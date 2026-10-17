@@ -227,7 +227,7 @@ struct Args {
     #[arg(long, default_value = "false")]
     yes: bool,
 
-    /// The Claude Code settings file to change. Default: ~/.claude/settings.json
+    /// The Claude Code settings file to change. Default: $CLAUDE_CONFIG_DIR/settings.json, else ~/.claude/settings.json
     #[arg(long)]
     claude_settings: Option<PathBuf>,
 }
