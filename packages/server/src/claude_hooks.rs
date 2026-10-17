@@ -100,8 +100,24 @@ fn sha(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// Where Claude Code reads its user settings: `CLAUDE_CONFIG_DIR` when set (as Claude Code itself does, and as
+/// the transcript reader does), else `~/.claude`.
 pub fn default_settings_path() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".claude/settings.json")
+    settings_in(
+        std::env::var_os("CLAUDE_CONFIG_DIR"),
+        std::env::var_os("HOME"),
+    )
+}
+
+fn settings_in(
+    config_dir: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> PathBuf {
+    match config_dir.filter(|d| !d.is_empty()) {
+        Some(d) => PathBuf::from(d),
+        None => PathBuf::from(home.unwrap_or_default()).join(".claude"),
+    }
+    .join("settings.json")
 }
 
 /// The user-scope journal of this one change: where the backup is and what the file hashed to after.
@@ -414,6 +430,23 @@ mod tests {
         assert!(!t.settings.exists());
         assert_eq!(respond(Some(&t), "claude", "remove").state, "not_connected");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn settings_live_in_the_claude_config_dir_when_it_is_set_else_under_home() {
+        let os = |s: &str| Some(std::ffi::OsString::from(s));
+        assert_eq!(
+            settings_in(os("/data/.claude"), os("/home/u")),
+            PathBuf::from("/data/.claude/settings.json")
+        );
+        assert_eq!(
+            settings_in(None, os("/home/u")),
+            PathBuf::from("/home/u/.claude/settings.json")
+        );
+        assert_eq!(
+            settings_in(os(""), os("/home/u")),
+            PathBuf::from("/home/u/.claude/settings.json")
+        );
     }
 
     #[test]
