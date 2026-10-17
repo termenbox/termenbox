@@ -7,6 +7,7 @@
 //! GitHub login inside the channel); the client verifies ours against the pinned fingerprint.
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
+use std::ops::RangeInclusive;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -113,15 +114,52 @@ pub fn fingerprint(cert: &DtlsCert) -> String {
     format!("sha-256 {}", hex.join(":"))
 }
 
-/// Starts the transport. `public_ip` is what clients are told to connect to.
-pub async fn start(
-    bind: SocketAddr,
+/// The UDP range user installs share (DECISION-0118): one firewall rule serves every instance on a
+/// machine, and the server, which owns the socket, picks the port.
+pub const UDP_PORT_RANGE: RangeInclusive<u16> = 4443..=4542;
+
+/// Binds the socket the transport will use, holding it so nothing can take the port in between
+/// (DECISION-0118). An `explicit` port is used as given and refused clearly when taken; otherwise
+/// the first free port in `ports` is used, preferring `preferred` when it is free. Returns the socket
+/// and the port it bound.
+pub async fn bind_transport(
+    ip: IpAddr,
+    explicit: Option<u16>,
+    ports: RangeInclusive<u16>,
+    preferred: Option<u16>,
+) -> Result<(UdpSocket, u16)> {
+    if let Some(port) = explicit {
+        let socket = UdpSocket::bind(SocketAddr::new(ip, port))
+            .await
+            .map_err(|e| anyhow!("UDP port {port} is not available: {e}"))?;
+        let bound = socket.local_addr()?.port();
+        return Ok((socket, bound));
+    }
+    let mut candidates: Vec<u16> = preferred
+        .filter(|p| ports.contains(p))
+        .into_iter()
+        .collect();
+    candidates.extend(ports.clone().filter(|p| Some(*p) != preferred));
+    for port in candidates {
+        if let Ok(socket) = UdpSocket::bind(SocketAddr::new(ip, port)).await {
+            return Ok((socket, port));
+        }
+    }
+    Err(anyhow!(
+        "no free UDP port in {}..={}; free one or set TERMENBOX_UDP_PORT",
+        ports.start(),
+        ports.end()
+    ))
+}
+
+/// Starts on an already-bound socket; its local port is what clients and the directory record get.
+pub async fn start_with_socket(
+    socket: UdpSocket,
     public_ip: IpAddr,
     cert: DtlsCert,
     limits: Limits,
     state: AppState,
 ) -> Result<RtcInfo> {
-    let socket = UdpSocket::bind(bind).await?;
     let port = socket.local_addr()?.port();
     let info = RtcInfo {
         ip: public_ip,
@@ -570,6 +608,74 @@ impl Peer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{IpAddr, SocketAddr};
+    use std::ops::RangeInclusive;
+    use tokio::net::UdpSocket;
+
+    /// A wide range so a stray busy port cannot make the test flaky (the production range is 4443-4542).
+    const TEST_RANGE: RangeInclusive<u16> = 47_000..=47_050;
+
+    fn localhost() -> IpAddr {
+        std::net::Ipv4Addr::LOCALHOST.into()
+    }
+
+    #[tokio::test]
+    async fn two_servers_take_different_ports_from_the_range() {
+        let (a, pa) = bind_transport(localhost(), None, TEST_RANGE, None)
+            .await
+            .unwrap();
+        let (b, pb) = bind_transport(localhost(), None, TEST_RANGE, None)
+            .await
+            .unwrap();
+        assert!(TEST_RANGE.contains(&pa), "{pa} is outside the range");
+        assert!(TEST_RANGE.contains(&pb), "{pb} is outside the range");
+        assert_ne!(pa, pb, "the second server reused the first's port");
+        drop((a, b));
+    }
+
+    #[tokio::test]
+    async fn a_restart_keeps_the_port_it_remembered() {
+        let (first, port) = bind_transport(localhost(), None, TEST_RANGE, None)
+            .await
+            .unwrap();
+        drop(first);
+        // As after a restart: the saved port is offered as the preference and is reused while free.
+        let (_again, again) = bind_transport(localhost(), None, TEST_RANGE, Some(port))
+            .await
+            .unwrap();
+        assert_eq!(again, port);
+    }
+
+    #[tokio::test]
+    async fn an_explicit_port_is_used_as_given_and_a_taken_one_fails_clearly() {
+        let held = UdpSocket::bind(SocketAddr::new(localhost(), 0))
+            .await
+            .unwrap();
+        let port = held.local_addr().unwrap().port();
+        let err = bind_transport(localhost(), Some(port), TEST_RANGE, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains(&port.to_string()), "{err}");
+
+        drop(held);
+        let (_socket, got) = bind_transport(localhost(), Some(port), TEST_RANGE, None)
+            .await
+            .unwrap();
+        assert_eq!(got, port);
+    }
+
+    #[tokio::test]
+    async fn a_full_range_is_a_clear_startup_error() {
+        // One free port, held for the whole test, so the single-port range has no room left.
+        let held = UdpSocket::bind(SocketAddr::new(localhost(), 0))
+            .await
+            .unwrap();
+        let port = held.local_addr().unwrap().port();
+        let err = bind_transport(localhost(), None, port..=port, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no free UDP port"), "{err}");
+    }
 
     fn stun(user: &str) -> Vec<u8> {
         let u = user.as_bytes();

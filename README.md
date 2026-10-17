@@ -135,7 +135,7 @@ Server (environment variables of the container; the installer sets the first two
 
 | Variable | Description |
 |---|---|
-| `TERMENBOX_UDP_PORT` | UDP port of the WebRTC transport (default 4443) |
+| `TERMENBOX_UDP_PORT` | UDP port of the WebRTC transport (default: the first free port in 4443-4542, remembered across restarts) |
 | `TERMENBOX_CLIENT_URL` | Client and directory origin (default https://app.termenbox.dev) |
 | `TERMENBOX_PUBLIC_IP` | Address clients connect to; detected when unset |
 | `TERMENBOX_WEBRTC` | `off` for WebSocket only |
