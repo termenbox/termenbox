@@ -486,7 +486,7 @@ async fn only_the_claiming_github_user_gets_in(kind: Kind) {
     assert!(c.recv_type("error").await["message"]
         .as_str()
         .unwrap()
-        .contains("another GitHub user"));
+        .contains("another user"));
     let mut c = Conn::open(kind, &f).await;
     c.login(&f, &alice, "").await;
     c.recv_type("auth_ok").await;

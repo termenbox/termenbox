@@ -1,6 +1,6 @@
-//! Device certificates (DECISION-0062). The hosted function signs (GitHub id, device public key, expiry,
-//! `kid`) with an Ed25519 key after a GitHub login; the browser proves it holds the device key by signing a
-//! per-connection challenge that names this server. The server never sees the GitHub token.
+//! Device certificates (DECISION-0062, DECISION-0116). The hosted function signs (provider, account id, device
+//! public key, expiry, `kid`) with an Ed25519 key after a GitHub login; the browser proves it holds the device key
+//! by signing a per-connection challenge that names this server. The server never sees the GitHub token.
 
 use std::collections::HashMap;
 
@@ -20,7 +20,15 @@ const DEFAULT_KEYS: &str = include_str!("../cert-keys.txt");
 struct Payload {
     v: u8,
     kid: String,
-    sub: u64,
+    /// Numeric account id; certificates from before DECISION-0116 carry only this.
+    #[serde(default)]
+    sub: Option<u64>,
+    /// Account id as a string (DECISION-0116), because providers other than GitHub do not use numbers.
+    #[serde(default)]
+    id: Option<String>,
+    /// Short lowercase provider name (DECISION-0116); absent means `github`.
+    #[serde(default)]
+    provider: Option<String>,
     login: String,
     dpk: String,
     exp: u64,
@@ -32,7 +40,10 @@ struct Payload {
 /// A verified certificate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceCert {
-    pub github_id: u64,
+    /// Short lowercase provider name; `github` unless the certificate says otherwise.
+    pub provider: String,
+    /// The account id within `provider`; a string (DECISION-0116).
+    pub account_id: String,
     pub login: String,
     /// Stable id of the device key, used by the revocation list.
     pub device: String,
@@ -106,8 +117,14 @@ impl CertKeys {
         }
         let dpk = B64.decode(&p.dpk).map_err(|_| CertError::Malformed)?;
         P256Key::from_sec1_bytes(&dpk).map_err(|_| CertError::Malformed)?;
+        // A certificate without a provider is GitHub; without an `id` its numeric `sub` is the id.
+        let provider = p.provider.unwrap_or_else(|| "github".to_string());
+        let account_id =
+            p.id.or_else(|| p.sub.map(|n| n.to_string()))
+                .ok_or(CertError::Malformed)?;
         Ok(DeviceCert {
-            github_id: p.sub,
+            provider,
+            account_id,
             login: p.login,
             device: device_id(&dpk),
             issued_at: p.iat,
@@ -178,8 +195,29 @@ pub mod testing {
             self.issue_at(device, id, login, exp, Some(now()))
         }
 
-        /// Like the function's certificates, but with a chosen (or missing) issue time.
+        /// Like the function's certificates, but with a chosen (or missing) issue time. Carries the
+        /// DECISION-0116 `provider` and string `id` alongside the legacy numeric `sub`.
         pub fn issue_at(
+            &self,
+            device: &Device,
+            id: u64,
+            login: &str,
+            exp: u64,
+            iat: Option<u64>,
+        ) -> String {
+            let dpk = device.public();
+            let mut body = serde_json::json!({
+                "v": 1, "kid": self.kid, "sub": id, "id": id.to_string(), "provider": "github",
+                "login": login, "dpk": B64.encode(dpk), "exp": exp,
+            });
+            if let Some(iat) = iat {
+                body["iat"] = iat.into();
+            }
+            self.sign_body(body)
+        }
+
+        /// A certificate in the pre-0116 form: a numeric `sub`, no `provider` and no string `id`.
+        pub fn issue_legacy_at(
             &self,
             device: &Device,
             id: u64,
@@ -194,6 +232,10 @@ pub mod testing {
             if let Some(iat) = iat {
                 body["iat"] = iat.into();
             }
+            self.sign_body(body)
+        }
+
+        fn sign_body(&self, body: serde_json::Value) -> String {
             let body = body.to_string();
             let sig = self.key.sign(body.as_bytes());
             format!("{}.{}", B64.encode(body), B64.encode(sig.to_bytes()))
@@ -243,10 +285,24 @@ mod tests {
         let (signer, device) = (Signer::new("k1"), Device::new());
         let cert = signer.issue(&device, 7, "octo", now() + 3600);
         let c = signer.keys().verify(&cert, now()).unwrap();
-        assert_eq!((c.github_id, c.login.as_str()), (7, "octo"));
+        assert_eq!(
+            (c.provider.as_str(), c.account_id.as_str(), c.login.as_str()),
+            ("github", "7", "octo")
+        );
         assert_eq!(c.device, device.id());
         c.verify_challenge("srv", "n1", &device.sign("srv", "n1"))
             .unwrap();
+    }
+
+    #[test]
+    fn an_old_form_certificate_is_read_as_github_with_the_numeric_sub_as_id() {
+        let (signer, device) = (Signer::new("k1"), Device::new());
+        let cert = signer.issue_legacy_at(&device, 42, "octo", now() + 3600, Some(now()));
+        let c = signer.keys().verify(&cert, now()).unwrap();
+        assert_eq!(
+            (c.provider.as_str(), c.account_id.as_str(), c.login.as_str()),
+            ("github", "42", "octo")
+        );
     }
 
     #[test]
