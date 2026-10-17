@@ -103,9 +103,10 @@ struct Args {
     #[arg(long, env = "TERMENBOX_RUN_USER", default_value = "termenbox")]
     run_user: String,
 
-    /// UDP port of the WebRTC-direct transport (open it in the firewall).
-    #[arg(long, env = "TERMENBOX_UDP_PORT", default_value = "4443")]
-    udp_port: u16,
+    /// UDP port of the WebRTC-direct transport. Without it the server binds the first free port from
+    /// 4443 to 4542 and remembers it, so one firewall rule serves every user install (decision 0118).
+    #[arg(long, env = "TERMENBOX_UDP_PORT")]
+    udp_port: Option<u16>,
 
     /// Address clients connect to over WebRTC; detected when not set.
     #[arg(long, env = "TERMENBOX_PUBLIC_IP")]
@@ -337,6 +338,20 @@ fn default_config_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/var/lib"))
         .join(".config/termenbox")
+}
+
+/// The UDP port the server bound last time (decision 0118); absent or unreadable means "pick one".
+fn saved_udp_port(dir: &std::path::Path) -> Option<u16> {
+    std::fs::read_to_string(dir.join("udp_port"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Remembers the bound port so a restart keeps it and the firewall rule stays valid.
+fn save_udp_port(dir: &std::path::Path, port: u16) -> std::io::Result<()> {
+    std::fs::write(dir.join("udp_port"), port.to_string())
 }
 
 /// The host's short name (`vps-1` for `vps-1.example.com`), cleaned for display; `termenbox-server` when unknown.
@@ -697,8 +712,27 @@ async fn main() -> anyhow::Result<()> {
             })?,
         };
         let cert = rtc::load_or_create_cert(&args.config_dir)?;
-        let bind = SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), args.udp_port);
-        let info = rtc::start(bind, public_ip, cert, rtc::Limits::default(), state.clone()).await?;
+        // The server owns the socket, so it picks the port in one step: no pick-then-bind race
+        // (decision 0118). An explicit port wins; otherwise the saved one, else the first free one.
+        let bind_ip: std::net::IpAddr = std::net::Ipv4Addr::UNSPECIFIED.into();
+        let (socket, port) = rtc::bind_transport(
+            bind_ip,
+            args.udp_port,
+            rtc::UDP_PORT_RANGE,
+            saved_udp_port(&args.config_dir),
+        )
+        .await?;
+        if args.udp_port.is_none() {
+            save_udp_port(&args.config_dir, port)?;
+        }
+        let info = rtc::start_with_socket(
+            socket,
+            public_ip,
+            cert,
+            rtc::Limits::default(),
+            state.clone(),
+        )
+        .await?;
         info!(
             "WebRTC-direct on udp {}:{} ({})",
             info.ip, info.port, info.fingerprint
@@ -790,5 +824,29 @@ mod name_tests {
         assert_eq!(clean_server_name("localhost"), "termenbox-server");
         assert_eq!(clean_server_name("a b\u{1b}[31mc"), "ab31mc");
         assert_eq!(clean_server_name(&"x".repeat(80)).len(), 40);
+    }
+}
+
+#[cfg(test)]
+mod udp_port_tests {
+    use super::{save_udp_port, saved_udp_port};
+
+    #[test]
+    fn the_bound_port_is_remembered_and_a_bad_file_is_ignored() {
+        let dir = std::env::temp_dir().join(format!("termenbox-udp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        assert_eq!(saved_udp_port(&dir), None, "nothing saved yet");
+        save_udp_port(&dir, 4447).unwrap();
+        assert_eq!(saved_udp_port(&dir), Some(4447), "the restart sees it");
+
+        std::fs::write(dir.join("udp_port"), "not a port").unwrap();
+        assert_eq!(
+            saved_udp_port(&dir),
+            None,
+            "a corrupt file falls back to picking"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
