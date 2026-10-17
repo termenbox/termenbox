@@ -453,9 +453,7 @@ fn print_registration(args: &Args, auth: &AuthState) -> anyhow::Result<()> {
         }
     }
     println!("Scan the code with Termenbox (or your phone's camera), or open:\n\n  {link}\n");
-    println!(
-        "The first GitHub user to connect becomes the owner. The code works for 15 minutes, once."
-    );
+    println!("The first user to connect becomes the owner. The code works for 15 minutes, once.");
     Ok(())
 }
 

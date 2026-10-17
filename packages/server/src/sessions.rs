@@ -187,7 +187,7 @@ impl SessionManager {
                     let Ok(client_msg) = serde_json::from_str::<ClientMessage>(&text) else { continue };
                     if let (true, ClientMessage::Attach { session_id }) = (self.mode.is_host(), &client_msg) {
                         // Who got a shell on the host and as whom; never what they typed.
-                        info!(target: "audit", event = "host_session", github_id = identity.id, login = %identity.login, run_as = %self.mode.label(), session = %session_id);
+                        info!(target: "audit", event = "host_session", provider = %identity.provider, account_id = %identity.id, login = %identity.login, run_as = %self.mode.label(), session = %session_id);
                     }
                     if let Err(e) = self.handle(conn, client_msg, auth, &identity, &mut attachment, &mut cols, &mut rows, &link.tx).await {
                         if !send(&link.tx, &ServerMessage::Error { message: e.to_string() }).await { break; }
@@ -296,10 +296,10 @@ impl SessionManager {
                     identity.issued_at,
                     now,
                 ) {
-                    info!(target: "audit", event = "uninstall_refused", github_id = identity.id, reason);
+                    info!(target: "audit", event = "uninstall_refused", provider = %identity.provider, account_id = %identity.id, reason);
                     return Err(anyhow::anyhow!(reason));
                 }
-                info!(target: "audit", event = "uninstall_started", github_id = identity.id, login = %identity.login, mode = %self.mode.label());
+                info!(target: "audit", event = "uninstall_started", provider = %identity.provider, account_id = %identity.id, login = %identity.login, mode = %self.mode.label());
                 *attachment = None;
                 crate::uninstall::wipe(auth.dir())?;
                 info!(target: "audit", event = "uninstall_config_wiped");
@@ -405,7 +405,7 @@ impl SessionManager {
                     choice,
                 )
                 .await?;
-                info!(target: "audit", event = "answer_sent", github_id = identity.id, session = %session, choice);
+                info!(target: "audit", event = "answer_sent", provider = %identity.provider, account_id = %identity.id, session = %session, choice);
             }
             ClientMessage::Reply { session, text } => {
                 // One line, no control characters: it is typed, then Enter.
@@ -416,7 +416,7 @@ impl SessionManager {
                 self.backend
                     .send_text(&session, &format!("{line}\r"))
                     .await?;
-                info!(target: "audit", event = "reply_sent", github_id = identity.id, session = %session);
+                info!(target: "audit", event = "reply_sent", provider = %identity.provider, account_id = %identity.id, session = %session);
             }
             ClientMessage::AgentSync { after } => {
                 let Some(hub) = &self.events else {
@@ -457,25 +457,25 @@ impl SessionManager {
                 self.backend.select_window(&session, index).await?;
             }
             ClientMessage::NewWindow { session } => {
-                info!(target: "audit", event = "new_window", github_id = identity.id, session = %session);
+                info!(target: "audit", event = "new_window", provider = %identity.provider, account_id = %identity.id, session = %session);
                 self.backend.new_window(&session).await?;
             }
             ClientMessage::CloseWindow { session, index } => {
-                info!(target: "audit", event = "close_window", github_id = identity.id, session = %session, window = index);
+                info!(target: "audit", event = "close_window", provider = %identity.provider, account_id = %identity.id, session = %session, window = index);
                 self.backend.kill_window(&session, index).await?;
                 // Closing the last window ends the session: the lists follow.
                 let sessions = self.backend.list().await?;
                 send_r(tx, &ServerMessage::Sessions { sessions }).await?;
             }
             ClientMessage::CloseSession { session } => {
-                info!(target: "audit", event = "close_session", github_id = identity.id, login = %identity.login, session = %session);
+                info!(target: "audit", event = "close_session", provider = %identity.provider, account_id = %identity.id, login = %identity.login, session = %session);
                 self.backend.kill(&session).await?;
                 let sessions = self.backend.list().await?;
                 send_r(tx, &ServerMessage::Sessions { sessions }).await?;
             }
             ClientMessage::Peek { session, hash } => {
                 // Only a counter in the audit log: what is on the screen is never logged.
-                audit_peek(identity.id, &session);
+                audit_peek(&identity.provider, &identity.id, &session);
                 let window = self
                     .windows
                     .as_ref()
@@ -486,7 +486,7 @@ impl SessionManager {
             }
             ClientMessage::SessionView { session, hash } => {
                 // Only a counter in the audit log, as for a peek: the screen is never logged.
-                audit_peek(identity.id, &session);
+                audit_peek(&identity.provider, &identity.id, &session);
                 let agent = self
                     .events
                     .as_ref()
@@ -519,7 +519,7 @@ impl SessionManager {
                     option,
                 )
                 .await?;
-                info!(target: "audit", event = "session_answer_sent", github_id = identity.id, session = %session, option);
+                info!(target: "audit", event = "session_answer_sent", provider = %identity.provider, account_id = %identity.id, session = %session, option);
             }
             ClientMessage::AgentHooks { agent, action } => {
                 let target = self.hooks.clone();
@@ -535,7 +535,7 @@ impl SessionManager {
                     } else {
                         "agent_hooks_removed"
                     };
-                    info!(target: "audit", event, github_id = identity.id, login = %identity.login, agent = %agent);
+                    info!(target: "audit", event, provider = %identity.provider, account_id = %identity.id, login = %identity.login, agent = %agent);
                 }
                 send_r(
                     tx,
@@ -697,8 +697,8 @@ async fn next_window(
     }
 }
 
-fn audit_peek(github_id: u64, session: &str) {
-    info!(target: "audit", event = "peek", github_id, session = %session);
+fn audit_peek(provider: &str, account_id: &str, session: &str) {
+    info!(target: "audit", event = "peek", provider, account_id, session = %session);
 }
 
 /// The most a snapshot carries; a phone screen is a few KB, this only stops a huge pane from being sent.
@@ -1240,7 +1240,7 @@ mod peek_tests {
         let secret = "SECRET-SCREEN-TEXT";
         let b = Fake(Mutex::new(Some(secret.into())));
         let _guard = tracing::subscriber::set_default(sub);
-        audit_peek(1, "s");
+        audit_peek("github", "1", "s");
         let reply = peek(&b, "s", None).await;
         assert!(parts(reply).0.contains(secret));
         let logged = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
