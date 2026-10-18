@@ -511,7 +511,8 @@ install_user() {
   elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
     FIREWALL=firewalld
   fi
-  LINGER_WAS="$(loginctl show-user "$ME" -p Linger --value 2>/dev/null || true)"
+  # No answer (no login session for this user, e.g. after su) is not "off": we then do not claim a state we cannot see.
+  LINGER_WAS="$(loginctl show-user "$ME" -p Linger --value 2>/dev/null)" || LINGER_WAS=unknown
   LINGER=off
   say ""
   say "What needs root (this installer never runs sudo):"
@@ -526,6 +527,9 @@ install_user() {
   elif [ "$LINGER_WAS" = yes ]; then
     LINGER=on
     say "  - sessions start at boot: lingering is on"
+  elif [ "$LINGER_WAS" = unknown ]; then
+    LINGER=unknown
+    say "  - sessions start at boot: lingering could not be read; it will be tried, but not undone on uninstall. If it fails, as root:  loginctl enable-linger $ME"
   else
     say "  - sessions start at boot: switching lingering on for $ME (reversible); if that is not allowed, as root:  loginctl enable-linger $ME"
   fi
@@ -545,13 +549,6 @@ install_user() {
 
   mkdir -p "$JOURNAL" "$UNIT_DIR"
   chmod 700 "$JOURNAL"
-  # Starting at boot, not only at login, needs lingering (announced in the summary above). The user may switch it
-  # on for themselves; it is journaled before it is switched on, so uninstall undoes it, and it is reversible.
-  if [ "$LINGER" = off ]; then
-    journal linger_enabled "user=$ME"
-    loginctl enable-linger "$ME" >/dev/null 2>&1 \
-      || say "Lingering could not be switched on: the server starts at login only. As root:  loginctl enable-linger $ME"
-  fi
   echo "$HTTP_PORT" > "$JOURNAL/http_port"
 
   mkdir -p "$(dirname "$BIN")"
@@ -614,6 +611,15 @@ UNIT
     [ "$i" -lt 30 ] || die "the server did not start; see: journalctl --user -u termenbox"
     sleep 1
   done
+
+  # Starting at boot, not only at login, needs lingering (announced in the summary above). Last, so a failed install
+  # leaves it alone. The user may switch it on for themselves; it is journaled before it is switched on, so uninstall
+  # undoes it, and it is reversible. Not journaled when we could not read the earlier state: it may not be ours.
+  if [ "$LINGER" = off ] || [ "$LINGER" = unknown ]; then
+    [ "$LINGER" = off ] && journal linger_enabled "user=$ME"
+    loginctl enable-linger "$ME" >/dev/null 2>&1 \
+      || say "Lingering could not be switched on: the server starts at login only. As root:  loginctl enable-linger $ME"
+  fi
 
   install_user_helper_units
   native_claim

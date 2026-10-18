@@ -67,9 +67,12 @@ if [ "$(loginctl show-user alice -p Linger --value)" = yes ]; then
 else
   grep -q "loginctl enable-linger alice" /tmp/install.txt || fail "no lingering and no instruction how to get it"
 fi
+grep -q "What needs root" /tmp/install.txt || fail "the installer did not say first what needs root"
 
 echo "== installing again changes nothing"
 entries="$(as_alice "$BIN" --journal-dir "$JOURNAL" --journal-list | wc -l)"
+# An install from before the server picked its own UDP port left this file behind; it must do no harm.
+as_alice sh -c "echo 4443 > '$JOURNAL/udp_port'"
 as_alice sh /install.sh "$SECRET" "$ORIGIN" host-me
 [ "$(as_alice "$BIN" --journal-dir "$JOURNAL" --journal-list | wc -l)" = "$entries" ] || fail "a second install wrote more journal entries"
 usr is-active --quiet termenbox || fail "the service stopped"
