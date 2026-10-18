@@ -13,9 +13,10 @@
 #   host        directly on this machine as root, as a systemd service
 # The host modes give the owner's browser a shell on the machine itself and need no Docker.
 #
-# It starts the server and hands it the claim secret (the server chooses its own UDP port; DECISION-0118). It asks
-# nothing and needs nothing afterwards: the server appears in Termenbox by itself. Safe to run again: a new secret
-# re-claims the server (root on this host already allows that).
+# It starts the server and hands it the claim secret. In host-me the server chooses its own UDP port from the
+# reserved range (DECISION-0118); the other modes still pick one. It asks nothing and needs nothing afterwards: the
+# server appears in Termenbox by itself. Safe to run again: a new secret re-claims the server (root on this host
+# already allows that).
 #
 # Host modes: every change is recorded in /var/lib/termenbox-root before it is made and can be undone with
 # `termenbox-server --revert`. The release is checked before anything is installed: its manifest must carry a valid
@@ -502,7 +503,8 @@ install_user() {
 
   # What will need root, said before anything is downloaded or changed (decision 0118, 0113). The firewall is
   # detected without root (`systemctl is-active`, because reading its rules needs root). Lingering we may switch on
-  # ourselves, so it is tried here: it is reversible and is journaled once the release (and so a binary) is here.
+  # ourselves; it is announced here and switched on below (after the dry-run guard), once a verified binary can
+  # journal it first.
   FIREWALL=""
   if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
     FIREWALL=ufw
@@ -510,7 +512,7 @@ install_user() {
     FIREWALL=firewalld
   fi
   LINGER_WAS="$(loginctl show-user "$ME" -p Linger --value 2>/dev/null || true)"
-  LINGER="$LINGER_WAS"
+  LINGER=off
   say ""
   say "What needs root (this installer never runs sudo):"
   case "$FIREWALL" in
@@ -522,12 +524,10 @@ install_user() {
     LINGER=skipped
     say "  - starting at boot is skipped (TERMENBOX_SKIP_LINGER); later, as root:  loginctl enable-linger $ME"
   elif [ "$LINGER_WAS" = yes ]; then
+    LINGER=on
     say "  - sessions start at boot: lingering is on"
   else
-    say "  - sessions start at boot: switching lingering on for $ME now (reversible)"
-    if [ -z "${TERMENBOX_DRY_RUN:-}" ]; then
-      loginctl enable-linger "$ME" >/dev/null 2>&1 && LINGER=yes || { LINGER=no; say "    that did not work; as root, run:  loginctl enable-linger $ME"; }
-    fi
+    say "  - sessions start at boot: switching lingering on for $ME (reversible); if that is not allowed, as root:  loginctl enable-linger $ME"
   fi
 
   fetch_release
@@ -545,8 +545,11 @@ install_user() {
 
   mkdir -p "$JOURNAL" "$UNIT_DIR"
   chmod 700 "$JOURNAL"
-  if [ "$LINGER" = yes ] && [ "$LINGER_WAS" != yes ]; then
+  # Starting at boot, not only at login, needs lingering (announced in the summary above). The user may switch it
+  # on for themselves; it is journaled before it is switched on, so uninstall undoes it, and it is reversible.
+  if [ "$LINGER" = off ]; then
     journal linger_enabled "user=$ME"
+    loginctl enable-linger "$ME" >/dev/null 2>&1 || LINGER=no
   fi
   echo "$HTTP_PORT" > "$JOURNAL/http_port"
 
@@ -610,9 +613,6 @@ UNIT
     [ "$i" -lt 30 ] || die "the server did not start; see: journalctl --user -u termenbox"
     sleep 1
   done
-
-  # Starting at boot, not only at login, needs lingering. It was switched on in the summary above and journaled
-  # here (as soon as a verified binary was available), because it is reversible.
 
   install_user_helper_units
   native_claim
