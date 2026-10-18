@@ -18,3 +18,5 @@ tags: [server, client, deployment]
 ## Why
 
 A name the owner did not type should still tell their servers apart. The hostname is the one name every VPS already has and the owner already recognises.
+
+Refined by [[0117-a-claim-link-is-previewed-and-consumed-only-on-confirm]]: the typed name is entered in the Add Server confirmation, pre-filled with this default.

@@ -22,3 +22,5 @@ tags: [deployment, security, server]
 ## Why
 
 Running as the owner already works without root: the server binds a high UDP port, keeps state in the home, and the signed update and uninstall only need the user's own files. Asking for `sudo` was for a boot-time system unit, a firewall rule and a package that most hosts either have or can do in one printed line. Making root optional removes the adoption friction of a shared or locked-down account, keeps the server from ever holding root (guardrail `unprivileged-server-never-holds-root`), and leaves `host-user` and `host` for the cases that want a system service.
+
+Amended by [[0118-user-installs-use-a-reserved-udp-range-and-say-what-needs-root-first]]: the server binds its port from a reserved range, and the installer says what needs root before it changes anything.
