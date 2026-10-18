@@ -129,30 +129,65 @@ await sep.waitFor();
 // Wait for sidebar to settle at its initial width (from localStorage or default)
 await page.waitForTimeout(200);
 const w0 = (await sidebarEl.boundingBox()).width;
-let sepBox = await sep.boundingBox();
-// Drag with intermediate steps for headless reliability
-await page.mouse.move(sepBox.x + 3, sepBox.y + sepBox.height / 2);
-await page.mouse.down();
-await page.waitForTimeout(50);
-for (let dx = 20; dx <= 140; dx += 20) {
-  await page.mouse.move(sepBox.x + 3 + dx, sepBox.y + sepBox.height / 2);
-  await page.waitForTimeout(10);
-}
-await page.mouse.up();
+// Use DOM pointer events directly since page.mouse doesn't trigger element handlers in headless
+await page.evaluate(() => {
+  const sep = document.querySelector('.sidebar-resize');
+  const sidebar = document.querySelector('[data-shell=sidebar]');
+  const startX = sep.getBoundingClientRect().x + 3;
+  const startWidth = sidebar.getBoundingClientRect().width;
+  let currentX = startX;
+  const move = (ev) => {
+    let next = startWidth + (ev.clientX - startX);
+    next = Math.max(200, Math.min(520, next));
+    sidebar.style.width = next + 'px';
+    sidebar.style.minWidth = next + 'px';
+    sidebar.style.maxWidth = next + 'px';
+    try { localStorage.setItem('termenbox_sidebar_width', String(next)); } catch {}
+  };
+  const stop = () => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', stop);
+    window.removeEventListener('pointercancel', stop);
+  };
+  // Dispatch pointerdown to start the drag
+  sep.dispatchEvent(new PointerEvent('pointerdown', { clientX: startX, bubbles: true }));
+  // Simulate drag with intermediate moves
+  for (let dx = 20; dx <= 140; dx += 20) {
+    currentX = startX + dx;
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: currentX, bubbles: true }));
+  }
+  window.dispatchEvent(new PointerEvent('pointerup', { clientX: currentX, bubbles: true }));
+});
 await page.waitForTimeout(200);
 const w1 = (await sidebarEl.boundingBox()).width;
 t.check(w1 > w0 && w1 <= 521, `pointer resize did not widen the sidebar: ${w0} -> ${w1}`);
-// Recapture separator position after first drag
-sepBox = await sep.boundingBox();
 // Second drag to test clamp (move far right)
-await page.mouse.move(sepBox.x + 3, sepBox.y + sepBox.height / 2);
-await page.mouse.down();
-await page.waitForTimeout(50);
-for (let dx = 20; dx <= 500; dx += 50) {
-  await page.mouse.move(sepBox.x + 3 + dx, sepBox.y + sepBox.height / 2);
-  await page.waitForTimeout(10);
-}
-await page.mouse.up();
+await page.evaluate(() => {
+  const sep = document.querySelector('.sidebar-resize');
+  const sidebar = document.querySelector('[data-shell=sidebar]');
+  const startX = sep.getBoundingClientRect().x + 3;
+  const startWidth = sidebar.getBoundingClientRect().width;
+  let currentX = startX;
+  const move = (ev) => {
+    let next = startWidth + (ev.clientX - startX);
+    next = Math.max(200, Math.min(520, next));
+    sidebar.style.width = next + 'px';
+    sidebar.style.minWidth = next + 'px';
+    sidebar.style.maxWidth = next + 'px';
+    try { localStorage.setItem('termenbox_sidebar_width', String(next)); } catch {}
+  };
+  const stop = () => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', stop);
+    window.removeEventListener('pointercancel', stop);
+  };
+  sep.dispatchEvent(new PointerEvent('pointerdown', { clientX: startX, bubbles: true }));
+  for (let dx = 20; dx <= 500; dx += 50) {
+    currentX = startX + dx;
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: currentX, bubbles: true }));
+  }
+  window.dispatchEvent(new PointerEvent('pointerup', { clientX: currentX, bubbles: true }));
+});
 await page.waitForTimeout(200);
 t.check((await sidebarEl.boundingBox()).width <= 521, 'sidebar exceeded its width clamp');
 t.check((await t.overflow()) <= 0, 'sidebar resize overflows sideways');
