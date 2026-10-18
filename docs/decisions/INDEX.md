@@ -117,3 +117,7 @@
 0112-browser-floor-ios-16-4-chrome-111,"The minimum browsers are iOS Safari 16.4 and Chrome Android 111, so Tailwind v4 stays","client, browser-support, design, roadmap",active
 0113-host-me-needs-no-root,"The install for the current user needs no root; anything that does is optional and printed, not run","deployment, security, server",active
 0114-server-builds-and-tests-run-in-a-pinned-container,"The Rust server and the browser end-to-end tests are built and run in a pinned container, not from a host install","build, repo",draft
+0115-several-accounts-on-a-machine-are-one-server-instance-per-os-user,"Several accounts on one machine are served by one server instance per OS user, never by one multi-account server","security, auth, deployment, server",active
+0116-an-account-is-a-provider-and-an-id,"An account is a provider and an id, so a second OAuth provider can be added without confusing two users","security, auth, protocol",active
+0117-a-claim-link-is-previewed-and-consumed-only-on-confirm,"A claim link is previewed first and consumed only when the user confirms, and the name is editable there","security, auth, client, protocol",active
+0118-user-installs-use-a-reserved-udp-range-and-say-what-needs-root-first,"User installs bind a port from a reserved UDP range and say what needs root before changing anything","deployment, network, security, client",active
