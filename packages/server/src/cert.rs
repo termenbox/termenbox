@@ -117,11 +117,24 @@ impl CertKeys {
         }
         let dpk = B64.decode(&p.dpk).map_err(|_| CertError::Malformed)?;
         P256Key::from_sec1_bytes(&dpk).map_err(|_| CertError::Malformed)?;
-        // A certificate without a provider is GitHub; without an `id` its numeric `sub` is the id.
-        let provider = p.provider.unwrap_or_else(|| "github".to_string());
-        let account_id =
-            p.id.or_else(|| p.sub.map(|n| n.to_string()))
-                .ok_or(CertError::Malformed)?;
+        // A certificate without a provider is GitHub. The provider is a short lowercase name; reject an
+        // empty one and normalise case so the owner check, an exact string match, cannot drift.
+        let provider = p
+            .provider
+            .unwrap_or_else(|| "github".to_string())
+            .to_lowercase();
+        if provider.is_empty() {
+            return Err(CertError::Malformed);
+        }
+        // The account id must be non-empty. The numeric `sub` is GitHub's legacy form and is only a
+        // fallback for GitHub (or a certificate with no provider); another provider must carry its own `id`.
+        let account_id = match p.id {
+            Some(id) if !id.is_empty() => id,
+            _ if provider == "github" => {
+                p.sub.map(|n| n.to_string()).ok_or(CertError::Malformed)?
+            }
+            _ => return Err(CertError::Malformed),
+        };
         Ok(DeviceCert {
             provider,
             account_id,
@@ -235,6 +248,26 @@ pub mod testing {
             self.sign_body(body)
         }
 
+        /// A certificate from another provider: a provider name and a string id, with no numeric `sub`.
+        pub fn issue_provider_at(
+            &self,
+            device: &Device,
+            provider: &str,
+            id: &str,
+            login: &str,
+            exp: u64,
+        ) -> String {
+            self.sign_payload(serde_json::json!({
+                "v": 1, "kid": self.kid, "provider": provider, "id": id,
+                "login": login, "dpk": B64.encode(device.public()), "exp": exp,
+            }))
+        }
+
+        /// Signs an arbitrary payload, so tests can craft unusual or malformed certificates.
+        pub fn sign_payload(&self, body: serde_json::Value) -> String {
+            self.sign_body(body)
+        }
+
         fn sign_body(&self, body: serde_json::Value) -> String {
             let body = body.to_string();
             let sig = self.key.sign(body.as_bytes());
@@ -303,6 +336,51 @@ mod tests {
             (c.provider.as_str(), c.account_id.as_str(), c.login.as_str()),
             ("github", "42", "octo")
         );
+    }
+
+    #[test]
+    fn a_provider_name_is_lowercased_and_its_own_id_is_used() {
+        let (signer, device) = (Signer::new("k1"), Device::new());
+        let cert = signer.issue_provider_at(&device, "GitHub", "abc", "octo", now() + 3600);
+        let c = signer.keys().verify(&cert, now()).unwrap();
+        assert_eq!(
+            (c.provider.as_str(), c.account_id.as_str(), c.login.as_str()),
+            ("github", "abc", "octo")
+        );
+    }
+
+    #[test]
+    fn a_non_github_certificate_without_its_own_id_is_malformed() {
+        let (signer, device) = (Signer::new("k1"), Device::new());
+        // A `sub` (GitHub's numeric id) must not become another provider's id.
+        let cert = signer.sign_payload(serde_json::json!({
+            "v": 1, "kid": "k1", "provider": "gitlab", "sub": 5,
+            "login": "o", "dpk": B64.encode(device.public()), "exp": now() + 60,
+        }));
+        assert_eq!(
+            signer.keys().verify(&cert, now()),
+            Err(CertError::Malformed)
+        );
+    }
+
+    #[test]
+    fn an_empty_provider_or_id_is_malformed() {
+        let (signer, device) = (Signer::new("k1"), Device::new());
+        let keys = signer.keys();
+        let dpk = B64.encode(device.public());
+        let empty_provider = signer.sign_payload(serde_json::json!({
+            "v": 1, "kid": "k1", "provider": "", "id": "5",
+            "login": "o", "dpk": dpk.clone(), "exp": now() + 60,
+        }));
+        assert_eq!(
+            keys.verify(&empty_provider, now()),
+            Err(CertError::Malformed)
+        );
+        let empty_id = signer.sign_payload(serde_json::json!({
+            "v": 1, "kid": "k1", "provider": "gitlab", "id": "",
+            "login": "o", "dpk": dpk, "exp": now() + 60,
+        }));
+        assert_eq!(keys.verify(&empty_id, now()), Err(CertError::Malformed));
     }
 
     #[test]

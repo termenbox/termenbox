@@ -25,13 +25,14 @@ describe('issueCertificate', () => {
     });
   });
 
-  it('names the provider when one is given', async () => {
+  it('names the provider and keeps the GitHub-only `sub` off other providers', async () => {
     const pair = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as CryptoKeyPair;
     const secret = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.exportKey('pkcs8', pair.privateKey))));
     const { cert } = await issueCertificate({ CERT_SIGNING_KEY: secret }, { id: 7, login: 'octo', provider: 'gitlab' }, 'B' + 'A'.repeat(86), 1000);
     const body = JSON.parse(new TextDecoder().decode(dec(cert.split('.')[0])));
     expect(body.provider).toBe('gitlab');
     expect(body.id).toBe('7');
+    expect(body.sub).toBeUndefined();
   });
 });
 

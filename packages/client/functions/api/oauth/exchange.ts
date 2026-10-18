@@ -56,15 +56,18 @@ export async function issueCertificate(
   nowSecs = Math.floor(Date.now() / 1000),
 ): Promise<{ cert: string; exp: number }> {
   const exp = nowSecs + CERT_LIFETIME_SECS;
+  const provider = user.provider || 'github';
+  // DECISION-0116: the account is a provider plus a string id. `sub` is GitHub's numeric id only: the
+  // client avatar URL is GitHub's, and a server older than 0116 reads `sub` as a GitHub id, so another
+  // provider's id must never be written there.
+  const sub = provider === 'github' ? user.id : undefined;
   const payload = new TextEncoder().encode(
     JSON.stringify({
       v: 1,
       kid: env.CERT_KID || 'k1',
-      // DECISION-0116: the account is a provider plus a string id. `sub` stays as the numeric
-      // GitHub id so the client avatar and servers older than 0116 keep working.
-      provider: user.provider || 'github',
+      provider,
       id: String(user.id),
-      sub: user.id,
+      sub,
       login: user.login,
       dpk: deviceKey,
       iat: nowSecs,

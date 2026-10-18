@@ -178,7 +178,7 @@ pub async fn run(
             let w = backoff;
             backoff = (backoff * 2).min(Duration::from_secs(600));
             w
-        } else if auth.owner().is_none() {
+        } else if !auth.is_claimed() {
             UNCLAIMED_REFRESH
         } else {
             KEEPALIVE
