@@ -518,7 +518,7 @@ install_user() {
   case "$FIREWALL" in
     ufw) say "  - the firewall ufw is active. Open the WebRTC range once, as root:  ufw allow 4443:4542/udp" ;;
     firewalld) say "  - the firewall firewalld is active. Open the WebRTC range once, as root:  firewall-cmd --permanent --add-port=4443-4542/udp && firewall-cmd --reload" ;;
-    *) say "  - no firewall (ufw or firewalld) is active here, so nothing has to be opened" ;;
+    *) say "  - no active ufw or firewalld was detected, so nothing has to be opened" ;;
   esac
   if [ -n "${TERMENBOX_SKIP_LINGER:-}" ]; then
     LINGER=skipped
@@ -549,7 +549,8 @@ install_user() {
   # on for themselves; it is journaled before it is switched on, so uninstall undoes it, and it is reversible.
   if [ "$LINGER" = off ]; then
     journal linger_enabled "user=$ME"
-    loginctl enable-linger "$ME" >/dev/null 2>&1 || LINGER=no
+    loginctl enable-linger "$ME" >/dev/null 2>&1 \
+      || say "Lingering could not be switched on: the server starts at login only. As root:  loginctl enable-linger $ME"
   fi
   echo "$HTTP_PORT" > "$JOURNAL/http_port"
 
