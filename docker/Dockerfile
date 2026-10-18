@@ -40,7 +40,8 @@ ENV LANG=C.UTF-8 \
     TERMENBOX_BUILD=$TERMENBOX_BUILD \
     TERMENBOX_CONFIG_DIR=/home/node/.config/termenbox \
     TERMENBOX_HOST=127.0.0.1 \
-    TERMENBOX_PORT=8080
+    TERMENBOX_PORT=8080 \
+    TERMENBOX_UDP_PORT=4443
 
 # The HTTP/WebSocket port stays inside the container; clients reach the server on its UDP port.
 HEALTHCHECK --interval=60s --timeout=5s --start-period=10s CMD curl -fs http://127.0.0.1:8080/health || exit 1

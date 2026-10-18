@@ -124,8 +124,16 @@ async fn fixture() -> Fixture {
         rtc_info: None,
     };
     let cert = rtc::load_or_create_cert(&dir).unwrap();
-    let rtc = rtc::start(
-        SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
+    let (socket, _) = rtc::bind_transport(
+        Ipv4Addr::LOCALHOST.into(),
+        Some(0), // an ephemeral port, so tests can run side by side
+        rtc::UDP_PORT_RANGE,
+        None,
+    )
+    .await
+    .unwrap();
+    let rtc = rtc::start_with_socket(
+        socket,
         Ipv4Addr::LOCALHOST.into(),
         cert,
         rtc::Limits::default(),
