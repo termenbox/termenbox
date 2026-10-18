@@ -22,7 +22,7 @@ use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc};
 use tokio::net::UdpSocket;
 use tokio::sync::Notify;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::link::{self, Inbound, LinkEnd};
 use crate::AppState;
@@ -119,8 +119,8 @@ pub fn fingerprint(cert: &DtlsCert) -> String {
 pub const UDP_PORT_RANGE: RangeInclusive<u16> = 4443..=4542;
 
 /// Binds the socket the transport will use, holding it so nothing can take the port in between
-/// (DECISION-0118). An `explicit` port is used as given and refused clearly when taken; otherwise
-/// the first free port in `ports` is used, preferring `preferred` when it is free. Returns the socket
+/// (DECISION-0118). An `explicit` port is used as given and refused clearly when taken; otherwise the
+/// remembered `preferred` port is retried first, then the range is scanned in order. Returns the socket
 /// and the port it bound.
 pub async fn bind_transport(
     ip: IpAddr,
@@ -131,24 +131,49 @@ pub async fn bind_transport(
     if let Some(port) = explicit {
         let socket = UdpSocket::bind(SocketAddr::new(ip, port))
             .await
-            .map_err(|e| anyhow!("UDP port {port} is not available: {e}"))?;
+            .map_err(|e| {
+                anyhow!(
+                    "requested UDP port {port} (--udp-port/TERMENBOX_UDP_PORT) is not available: {e}"
+                )
+            })?;
         let bound = socket.local_addr()?.port();
         return Ok((socket, bound));
     }
-    let mut candidates: Vec<u16> = preferred
-        .filter(|p| ports.contains(p))
-        .into_iter()
-        .collect();
-    candidates.extend(ports.clone().filter(|p| Some(*p) != preferred));
-    for port in candidates {
-        if let Ok(socket) = UdpSocket::bind(SocketAddr::new(ip, port)).await {
-            return Ok((socket, port));
+    let (first, last) = (*ports.start(), *ports.end());
+    // The remembered port is only a hint: if the range no longer covers it, say so and scan the range.
+    let preferred = match preferred {
+        Some(p) if ports.contains(&p) => Some(p),
+        Some(p) => {
+            warn!("remembered UDP port {p} is outside {first}..={last}; picking from the range");
+            None
+        }
+        None => None,
+    };
+    // Retry the remembered port first, so a restart keeps it and the machine's firewall rule stays valid.
+    if let Some(port) = preferred {
+        match UdpSocket::bind(SocketAddr::new(ip, port)).await {
+            Ok(socket) => return Ok((socket, port)),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                info!("remembered UDP port {port} is taken; picking another in {first}..={last}");
+            }
+            Err(e) => return Err(anyhow!("UDP port {port} could not be bound: {e}")),
+        }
+    }
+    for port in ports {
+        if Some(port) == preferred {
+            continue;
+        }
+        match UdpSocket::bind(SocketAddr::new(ip, port)).await {
+            Ok(socket) => return Ok((socket, port)),
+            // Only "someone else has it" means try the next one. Any other error (a permission or
+            // resource problem) would repeat for every port, so report its cause instead of hiding it
+            // behind "no free UDP port".
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {}
+            Err(e) => return Err(anyhow!("UDP port {port} could not be bound: {e}")),
         }
     }
     Err(anyhow!(
-        "no free UDP port in {}..={}; free one or set TERMENBOX_UDP_PORT",
-        ports.start(),
-        ports.end()
+        "no free UDP port in {first}..={last}; free one or set TERMENBOX_UDP_PORT"
     ))
 }
 
@@ -612,8 +637,13 @@ mod tests {
     use std::ops::RangeInclusive;
     use tokio::net::UdpSocket;
 
-    /// A wide range so a stray busy port cannot make the test flaky (the production range is 4443-4542).
-    const TEST_RANGE: RangeInclusive<u16> = 47_000..=47_050;
+    /// Each port test uses its own slice, below the OS ephemeral range (32768-60999 on Linux), so tests
+    /// that run in parallel never take a port another one is about to rebind. The production range is
+    /// 4443-4542; these are only for tests.
+    const TWO_SERVERS_RANGE: RangeInclusive<u16> = 20_000..=20_010;
+    const RESTART_RANGE: RangeInclusive<u16> = 20_020..=20_030;
+    const REMEMBERED_RANGE: RangeInclusive<u16> = 20_040..=20_050;
+    const OUTSIDE_RANGE: RangeInclusive<u16> = 20_060..=20_070;
 
     fn localhost() -> IpAddr {
         std::net::Ipv4Addr::LOCALHOST.into()
@@ -621,29 +651,56 @@ mod tests {
 
     #[tokio::test]
     async fn two_servers_take_different_ports_from_the_range() {
-        let (a, pa) = bind_transport(localhost(), None, TEST_RANGE, None)
+        let (a, pa) = bind_transport(localhost(), None, TWO_SERVERS_RANGE, None)
             .await
             .unwrap();
-        let (b, pb) = bind_transport(localhost(), None, TEST_RANGE, None)
+        let (b, pb) = bind_transport(localhost(), None, TWO_SERVERS_RANGE, None)
             .await
             .unwrap();
-        assert!(TEST_RANGE.contains(&pa), "{pa} is outside the range");
-        assert!(TEST_RANGE.contains(&pb), "{pb} is outside the range");
+        assert!(TWO_SERVERS_RANGE.contains(&pa), "{pa} is outside the range");
+        assert!(TWO_SERVERS_RANGE.contains(&pb), "{pb} is outside the range");
         assert_ne!(pa, pb, "the second server reused the first's port");
         drop((a, b));
     }
 
     #[tokio::test]
     async fn a_restart_keeps_the_port_it_remembered() {
-        let (first, port) = bind_transport(localhost(), None, TEST_RANGE, None)
+        let (first, port) = bind_transport(localhost(), None, RESTART_RANGE, None)
             .await
             .unwrap();
         drop(first);
         // As after a restart: the saved port is offered as the preference and is reused while free.
-        let (_again, again) = bind_transport(localhost(), None, TEST_RANGE, Some(port))
+        let (_again, again) = bind_transport(localhost(), None, RESTART_RANGE, Some(port))
             .await
             .unwrap();
         assert_eq!(again, port);
+    }
+
+    #[tokio::test]
+    async fn a_taken_remembered_port_moves_to_another_in_the_range() {
+        let (held, remembered) = bind_transport(localhost(), None, REMEMBERED_RANGE, None)
+            .await
+            .unwrap();
+        let (_other, port) = bind_transport(localhost(), None, REMEMBERED_RANGE, Some(remembered))
+            .await
+            .unwrap();
+        assert!(
+            REMEMBERED_RANGE.contains(&port),
+            "{port} is outside the range"
+        );
+        assert_ne!(
+            port, remembered,
+            "a taken remembered port must not be reused"
+        );
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn a_remembered_port_outside_the_range_is_ignored() {
+        let (_socket, port) = bind_transport(localhost(), None, OUTSIDE_RANGE, Some(80))
+            .await
+            .unwrap();
+        assert!(OUTSIDE_RANGE.contains(&port), "{port} is outside the range");
     }
 
     #[tokio::test]
@@ -652,13 +709,13 @@ mod tests {
             .await
             .unwrap();
         let port = held.local_addr().unwrap().port();
-        let err = bind_transport(localhost(), Some(port), TEST_RANGE, None)
+        let err = bind_transport(localhost(), Some(port), TWO_SERVERS_RANGE, None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains(&port.to_string()), "{err}");
 
         drop(held);
-        let (_socket, got) = bind_transport(localhost(), Some(port), TEST_RANGE, None)
+        let (_socket, got) = bind_transport(localhost(), Some(port), TWO_SERVERS_RANGE, None)
             .await
             .unwrap();
         assert_eq!(got, port);

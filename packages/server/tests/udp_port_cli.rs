@@ -28,12 +28,15 @@ fn free_tcp_port() -> u16 {
         .port()
 }
 
-fn free_udp_port() -> u16 {
-    UdpSocket::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+/// A free port from the reserved range, so an explicit choice is inside the range and can be remembered.
+/// Ports the owner's own running service holds are skipped (their bind fails).
+fn free_reserved_udp_port() -> u16 {
+    for port in RANGE {
+        if UdpSocket::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    panic!("no free port in the reserved range");
 }
 
 /// A server the test started; stopped when it goes out of scope, even on a failed assertion.
@@ -146,13 +149,23 @@ fn a_restart_keeps_the_port_it_saved() {
 }
 
 #[test]
-fn an_explicit_port_is_used_as_given() {
+fn an_explicit_port_is_used_as_given_and_remembered() {
     let _serial = serial();
     let dir = config_dir("explicit");
-    let port = free_udp_port();
+    let port = free_reserved_udp_port();
     let h = free_tcp_port();
-    let child = start(&dir, h, Some(port));
+    let first = start(&dir, h, Some(port));
     assert_eq!(wait_udp_port(&dir, h), port);
+    drop(first); // stop it before the restart
+
+    // An explicit port updates the saved file, so a later start without the flag keeps it.
+    let h = free_tcp_port();
+    let child = start(&dir, h, None);
+    assert_eq!(
+        wait_udp_port(&dir, h),
+        port,
+        "the explicit port must be remembered"
+    );
 
     drop(child);
     let _ = std::fs::remove_dir_all(&dir);

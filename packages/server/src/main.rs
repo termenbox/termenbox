@@ -349,9 +349,17 @@ fn saved_udp_port(dir: &std::path::Path) -> Option<u16> {
         .ok()
 }
 
-/// Remembers the bound port so a restart keeps it and the firewall rule stays valid.
+/// Remembers the bound port so a restart keeps it and the firewall rule stays valid. The file is only a
+/// hint (the bound socket is the real guard), so it is written to a temporary file and renamed rather
+/// than locked: a concurrent reader then never sees a half-written number.
 fn save_udp_port(dir: &std::path::Path, port: u16) -> std::io::Result<()> {
-    std::fs::write(dir.join("udp_port"), port.to_string())
+    let tmp = dir.join(format!("udp_port.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, port.to_string())?;
+    if let Err(e) = std::fs::rename(&tmp, dir.join("udp_port")) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// The host's short name (`vps-1` for `vps-1.example.com`), cleaned for display; `termenbox-server` when unknown.
@@ -722,8 +730,13 @@ async fn main() -> anyhow::Result<()> {
             saved_udp_port(&args.config_dir),
         )
         .await?;
-        if args.udp_port.is_none() {
-            save_udp_port(&args.config_dir, port)?;
+        // Remember the bound port so a restart (and the machine's firewall rule) keeps it. The socket
+        // is already listening, so a config dir we cannot write must not stop the server: warn and go on.
+        if let Err(e) = save_udp_port(&args.config_dir, port) {
+            tracing::warn!(
+                "cannot remember UDP port {port} in {}: {e}",
+                args.config_dir.display()
+            );
         }
         let info = rtc::start_with_socket(
             socket,
