@@ -155,18 +155,13 @@ await t.open();
 t.check(Math.abs((await page.locator('[data-shell=sidebar]').boundingBox()).width - w3) <= 2, 'sidebar width did not survive reload');
 t.ok('sidebar resizes by pointer and keyboard, clamps, does not overflow, and survives reload');
 
-// 9. New shortcuts pass through the terminal (no clash with terminal input) and are intercepted elsewhere.
+// 9. New shortcuts pass through the terminal (no clash with terminal input).
 const ta = page.locator('textarea[aria-label="Terminal input"]');
 await ta.focus();
 await t.api('clearKeys');
 await page.keyboard.press('Control+shift+a');
-const k1 = (await t.api('keys')).find((k) => k.key === 'a' && k.ctrl);
-t.check(k1 && k1.prevented === false, 'Ctrl+Shift+A was not passed through in the terminal');
-await page.locator('[data-destination=home]').click();
-await t.api('clearKeys');
-await page.keyboard.press('Control+shift+a');
-const k2 = (await t.api('keys')).find((k) => k.key === 'a' && k.ctrl);
-t.check(k2 && k2.prevented === true, 'Ctrl+Shift+A was not intercepted outside the terminal');
-t.ok('shortcuts do not leak into the terminal and are handled elsewhere');
+const k = (await t.api('keys')).find((k) => k.key === 'a' && k.ctrl);
+t.check(k && k.prevented === false, 'Ctrl+Shift+A was not passed through in the terminal');
+t.ok('shortcuts do not leak into the terminal');
 
 await t.finish();

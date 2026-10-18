@@ -35,8 +35,9 @@
   import SessionView from './SessionView.svelte';
   import { merge as mergeView, requestView, type ViewModel } from './lib/sessionView';
   import { loadPaneModes, withPaneMode, type PaneMode } from './lib/paneMode';
-  import { rowOf } from './lib/home';
-  import { stepOf } from './lib/decision';
+import { rowOf } from './lib/home';
+import { stepOf } from './lib/decision';
+import { fleetOf } from './lib/navlist';
   import Home from './Home.svelte';
   import SessionGroups from './SessionGroups.svelte';
   import { destination, navigate, startRouter, type Destination } from './lib/router';
@@ -554,7 +555,7 @@
     if (id === 'approve-decision') { buttons[0]?.click(); }
     else if (id === 'deny-decision') { buttons[1]?.click(); }
     else if (id === 'next-needs-you') {
-      const next = $allSessions.find(s => s.state === 'needs-you' && s.key !== activeKey);
+      const next = $allSessions.find(s => fleetOf($allAgents[s.key]) === 'needs-you' && s.key !== activeKey);
       if (next) attach(next.key);
     }
   }

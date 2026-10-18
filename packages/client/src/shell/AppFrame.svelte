@@ -119,25 +119,45 @@
     else onaction(arg);
   }
 
+  /** Match pane/decision shortcuts (Ctrl/Cmd+Shift+letter). matchShortcut rejects Shift, so these are separate. */
+  const matchPaneShortcut = (e: KeyboardEvent, mac: boolean): string | null => {
+    const mod = mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+    if (!mod || !e.shiftKey || e.altKey) return null;
+    const map: Record<string, string> = {
+      o: 'focus-composer',
+      a: 'approve-decision',
+      d: 'deny-decision',
+      n: 'next-needs-you',
+      p: 'toggle-panes',
+    };
+    return map[e.key.toLowerCase()] ?? null;
+  };
+
   onMount(() => {
     const mq = matchMedia('(min-width: 1024px)');
     const media = () => (wide = mq.matches);
     media();
     mq.addEventListener('change', media);
     // Capture phase: the terminal's own key handler would otherwise see the shortcut first. Only the registered
-    // shortcuts are taken; every other key is left alone. The palette is taken everywhere (even in the terminal);
-    // pane and decision shortcuts pass through when the terminal has focus, so they never clash with terminal input.
+    // shortcuts are taken; every other key is left alone. The palette (Ctrl/Cmd+K) is taken everywhere, even in the
+    // terminal; pane and decision shortcuts (Ctrl/Cmd+Shift+letter) pass through when the terminal has focus, so they
+    // never clash with terminal input.
     const keydown = (e: KeyboardEvent) => {
       if (!chrome || !$shortcutsOn) return;
-      const id = matchShortcut(e, mac);
+      if (matchShortcut(e, mac) === 'palette') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (paletteOpen) paletteOpen = false; else openPalette();
+        return;
+      }
+      const id = matchPaneShortcut(e, mac);
       if (!id) return;
       const active = document.activeElement;
       const inTerminal = active?.closest('.xterm, .xterm-helper-textarea');
-      if (id !== 'palette' && inTerminal) return;
+      if (inTerminal) return;
       e.preventDefault();
       e.stopPropagation();
-      if (id === 'palette') { if (paletteOpen) paletteOpen = false; else openPalette(); }
-      else onshortcut(id);
+      onshortcut(id);
     };
     document.addEventListener('keydown', keydown, true);
     return () => { mq.removeEventListener('change', media); document.removeEventListener('keydown', keydown, true); };
