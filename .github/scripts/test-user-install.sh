@@ -68,6 +68,9 @@ else
   grep -q "loginctl enable-linger alice" /tmp/install.txt || fail "no lingering and no instruction how to get it"
 fi
 grep -q "What needs root" /tmp/install.txt || fail "the installer did not say first what needs root"
+! grep -q '^Environment=TERMENBOX_UDP_PORT' "$UNITS/termenbox.service" || fail "the unit pins a UDP port; the server picks its own"
+alice_port="$(cat "$STATE/udp_port")"
+{ [ "$alice_port" -ge 4443 ] && [ "$alice_port" -le 4542 ]; } || fail "the server's UDP port $alice_port is outside 4443-4542"
 
 echo "== installing again changes nothing"
 entries="$(as_alice "$BIN" --journal-dir "$JOURNAL" --journal-list | wc -l)"

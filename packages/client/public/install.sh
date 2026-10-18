@@ -519,7 +519,7 @@ install_user() {
   case "$FIREWALL" in
     ufw) say "  - the firewall ufw is active. Open the WebRTC range once, as root:  ufw allow 4443:4542/udp" ;;
     firewalld) say "  - the firewall firewalld is active. Open the WebRTC range once, as root:  firewall-cmd --permanent --add-port=4443-4542/udp && firewall-cmd --reload" ;;
-    *) say "  - no active ufw or firewalld was detected, so nothing has to be opened" ;;
+    *) say "  - no active ufw or firewalld was detected. With another firewall, open 4443-4542/udp yourself" ;;
   esac
   if [ -n "${TERMENBOX_SKIP_LINGER:-}" ]; then
     LINGER=skipped
