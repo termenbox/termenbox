@@ -545,6 +545,20 @@
     else if (name === 'resume' && arg) hub.resume(arg);
   }
 
+  function handleShortcut(id: string) {
+    if (id === 'toggle-panes') { rightOpen = !rightOpen; return; }
+    if (id === 'focus-composer') { document.querySelector('input[data-composer]')?.focus(); return; }
+    const hero = document.querySelector('[data-testid=session-view] [data-hero-options]');
+    if (!hero) return;
+    const buttons = Array.from(hero.querySelectorAll('button:not([disabled])'));
+    if (id === 'approve-decision') { buttons[0]?.click(); }
+    else if (id === 'deny-decision') { buttons[1]?.click(); }
+    else if (id === 'next-needs-you') {
+      const next = $allSessions.find(s => s.state === 'needs-you' && s.key !== activeKey);
+      if (next) attach(next.key);
+    }
+  }
+
   onMount(() => {
     const visible = () => (pageVisible = document.visibilityState !== 'hidden');
     document.addEventListener('visibilitychange', visible);
@@ -675,8 +689,8 @@
     </div>
   {:else}
     <AppFrame current={$destination} onnavigate={go} servers={$hubServers} sessions={$allSessions} agents={$allAgents} {activeKey} chrome={servers.length > 0} inSession={!!activeKey && !away} {keyboardOpen}
-      canCreate={sessionDestinations($hubServers, selected).length > 0} bind:wide bind:rightOpen bind:helpOpen onopen={attach} onserver={openServer} onaction={runAction}
-      onback={() => { showWorkspace(); sheetHeight = 'half'; }}>
+  canCreate={sessionDestinations($hubServers, selected).length > 0} bind:wide bind:rightOpen bind:helpOpen onopen={attach} onserver={openServer} onaction={runAction} onshortcut={handleShortcut}
+  onback={() => { showWorkspace(); sheetHeight = 'half'; }}>
     {#if $destination === 'sessions' || servers.length === 0}
     <NavigationBar sessions={tabSessions} agents={$allAgents} servers={$hubServers} windows={$allWindows} {expiring} {link} {activeKey} held={!!actionSession || !!menuSession || cardExpanded || sheetHeld} onopen={attach} onpeek={peek} ontabmenu={openWindowMenu} onactions={(key) => { actionConfirm = false; actionKey = key; }}
       onlink={() => link && showToast(link.text, link.ok ? 'success' : 'error')} onmenu={() => { titleTapped(); menuOpen = true; }} onsessions={() => { if (wide) { rightOpen = !rightOpen; return; } crumb('sessions sheet toggled'); showWorkspace(); sheetHeight = sheetHeight === 'closed' ? 'half' : 'closed'; }} />
@@ -748,8 +762,11 @@
       </svelte:boundary>
     </main>
     {#snippet right()}
-      <SessionSheet sessions={$allSessions} agents={$allAgents} servers={$hubServers} windows={$allWindows} onpeek={peek} onwarm={keepWarm} {activeKey} mobile={false} bind:height={sheetHeight} held={!!actionSession}
-        onexpanded={(open) => cardExpanded = open} onheld={(held) => sheetHeld = held} onopen={attach} onnew={newSession} onrefresh={() => { for (const s of $hubServers) hub.send(s.id, { type: 'list_sessions' }); }} onretry={(id) => hub.retry(id)} send={sendSession} />
+      {#if activeKey}
+        <Terminal {connection} {activeSessionId} {connState} ontyped={typedByHand} {profile} prefix={selected?.prefix || 'C-b'} />
+      {:else}
+        <div class="p-4 text-soft text-sm">Open a session to show its live terminal here.</div>
+      {/if}
     {/snippet}
     </AppFrame>
   {/if}

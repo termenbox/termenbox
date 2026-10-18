@@ -76,6 +76,11 @@ export interface Shortcut { id: 'palette'; mac: string; other: string; label: st
  */
 export const SHORTCUTS: Shortcut[] = [
   { id: 'palette', mac: '⌘K', other: 'Ctrl+K', label: 'Open or close the command palette', scope: 'Everywhere in the app, including while the terminal has focus' },
+  { id: 'focus-composer', mac: '⌘⇧O', other: 'Ctrl+Shift+O', label: 'Focus the composer', scope: 'In the decision view, when no field is being edited' },
+  { id: 'approve-decision', mac: '⌘⇧A', other: 'Ctrl+Shift+A', label: 'Answer with the first option', scope: 'When a decision card shows options' },
+  { id: 'deny-decision', mac: '⌘⇧D', other: 'Ctrl+Shift+D', label: 'Answer with the second option', scope: 'When a decision card shows two or more options' },
+  { id: 'next-needs-you', mac: '⌘⇧N', other: 'Ctrl+Shift+N', label: 'Open the next session that needs you', scope: 'Everywhere' },
+  { id: 'toggle-panes', mac: '⌘⇧P', other: 'Ctrl+Shift+P', label: 'Show or hide the right pane', scope: 'On the desktop' },
 ];
 export const PALETTE_KEYS: { keys: string; label: string }[] = [
   { keys: '↑ ↓', label: 'Move through the results' },
