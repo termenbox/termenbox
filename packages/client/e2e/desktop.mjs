@@ -126,67 +126,26 @@ t.ok('no control moves when a status update arrives while the pointer is down');
 const sidebarEl = page.locator('[data-shell=sidebar]');
 const sep = page.locator('.sidebar-resize');
 await sep.waitFor();
-// Wait for sidebar to settle at its initial width (from localStorage or default)
+// Clear localStorage to get consistent default width
+await page.evaluate(() => localStorage.removeItem('termenbox_sidebar_width'));
+await page.reload({ waitUntil: 'domcontentloaded' });
+await sep.waitFor();
 await page.waitForTimeout(200);
 const w0 = (await sidebarEl.boundingBox()).width;
-// Use DOM pointer events directly since page.mouse doesn't trigger element handlers in headless
-await page.evaluate(() => {
-  const sep = document.querySelector('.sidebar-resize');
-  const sidebar = document.querySelector('[data-shell=sidebar]');
-  const startX = sep.getBoundingClientRect().x + 3;
-  const startWidth = sidebar.getBoundingClientRect().width;
-  let currentX = startX;
-  const move = (ev) => {
-    let next = startWidth + (ev.clientX - startX);
-    next = Math.max(200, Math.min(520, next));
-    sidebar.style.width = next + 'px';
-    sidebar.style.minWidth = next + 'px';
-    sidebar.style.maxWidth = next + 'px';
-    try { localStorage.setItem('termenbox_sidebar_width', String(next)); } catch {}
-  };
-  const stop = () => {
-    window.removeEventListener('pointermove', move);
-    window.removeEventListener('pointerup', stop);
-    window.removeEventListener('pointercancel', stop);
-  };
-  // Dispatch pointerdown to start the drag
-  sep.dispatchEvent(new PointerEvent('pointerdown', { clientX: startX, bubbles: true }));
-  // Simulate drag with intermediate moves
-  for (let dx = 20; dx <= 140; dx += 20) {
-    currentX = startX + dx;
-    window.dispatchEvent(new PointerEvent('pointermove', { clientX: currentX, bubbles: true }));
-  }
-  window.dispatchEvent(new PointerEvent('pointerup', { clientX: currentX, bubbles: true }));
+// Use locator.dragTo which properly dispatches pointer events through the element handlers
+await sep.dragTo(page.locator('[data-shell=main]'), {
+  sourcePosition: { x: 3, y: 5 },
+  targetPosition: { x: 140, y: 5 },
+  steps: 10
 });
 await page.waitForTimeout(200);
 const w1 = (await sidebarEl.boundingBox()).width;
 t.check(w1 > w0 && w1 <= 521, `pointer resize did not widen the sidebar: ${w0} -> ${w1}`);
 // Second drag to test clamp (move far right)
-await page.evaluate(() => {
-  const sep = document.querySelector('.sidebar-resize');
-  const sidebar = document.querySelector('[data-shell=sidebar]');
-  const startX = sep.getBoundingClientRect().x + 3;
-  const startWidth = sidebar.getBoundingClientRect().width;
-  let currentX = startX;
-  const move = (ev) => {
-    let next = startWidth + (ev.clientX - startX);
-    next = Math.max(200, Math.min(520, next));
-    sidebar.style.width = next + 'px';
-    sidebar.style.minWidth = next + 'px';
-    sidebar.style.maxWidth = next + 'px';
-    try { localStorage.setItem('termenbox_sidebar_width', String(next)); } catch {}
-  };
-  const stop = () => {
-    window.removeEventListener('pointermove', move);
-    window.removeEventListener('pointerup', stop);
-    window.removeEventListener('pointercancel', stop);
-  };
-  sep.dispatchEvent(new PointerEvent('pointerdown', { clientX: startX, bubbles: true }));
-  for (let dx = 20; dx <= 500; dx += 50) {
-    currentX = startX + dx;
-    window.dispatchEvent(new PointerEvent('pointermove', { clientX: currentX, bubbles: true }));
-  }
-  window.dispatchEvent(new PointerEvent('pointerup', { clientX: currentX, bubbles: true }));
+await sep.dragTo(page.locator('[data-shell=main]'), {
+  sourcePosition: { x: 3, y: 5 },
+  targetPosition: { x: 600, y: 5 },
+  steps: 10
 });
 await page.waitForTimeout(200);
 t.check((await sidebarEl.boundingBox()).width <= 521, 'sidebar exceeded its width clamp');
@@ -202,6 +161,7 @@ await page.waitForTimeout(100);
 const w3 = (await sidebarEl.boundingBox()).width;
 t.check(w3 > 260 && w3 <= 282, 'arrow keys did not resize the sidebar');
 await page.reload();
+await t.open();
 await t.open();
 t.check(Math.abs((await page.locator('[data-shell=sidebar]').boundingBox()).width - w3) <= 2, 'sidebar width did not survive reload');
 t.ok('sidebar resizes by pointer and keyboard, clamps, does not overflow, and survives reload');
