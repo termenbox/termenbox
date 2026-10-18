@@ -13,14 +13,41 @@ use crate::cert::{CertError, CertKeys};
 /// A claim secret works for this long after it is issued, then once only.
 const CLAIM_TTL: Duration = Duration::from_secs(15 * 60);
 
-/// A GitHub user, as vouched for by a device certificate.
+/// A user, as vouched for by a device certificate: a provider and an account id within it (DECISION-0116).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identity {
-    pub id: u64,
+    /// Short lowercase provider name; `owner.json` written before 0116 has none and reads as `github`.
+    #[serde(default = "default_provider")]
+    pub provider: String,
+    /// Account id within `provider`, a string because other providers do not use numbers.
+    #[serde(deserialize_with = "string_or_number")]
+    pub id: String,
     pub login: String,
     /// Issue time of the certificate this connection used; never written to owner.json.
     #[serde(skip)]
     pub issued_at: Option<u64>,
+}
+
+fn default_provider() -> String {
+    "github".to_string()
+}
+
+/// Reads an id written either as a JSON number (GitHub before DECISION-0116) or as a string. Any JSON
+/// number is accepted, so a hand-edited value does not make `owner.json` unreadable.
+fn string_or_number<'de, D>(de: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Id {
+        Num(serde_json::Number),
+        Text(String),
+    }
+    Ok(match Id::deserialize(de)? {
+        Id::Num(n) => n.to_string(),
+        Id::Text(s) => s,
+    })
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -42,6 +69,15 @@ pub struct AuthState {
     // Serialises owner binding so two clients cannot both claim.
     bind_lock: Mutex<()>,
     claim_ttl: Duration,
+}
+
+/// What `owner.json` says: someone owns the server, nobody does yet, or the file is there but cannot be
+/// read. The last case must never look unclaimed, or a new claim could take the server over (a downgrade
+/// that writes a string id, or a corrupted file, both land here).
+enum OwnerFile {
+    None,
+    Owned(Identity),
+    Unreadable,
 }
 
 impl AuthState {
@@ -72,9 +108,35 @@ impl AuthState {
         self.dir.join("claim_token")
     }
 
+    /// The owner file, told apart from "no owner yet".
+    fn read_owner(&self) -> OwnerFile {
+        match std::fs::read_to_string(self.owner_path()) {
+            Ok(text) => match serde_json::from_str(&text) {
+                Ok(owner) => OwnerFile::Owned(owner),
+                Err(e) => {
+                    warn!(target: "audit", event = "owner_unreadable", error = %e);
+                    OwnerFile::Unreadable
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => OwnerFile::None,
+            Err(e) => {
+                warn!(target: "audit", event = "owner_unreadable", error = %e);
+                OwnerFile::Unreadable
+            }
+        }
+    }
+
     pub fn owner(&self) -> Option<Identity> {
-        let text = std::fs::read_to_string(self.owner_path()).ok()?;
-        serde_json::from_str(&text).ok()
+        match self.read_owner() {
+            OwnerFile::Owned(owner) => Some(owner),
+            _ => None,
+        }
+    }
+
+    /// True when the server has an owner, or an owner file we cannot read. Security decisions treat an
+    /// unreadable file as claimed, never as free to claim again.
+    pub fn is_claimed(&self) -> bool {
+        !matches!(self.read_owner(), OwnerFile::None)
     }
 
     #[cfg(test)]
@@ -91,7 +153,7 @@ impl AuthState {
 
     /// The unexpired claim secret, if the server is unclaimed. Stored as `secret\nexpires_ms`.
     pub fn active_claim(&self) -> Option<String> {
-        if self.owner().is_some() {
+        if self.is_claimed() {
             return None;
         }
         let text = std::fs::read_to_string(self.claim_path()).ok()?;
@@ -110,7 +172,7 @@ impl AuthState {
 
     /// Uses a secret chosen by the client (from the install command) as the claim token.
     pub fn provide_claim(&self, secret: &str) -> Result<()> {
-        if self.owner().is_none() && !secret.is_empty() {
+        if !self.is_claimed() && !secret.is_empty() {
             self.store_claim(secret)?;
         }
         Ok(())
@@ -123,16 +185,23 @@ impl AuthState {
             return Err(anyhow!("empty claim secret"));
         }
         crate::uninstall::clear(&self.dir);
-        if let Some(owner) = self.owner() {
-            info!(target: "audit", event = "owner_reset", previous_github_id = owner.id);
-            let _ = std::fs::remove_file(self.owner_path());
+        match self.read_owner() {
+            OwnerFile::Owned(owner) => {
+                info!(target: "audit", event = "owner_reset", provider = %owner.provider, account_id = %owner.id);
+                let _ = std::fs::remove_file(self.owner_path());
+            }
+            OwnerFile::Unreadable => {
+                info!(target: "audit", event = "owner_reset", reason = "unreadable_owner_file");
+                let _ = std::fs::remove_file(self.owner_path());
+            }
+            OwnerFile::None => {}
         }
         self.store_claim(secret)
     }
 
     /// The claim token of an unclaimed server, made fresh when none is valid. `None` once claimed.
     pub fn claim_token(&self) -> Result<Option<String>> {
-        if self.owner().is_some() {
+        if self.is_claimed() {
             return Ok(None);
         }
         if let Some(secret) = self.active_claim() {
@@ -148,12 +217,22 @@ impl AuthState {
     /// Decides whether `identity` may use the server; binds the first user who presents the claim token.
     pub fn authorize(&self, identity: &Identity, claim: Option<&str>) -> Result<Decision> {
         let _guard = self.bind_lock.lock().unwrap();
-        if let Some(owner) = self.owner() {
-            return Ok(if owner.id == identity.id {
-                Decision::Allowed
-            } else {
-                Decision::Denied
-            });
+        match self.read_owner() {
+            OwnerFile::Owned(owner) => {
+                return Ok(
+                    if owner.provider == identity.provider && owner.id == identity.id {
+                        Decision::Allowed
+                    } else {
+                        Decision::Denied
+                    },
+                );
+            }
+            OwnerFile::Unreadable => {
+                return Err(anyhow!(
+                    "owner.json exists but cannot be read; refusing to treat the server as unclaimed"
+                ));
+            }
+            OwnerFile::None => {}
         }
         let expected = self
             .claim_token()?
@@ -165,7 +244,7 @@ impl AuthState {
                     serde_json::to_string(identity)?.as_bytes(),
                 )?;
                 let _ = std::fs::remove_file(self.claim_path());
-                info!(target: "audit", event = "server_claimed", github_id = identity.id, login = %identity.login);
+                info!(target: "audit", event = "server_claimed", provider = %identity.provider, account_id = %identity.id, login = %identity.login);
                 Ok(Decision::Allowed)
             }
             _ => Ok(Decision::NeedsClaim),
@@ -233,7 +312,8 @@ impl AuthState {
             return Err(fail("device_revoked", AuthError::Revoked));
         }
         let identity = Identity {
-            id: device.github_id,
+            provider: device.provider,
+            id: device.account_id,
             login: device.login.clone(),
             issued_at: device.issued_at,
         };
@@ -245,7 +325,7 @@ impl AuthState {
             Decision::NeedsClaim => (false, "needs_claim"),
             Decision::Denied => (false, "not_owner"),
         };
-        info!(target: "audit", event = "auth", success, reason, github_id = identity.id, login = %identity.login, device = %device.device, ip);
+        info!(target: "audit", event = "auth", success, reason, provider = %identity.provider, account_id = %identity.id, login = %identity.login, device = %device.device, ip);
         match decision {
             Decision::Allowed => Ok(identity),
             Decision::NeedsClaim => Err(AuthError::NeedsClaim),
@@ -273,7 +353,7 @@ impl AuthError {
             AuthError::NeedsClaim => {
                 "This server is not registered yet; add it with its registration link"
             }
-            AuthError::NotOwner => "This server belongs to another GitHub user",
+            AuthError::NotOwner => "This server belongs to another user",
             AuthError::Internal => "Authentication failed",
         }
     }
@@ -336,8 +416,18 @@ mod tests {
 
     fn id(n: u64) -> Identity {
         Identity {
-            id: n,
+            provider: "github".into(),
+            id: n.to_string(),
             login: format!("user{n}"),
+            issued_at: None,
+        }
+    }
+
+    fn other_provider(provider: &str, id: &str) -> Identity {
+        Identity {
+            provider: provider.into(),
+            id: id.into(),
+            login: format!("{provider}{id}"),
             issued_at: None,
         }
     }
@@ -354,8 +444,88 @@ mod tests {
             a.authorize(&id(1), Some(&claim)).unwrap(),
             Decision::Allowed
         );
-        assert_eq!(a.owner().unwrap().id, 1);
+        let owner = a.owner().unwrap();
+        assert_eq!(
+            (owner.provider.as_str(), owner.id.as_str()),
+            ("github", "1")
+        );
         assert!(a.claim_token().unwrap().is_none());
+    }
+
+    #[test]
+    fn an_owner_file_without_a_provider_reads_as_github_and_still_opens_the_server() {
+        let dir = temp_dir();
+        // The shape the previous version wrote: a numeric id and no provider.
+        std::fs::write(dir.join("owner.json"), r#"{"id": 9, "login": "legacy"}"#).unwrap();
+        let a = AuthState::new(dir, CertKeys::default(), "srv".into()).unwrap();
+        let owner = a.owner().unwrap();
+        assert_eq!(
+            (
+                owner.provider.as_str(),
+                owner.id.as_str(),
+                owner.login.as_str()
+            ),
+            ("github", "9", "legacy")
+        );
+        assert_eq!(a.authorize(&id(9), None).unwrap(), Decision::Allowed);
+        assert_eq!(a.authorize(&id(10), None).unwrap(), Decision::Denied);
+    }
+
+    #[test]
+    fn an_unreadable_owner_file_is_treated_as_claimed_not_free() {
+        let dir = temp_dir();
+        std::fs::write(dir.join("owner.json"), "{ this is not json").unwrap();
+        let a = AuthState::new(dir, CertKeys::default(), "srv".into()).unwrap();
+        assert!(a.owner().is_none(), "there is no owner we can name");
+        assert!(a.is_claimed(), "but the file must not look unclaimed");
+        assert!(a.claim_token().unwrap().is_none(), "no new claim link");
+        assert!(a.active_claim().is_none());
+        a.provide_claim("one-time").unwrap();
+        assert!(a.active_claim().is_none(), "a secret cannot claim over it");
+        assert!(a.authorize(&id(1), None).is_err(), "login fails closed");
+    }
+
+    #[test]
+    fn a_root_reclaim_resets_an_unreadable_owner_file() {
+        let dir = temp_dir();
+        std::fs::write(dir.join("owner.json"), "{ this is not json").unwrap();
+        let a = AuthState::new(dir, CertKeys::default(), "srv".into()).unwrap();
+        a.reclaim("fresh-secret").unwrap();
+        assert!(!a.is_claimed());
+        assert_eq!(a.active_claim().as_deref(), Some("fresh-secret"));
+        assert_eq!(
+            a.authorize(&id(3), Some("fresh-secret")).unwrap(),
+            Decision::Allowed
+        );
+    }
+
+    #[test]
+    fn a_hand_edited_numeric_owner_id_still_reads() {
+        let negative: Identity = serde_json::from_str(r#"{"id": -1, "login": "x"}"#).unwrap();
+        assert_eq!(
+            (negative.provider.as_str(), negative.id.as_str()),
+            ("github", "-1")
+        );
+        let text: Identity =
+            serde_json::from_str(r#"{"provider":"gitlab","id":"abc","login":"x"}"#).unwrap();
+        assert_eq!(
+            (text.provider.as_str(), text.id.as_str()),
+            ("gitlab", "abc")
+        );
+    }
+
+    #[test]
+    fn the_same_id_from_another_provider_is_denied() {
+        let a = auth();
+        let claim = a.claim_token().unwrap().unwrap();
+        a.authorize(&id(1), Some(&claim)).unwrap();
+        let other = other_provider("gitlab", "1");
+        assert_eq!(a.authorize(&other, None).unwrap(), Decision::Denied);
+        assert_eq!(
+            a.authorize(&other, Some(&claim)).unwrap(),
+            Decision::Denied,
+            "a spent claim cannot rebind the owner"
+        );
     }
 
     #[test]
@@ -487,7 +657,7 @@ mod tests {
             AuthError::NeedsClaim
         );
         let claim = a.claim_token().unwrap().unwrap();
-        assert_eq!(check(&alice, &ca, "n", Some(&claim)).unwrap().id, 42);
+        assert_eq!(check(&alice, &ca, "n", Some(&claim)).unwrap().id, "42");
         assert_eq!(check(&alice, &ca, "n2", None).unwrap().login, "octo");
 
         let cb = cert(&bob, 43, "other");
@@ -505,6 +675,23 @@ mod tests {
             a.check(&ca, &alice.sign("elsewhere", "n"), "n", None, None)
                 .unwrap_err(),
             AuthError::BadCertificate
+        );
+    }
+
+    #[test]
+    fn an_old_form_certificate_authorises_as_github() {
+        use crate::cert::testing::*;
+        let signer = Signer::new("k1");
+        let a = AuthState::new(temp_dir(), signer.keys(), "srv".into()).unwrap();
+        let d = Device::new();
+        let claim = a.claim_token().unwrap().unwrap();
+        let legacy = signer.issue_legacy_at(&d, 7, "me", now() + 3600, Some(now()));
+        let identity = a
+            .check(&legacy, &d.sign("srv", "n"), "n", Some(&claim), None)
+            .unwrap();
+        assert_eq!(
+            (identity.provider.as_str(), identity.id.as_str()),
+            ("github", "7")
         );
     }
 

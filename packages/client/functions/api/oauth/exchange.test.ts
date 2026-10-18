@@ -4,7 +4,7 @@ import { issueCertificate, validDeviceKey, CERT_LIFETIME_SECS } from './exchange
 const dec = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
 
 describe('issueCertificate', () => {
-  it('signs (github id, device key, 7-day expiry, kid) so the public key verifies it', async () => {
+  it('signs (provider, string id, device key, 7-day expiry, kid) so the public key verifies it', async () => {
     const pair = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as CryptoKeyPair;
     const secret = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.exportKey('pkcs8', pair.privateKey))));
     const dpk = 'B' + 'A'.repeat(86);
@@ -12,7 +12,27 @@ describe('issueCertificate', () => {
     expect(exp).toBe(1000 + CERT_LIFETIME_SECS);
     const [body, sig] = cert.split('.');
     expect(await crypto.subtle.verify({ name: 'Ed25519' }, pair.publicKey, dec(sig), dec(body))).toBe(true);
-    expect(JSON.parse(new TextDecoder().decode(dec(body)))).toEqual({ v: 1, kid: 'k9', sub: 7, login: 'octo', dpk, iat: 1000, exp });
+    expect(JSON.parse(new TextDecoder().decode(dec(body)))).toEqual({
+      v: 1,
+      kid: 'k9',
+      provider: 'github',
+      id: '7',
+      sub: 7,
+      login: 'octo',
+      dpk,
+      iat: 1000,
+      exp,
+    });
+  });
+
+  it('names the provider and keeps the GitHub-only `sub` off other providers', async () => {
+    const pair = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as CryptoKeyPair;
+    const secret = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.exportKey('pkcs8', pair.privateKey))));
+    const { cert } = await issueCertificate({ CERT_SIGNING_KEY: secret }, { id: 7, login: 'octo', provider: 'gitlab' }, 'B' + 'A'.repeat(86), 1000);
+    const body = JSON.parse(new TextDecoder().decode(dec(cert.split('.')[0])));
+    expect(body.provider).toBe('gitlab');
+    expect(body.id).toBe('7');
+    expect(body.sub).toBeUndefined();
   });
 });
 

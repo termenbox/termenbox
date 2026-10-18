@@ -443,6 +443,11 @@ fn print_registration(args: &Args, auth: &AuthState) -> anyhow::Result<()> {
         );
         return Ok(());
     }
+    if auth.is_claimed() {
+        anyhow::bail!(
+            "owner.json exists but cannot be read; fix or remove it, then run --register again"
+        );
+    }
     let claim = auth
         .claim_token()?
         .ok_or_else(|| anyhow::anyhow!("no claim token"))?;
@@ -453,9 +458,7 @@ fn print_registration(args: &Args, auth: &AuthState) -> anyhow::Result<()> {
         }
     }
     println!("Scan the code with Termenbox (or your phone's camera), or open:\n\n  {link}\n");
-    println!(
-        "The first GitHub user to connect becomes the owner. The code works for 15 minutes, once."
-    );
+    println!("The first user to connect becomes the owner. The code works for 15 minutes, once.");
     Ok(())
 }
 
@@ -562,6 +565,9 @@ async fn main() -> anyhow::Result<()> {
 
     match auth.owner() {
         Some(owner) => info!("Server owner: @{}", owner.login),
+        None if auth.is_claimed() => {
+            tracing::warn!("owner.json exists but cannot be read; treating the server as claimed");
+        }
         None => {
             auth.claim_token()?;
             info!("Server is unclaimed; run `termenbox-server --register` to get the registration link");

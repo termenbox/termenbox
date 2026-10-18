@@ -51,13 +51,28 @@ const signingKey = (secret: string) => {
 /** `base64url(payload).base64url(Ed25519 signature of the payload bytes)`, as packages/server/src/cert.rs expects. */
 export async function issueCertificate(
   env: Pick<Env, 'CERT_SIGNING_KEY' | 'CERT_KID'>,
-  user: { id: number; login: string },
+  user: { id: number; login: string; provider?: string },
   deviceKey: string,
   nowSecs = Math.floor(Date.now() / 1000),
 ): Promise<{ cert: string; exp: number }> {
   const exp = nowSecs + CERT_LIFETIME_SECS;
+  const provider = user.provider || 'github';
+  // DECISION-0116: the account is a provider plus a string id. `sub` is GitHub's numeric id only: the
+  // client avatar URL is GitHub's, and a server older than 0116 reads `sub` as a GitHub id, so another
+  // provider's id must never be written there.
+  const sub = provider === 'github' ? user.id : undefined;
   const payload = new TextEncoder().encode(
-    JSON.stringify({ v: 1, kid: env.CERT_KID || 'k1', sub: user.id, login: user.login, dpk: deviceKey, iat: nowSecs, exp }),
+    JSON.stringify({
+      v: 1,
+      kid: env.CERT_KID || 'k1',
+      provider,
+      id: String(user.id),
+      sub,
+      login: user.login,
+      dpk: deviceKey,
+      iat: nowSecs,
+      exp,
+    }),
   );
   const sig = await crypto.subtle.sign({ name: 'Ed25519' }, await signingKey(env.CERT_SIGNING_KEY), payload);
   return { cert: `${b64url(payload)}.${b64url(sig)}`, exp };
