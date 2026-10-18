@@ -126,25 +126,39 @@ t.ok('no control moves when a status update arrives while the pointer is down');
 const sidebarEl = page.locator('[data-shell=sidebar]');
 const sep = page.locator('.sidebar-resize');
 await sep.waitFor();
+// Wait for sidebar to settle at its initial width (from localStorage or default)
+await page.waitForTimeout(200);
 const w0 = (await sidebarEl.boundingBox()).width;
 let sepBox = await sep.boundingBox();
+// Drag with intermediate steps for headless reliability
 await page.mouse.move(sepBox.x + 3, sepBox.y + sepBox.height / 2);
 await page.mouse.down();
-await page.mouse.move(sepBox.x + 140, sepBox.y + sepBox.height / 2);
+await page.waitForTimeout(50);
+for (let dx = 20; dx <= 140; dx += 20) {
+  await page.mouse.move(sepBox.x + 3 + dx, sepBox.y + sepBox.height / 2);
+  await page.waitForTimeout(10);
+}
 await page.mouse.up();
 await page.waitForTimeout(200);
 const w1 = (await sidebarEl.boundingBox()).width;
 t.check(w1 > w0 && w1 <= 521, `pointer resize did not widen the sidebar: ${w0} -> ${w1}`);
 // Recapture separator position after first drag
 sepBox = await sep.boundingBox();
+// Second drag to test clamp (move far right)
 await page.mouse.move(sepBox.x + 3, sepBox.y + sepBox.height / 2);
 await page.mouse.down();
-await page.mouse.move(sepBox.x + 5000, sepBox.y + sepBox.height / 2);
+await page.waitForTimeout(50);
+for (let dx = 20; dx <= 500; dx += 50) {
+  await page.mouse.move(sepBox.x + 3 + dx, sepBox.y + sepBox.height / 2);
+  await page.waitForTimeout(10);
+}
 await page.mouse.up();
 await page.waitForTimeout(200);
 t.check((await sidebarEl.boundingBox()).width <= 521, 'sidebar exceeded its width clamp');
 t.check((await t.overflow()) <= 0, 'sidebar resize overflows sideways');
+// Keyboard resize
 await sep.focus();
+await page.waitForTimeout(50);
 await page.keyboard.press('Home');
 await page.waitForTimeout(100);
 t.check(Math.abs((await sidebarEl.boundingBox()).width - 260) <= 2, 'Home did not reset the sidebar width');
