@@ -127,7 +127,7 @@ const sidebarEl = page.locator('[data-shell=sidebar]');
 const sep = page.locator('.sidebar-resize');
 await sep.waitFor();
 const w0 = (await sidebarEl.boundingBox()).width;
-const sepBox = await sep.boundingBox();
+let sepBox = await sep.boundingBox();
 await page.mouse.move(sepBox.x + 3, sepBox.y + sepBox.height / 2);
 await page.mouse.down();
 await page.mouse.move(sepBox.x + 140, sepBox.y + sepBox.height / 2);
@@ -135,6 +135,8 @@ await page.mouse.up();
 await page.waitForTimeout(200);
 const w1 = (await sidebarEl.boundingBox()).width;
 t.check(w1 > w0 && w1 <= 521, `pointer resize did not widen the sidebar: ${w0} -> ${w1}`);
+// Recapture separator position after first drag
+sepBox = await sep.boundingBox();
 await page.mouse.move(sepBox.x + 3, sepBox.y + sepBox.height / 2);
 await page.mouse.down();
 await page.mouse.move(sepBox.x + 5000, sepBox.y + sepBox.height / 2);
@@ -159,7 +161,7 @@ t.ok('sidebar resizes by pointer and keyboard, clamps, does not overflow, and su
 const ta = page.locator('textarea[aria-label="Terminal input"]');
 await ta.focus();
 await t.api('clearKeys');
-await page.keyboard.press('Control+shift+a');
+await page.keyboard.press('Control+Shift+a');
 const k = (await t.api('keys')).find((k) => k.key === 'a' && k.ctrl);
 t.check(k && k.prevented === false, 'Ctrl+Shift+A was not passed through in the terminal');
 t.ok('shortcuts do not leak into the terminal');
