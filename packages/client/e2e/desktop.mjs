@@ -123,32 +123,32 @@ t.ok('no control moves when a status update arrives while the pointer is down');
 
 // 8. Sidebar resize: dragging the separator widens it, the width is clamped so the terminal stays usable, causes no
 //    sideways overflow, the keyboard (arrows / Home) resizes it, and the width survives a reload.
-const side = page.locator('[data-shell=sidebar]');
+const sidebarEl = page.locator('[data-shell=sidebar]');
 const sep = page.locator('.sidebar-resize');
 await sep.waitFor();
-const w0 = (await side.boundingBox()).width;
+const w0 = (await sidebarEl.boundingBox()).width;
 const box = await sep.boundingBox();
 await page.mouse.move(box.x + 3, box.y + box.height / 2);
 await page.mouse.down();
 await page.mouse.move(box.x + 140, box.y + box.height / 2);
 await page.mouse.up();
 await page.waitForTimeout(200);
-const w1 = (await side.boundingBox()).width;
+const w1 = (await sidebarEl.boundingBox()).width;
 t.check(w1 > w0 && w1 <= 521, `pointer resize did not widen the sidebar: ${w0} -> ${w1}`);
 await page.mouse.move(box.x + 3, box.y + box.height / 2);
 await page.mouse.down();
 await page.mouse.move(box.x + 5000, box.y + box.height / 2);
 await page.mouse.up();
 await page.waitForTimeout(200);
-t.check((await side.boundingBox()).width <= 521, 'sidebar exceeded its width clamp');
+t.check((await sidebarEl.boundingBox()).width <= 521, 'sidebar exceeded its width clamp');
 t.check((await t.overflow()) <= 0, 'sidebar resize overflows sideways');
 await sep.focus();
 await page.keyboard.press('Home');
 await page.waitForTimeout(100);
-t.check(Math.abs((await side.boundingBox()).width - 260) <= 2, 'Home did not reset the sidebar width');
+t.check(Math.abs((await sidebarEl.boundingBox()).width - 260) <= 2, 'Home did not reset the sidebar width');
 await page.keyboard.press('ArrowRight');
 await page.waitForTimeout(100);
-const w3 = (await side.boundingBox()).width;
+const w3 = (await sidebarEl.boundingBox()).width;
 t.check(w3 > 260 && w3 <= 282, 'arrow keys did not resize the sidebar');
 await page.reload();
 await t.open();
