@@ -125,6 +125,14 @@ fn journal_path(dir: &Path) -> PathBuf {
     dir.join("claude-hooks.json")
 }
 
+/// The settings file the journal says `connect` changed; `None` without a journal. A later `--disconnect-claude`
+/// follows it, so it undoes the change in the file it was made in whatever `CLAUDE_CONFIG_DIR` is then.
+pub fn journal_settings(state_dir: &Path) -> Option<PathBuf> {
+    let journal: Value =
+        serde_json::from_str(&std::fs::read_to_string(journal_path(state_dir)).ok()?).ok()?;
+    journal["settings"].as_str().map(PathBuf::from)
+}
+
 pub struct Outcome(pub String);
 
 /// What the file looks like to the offer (U10): all of our entries are there, or they are not.
@@ -271,12 +279,28 @@ pub fn connect(settings: &Path, binary: &str, state_dir: &Path, apply: bool) -> 
 
 /// Restores the original bytes when only we have changed the file since; otherwise removes just our entries.
 pub fn disconnect(settings: &Path, state_dir: &Path) -> Result<Outcome> {
-    let current =
-        std::fs::read(settings).map_err(|e| anyhow!("cannot read {}: {e}", settings.display()))?;
     let jp = journal_path(state_dir);
     let journal: Option<Value> = std::fs::read_to_string(&jp)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok());
+    let current = match std::fs::read(settings) {
+        Ok(c) => c,
+        // Nothing was connected here, or the file is gone with whatever it held: there is nothing to undo, and
+        // an uninstall must not fail on it.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let _ = std::fs::remove_file(&jp);
+            return Ok(Outcome(format!(
+                "{} does not exist; nothing to disconnect.",
+                settings.display()
+            )));
+        }
+        Err(e) => return Err(anyhow!("cannot read {}: {e}", settings.display())),
+    };
+    // Without a journal (the state was removed first) only entries that are ours can be taken out, and a file that
+    // has none is left byte for byte as it is.
+    if journal.is_none() && !String::from_utf8_lossy(&current).contains(MARKER) {
+        return Ok(Outcome("No Termenbox hooks in the settings file.".into()));
+    }
     let untouched =
         journal.as_ref().and_then(|j| j["after_sha256"].as_str()) == Some(sha(&current).as_str());
     if let (true, Some(j)) = (untouched, &journal) {
@@ -384,6 +408,41 @@ mod tests {
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
         assert_eq!(v["model"], "sonnet");
         assert!(!serde_json::to_string(&v).unwrap().contains(MARKER));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn disconnect_without_a_journal_takes_out_ours_and_leaves_a_clean_file_untouched() {
+        let d = tmpdir("nj");
+        let settings = d.join("settings.json");
+        std::fs::write(&settings, MINE).unwrap();
+        connect(&settings, BIN, &d.join("state"), true).unwrap();
+        // The state directory was removed before the hooks were: no journal, no backup.
+        std::fs::remove_dir_all(d.join("state")).unwrap();
+        disconnect(&settings, &d.join("state")).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(v, serde_json::from_str::<Value>(MINE).unwrap());
+        let odd = "{ \"model\":   \"opus\" }";
+        std::fs::write(&settings, odd).unwrap();
+        disconnect(&settings, &d.join("state")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&settings).unwrap(),
+            odd,
+            "no hooks of ours: not rewritten"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn disconnect_of_a_missing_settings_file_is_not_an_error_and_the_journal_names_the_file() {
+        let d = tmpdir("ms");
+        let settings = d.join("elsewhere").join("settings.json");
+        connect(&settings, BIN, &d.join("state"), true).unwrap();
+        assert_eq!(journal_settings(&d.join("state")), Some(settings.clone()));
+        std::fs::remove_file(&settings).unwrap();
+        assert!(disconnect(&settings, &d.join("state")).is_ok());
+        assert_eq!(journal_settings(&d.join("state")), None);
+        assert!(disconnect(&d.join("nope.json"), &d.join("state")).is_ok());
         let _ = std::fs::remove_dir_all(&d);
     }
 

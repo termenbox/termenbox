@@ -218,6 +218,13 @@ bob_sc start termenbox
 i=0; until curl -fs "http://127.0.0.1:$bob_port/health" >/dev/null 2>&1 || [ $i -ge 20 ]; do i=$((i + 1)); sleep 1; done
 curl -fs "http://127.0.0.1:$bob_port/health" >/dev/null || fail "bob's server did not come back"
 
+echo "== alice connects Claude Code's hooks, which the uninstall must take out again"
+mkdir -p /home/alice/.claude
+printf '{\n  "model": "opus"\n}\n' > /home/alice/.claude/settings.json
+chown -R alice /home/alice/.claude
+as_alice env TERMENBOX_CONFIG_DIR="$STATE" "$BIN" --connect-claude --yes >/dev/null
+grep -q -- '--hook claude' /home/alice/.claude/settings.json || fail "the hooks were not connected"
+
 echo "== uninstall.sh as alice shows the plan first and changes nothing"
 before="$(snapshot)"
 as_alice sh /uninstall.sh | grep -q "Nothing was changed" || fail "the uninstall preview did not say it changed nothing"
@@ -232,6 +239,8 @@ as_alice sh /uninstall.sh --yes
 ls /home/alice/.local/bin/termenbox-tmux-* >/dev/null 2>&1 && fail "a tmux notice is still there"
 [ ! -e "$STATE" ] || fail "the state directory is still there"
 [ ! -e "$JOURNAL" ] || fail "the journal is still there"
+if grep -q -- '--hook claude' /home/alice/.claude/settings.json; then fail "the uninstall left Termenbox's hooks in Claude Code's settings"; fi
+grep -q '"model": "opus"' /home/alice/.claude/settings.json || fail "the uninstall changed more of Claude Code's settings than the hooks"
 [ -d /home/alice ] || fail "alice's home was touched"
 [ "$(loginctl show-user alice -p Linger --value)" != yes ] || fail "lingering the installer enabled was left on"
 bob_sc is-active --quiet termenbox || fail "uninstalling alice's server stopped bob's"
