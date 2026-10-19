@@ -163,6 +163,20 @@ pub fn use_private_tmux(isolation: Isolation) {
 /// be mistaken for, or shadow, a distribution `tmux`.
 pub const BUNDLED_TMUX: &str = "termenbox-tmux";
 
+/// What a failed tmux command says, as one line. A tmux client and a running tmux server on the same socket must
+/// share a protocol number (8 in every release from 2.6 to 3.8, pinned for the bundled one in `build-tmux.sh`); when
+/// they do not, tmux's own message does not say what to do.
+fn tmux_stderr(raw: &[u8]) -> String {
+    let text = String::from_utf8_lossy(raw);
+    let text = text.trim();
+    if text.contains("protocol version mismatch") {
+        return format!(
+            "the tmux server already running on this socket is too different from the tmux termenbox runs now to talk to it (tmux says: {text}). Restart that tmux server: `termenbox-server tmux kill-server` ends its sessions"
+        );
+    }
+    text.to_string()
+}
+
 /// The oldest tmux with the control mode the session backend needs.
 const MIN_TMUX: (u32, u32) = (3, 2);
 
@@ -551,12 +565,12 @@ impl SessionBackend for TmuxBackend {
         let args = ["list-sessions", "-F", "#{session_name}|#{session_name}"].map(String::from);
         let out = self.runner.run("tmux", &args).await?;
         if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
+            let stderr = tmux_stderr(&out.stderr);
             // No server yet simply means no sessions.
             if stderr.contains("no server running") || stderr.contains("No such file") {
                 return Ok(vec![]);
             }
-            return Err(anyhow!("tmux list-sessions failed: {}", stderr.trim()));
+            return Err(anyhow!("tmux list-sessions failed: {stderr}"));
         }
         Ok(parse_list(&String::from_utf8_lossy(&out.stdout)))
     }
@@ -605,7 +619,7 @@ impl SessionBackend for TmuxBackend {
         if !out.status.success() {
             return Err(anyhow!(
                 "tmux new-session failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
+                tmux_stderr(&out.stderr)
             ));
         }
         if let Some(agent) = template {
@@ -679,7 +693,7 @@ impl SessionBackend for TmuxBackend {
         if !out.status.success() {
             return Err(anyhow!(
                 "tmux kill-session failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
+                tmux_stderr(&out.stderr)
             ));
         }
         Ok(())
@@ -1022,6 +1036,17 @@ impl SessionBackend for CommandBackend {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_tmux_protocol_mismatch_says_what_to_do_and_other_errors_pass_through() {
+        let msg = super::tmux_stderr(b"protocol version mismatch (client 8, server 7)\n");
+        assert!(msg.contains("termenbox-server tmux kill-server"), "{msg}");
+        assert!(msg.contains("client 8, server 7"), "{msg}");
+        assert_eq!(
+            super::tmux_stderr(b"no server running on /tmp/x\n"),
+            "no server running on /tmp/x"
+        );
+    }
+
     use super::*;
 
     #[test]

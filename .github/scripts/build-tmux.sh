@@ -10,6 +10,9 @@ set -eu
 
 TMUX_VERSION=3.8
 TMUX_SHA256=e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e
+# The client/server protocol number the pin speaks. A client and a running server on one socket must agree, so a
+# bump that changes it needs an update note (a running tmux server cannot be replaced under live sessions).
+TMUX_PROTOCOL=8
 TMUX_URL=https://github.com/tmux/tmux/releases/download/$TMUX_VERSION/tmux-$TMUX_VERSION.tar.gz
 LIBEVENT_VERSION=2.1.13-stable
 LIBEVENT_SHA256=f7e9383b8c0baa81b687e5b5eecc01beefaf1b19b64151d95ed61647fe7a315c
@@ -38,6 +41,8 @@ fetch() { # url sha256 name
 fetch "$LIBEVENT_URL" "$LIBEVENT_SHA256" libevent
 fetch "$NCURSES_URL" "$NCURSES_SHA256" ncurses
 fetch "$TMUX_URL" "$TMUX_SHA256" tmux
+protocol="$(sed -n 's/^#define PROTOCOL_VERSION \([0-9][0-9]*\)$/\1/p' "$WORK/tmux/tmux-protocol.h")"
+[ "$protocol" = "$TMUX_PROTOCOL" ] || { echo "tmux $TMUX_VERSION speaks protocol '$protocol', not the pinned $TMUX_PROTOCOL: a server running the old one would refuse this client (see TMUX_PROTOCOL)"; exit 1; }
 
 cd "$WORK/libevent"
 ./configure --prefix="$DEPS" --disable-shared --enable-static --disable-openssl --disable-samples \
