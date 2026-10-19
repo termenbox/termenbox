@@ -714,6 +714,7 @@ async fn main() -> anyhow::Result<()> {
             .with_push(push.clone())
             .with_events(hub.clone())
             .with_claude_hooks(claude_hooks::Target {
+                auto: args.claude_settings.is_none(),
                 settings: args
                     .claude_settings
                     .clone()
