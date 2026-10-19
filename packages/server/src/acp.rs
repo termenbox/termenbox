@@ -354,8 +354,27 @@ impl Live {
         }
     }
 
-    fn state(&self, state: AgentState) {
-        self.emit(EventKind::State { state });
+    /// The turn opens at `session/prompt` and closes with its response; the state is derived from this and from
+    /// the open requests by the hub's reducer, the same one the hooks feed.
+    fn turn_open(&self) {
+        self.emit(EventKind::Turn {
+            open: true,
+            outcome: None,
+        });
+    }
+
+    fn turn_close(&self, outcome: AgentState) {
+        self.emit(EventKind::Turn {
+            open: false,
+            outcome: Some(outcome),
+        });
+    }
+
+    fn block(&self, key: &str, open: bool) {
+        self.emit(EventKind::Block {
+            key: key.to_string(),
+            open,
+        });
     }
 
     fn send(&self, v: Value) {
@@ -456,7 +475,7 @@ impl Live {
         };
         let tool = params.get("toolCall").unwrap_or(&Value::Null);
         let detail = Some(first_line(s(tool, "title"))).filter(|d| !d.is_empty());
-        self.state(AgentState::NeedsInput);
+        self.block(&prompt_id, true);
         self.emit(EventKind::Prompt {
             id: prompt_id,
             prompt_kind: "permission".into(),
@@ -489,7 +508,7 @@ impl Live {
             std::mem::replace(&mut g.status, status.clone())
         };
         if was == SessionStatus::Running {
-            self.state(match status {
+            self.turn_close(match status {
                 SessionStatus::Failed(_) => AgentState::Error,
                 _ => AgentState::Done,
             });
@@ -800,7 +819,7 @@ impl AcpBackend {
             }
         };
         live.inner.lock().unwrap().acp_id = id;
-        live.state(AgentState::Idle);
+        live.turn_close(AgentState::Idle);
         self.sessions.lock().unwrap().insert(
             name.to_string(),
             Entry {
@@ -842,8 +861,9 @@ impl AcpBackend {
                         &format!("{}{}", self.event_prefix, s.name),
                         Source::Acp,
                         Confidence::High,
-                        EventKind::State {
-                            state: AgentState::Done,
+                        EventKind::Turn {
+                            open: false,
+                            outcome: Some(AgentState::Done),
                         },
                     );
                 }
@@ -877,7 +897,8 @@ impl AcpBackend {
                 json!({"outcome": {"outcome": "selected", "optionId": option_id}}),
             );
         }
-        live.state(AgentState::Working);
+        // Resolved: the turn resumes unless another request is still open.
+        live.block(prompt_id, false);
         Ok(())
     }
 
@@ -987,7 +1008,7 @@ impl SessionBackend for AcpBackend {
         live.emit(EventKind::Task {
             title: first_line(text),
         });
-        live.state(AgentState::Working);
+        live.turn_open();
         let text = text.to_string();
         tokio::spawn(async move {
             let r = live
@@ -1010,7 +1031,7 @@ impl SessionBackend for AcpBackend {
             if live.inner.lock().unwrap().status != SessionStatus::Running {
                 return;
             }
-            live.state(match r {
+            live.turn_close(match r {
                 Ok(v) if s(&v, "stopReason") == "end_turn" => AgentState::Done,
                 Ok(_) => AgentState::Idle,
                 Err(_) => AgentState::Error,

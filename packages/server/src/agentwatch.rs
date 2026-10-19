@@ -10,6 +10,8 @@ use termenbox_core::events::{AgentState, Confidence, EventKind, Source};
 use crate::adapters;
 use crate::backend::Runner;
 use crate::events::EventHub;
+use crate::profile::Profiles;
+use crate::reducer::Screen;
 
 const SCAN_EVERY: Duration = Duration::from_secs(2);
 /// Never more than one `capture-pane` per this long, whatever the number of sessions.
@@ -151,9 +153,31 @@ pub async fn scan_tmux_once(
                 },
             );
         }
+        // Where the agent has a profile that tells working from idle, the screen decides both what the scan says
+        // (a redraw on attach is output, not inference) and whether the reducer's turn or wait is still on screen.
+        let agent = adapters::agent_name(&p.command);
+        let (profile, _) = Profiles::builtin().for_agent(agent);
+        let view =
+            (profile.has_state_markers() && !screen.is_empty()).then(|| profile.read(&screen));
+        if let Some(v) = &view {
+            hub.reconcile(
+                &p.session,
+                Screen {
+                    working: v.working,
+                    idle: v.idle,
+                    blocked: v.blocked,
+                },
+            );
+        }
         // While a question is on screen the scan must not flip the state back and forth.
         if !tracker.active(&p.session) {
-            if let Some(state) = adapters::scan_state(p) {
+            let scanned = match &view {
+                Some(v) if v.working => Some(AgentState::Working),
+                Some(v) if v.idle => Some(AgentState::Idle),
+                Some(_) => None,
+                None => adapters::scan_state(p),
+            };
+            if let Some(state) = scanned {
                 hub.report(
                     &p.session,
                     Source::Scan,

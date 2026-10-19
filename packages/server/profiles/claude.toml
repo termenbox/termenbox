@@ -14,3 +14,6 @@ numbered = true
 working = ["esc to interrupt", "thinking)", "tokens ·", "tokens)"]
 # "← for agents" is on the idle footer only; "auto mode on" is on every screen, so it is not a marker.
 idle = ["← for agents", "? for shortcuts", "worked for"]
+# Every dialog that waits for the human ends its footer with "Esc to cancel" (permission, AskUserQuestion, plan
+# approval, trust); AskUserQuestion's also reads "Enter to select". Working and idle screens have neither.
+blocked = ["esc to cancel", "enter to select"]

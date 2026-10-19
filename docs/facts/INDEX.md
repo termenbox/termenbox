@@ -47,5 +47,6 @@
 | 0045 | A dialog's input takes focus a moment after the dialog is visible, so typing straight away loses the first letters | client | active |
 | 0046 | One machine can already hold a system install and a user install for each user; what coexists and what conflicts | deployment, server | active |
 | 0047 | One server instance idles at about 8.3 MiB RSS (8.7 with three sessions); five instances cost about 41 to 44 MiB | deployment, server, performance | active |
+| 0048 | Claude Code 2.1.302 sends PermissionRequest for AskUserQuestion at once, Notification up to six seconds later, and no hook when a dialog or a turn is cancelled with Esc | agents, hooks, claude | active |
 
 <!-- bootstrap-generated: true -->

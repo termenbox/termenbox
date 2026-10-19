@@ -47,7 +47,7 @@ T2 is a profile file in `packages/server/profiles/`; the session view reports `t
 
 | Agent | Profile | What it reads | Not measured |
 |---|---|---|---|
-| claude 2.1.302 | yes | permission prompt (`Do you want to ...` + numbered list, keys are digits); working from the spinner line (`thinking)`, `tokens)`); idle/finished from `← for agents` and `Worked for` | AskUserQuestion screens are left unparsed on purpose: the digit on the `Type something.` row only moves the cursor |
+| claude 2.1.302 | yes | permission prompt (`Do you want to ...` + numbered list, keys are digits); working from the spinner line (`thinking)`, `tokens)`); idle/finished from `← for agents` and `Worked for` | AskUserQuestion screens are left unparsed on purpose: the digit on the `Type something.` row only moves the cursor (the `blocked` marker `Esc to cancel` / `Enter to select` still tells the reducer a dialog is open, decision 0122) |
 | opencode 2.0.31 | yes | working (`esc interrupt`) and idle (`ask anything`, `ctrl+p commands`, idle only when not working) | any permission prompt or question |
 | kilo | yes, minimal | idle footer (`tab agents`) | working indicator, permission prompt, question (no screens recorded) |
 | codex | **no** | nothing | not installed on the build host, so no screen was recorded; stays T3 |
