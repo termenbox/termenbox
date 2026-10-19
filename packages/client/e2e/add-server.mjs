@@ -9,7 +9,7 @@ import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, extname, resolve } from 'node:path';
-import { randomBytes, generateKeyPairSync, sign, createPrivateKey, createPublicKey } from 'node:crypto';
+import { randomBytes, generateKeyPairSync, sign } from 'node:crypto';
 
 const here = import.meta.dirname;
 const BIN = process.env.TERMENBOX_BIN ?? resolve(here, '../../../target/release/termenbox-server');
@@ -110,7 +110,6 @@ async function run(label, srv, extraArgs, freeze, expected) {
   await page.getByText('This server is ready to add').waitFor({ timeout: 40000 });
   check(true, `${label}: preview appeared after ${Date.now() - t0} ms`);
   await page.getByRole('group', { name: 'What you are adding' }).scrollIntoViewIfNeeded();
-  const fold = await page.getByRole('group', { name: 'What you are adding' }).evaluate((e) => e.getBoundingClientRect().top - innerHeight);
   if (freeze) { srv.proc.kill('SIGSTOP'); log('   server suspended (UDP port answers nothing)'); }
   const text = await page.getByRole('group', { name: 'What you are adding' }).innerText();
   check(/isolated container|on the machine itself/.test(text) && /Version/.test(text), `${label}: preview shows where sessions run and the version`);
@@ -119,7 +118,6 @@ async function run(label, srv, extraArgs, freeze, expected) {
   await page.locator('#preview-name').fill(`ui-${label}`);
   await page.getByRole('group', { name: 'What you are adding' }).getByRole('button', { name: 'Add', exact: true }).click();
   await page.getByText('Server added').waitFor();
-  const checkingShown = await page.getByText('Checking that this device can reach it').count();
   await page.getByText(/This device can reach it|could not reach it|Could not tell/).first().waitFor({ timeout: 60000 });
   await page.locator('.preview[role=status]').scrollIntoViewIfNeeded();
   const panel = await page.locator('.preview[role=status]').innerText();
