@@ -16,7 +16,7 @@ echo "t1 $(cut -d' ' -f1,2 "$OUT/key.pub")" > "$OUT/keys.txt"
 release() { # dir version [--freeze]  (binary at $dir/termenbox-server-x86_64-linux)
   dir="$1"; version="$2"; shift 2
   cp "$dir/termenbox-server-x86_64-linux" "$dir/termenbox-server-aarch64-linux"
-  python3 "$HERE/make_manifest.py" "$version" "$dir" "$dir/manifest.json" "$@" >/dev/null
+  python3 "$HERE/make_manifest.py" "$version" "$dir" "$dir/manifest.json" --no-tmux "$@" >/dev/null
   ssh-keygen -Y sign -n termenbox-release -f "$OUT/key" "$dir/manifest.json" >/dev/null 2>&1
 }
 
