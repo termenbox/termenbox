@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 
 /// The entries compiled into the bundled tmux (`FALLBACKS` in `.github/scripts/build-tmux.sh`).
+#[cfg(test)]
 pub const COMPILED_IN: [&str; 5] = [
     "xterm-256color",
     "screen-256color",

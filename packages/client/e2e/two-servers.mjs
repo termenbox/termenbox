@@ -107,7 +107,7 @@ async function startServer(label) {
     claim,
     record: { ip: info.ip, udp_port: info.port, fingerprint: info.fingerprint },
     serverId: serverIdOf(join(home, 'config')),
-    tmux: (...args) => execFileSync('tmux', args, { env: { ...process.env, TMUX_TMPDIR: home }, encoding: 'utf8' }).trim(),
+    tmux: (...args) => execFileSync('tmux', ['-L', 'termenbox', ...args], { env: { ...process.env, TMUX_TMPDIR: home }, encoding: 'utf8' }).trim(),
   };
   servers.push(s);
   return s;

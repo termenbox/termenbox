@@ -130,6 +130,33 @@ pub struct Runner {
     env: Vec<String>,
     /// The tmux this runner starts in place of `tmux` on `PATH` (decision 0119); `None` means `tmux` as named.
     tmux: Option<String>,
+    /// How tmux is kept apart from the user's own (decision 0120); `None` uses the default socket and config.
+    isolation: Option<Isolation>,
+}
+
+/// Where termenbox's own tmux server gets its config from (decision 0120). Every tmux this runner starts is given
+/// `-L termenbox` and `-f <config>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Isolation {
+    /// A config file on this machine's file system (container and native modes).
+    File(String),
+    /// Host mode: the file is written on the host, under tmux's own per-user directory, and named at run time
+    /// because the user's uid is only known there.
+    HostUser,
+}
+
+/// Runs `"$0" <args>` with termenbox's socket and the per-user config in tmux's own directory for that uid.
+const HOST_TMUX: &str = r#"exec "$0" -L termenbox -f "/tmp/tmux-$(id -u)/termenbox.conf" "$@""#;
+
+/// Writes the config for host mode into `/tmp/tmux-<uid>/` as the session user. The directory is tmux's own: it
+/// is created private, and refused when it is a link or someone else's, so another user cannot plant a config.
+const WRITE_HOST_CONF: &str = r#"umask 077; d=/tmp/tmux-$(id -u); mkdir -p "$d" && [ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ] && chmod 700 "$d" && printf '%s' "$1" > "$d/termenbox.conf.$$" && mv "$d/termenbox.conf.$$" "$d/termenbox.conf""#;
+
+static ISOLATION: std::sync::OnceLock<Isolation> = std::sync::OnceLock::new();
+
+/// Decided once at startup (decision 0120); runners made after this keep tmux apart from the user's own.
+pub fn use_private_tmux(isolation: Isolation) {
+    let _ = ISOLATION.set(isolation);
 }
 
 /// The bundled tmux the installer places beside the server binary (decision 0119). Named so that it can never
@@ -256,12 +283,17 @@ impl Runner {
         self
     }
 
-    /// Whether this runner starts the bundled tmux (decision 0119), as opposed to a distribution or user-chosen one.
-    fn uses_bundled_tmux(&self) -> bool {
-        self.tmux
-            .as_deref()
-            .and_then(|t| std::path::Path::new(t).file_name())
-            .is_some_and(|n| n == BUNDLED_TMUX)
+    /// Host mode: writes the private server's config on the host (decision 0120), as the session user.
+    pub async fn install_host_tmux_conf(&self, content: &str) -> Result<()> {
+        let args = ["-c", WRITE_HOST_CONF, "sh", content].map(String::from);
+        let out = self.run("sh", &args).await?;
+        if !out.status.success() {
+            return Err(anyhow!(
+                "cannot write tmux's config on the host: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Ok(())
     }
 
     /// For commands run on this machine as this process: container and native modes. Uses the tmux that
@@ -269,6 +301,7 @@ impl Runner {
     pub fn local() -> Self {
         Self {
             tmux: local_tmux().as_ref().ok().cloned(),
+            isolation: ISOLATION.get().cloned(),
             ..Self::default()
         }
     }
@@ -288,6 +321,7 @@ impl Runner {
             user,
             env: vec![],
             tmux: None,
+            isolation: ISOLATION.get().cloned(),
         }
     }
 
@@ -303,10 +337,21 @@ impl Runner {
             argv.push("env".to_string());
             argv.extend(self.env.iter().cloned());
         }
-        argv.push(match (&self.tmux, program) {
+        let program_path = match (&self.tmux, program) {
             (Some(path), "tmux") => path.clone(),
             _ => program.to_string(),
-        });
+        };
+        match (&self.isolation, program) {
+            (Some(Isolation::File(conf)), "tmux") => {
+                argv.push(program_path);
+                argv.extend(["-L", crate::tmuxconf::SOCKET, "-f", conf].map(String::from));
+            }
+            (Some(Isolation::HostUser), "tmux") => {
+                argv.extend(["sh", "-c", HOST_TMUX].map(String::from));
+                argv.push(program_path);
+            }
+            _ => argv.push(program_path),
+        }
         argv.extend(args.iter().cloned());
         let first = argv.remove(0);
         (first, argv)
@@ -555,20 +600,6 @@ impl SessionBackend for TmuxBackend {
             .flat_map(|e| e.vars(&format!("{}{name}", self.event_prefix)))
         {
             args.extend(["-e".to_string(), var]);
-        }
-        // The bundled tmux has no terminfo database of its own to pick the panes' TERM from, so the server names
-        // one the host has (decision 0119). It can only be set before the first pane exists, so a fresh server gets
-        // it in the same command line; a running server keeps whatever it has.
-        if self.runner.uses_bundled_tmux() && matches!(self.list().await, Ok(l) if l.is_empty()) {
-            let mut fresh: Vec<String> = ["start-server", ";", "set", "-g", "default-terminal"]
-                .map(String::from)
-                .into();
-            fresh.extend([
-                crate::terminfo::host_pane_term().to_string(),
-                ";".to_string(),
-            ]);
-            fresh.extend(args);
-            args = fresh;
         }
         let out = self.runner.run_as(true, "tmux", &args).await?;
         if !out.status.success() {
@@ -1132,6 +1163,7 @@ mod tests {
             user: vec![],
             env: vec![],
             tmux: None,
+            isolation: None,
         };
         let err = broken.check_host(false).await.unwrap_err().to_string();
         assert!(err.contains("--pid=host --privileged"), "{err}");
@@ -1390,46 +1422,74 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn tmux_is_given_the_private_socket_and_config_and_other_programs_are_left_alone() {
+        let args = ["list-sessions".to_string()];
+        let mut r = Runner::default();
+        assert_eq!(r.wrap(false, "tmux", &args).1, ["list-sessions"]);
+        r.isolation = Some(Isolation::File("/c/tmux.conf".into()));
+        let (prog, argv) = r.wrap(false, "tmux", &args);
+        assert_eq!(
+            format!("{prog} {}", argv.join(" ")),
+            "tmux -L termenbox -f /c/tmux.conf list-sessions"
+        );
+        r.tmux = Some("/b/termenbox-tmux".into());
+        assert_eq!(r.wrap(false, "tmux", &args).0, "/b/termenbox-tmux");
+        assert_eq!(r.wrap(false, "id", &["-u".to_string()]).1, ["-u"]);
+        // Host mode: the config path needs the user's uid, so a shell names it where the user runs.
+        let mut h = Runner::host("termenbox");
+        h.isolation = Some(Isolation::HostUser);
+        let (_, argv) = h.wrap(false, "tmux", &args);
+        let line = argv.join(" ");
+        assert!(line.contains("runuser -u termenbox -- sh -c"), "{line}");
+        assert!(line.ends_with("tmux list-sessions"), "{line}");
+        assert!(line.contains("-L termenbox -f \"/tmp/tmux-$(id -u)/termenbox.conf\""));
+    }
+
     #[tokio::test]
-    async fn the_bundled_tmux_gets_a_pane_term_the_host_knows_on_a_fresh_server_only() {
-        let Ok(which) = std::process::Command::new("sh")
-            .args(["-c", "command -v tmux"])
+    async fn sessions_live_on_a_private_server_that_reads_termenbox_config_and_not_the_users() {
+        if std::process::Command::new("tmux")
+            .arg("-V")
             .output()
-        else {
-            return;
-        };
-        let real = String::from_utf8_lossy(&which.stdout).trim().to_string();
-        if real.is_empty() {
+            .is_err()
+        {
             return;
         }
-        let dir = std::env::temp_dir().join(format!("tm-term-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tm-priv-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let bundled = dir.join(BUNDLED_TMUX);
-        std::os::unix::fs::symlink(&real, &bundled).unwrap();
         let tmpdir = dir.to_string_lossy().into_owned();
-        let mut runner =
-            Runner::default().with_env(&[("TMUX_TMPDIR", Some(tmpdir.as_str())), ("TMUX", None)]);
-        runner.tmux = Some(bundled.to_string_lossy().into_owned());
-        assert!(runner.uses_bundled_tmux());
-        let b = TmuxBackend::new(runner.clone());
-        let term = |r: &Runner| {
-            let r = r.clone();
+        // The user's own config, which must not be read, and the config termenbox writes.
+        std::fs::write(
+            dir.join(".tmux.conf"),
+            "set -g default-terminal xterm\nset -g history-limit 77\n",
+        )
+        .unwrap();
+        let conf = crate::tmuxconf::write_config(&dir, "screen-256color").unwrap();
+        let env = [
+            ("TMUX_TMPDIR", Some(tmpdir.as_str())),
+            ("TMUX", None),
+            ("HOME", Some(tmpdir.as_str())),
+        ];
+        let mut private = Runner::default().with_env(&env);
+        private.isolation = Some(Isolation::File(conf.to_string_lossy().into_owned()));
+        let user_own = Runner::default().with_env(&env);
+        let b = TmuxBackend::new(private.clone());
+        b.create_with("p1", None, None, None).await.unwrap();
+        let show = |r: &Runner, opt: &str| {
+            let (r, args) = (r.clone(), ["show-options", "-gv", opt].map(String::from));
             async move {
-                let args = ["show-options", "-gv", "default-terminal"].map(String::from);
-                let out = r.run("tmux", &args).await.unwrap();
-                String::from_utf8_lossy(&out.stdout).trim().to_string()
+                String::from_utf8_lossy(&r.run("tmux", &args).await.unwrap().stdout)
+                    .trim()
+                    .to_string()
             }
         };
-        b.create_with("one", None, None, None).await.unwrap();
-        assert_eq!(term(&runner).await, crate::terminfo::host_pane_term());
-        // A running server keeps what it has, so a later session does not undo a change made meanwhile.
-        let args = ["set-option", "-g", "default-terminal", "xterm"].map(String::from);
-        runner.run("tmux", &args).await.unwrap();
-        b.create_with("two", None, None, None).await.unwrap();
-        assert_eq!(term(&runner).await, "xterm");
-        let _ = runner.run("tmux", &["kill-server".to_string()]).await;
+        assert_eq!(show(&private, "default-terminal").await, "screen-256color");
+        assert_ne!(show(&private, "history-limit").await, "77");
+        // The user's tmux does not see it, and the session list of the private one does.
+        let theirs = TmuxBackend::new(user_own.clone());
+        assert!(theirs.list().await.map(|l| l.is_empty()).unwrap_or(true));
+        assert_eq!(b.list().await.unwrap().len(), 1);
+        let _ = private.run("tmux", &["kill-server".to_string()]).await;
         let _ = std::fs::remove_dir_all(&dir);
-        // A tmux that is not the bundled one is left to its own default.
-        assert!(!Runner::default().uses_bundled_tmux());
     }
 }
