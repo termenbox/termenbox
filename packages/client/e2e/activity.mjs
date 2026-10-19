@@ -53,6 +53,25 @@ try {
     check((await clipped(page)).length === 0, `${name}: a digest value is clipped: ${await clipped(page)}`);
     console.log(`ok  ${name}: day digest 2 finished, 1 failed, 14m waited; 5 tasks newest first; 2 charts with a spoken summary; no sideways scroll; targets >= 44 px; text >= 12 px`);
 
+    // The hub publishes a new servers array on every agent event; that must not send a new query to every server.
+    const asked = await page.evaluate(() => window.__activity.asks.length);
+    for (let i = 0; i < 3; i++) await page.evaluate(() => window.__activity.rebuild());
+    await page.waitForTimeout(150);
+    check((await page.evaluate(() => window.__activity.asks.length)) === asked, `${name}: a new servers array with the same connected servers re-asked for the history`);
+
+    // Dense bars: no two labels of a chart may run into each other (a busy morning, long wait labels).
+    const dense = await open(ctx, '?dense');
+    await dense.waitForSelector('[data-activity=ready]');
+    // The value texts above the bars are one row, the axis labels another: within each row, no text may touch the next.
+    const rows = await dense.$$eval('[data-bar-chart]', (charts) => charts.flatMap((c) => [c.querySelectorAll('[data-bar] > span'), c.querySelectorAll(':scope > div:last-child > span')].map((spans) => [...spans].filter((s) => s.textContent.trim()).map((s) => { const r = document.createRange(); r.selectNodeContents(s); const b = r.getBoundingClientRect(); return [b.left, b.right, s.textContent]; }))));
+    for (const [i, rects] of rows.entries()) {
+      const sorted = rects.sort((a, b) => a[0] - b[0]);
+      const touching = sorted.filter((r, k) => k && sorted[k - 1][1] > r[0] - 1).map((r) => r[2]);
+      check(touching.length === 0, `${name}: row ${i} of the charts has overlapping labels: ${touching}`);
+    }
+    check(rows[0].length > 1 && rows[2].length > 1, 'the dense probe shows no labels at all');
+    await dense.close();
+
     // Week: another range is asked for, 7 bars, tasks of two days.
     await page.getByRole('radio', { name: 'Week' }).click();
     await page.waitForFunction(() => document.querySelectorAll('[data-bar-chart] [data-bar]').length === 14);

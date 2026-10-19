@@ -1,7 +1,7 @@
 <script lang="ts">
   /** Settings > Privacy and your data (DECISION-0066): what the hosted service stores, for how long, and a way to delete it. */
   import { DeleteFailed } from '../lib/account';
-  import type { HistoryDeletion } from '../lib/history';
+  import { deletionSummary, plural, type HistoryDeletion } from '../lib/history';
   let { ondelete, onback, onlogout, historyServers, ondeletehistory }: {
     ondelete: () => Promise<number>; onback: () => void; onlogout: () => void;
     /** Connected servers: the ones whose history a deletion reaches. */
@@ -15,15 +15,14 @@
   const go = (next: Step) => ((moved = true), (step = next));
   const focus = (el: HTMLElement, active: boolean) => { if (active) el.focus(); };
   const heading = (el: HTMLElement) => el.focus();
-  type HStep = { name: 'idle' } | { name: 'confirm' } | { name: 'busy' } | { name: 'done'; servers: number; removed: number } | { name: 'failed'; names: string[] };
+  type HStep = { name: 'idle' } | { name: 'confirm' } | { name: 'busy' } | { name: 'done'; text: string } | { name: 'failed'; text: string };
   let hstep = $state<HStep>({ name: 'idle' });
   const hgo = (next: HStep) => ((moved = true), (hstep = next));
   async function removeHistory() {
     hgo({ name: 'busy' });
     const r = await ondeletehistory();
-    hgo(r.failedNames.length ? { name: 'failed', names: r.failedNames } : { name: 'done', servers: r.servers, removed: r.removed });
+    hgo({ name: r.failedNames.length ? 'failed' : 'done', text: deletionSummary(r) });
   }
-  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
   const btn = 'min-h-11 rounded-card px-4 text-base font-semibold disabled:opacity-60';
   const card = 'flex flex-col gap-2 rounded-card border border-line bg-panel p-4';
 
@@ -65,10 +64,10 @@
     <p class="text-base text-soft">Each server keeps a history of what its agents did, so Activity can show a day or a week. It stays on that server and never comes to us. For each task it holds:</p>
     <ul class="list-disc space-y-1 pl-5 text-base text-soft">
       <li>the session name and the agent;</li>
-      <li>a short title: the first line of your prompt, at most 80 characters, with secrets and addresses replaced;</li>
+      <li>a short title: the first line of your prompt (or the title Codex or an ACP agent gives the task), at most 80 characters. Tokens, passwords after a keyword, IP addresses, host names with a port, email addresses, links and paths in your home folder are replaced; other words stay as you wrote them, so keep sensitive details out of that first line;</li>
       <li>when the task started and ended, how it ended (finished, failed or stopped), and how long the agent waited on you.</li>
     </ul>
-    <p class="text-base text-soft">Never the rest of a prompt, an agent's reply or any terminal text. Only tasks an agent reports through its hooks are recorded. By default a server keeps 90 days and at most 20 MB, oldest first; whoever runs the server can change that.</p>
+    <p class="text-base text-soft">Never the rest of a prompt, an agent's reply, a plan or any terminal text. Only tasks an agent reports itself are recorded (Claude Code hooks, Codex, ACP agents), not guesses from the terminal screen. By default a server keeps 90 days and at most 20 MB, oldest first; whoever runs the server can change that.</p>
   </section>
 
   <section class={card} aria-labelledby="privacy-history-delete" data-history-step={hstep.name}>
@@ -86,9 +85,9 @@
     {:else if hstep.name === 'busy'}
       <p class="text-base text-soft outline-none" role="status" tabindex="-1" use:focus={true}>Deleting…</p>
     {:else if hstep.name === 'done'}
-      <p class="text-base text-ok outline-none" role="status" tabindex="-1" use:focus={true}>Done. Removed {plural(hstep.removed, 'task', 'tasks')} from {plural(hstep.servers, 'server', 'servers')}.</p>
+      <p class="text-base text-ok outline-none" role="status" tabindex="-1" use:focus={true}>{hstep.text}</p>
     {:else}
-      <p class="text-base text-bad outline-none" role="alert" tabindex="-1" use:focus={true}>{hstep.names.join(', ')} did not confirm in time, so history may remain there.</p>
+      <p class="text-base text-bad outline-none" role="alert" tabindex="-1" use:focus={true}>{hstep.text}</p>
       <div class="flex flex-col gap-2">
         <button type="button" class="{btn} bg-raised text-fg" onclick={removeHistory}>Try again</button>
         <button type="button" class="{btn} bg-raised text-fg" onclick={() => hgo({ name: 'idle' })}>Close</button>

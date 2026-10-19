@@ -31,6 +31,12 @@ export function rangeOf(mode: Mode, anchor: number): Range {
 export function step(mode: Mode, anchor: number, dir: 1 | -1, now: number): number {
   return Math.min(addDays(anchor, dir * (mode === 'day' ? 1 : 7)), startOfDay(now));
 }
+/** The start of local hour `h` of the day that starts at `dayStart`. A day of 23 or 25 hours is not 24 x 3600 s long. */
+function hourOf(dayStart: number, h: number): number {
+  const d = new Date(dayStart);
+  d.setHours(h, 0, 0, 0);
+  return d.getTime();
+}
 export const daysOf = (r: Range): number[] => {
   const out: number[] = [];
   for (let d = r.from; d < r.to; d = addDays(d, 1)) out.push(d);
@@ -135,7 +141,7 @@ export interface Bucket { label: string; finished: number; failed: number; block
 export function bucketsOf(rows: Row[], mode: Mode, r: Range, locale?: string): Bucket[] {
   const days = daysOf(r);
   const buckets: Bucket[] = mode === 'day'
-    ? Array.from({ length: 24 }, (_, h) => ({ label: h % 6 === 0 ? String(h).padStart(2, '0') : '', finished: 0, failed: 0, blockedMs: 0, start: r.from + h * 3_600_000 }))
+    ? Array.from({ length: 24 }, (_, h) => ({ label: h % 6 === 0 ? String(h).padStart(2, '0') : '', finished: 0, failed: 0, blockedMs: 0, start: hourOf(r.from, h) }))
     : days.map((d) => ({ label: fmt(d, { weekday: 'short' }, locale), finished: 0, failed: 0, blockedMs: 0, start: d }));
   const at = (t: number): Bucket | undefined =>
     t < r.from || t >= r.to ? undefined : mode === 'day' ? buckets[new Date(t).getHours()] : buckets[days.indexOf(startOfDay(t))];
@@ -154,6 +160,13 @@ export function bucketsOf(rows: Row[], mode: Mode, r: Range, locale?: string): B
 export interface Bar { label: string; value: string; parts: { n: number; tone: 'ok' | 'bad' | 'warn' }[]; spoken: string }
 const at = (b: Bucket, mode: Mode, locale?: string) =>
   mode === 'day' ? `${new Date(b.start).toLocaleTimeString(locale, { hour: 'numeric' })}` : fmt(b.start, { weekday: 'long' }, locale);
+
+/** Which bars write their value above them. Bars that would not leave room for the text of their neighbours give way:
+ *  a value stays only when no taller bar (or an earlier one as tall) with a value is within `radius` places. */
+export function shownValues(bars: Bar[], radius: number): boolean[] {
+  const total = (b: Bar) => b.parts.reduce((t, p) => t + p.n, 0);
+  return bars.map((b, i) => !!b.value && !bars.some((o, j) => j !== i && o.value && Math.abs(j - i) <= radius && (total(o) > total(b) || (total(o) === total(b) && j < i))));
+}
 
 export function taskBars(buckets: Bucket[], mode: Mode, locale?: string): Bar[] {
   return buckets.map((b) => ({
@@ -200,6 +213,14 @@ export function overall(statuses: Status[]): Status {
 export interface DeleteResult { removed: number; /** Servers that did not confirm in time. */ failed: string[] }
 /** What the user is told: how many servers answered, how many tasks went, and the names of those that did not confirm. */
 export interface HistoryDeletion { servers: number; removed: number; failedNames: string[] }
+export const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+/** What the user is told after a deletion: what went where, then which servers did not confirm (an unconfirmed server may still hold its history). */
+export function deletionSummary(d: HistoryDeletion): string {
+  const gone = d.servers ? `Removed ${plural(d.removed, 'task', 'tasks')} from ${plural(d.servers, 'server', 'servers')}.` : '';
+  if (!d.failedNames.length) return gone ? `Done. ${gone}` : 'Done.';
+  const miss = `${d.failedNames.join(', ')} did not confirm in time, so history may remain there. A server older than this feature keeps none and never answers.`;
+  return gone ? `${gone} ${miss}` : miss;
+}
 /** Asks each server to forget its history and waits for every `history_deleted`, up to a limit. */
 export class DeleteBook {
   private waiting = new Map<string, (removed: number) => void>();

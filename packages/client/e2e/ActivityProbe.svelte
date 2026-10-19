@@ -3,22 +3,25 @@
   // asked. `?silent` is a server older than the feature, which never answers. window.__activity lists the ranges asked.
   import ActivityView from '../src/shell/ActivityView.svelte';
   import { answered, asked, type HistoryMap, type Range } from '../src/lib/history';
-  import { EARLIER, RUNS } from '../src/lib/historyFixture';
+  import { at, EARLIER, RUNS } from '../src/lib/historyFixture';
   import type { HubServer } from '../src/lib/hub';
 
   const silent = new URLSearchParams(location.search).has('silent');
-  const servers = [{ id: 'alpha', state: 'connected', server: { server_name: 'alpha' } }] as unknown as HubServer[];
+  const dense = new URLSearchParams(location.search).has('dense');
+  let servers = $state([{ id: 'alpha', state: 'connected', server: { server_name: 'alpha' } }] as unknown as HubServer[]);
   let history: HistoryMap = $state({});
   let now = $state(Date.now());
   const asks: Range[] = [];
+  // `?dense`: a busy morning, one task every hour from 08:00 to 13:00, each waiting over an hour, so neighbouring bars carry long labels.
+  const busy = dense ? Array.from({ length: 6 }, (_, i) => ({ session: `s${i}`, started_at: at(14, 8 + i, 0), ended_at: at(14, 8 + i, 50), outcome: 'finished' as const, blocked_ms: (65 + i) * 60_000 })) : [];
   function onask(r: Range) {
     asks.push(r);
     history = asked(history, 'alpha', r, Date.now());
     if (silent) return;
-    const runs = [...RUNS, ...EARLIER].filter((x) => (x.ended_at === undefined ? x.started_at < r.to : x.ended_at >= r.from && x.ended_at < r.to));
+    const runs = [...RUNS, ...EARLIER, ...busy].filter((x) => (x.ended_at === undefined ? x.started_at < r.to : x.ended_at >= r.from && x.ended_at < r.to));
     history = answered(history, 'alpha', { type: 'history', ...r, runs, truncated: false, keep_days: 90, max_bytes: 20_000_000 });
   }
-  Object.assign(window, { __activity: { asks, tick: () => (now = Date.now()) } });
+  Object.assign(window, { __activity: { asks, tick: () => (now = Date.now()), rebuild: () => (servers = servers.map((s) => ({ ...s }))) } });
 </script>
 
 <div style="display:flex;flex-direction:column;height:100dvh">

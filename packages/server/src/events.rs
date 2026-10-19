@@ -460,8 +460,8 @@ impl EventHub {
         self.history.as_ref()
     }
 
-    /// What a fact from an agent means for the history: a state change opens or ends a task, a title names it.
-    /// Guesses from the screen or the scan are not recorded.
+    /// What a fact from an agent means for the history: a state change opens or ends a task, a title names it (only the
+    /// task title the agent reports; plan items are never copied). Guesses from the screen or the scan are not recorded.
     fn note_history(
         &self,
         session: &str,
@@ -477,14 +477,9 @@ impl EventHub {
         match kind {
             EventKind::State { state } => {
                 let agent = self.agents.lock().unwrap().get(session).cloned();
-                history.state(session, agent.as_deref(), *state, confidence, ts);
+                history.state(session, agent.as_deref(), *state, ts);
             }
             EventKind::Task { title } => history.task(session, title),
-            EventKind::Plan { items } => {
-                if let Some(item) = items.iter().find(|i| i.status.contains("progress")) {
-                    history.task(session, &item.text);
-                }
-            }
             _ => {}
         }
     }
@@ -708,6 +703,9 @@ impl EventHub {
             if *state == ring.state {
                 ring.last_event_at = now;
                 drop(rings);
+                // The merged state may already say this because a screen guess got there first; the agent's own
+                // report still opens or ends the task.
+                self.note_history(session, source, confidence, &kind, now);
                 self.settle(session, source, confidence, &kind, prev_hook, now);
                 return;
             }
@@ -2256,6 +2254,93 @@ mod tests {
         );
         let file = std::fs::read_to_string(dir.join("history.jsonl")).unwrap();
         assert!(!file.contains("second line") && !file.contains("secret plan"));
+    }
+
+    #[test]
+    fn a_task_the_screen_guessed_first_is_still_recorded() {
+        let (h, _dir) = hub_with_history();
+        // The scan saw the agent working before its hook said so.
+        h.push(
+            "s",
+            Source::Screen,
+            Confidence::Medium,
+            EventKind::State {
+                state: AgentState::Working,
+            },
+            500,
+        );
+        hook(
+            &h,
+            "UserPromptSubmit",
+            serde_json::json!({ "prompt": "Fix the login test" }),
+            1_000,
+        );
+        hook(&h, "Stop", quiet(), 4_000);
+        let runs = h.history().unwrap().query(0, u64::MAX, 5_000).runs;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].task.as_deref(), Some("Fix the login test"));
+        assert_eq!(
+            runs[0].outcome,
+            Some(termenbox_core::protocol::RunOutcome::Finished)
+        );
+    }
+
+    #[test]
+    fn an_acp_task_keeps_its_title() {
+        let (h, _dir) = hub_with_history();
+        let acp = |kind: EventKind, now: u64| h.feed("a", Source::Acp, Confidence::High, kind, now);
+        // The order the ACP session uses: the turn opens, then the prompt names the task.
+        acp(
+            EventKind::Turn {
+                open: true,
+                outcome: None,
+            },
+            1_000,
+        );
+        acp(
+            EventKind::Task {
+                title: "Add a retry to the uploader".into(),
+            },
+            1_000,
+        );
+        acp(
+            EventKind::Turn {
+                open: false,
+                outcome: Some(AgentState::Done),
+            },
+            3_000,
+        );
+        let runs = h.history().unwrap().query(0, u64::MAX, 4_000).runs;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].task.as_deref(), Some("Add a retry to the uploader"));
+    }
+
+    #[test]
+    fn a_plan_item_never_becomes_the_title() {
+        let (h, dir) = hub_with_history();
+        hook(
+            &h,
+            "UserPromptSubmit",
+            serde_json::json!({ "prompt": "Tidy the repo" }),
+            1_000,
+        );
+        h.push(
+            "s",
+            Source::Hook,
+            Confidence::High,
+            EventKind::Plan {
+                items: vec![PlanItem {
+                    text: "edit /home/me/secret-project/src/lib.rs".into(),
+                    status: "in_progress".into(),
+                }],
+            },
+            2_000,
+        );
+        hook(&h, "Stop", quiet(), 3_000);
+        let runs = h.history().unwrap().query(0, u64::MAX, 4_000).runs;
+        assert_eq!(runs[0].task.as_deref(), Some("Tidy the repo"));
+        let file = std::fs::read_to_string(dir.join("history.jsonl")).unwrap();
+        assert!(!file.contains("secret-project"));
     }
 
     #[test]

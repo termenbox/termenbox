@@ -13,10 +13,11 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use termenbox_core::events::{AgentState, Confidence};
+use termenbox_core::events::AgentState;
 use termenbox_core::protocol::{HistoryRun, RunOutcome};
 use tracing::{info, warn};
 
@@ -33,6 +34,13 @@ const MAX_OPEN: usize = crate::events::MAX_SESSIONS;
 /// A rewrite leaves room for this share of the limit, so it does not run again on the next record.
 const TRIM_TO_PERCENT: u64 = 80;
 const DAY_MS: u64 = 86_400_000;
+/// A task with no event for this long has lost its end (a crashed agent, a missed hook): it is closed as stopped at its
+/// last sign of life instead of swallowing the next prompt.
+const OPEN_MAX_AGE_MS: u64 = DAY_MS;
+/// After a failed compaction, wait this long before trying on the next task.
+const RETRY_AFTER_MS: u64 = 600_000;
+/// Records waiting for the store while a query or a compaction holds it. Far more than tasks end in a minute.
+const MAX_BACKLOG: usize = 1000;
 /// A line longer than any record we write is damage, not data.
 const MAX_LINE: usize = 4096;
 const FIELD_CHARS: usize = 100;
@@ -63,6 +71,8 @@ struct Store {
     bytes: u64,
     /// The last append failed part-way: the next one starts on a fresh line so it cannot join the fragment.
     torn: bool,
+    /// A failed compaction is not tried again before this time (ms), so a full disk is not rewritten on every task.
+    retry_after: u64,
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -122,6 +132,7 @@ impl Store {
             limits,
             bytes: 0,
             torn: false,
+            retry_after: 0,
         };
         let r = store.rewrite(now)?;
         info!(
@@ -173,19 +184,43 @@ impl Store {
         } else {
             kept
         };
-        let mut to_drop = kept - target;
+        let to_drop = kept - target;
         if r.aged == 0 && r.invalid == 0 && to_drop == 0 && !unterminated {
             self.bytes = r.before;
             r.after = r.before;
             return Ok(r);
         }
         let tmp = self.path.with_extension("jsonl.tmp");
+        // Any failure below leaves the old file in place and no temporary file behind.
+        match self.write_trimmed(&tmp, &keep, to_drop, &mut r) {
+            Ok(written) => {
+                self.bytes = written;
+                r.after = written;
+                self.torn = false;
+                Ok(r)
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                Err(e)
+            }
+        }
+    }
+
+    /// Writes the kept records to `tmp`, makes them durable and renames `tmp` over the file; then makes the rename itself
+    /// durable. Returns the bytes written.
+    fn write_trimmed(
+        &self,
+        tmp: &Path,
+        keep: &dyn Fn(&[u8]) -> bool,
+        mut to_drop: u64,
+        r: &mut Rewrite,
+    ) -> Result<u64> {
         let out = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .mode(0o600)
-            .open(&tmp)?;
+            .open(tmp)?;
         let mut out = BufWriter::new(out);
         let mut written = 0u64;
         let mut failed = None;
@@ -206,16 +241,20 @@ impl Store {
             }
         })?;
         if let Some(e) = failed {
-            let _ = std::fs::remove_file(&tmp);
             return Err(e.into());
         }
         let out = out.into_inner().map_err(|e| e.into_error())?;
         out.sync_all()?;
-        std::fs::rename(&tmp, &self.path)?;
-        self.bytes = written;
-        r.after = written;
-        self.torn = false;
-        Ok(r)
+        std::fs::rename(tmp, &self.path)?;
+        // The new file is already in place; a directory that cannot be synced only risks the rename after a power cut.
+        if let Some(Err(e)) = self
+            .path
+            .parent()
+            .map(|d| File::open(d).and_then(|d| d.sync_all()))
+        {
+            warn!("history directory not synced: {e}");
+        }
+        Ok(written)
     }
 
     fn compact(&mut self, now: u64, why: &'static str) {
@@ -230,11 +269,18 @@ impl Store {
                 "history store compacted"
             ),
             Ok(_) => {}
-            Err(e) => warn!(why, "history store compaction failed: {e}"),
+            Err(e) => {
+                self.retry_after = now + RETRY_AFTER_MS;
+                warn!(why, "history store compaction failed: {e}");
+            }
         }
     }
 
-    fn append(&mut self, run: &HistoryRun, now: u64) {
+    fn over_limit(&self, now: u64) -> bool {
+        self.bytes > self.limits.max_bytes && now >= self.retry_after
+    }
+
+    fn append(&mut self, run: &HistoryRun) {
         let Ok(mut line) = serde_json::to_vec(run) else {
             return;
         };
@@ -252,9 +298,6 @@ impl Store {
             Ok(()) => {
                 self.torn = false;
                 self.bytes += line.len() as u64;
-                if self.bytes > self.limits.max_bytes {
-                    self.compact(now, "size");
-                }
             }
             Err(e) => {
                 self.torn = true;
@@ -307,10 +350,25 @@ impl Store {
 
 struct Open {
     started_at: u64,
+    /// The last event of this task: how long it has been silent.
+    touched: u64,
     task: Option<String>,
     agent: Option<String>,
     blocked_ms: u64,
     blocked_since: Option<u64>,
+}
+
+impl Open {
+    fn new(ts: u64) -> Self {
+        Self {
+            started_at: ts,
+            touched: ts,
+            task: None,
+            agent: None,
+            blocked_ms: 0,
+            blocked_since: None,
+        }
+    }
 }
 
 pub struct Answer {
@@ -319,8 +377,12 @@ pub struct Answer {
 }
 
 pub struct History {
-    store: Mutex<Store>,
+    store: Arc<Mutex<Store>>,
     open: Mutex<HashMap<String, Open>>,
+    /// Finished tasks the store has not taken yet: the store is busy with a query or a compaction, and the hub that
+    /// reports a task end must never wait for a disk. Whoever holds the store flushes this when it lets go.
+    backlog: Arc<Mutex<VecDeque<HistoryRun>>>,
+    compacting: Arc<AtomicBool>,
     limits: Limits,
 }
 
@@ -328,11 +390,56 @@ fn clip(s: &str) -> String {
     sanitize_text(s, FIELD_CHARS)
 }
 
+/// A task title as it is kept: what `sanitize_text` replaces (tokens, secrets after a keyword, IP addresses, host:port),
+/// plus email addresses, URLs and paths under a home directory, which that does not touch; capped at `TITLE_CHARS`.
+fn scrub_title(title: &str) -> String {
+    let text = sanitize_text(title, 4 * TITLE_CHARS);
+    let word = |w: &str| {
+        let core = w.trim_start_matches(['(', '[', '"', '\'', '`', '<', '=']);
+        if w.contains("://") {
+            "[url]"
+        } else if w
+            .split_once('@')
+            .is_some_and(|(a, b)| !a.is_empty() && !b.is_empty())
+        {
+            "[email]"
+        } else if ["/home/", "/Users/", "/root/", "~/"]
+            .iter()
+            .any(|p| core.starts_with(p))
+        {
+            "[path]"
+        } else {
+            ""
+        }
+    };
+    let scrubbed: Vec<&str> = text
+        .split(' ')
+        .map(|w| Some(word(w)).filter(|r| !r.is_empty()).unwrap_or(w))
+        .collect();
+    scrubbed.join(" ").chars().take(TITLE_CHARS).collect()
+}
+
+/// Hands the backlog to the store when nobody else holds it. Returns whether the store is over its size limit.
+fn flush(store: &Mutex<Store>, backlog: &Mutex<VecDeque<HistoryRun>>, now: u64) -> bool {
+    let Ok(mut store) = store.try_lock() else {
+        return false;
+    };
+    loop {
+        let Some(run) = backlog.lock().unwrap().pop_front() else {
+            break;
+        };
+        store.append(&run);
+    }
+    store.over_limit(now)
+}
+
 impl History {
     pub fn open(dir: &Path, limits: Limits, now: u64) -> Result<Self> {
         Ok(Self {
-            store: Mutex::new(Store::open(dir, limits, now)?),
+            store: Arc::new(Mutex::new(Store::open(dir, limits, now)?)),
             open: Mutex::default(),
+            backlog: Arc::default(),
+            compacting: Arc::default(),
             limits,
         })
     }
@@ -343,28 +450,31 @@ impl History {
 
     /// A session's state changed (a fact from a hook, Codex or ACP): a task starts when the agent starts working or
     /// waits, and ends when it is done, failed or idle. The time spent waiting on the user is summed as it happens.
-    pub fn state(
-        &self,
-        session: &str,
-        agent: Option<&str>,
-        state: AgentState,
-        confidence: Confidence,
-        ts: u64,
-    ) {
-        let ended = {
+    pub fn state(&self, session: &str, agent: Option<&str>, state: AgentState, ts: u64) {
+        let mut ended = Vec::new();
+        {
             let mut open = self.open.lock().unwrap();
             match state {
                 AgentState::Working | AgentState::NeedsInput => {
+                    // An end that never came: close that task where it went quiet, and start this one fresh.
+                    if open
+                        .get(session)
+                        .is_some_and(|r| ts.saturating_sub(r.touched) >= OPEN_MAX_AGE_MS)
+                    {
+                        if let Some(run) = open.remove(session) {
+                            let at = run.touched;
+                            ended.push((run, RunOutcome::Stopped, at));
+                        }
+                    }
                     if !open.contains_key(session) && open.len() >= MAX_OPEN {
+                        drop(open);
+                        self.finish_all(session, agent, ended);
                         return;
                     }
-                    let run = open.entry(session.to_string()).or_insert_with(|| Open {
-                        started_at: ts,
-                        task: None,
-                        agent: None,
-                        blocked_ms: 0,
-                        blocked_since: None,
-                    });
+                    let run = open
+                        .entry(session.to_string())
+                        .or_insert_with(|| Open::new(ts));
+                    run.touched = ts;
                     if let Some(a) = agent {
                         run.agent = Some(clip(a));
                     }
@@ -374,30 +484,34 @@ impl History {
                     if state == AgentState::NeedsInput {
                         run.blocked_since = Some(ts);
                     }
-                    None
                 }
                 AgentState::Done | AgentState::Idle | AgentState::Error => {
-                    let outcome = match (state, confidence) {
-                        (AgentState::Done, _) | (AgentState::Idle, Confidence::High) => {
-                            RunOutcome::Finished
-                        }
-                        (AgentState::Error, _) => RunOutcome::Failed,
-                        // Idle on a hunch (the screen reconciled): the task ended, nobody said how.
+                    // Only Done is a finished turn and only Error a failure. Idle is the agent going quiet (a session
+                    // that ended or started, a cancelled or cut-off turn): the task stopped, it did not finish.
+                    let outcome = match state {
+                        AgentState::Done => RunOutcome::Finished,
+                        AgentState::Error => RunOutcome::Failed,
                         _ => RunOutcome::Stopped,
                     };
-                    open.remove(session).map(|run| (run, outcome))
+                    if let Some(run) = open.remove(session) {
+                        ended.push((run, outcome, ts));
+                    }
                 }
-                AgentState::Unknown => None,
+                AgentState::Unknown => {}
             }
-        };
-        if let Some((run, outcome)) = ended {
+        }
+        self.finish_all(session, agent, ended);
+    }
+
+    fn finish_all(&self, session: &str, agent: Option<&str>, ended: Vec<(Open, RunOutcome, u64)>) {
+        for (run, outcome, ts) in ended {
             self.finish(session, run, outcome, agent, ts);
         }
     }
 
     /// The agent named what it is working on; only a task in flight takes a title.
     pub fn task(&self, session: &str, title: &str) {
-        let title = sanitize_text(title, TITLE_CHARS);
+        let title = scrub_title(title);
         if title.is_empty() {
             return;
         }
@@ -425,6 +539,8 @@ impl History {
         }
     }
 
+    /// Hands a finished task to the store without waiting for it, and starts a compaction (off this thread) when the
+    /// file is over its limit.
     fn finish(&self, session: &str, run: Open, outcome: RunOutcome, agent: Option<&str>, ts: u64) {
         let ended_at = ts.max(run.started_at);
         let blocked = run.blocked_ms
@@ -440,12 +556,64 @@ impl History {
             outcome: Some(outcome),
             blocked_ms: blocked.min(ended_at - run.started_at),
         };
-        self.store.lock().unwrap().append(&record, ts);
+        {
+            let mut backlog = self.backlog.lock().unwrap();
+            if backlog.len() >= MAX_BACKLOG {
+                backlog.pop_front();
+                warn!("history backlog full: the oldest waiting record was dropped");
+            }
+            backlog.push_back(record);
+        }
+        if flush(&self.store, &self.backlog, ts) {
+            self.compact_in_background(ts);
+        }
+    }
+
+    fn compact_in_background(&self, now: u64) {
+        if self.compacting.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let (store, backlog, compacting) = (
+            self.store.clone(),
+            self.backlog.clone(),
+            self.compacting.clone(),
+        );
+        let spawned = std::thread::Builder::new()
+            .name("history-compact".into())
+            .spawn({
+                let (store, backlog, compacting) = (store, backlog, compacting.clone());
+                move || {
+                    // Records that arrived meanwhile may have put the file over again.
+                    loop {
+                        store.lock().unwrap().compact(now, "size");
+                        if !flush(&store, &backlog, now) {
+                            break;
+                        }
+                    }
+                    compacting.store(false, Ordering::Release);
+                }
+            });
+        if let Err(e) = spawned {
+            self.compacting.store(false, Ordering::Release);
+            warn!("history compaction not started: {e}");
+        }
     }
 
     /// The tasks that ended in `[from, to)`, and those still running that started before `to`.
     pub fn query(&self, from: u64, to: u64, now: u64) -> Answer {
         let (mut runs, truncated) = self.store.lock().unwrap().query(from, to);
+        // Whatever finished while the file was being read.
+        runs.extend(
+            self.backlog
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r.ended_at.is_some_and(|e| e >= from && e < to))
+                .cloned(),
+        );
+        if flush(&self.store, &self.backlog, now) {
+            self.compact_in_background(now);
+        }
         let open = self.open.lock().unwrap();
         for (session, run) in open.iter().filter(|(_, r)| r.started_at < to) {
             let blocked = run.blocked_ms
@@ -468,14 +636,33 @@ impl History {
     /// Forgets everything: the file and the tasks in flight. Returns how many finished tasks it held.
     pub fn delete(&self) -> u64 {
         self.open.lock().unwrap().clear();
-        let removed = self.store.lock().unwrap().delete();
+        let mut store = self.store.lock().unwrap();
+        let waiting = std::mem::take(&mut *self.backlog.lock().unwrap()).len() as u64;
+        let removed = store.delete() + waiting;
         info!(removed, "history deleted");
         removed
     }
 
-    /// The hourly check: drops what has aged out.
+    /// The hourly check: closes tasks that lost their end, and drops what has aged out.
     pub fn maintain(&self, now: u64) {
+        let lost: Vec<(String, Open)> = {
+            let mut open = self.open.lock().unwrap();
+            let names: Vec<String> = open
+                .iter()
+                .filter(|(_, r)| now.saturating_sub(r.touched) >= OPEN_MAX_AGE_MS)
+                .map(|(k, _)| k.clone())
+                .collect();
+            names
+                .into_iter()
+                .filter_map(|k| open.remove(&k).map(|r| (k, r)))
+                .collect()
+        };
+        for (session, run) in lost {
+            let at = run.touched;
+            self.finish(&session, run, RunOutcome::Stopped, None, at);
+        }
         self.store.lock().unwrap().compact(now, "age");
+        flush(&self.store, &self.backlog, now);
     }
 }
 
@@ -497,6 +684,18 @@ mod tests {
         Limits::new(90, 20)
     }
 
+    /// Waits for a background compaction to finish.
+    fn idle(h: &History) {
+        while h.compacting.load(Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // A compaction that ended just after a record arrived leaves it in the backlog until the next call.
+        let _ = h.query(0, 0, 0);
+        while h.compacting.load(Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     fn file_len(d: &Path) -> u64 {
         std::fs::metadata(d.join(FILE))
             .map(|m| m.len())
@@ -505,63 +704,21 @@ mod tests {
 
     /// One whole task: working, then done, `mins` later.
     fn task(h: &History, session: &str, start: u64, mins: u64, end: AgentState) {
-        h.state(
-            session,
-            Some("claude"),
-            AgentState::Working,
-            Confidence::High,
-            start,
-        );
+        h.state(session, Some("claude"), AgentState::Working, start);
         h.task(session, "Fix the flaky login test");
-        h.state(
-            session,
-            Some("claude"),
-            end,
-            Confidence::High,
-            start + mins * MIN,
-        );
+        h.state(session, Some("claude"), end, start + mins * MIN);
     }
 
     #[test]
     fn a_task_is_recorded_when_it_ends_with_its_waiting_time() {
         let d = dir("basic");
         let h = History::open(&d, limits(), T0).unwrap();
-        h.state(
-            "api",
-            Some("claude"),
-            AgentState::Working,
-            Confidence::High,
-            T0,
-        );
+        h.state("api", Some("claude"), AgentState::Working, T0);
         h.task("api", "Fix the flaky login test");
-        h.state(
-            "api",
-            None,
-            AgentState::NeedsInput,
-            Confidence::High,
-            T0 + MIN,
-        );
-        h.state(
-            "api",
-            None,
-            AgentState::Working,
-            Confidence::High,
-            T0 + 4 * MIN,
-        );
-        h.state(
-            "api",
-            None,
-            AgentState::NeedsInput,
-            Confidence::High,
-            T0 + 5 * MIN,
-        );
-        h.state(
-            "api",
-            None,
-            AgentState::Done,
-            Confidence::High,
-            T0 + 6 * MIN,
-        );
+        h.state("api", None, AgentState::NeedsInput, T0 + MIN);
+        h.state("api", None, AgentState::Working, T0 + 4 * MIN);
+        h.state("api", None, AgentState::NeedsInput, T0 + 5 * MIN);
+        h.state("api", None, AgentState::Done, T0 + 6 * MIN);
         let a = h.query(T0, T0 + 10 * MIN, T0 + 10 * MIN);
         assert_eq!(a.runs.len(), 1);
         let r = &a.runs[0];
@@ -583,10 +740,8 @@ mod tests {
         let h = History::open(&d, limits(), T0).unwrap();
         task(&h, "a", T0, 1, AgentState::Done);
         task(&h, "b", T0, 1, AgentState::Error);
-        h.state("c", None, AgentState::Working, Confidence::High, T0);
-        h.state("c", None, AgentState::Idle, Confidence::Medium, T0 + MIN);
-        h.state("d", None, AgentState::Working, Confidence::High, T0);
-        h.state("d", None, AgentState::Idle, Confidence::High, T0 + MIN);
+        h.state("c", None, AgentState::Working, T0);
+        h.state("c", None, AgentState::Idle, T0 + MIN);
         let by = |s: &str| {
             h.query(T0, T0 + 9 * MIN, T0)
                 .runs
@@ -597,15 +752,15 @@ mod tests {
         };
         assert_eq!(by("a"), Some(RunOutcome::Finished));
         assert_eq!(by("b"), Some(RunOutcome::Failed));
+        // Idle is a session that ended or a turn that was cut off, never a finished task.
         assert_eq!(by("c"), Some(RunOutcome::Stopped));
-        assert_eq!(by("d"), Some(RunOutcome::Finished));
     }
 
     #[test]
     fn a_task_in_flight_is_listed_without_an_end_and_a_gone_session_stops_it() {
         let d = dir("flight");
         let h = History::open(&d, limits(), T0).unwrap();
-        h.state("api", None, AgentState::NeedsInput, Confidence::High, T0);
+        h.state("api", None, AgentState::NeedsInput, T0);
         let live = h.query(T0 - MIN, T0 + MIN, T0 + 2 * MIN);
         assert_eq!(live.runs.len(), 1);
         assert_eq!((live.runs[0].ended_at, live.runs[0].outcome), (None, None));
@@ -622,20 +777,14 @@ mod tests {
     fn titles_are_capped_and_scrubbed_and_nothing_else_is_stored() {
         let d = dir("scrub");
         let h = History::open(&d, limits(), T0).unwrap();
-        h.state(
-            "api",
-            Some("claude"),
-            AgentState::Working,
-            Confidence::High,
-            T0,
-        );
+        h.state("api", Some("claude"), AgentState::Working, T0);
         let title = format!(
             "deploy with ghp_{} to 10.1.2.3 {}",
             "a".repeat(30),
             "and a very long tail ".repeat(10)
         );
         h.task("api", &title);
-        h.state("api", None, AgentState::Done, Confidence::High, T0 + MIN);
+        h.state("api", None, AgentState::Done, T0 + MIN);
         let text = std::fs::read_to_string(d.join(FILE)).unwrap();
         assert!(
             !text.contains("ghp_") && !text.contains("10.1.2.3"),
@@ -746,7 +895,7 @@ mod tests {
             blocked_ms: 0,
         };
         std::fs::write(d.join(FILE), b"{\"sess").unwrap();
-        s.append(&run, T0);
+        s.append(&run);
         assert_eq!(s.query(0, u64::MAX).0.len(), 1);
     }
 
@@ -760,8 +909,8 @@ mod tests {
         let h = History::open(&d, limits, T0).unwrap();
         for i in 0..500u64 {
             task(&h, &format!("s{i}"), T0 + i * 2 * MIN, 1, AgentState::Done);
-            assert!(file_len(&d) <= limits.max_bytes, "after record {i}");
         }
+        idle(&h);
         let kept = h.query(0, u64::MAX, T0).runs;
         assert!(!kept.is_empty() && kept.len() < 500);
         assert_eq!(kept.last().unwrap().session, "s499", "the newest survives");
@@ -821,7 +970,7 @@ mod tests {
         let h = History::open(&d, limits(), T0).unwrap();
         task(&h, "a", T0, 1, AgentState::Done);
         task(&h, "b", T0, 1, AgentState::Error);
-        h.state("c", None, AgentState::Working, Confidence::High, T0);
+        h.state("c", None, AgentState::Working, T0);
         assert_eq!(h.delete(), 2);
         assert!(!d.join(FILE).exists());
         assert!(h.query(0, u64::MAX, T0).runs.is_empty());
@@ -841,5 +990,105 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o077, 0);
+    }
+
+    #[test]
+    fn titles_lose_emails_urls_and_home_paths_too() {
+        let d = dir("scrub");
+        let h = History::open(&d, limits(), T0).unwrap();
+        h.state("a", None, AgentState::Working, T0);
+        h.task(
+            "a",
+            "Mail bob@example.com the log from https://ci.example.com/run/1 at /home/bob/app/x.log and ~/notes",
+        );
+        h.state("a", None, AgentState::Done, T0 + MIN);
+        let t = h.query(0, u64::MAX, T0).runs.remove(0).task.unwrap();
+        assert_eq!(t, "Mail [email] the log from [url] at [path] and [path]");
+    }
+
+    #[test]
+    fn a_task_end_never_waits_for_the_store() {
+        let d = dir("backlog");
+        let h = History::open(&d, limits(), T0).unwrap();
+        let busy = h.store.lock().unwrap(); // a query or a compaction is running
+        task(&h, "a", T0, 1, AgentState::Done); // must return, not block
+        assert_eq!(h.backlog.lock().unwrap().len(), 1);
+        drop(busy);
+        assert_eq!(h.query(0, u64::MAX, T0).runs.len(), 1, "nothing is lost");
+        assert!(h.backlog.lock().unwrap().is_empty());
+        assert_eq!(h.delete(), 1);
+    }
+
+    #[test]
+    fn a_failed_compaction_is_not_retried_on_every_task() {
+        let d = dir("retry");
+        let limits = Limits {
+            keep_days: 90,
+            max_bytes: 1_000,
+        };
+        let mut s = Store::open(&d, limits, T0).unwrap();
+        for i in 0..20u64 {
+            s.append(&HistoryRun {
+                session: format!("s{i}"),
+                agent: None,
+                task: Some("Fix the flaky login test".into()),
+                started_at: T0,
+                ended_at: Some(T0 + MIN),
+                outcome: Some(RunOutcome::Finished),
+                blocked_ms: 0,
+            });
+        }
+        assert!(s.over_limit(T0));
+        // The temporary file cannot be created: a directory is in its place.
+        std::fs::create_dir(d.join("history.jsonl.tmp")).unwrap();
+        s.compact(T0, "size");
+        assert!(!s.over_limit(T0 + MIN), "backs off after a failure");
+        assert!(s.over_limit(T0 + RETRY_AFTER_MS), "and tries again later");
+        assert!(file_len(&d) > limits.max_bytes, "the old file is untouched");
+    }
+
+    #[test]
+    fn a_compaction_leaves_no_temporary_file() {
+        let d = dir("tmp");
+        let limits = Limits {
+            keep_days: 90,
+            max_bytes: 2_000,
+        };
+        let h = History::open(&d, limits, T0).unwrap();
+        for i in 0..50u64 {
+            task(&h, &format!("s{i}"), T0 + i * 2 * MIN, 1, AgentState::Done);
+        }
+        idle(&h);
+        assert!(!d.join("history.jsonl.tmp").exists());
+        assert!(file_len(&d) <= limits.max_bytes);
+    }
+
+    #[test]
+    fn a_task_that_never_ended_is_closed_instead_of_swallowing_the_next() {
+        let d = dir("lost");
+        let h = History::open(&d, limits(), T0).unwrap();
+        h.state("api", Some("claude"), AgentState::Working, T0);
+        // The end never came; a day later a new prompt arrives.
+        h.state("api", None, AgentState::Working, T0 + OPEN_MAX_AGE_MS + MIN);
+        h.state(
+            "api",
+            None,
+            AgentState::Done,
+            T0 + OPEN_MAX_AGE_MS + 2 * MIN,
+        );
+        let runs = h.query(0, u64::MAX, T0 + OPEN_MAX_AGE_MS + 3 * MIN).runs;
+        assert_eq!(runs.len(), 2);
+        assert_eq!(
+            (runs[0].started_at, runs[0].ended_at, runs[0].outcome),
+            (T0, Some(T0), Some(RunOutcome::Stopped))
+        );
+        assert_eq!(runs[1].started_at, T0 + OPEN_MAX_AGE_MS + MIN);
+        assert_eq!(runs[1].outcome, Some(RunOutcome::Finished));
+        // The hourly check closes one nobody came back to.
+        h.state("b", None, AgentState::Working, T0);
+        h.maintain(T0 + OPEN_MAX_AGE_MS + 5 * MIN);
+        let runs = h.query(0, u64::MAX, T0 + OPEN_MAX_AGE_MS + 6 * MIN).runs;
+        assert!(runs.iter().all(|r| r.ended_at.is_some()));
+        assert_eq!(runs.iter().filter(|r| r.session == "b").count(), 1);
     }
 }

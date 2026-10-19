@@ -17,6 +17,8 @@
   let anchor = $state(startOfDay(Date.now()));
   const range = $derived(rangeOf(mode, anchor));
   const connected = $derived(servers.filter((s) => s.state === 'connected'));
+  // The hub publishes a new servers array on every agent event; only a change in who is connected is a reason to ask again.
+  const connectedIds = $derived(connected.map((s) => s.id).join());
   const nameOf = (s: HubServer) => s.server.server_name || 'Server';
   // An answer for another range than the one on screen is not an answer yet.
   const entry = (s: HubServer) => (history[s.id]?.from === range.from && history[s.id]?.to === range.to ? history[s.id] : undefined);
@@ -36,7 +38,7 @@
   const ask = () => untrack(() => onask(range));
   // Ask again when the range or the set of connected servers changes, and every 30 s while the view is open. What the
   // asker reads is not a dependency: it writes the answers this view shows.
-  $effect(() => { range; connected.map((s) => s.id).join(); ask(); });
+  $effect(() => { range; connectedIds; ask(); });
   onMount(() => { const t = setInterval(ask, 30_000); return () => clearInterval(t); });
 
   const noun = $derived(mode === 'day' ? 'day' : 'week');
@@ -125,7 +127,7 @@
       {#each cut as c (c.server.id)}
         <p class="text-sm text-soft">{nameOf(c.server)} had more tasks in this {noun} than fit in one answer: showing the newest {c.answer.runs.length}.</p>
       {/each}
-      <p class="text-sm text-soft">History stays on your servers, for up to {keepDays} days. It holds titles, times and outcomes, never prompts or terminal text. Delete it under Privacy and your data in Settings.</p>
+      <p class="text-sm text-soft">History stays on your servers, for up to {keepDays} days. It holds session names, a short task title (the first line of your prompt, scrubbed), times and outcomes, never the rest of a prompt, replies or terminal text. Delete it under Privacy and your data in Settings.</p>
     {/if}
   {/if}
 </div>

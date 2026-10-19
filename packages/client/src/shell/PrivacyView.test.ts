@@ -22,6 +22,18 @@ describe('the privacy page', () => {
   });
 });
 
+describe('the history notice says what is kept', () => {
+  const out = html();
+  it('names the title source and exactly what is scrubbed, and what is never kept', () => {
+    expect(out).toContain('the first line of your prompt');
+    expect(out).toContain('email addresses, links and paths in your home folder are replaced');
+    expect(out).toContain('other words stay as you wrote them');
+    expect(out).toContain('a plan');
+    expect(out).toContain('Claude Code hooks, Codex, ACP agents');
+    expect(out).not.toContain('addresses replaced;');
+  });
+});
+
 describe('settings', () => {
   it('links to the privacy page', () => {
     const out = render(SettingsView, { props: { user: 'octo', onservers() {}, onmenu() {}, onshortcuts() {}, onreport() {}, onlogout() {}, ondeletedata: async () => 0, historyServers: 0, ondeletehistory: async () => ({ servers: 0, removed: 0, failedNames: [] }) } }).body;

@@ -62,7 +62,8 @@ describe('Activity from a fixture', () => {
     const cut = html([server('alpha')], { alpha: entry(NOW, answer(RUNS, 'day', { truncated: true })) });
     expect(cut).toContain('showing the newest 5');
     expect(out).toContain('for up to 90 days');
-    expect(out).toContain('never prompts or terminal text');
+    expect(out).toContain('the first line of your prompt, scrubbed');
+    expect(out).toContain('never the rest of a prompt, replies or terminal text');
   });
 });
 

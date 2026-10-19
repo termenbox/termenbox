@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   addDays, answered, asked, ANSWER_TIMEOUT_MS, bucketsOf, compact, DeleteBook, digestOf, digestSentence, duration, groupByDay, overall, rangeLabel, rangeOf, rowsOf,
-  startOfDay, statusOf, step, taskBars, waitBars, type Source,
+  deletionSummary, shownValues, startOfDay, statusOf, step, taskBars, waitBars, type Bar, type Source,
 } from './history';
 import { answer, at, EARLIER, NOW, RUNS } from './historyFixture';
 
@@ -144,5 +144,41 @@ describe('deleting history', () => {
   });
   it('resolves at once when no server is connected', async () => {
     expect(await new DeleteBook().run([], () => {})).toEqual({ removed: 0, failed: [] });
+  });
+});
+
+describe('a deletion that reached only some servers', () => {
+  it('says what was removed where, then names the servers that did not confirm', () => {
+    expect(deletionSummary({ servers: 2, removed: 5, failedNames: [] })).toBe('Done. Removed 5 tasks from 2 servers.');
+    expect(deletionSummary({ servers: 1, removed: 1, failedNames: [] })).toBe('Done. Removed 1 task from 1 server.');
+    const partial = deletionSummary({ servers: 1, removed: 3, failedNames: ['beta'] });
+    expect(partial).toContain('Removed 3 tasks from 1 server.');
+    expect(partial).toContain('beta did not confirm in time, so history may remain there');
+    expect(partial).toContain('older than this feature');
+    expect(deletionSummary({ servers: 0, removed: 0, failedNames: ['a', 'b'] })).toMatch(/^a, b did not confirm/);
+  });
+});
+
+describe('bar values that would run into each other', () => {
+  const bar = (n: number): Bar => ({ label: '', value: n ? String(n) : '', parts: [{ n, tone: 'ok' }], spoken: '' });
+  it('keep only the taller bar of a close pair, the earlier of equals, and everything when there is room', () => {
+    const bars = [bar(1), bar(3), bar(2), bar(0), bar(0), bar(0), bar(2), bar(2)];
+    expect(shownValues(bars, 2)).toEqual([false, true, false, false, false, false, true, false]);
+    expect(shownValues(bars, 0)).toEqual(bars.map((b) => !!b.value));
+  });
+});
+
+describe('hour bars on a day with a clock change', () => {
+  const tz = process.env.TZ;
+  afterEach(() => { if (tz === undefined) delete process.env.TZ; else process.env.TZ = tz; });
+  it('start at the local hour they name, not 24 x 3600 s after midnight', () => {
+    process.env.TZ = 'America/New_York';
+    const day = new Date(2026, 2, 8).getTime(); // 23 hours: 02:00 does not exist
+    expect(new Date(day).getTimezoneOffset()).toBe(300); // guards the test itself: the zone took effect
+    const buckets = bucketsOf([], 'day', rangeOf('day', day));
+    expect(buckets).toHaveLength(24);
+    expect(buckets[5].start).toBe(new Date(2026, 2, 8, 5).getTime());
+    expect(new Date(buckets[5].start).getHours()).toBe(5);
+    expect(new Date(buckets[23].start).getHours()).toBe(23);
   });
 });

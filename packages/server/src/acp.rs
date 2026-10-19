@@ -1116,11 +1116,12 @@ impl SessionBackend for AcpBackend {
             g.turn = true;
             g.acp_id.clone()
         };
+        // The turn opens first: the history gives a title only to a task that is already open.
+        live.turn_open();
         live.emit(EventKind::Task {
             title: first_line(text),
         });
         live.stream(|st| st.user(text));
-        live.turn_open();
         let text = text.to_string();
         tokio::spawn(async move {
             let r = live
