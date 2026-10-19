@@ -171,11 +171,13 @@ pub async fn scan_tmux_once(
         }
         // While a question is on screen the scan must not flip the state back and forth.
         if !tracker.active(&p.session) {
+            // A screen the profile does not recognise (a newer UI, a blank start-up) falls back to the output
+            // heuristic: an agent is still reported, and the reducer's pin guards an open turn against it.
             let scanned = match &view {
                 Some(v) if v.working => Some(AgentState::Working),
                 Some(v) if v.idle => Some(AgentState::Idle),
-                Some(_) => None,
-                None => adapters::scan_state(p),
+                Some(v) if v.blocked => None,
+                _ => adapters::scan_state(p),
             };
             if let Some(state) = scanned {
                 hub.report(
