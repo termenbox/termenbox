@@ -20,6 +20,7 @@ fail() { echo "FAIL: $*"; exit 1; }
 snapshot() { ls -A /etc/systemd/system /usr/local/bin /var/lib /home 2>/dev/null | sort | md5sum; }
 
 before="$(snapshot)"
+! command -v tmux >/dev/null 2>&1 || fail "this test needs a machine with no tmux (the install must bring one, decision 0119)"
 
 echo "== a dry run changes nothing"
 TERMENBOX_DRY_RUN=1 sh /install.sh "$SECRET" "$ORIGIN" "$MODE"
@@ -34,7 +35,22 @@ pid="$(systemctl show -p MainPID --value termenbox)"
 [ "$pid" -gt 0 ] || fail "the service has no main process"
 [ "$(stat -c %U "/proc/$pid")" = "$RUN_USER" ] || fail "the server does not run as $RUN_USER"
 [ "$MODE" != host-user ] || id termenbox >/dev/null || fail "the user termenbox was not created"
-command -v tmux >/dev/null || fail "tmux was not installed"
+BUNDLED=/usr/local/bin/termenbox-tmux
+[ -x "$BUNDLED" ] || fail "the bundled tmux was not installed (decision 0119)"
+! command -v tmux >/dev/null 2>&1 || fail "a tmux package was installed; the bundled one is all there should be"
+[ "$(sha256sum "$BUNDLED" | cut -d' ' -f1)" = "$(sha256sum /release/tmux-x86_64-linux | cut -d' ' -f1)" ] || fail "the bundled tmux is not the signed one"
+for n in tmux-COPYING tmux-libevent-LICENSE tmux-ncurses-COPYING; do [ -f "/usr/local/bin/termenbox-$n" ] || fail "the notice $n is not beside the tmux"; done
+runuser -u "$RUN_USER" -- "$BUNDLED" -V | grep -q '^tmux ' || fail "$RUN_USER cannot run the bundled tmux"
+termenbox-server --journal-list | grep -q termenbox-tmux || fail "the journal has no tmux entry"
+if ! grep -q "stub tmux" "$BUNDLED"; then
+  # A real tmux: a session as the user the sessions run as, in control mode too, which is what the server speaks.
+  tm() { runuser -u "$RUN_USER" -- env TERM=xterm-256color TMUX_TMPDIR=/tmp "$BUNDLED" -f /dev/null "$@"; }
+  tm new-session -d -s probe -x 80 -y 24 'echo session-ok; exec sleep 30'
+  sleep 1
+  tm capture-pane -p -t probe | grep -q session-ok || fail "the bundled tmux did not run a session"
+  printf 'list-sessions\n' | tm -C attach -t probe 2>&1 | grep -q '^%begin' || fail "control mode did not answer"
+  tm kill-server
+fi
 grep -q '^KillMode=process' /etc/systemd/system/termenbox.service || fail "sessions would die with the service"
 [ -f /var/lib/termenbox/server_key ] || fail "the server did not create its state"
 termenbox-server --journal-list | grep -q unit_installed || fail "the journal has no unit entry"
@@ -64,11 +80,13 @@ echo "== a newer release is installed, the old binary is kept, the service comes
 helper /release2 | grep -q "updated .* -> 9.0.1" || fail "the update did not report success"
 [ "$(sha /usr/local/bin/termenbox-server)" = "$(sha /release2/termenbox-server-x86_64-linux)" ] || fail "the new binary is not in place"
 [ -f /usr/local/bin/termenbox-server.prev ] || fail "the previous binary was not kept"
+[ "$(sha "$BUNDLED")" = "$(sha /release2/tmux-x86_64-linux)" ] || fail "the update did not carry the new tmux"
 systemctl is-active --quiet termenbox || fail "the service is not active after the update"
 # (applying the same release twice is covered by the unit tests: the test binaries all report the crate's own version)
 
 echo "== a release that does not come up is rolled back"
 good_sha="$(sha /usr/local/bin/termenbox-server)"
+good_tmux="$(sha "$BUNDLED")"
 set +e
 helper /release3 > /tmp/rollback.txt 2>&1
 code=$?
@@ -76,6 +94,7 @@ set -e
 [ "$code" = 2 ] || { cat /tmp/rollback.txt; fail "a failed update did not exit with 2 (got $code)"; }
 grep -q "rolled back" /tmp/rollback.txt || fail "the rollback was not reported"
 [ "$(sha /usr/local/bin/termenbox-server)" = "$good_sha" ] || fail "the old binary was not restored"
+[ "$(sha "$BUNDLED")" = "$good_tmux" ] || fail "the tmux was not put back with the server"
 systemctl is-active --quiet termenbox || fail "the service is not active after the rollback"
 port="$(sed -n 's/^Environment=TERMENBOX_PORT=//p' /etc/systemd/system/termenbox.service)"
 for i in 1 2 3 4 5 6 7 8 9 10; do curl -fs "http://127.0.0.1:$port/health" >/dev/null && break; sleep 1; done
@@ -119,6 +138,8 @@ echo "== uninstall.sh --yes restores the machine"
 sh /uninstall.sh --yes
 [ ! -e /etc/systemd/system/termenbox.service ] || fail "the unit is still there"
 [ ! -e /usr/local/bin/termenbox-server ] || fail "the binary is still there"
+[ ! -e "$BUNDLED" ] || fail "the bundled tmux is still there"
+ls /usr/local/bin/termenbox-tmux-* >/dev/null 2>&1 && fail "a tmux notice is still there"
 [ ! -e /var/lib/termenbox ] || fail "the state directory is still there"
 [ "$MODE" != host-user ] || ! id termenbox >/dev/null 2>&1 || fail "the user is still there"
 [ "$MODE" != host-user ] || [ -d /home/termenbox ] || fail "the created user's home was deleted without --delete-home"

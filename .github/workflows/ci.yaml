@@ -218,11 +218,38 @@ jobs:
           TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
         run: node e2e/run.mjs
 
+  # The bundled tmux (decision 0119), built from the pinned sources and put through its gate (static, runs with an
+  # empty PATH and no terminfo, drives a session in control mode). The installer job installs this very binary.
+  tmux:
+    name: Bundled tmux (static, x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools bison
+
+      - name: Build
+        run: .github/scripts/build-tmux.sh tmux-out
+
+      - name: Gate
+        run: .github/scripts/check-tmux.sh tmux-out/tmux
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tmux-musl-x86_64
+          path: |
+            tmux-out/tmux
+            tmux-out/tmux-COPYING
+            tmux-out/tmux-libevent-LICENSE
+            tmux-out/tmux-ncurses-COPYING
+          retention-days: 7
+
   # The native installer (decision 0075) run for real: a machine with systemd, a release signed with a throwaway
   # key, then install, install again, a refused tampered release, and a revert that restores the machine.
   installer:
     name: Native installer (${{ matrix.image }}, ${{ matrix.mode }})
-    needs: static
+    needs: [static, tmux]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -237,8 +264,13 @@ jobs:
           name: termenbox-server-musl-x86_64
           path: release
 
-      - name: Make signed test releases (0.1.0, a newer one, a broken one, a frozen one)
-        run: .github/scripts/make-test-releases.sh release/termenbox-server work
+      - uses: actions/download-artifact@v4
+        with:
+          name: tmux-musl-x86_64
+          path: tmux-dist
+
+      - name: Make signed test releases (0.1.0, a newer one, a broken one, a frozen one), each with the bundled tmux
+        run: .github/scripts/make-test-releases.sh release/termenbox-server work tmux-dist
 
       - name: Start a machine with systemd
         run: |
