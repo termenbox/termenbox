@@ -3,7 +3,7 @@
   import type { ServerListItem } from './lib/protocol';
   import type { DirRecord } from './lib/directory';
   import { randomClaimSecret } from './lib/directory';
-  import { installCommand, scanCommand as scanCommandFor, parseClaim, parseServerLink, waitForServer, previewClaim, ClaimTimeout, type ClaimPreview, type RunChoice } from './lib/onboard';
+  import { installCommand, scanCommand as scanCommandFor, parseClaim, parseServerLink, waitForServer, previewClaim, checkReachable, firewallCommand, UDP_RANGE, ClaimTimeout, type Reachability, type ClaimPreview, type RunChoice } from './lib/onboard';
   import { decodeQrFile, startCameraScan } from './lib/scan';
   import { wsUrl } from './lib/servers';
   import { Dialog } from './lib/ui';
@@ -64,9 +64,19 @@
   }
 
   /** The only place a claim leaves the dialog: the client connects with the token on this server's first connection. */
+  /** Set once the server is added and the reachability check is running or done (decision 0118). */
+  let added: DirRecord | null = null;
+  let checking = false;
+  let reach: Reachability | null = null;
+
   function confirm() {
     if (!found) return;
+    const record = found;
     onadd({ server_id: found.server_id, server_name: (preview ? previewName : name).trim(), server_url: '', record: found, registered_at: Date.now(), claim: secret });
+    // The server stays added whatever the check says; it only advises (GUARDRAIL connections-warn-never-drop).
+    added = record;
+    checking = true;
+    void checkReachable({ record }).then((r) => { reach = r; checking = false; });
   }
 
   async function begin(s: string) {
@@ -164,6 +174,7 @@
       return;
     }
     onadd({ server_url: manualUrl.trim(), server_name: name.trim(), registered_at: Date.now(), claim: manualClaim.trim() || undefined });
+    onclose();
   }
 
   function choose(t: Tab) {
@@ -266,7 +277,24 @@
       </div>
     {/if}
 
-    {#if preview}
+    {#if added}
+      <div class="preview" role="status" aria-live="polite">
+        <strong>Server added</strong>
+        {#if checking}
+          <p class="note">Checking that this device can reach it…</p>
+        {:else if reach?.state === 'reachable'}
+          <p class="note">This device can reach it.</p>
+        {:else if reach?.state === 'unreachable'}
+          <p class="note">This device could not reach it{reach.port ? ` on UDP port ${reach.port}` : ''}. It stays in your list and keeps retrying.</p>
+          <p class="note">On the server, an admin opens the range for Termenbox once:</p>
+          <pre class="command">{firewallCommand}</pre>
+          <p class="note">Servers use a port from {UDP_RANGE.replace(':', '-')}. Your own network (cafe, work or mobile data) may also block UDP; try another network if the port is open.</p>
+        {:else}
+          <p class="note">Could not tell whether this device can reach it. It stays in your list.</p>
+        {/if}
+        <button on:click={onclose} disabled={checking} style="width: 100%;">Done</button>
+      </div>
+    {:else if preview}
       <div class="preview" role="group" aria-label="What you are adding">
         <strong>This server is ready to add</strong>
         <dl>
@@ -313,6 +341,7 @@
   .preview dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 8px 0 12px; font-size: 0.875rem; }
   .preview dt { color: var(--fg-muted); }
   .preview dd { margin: 0; }
+  .note { color: var(--fg-muted); font-size: 0.85rem; margin: 8px 0; }
   .locked { color: var(--fg-muted); font-size: 0.85rem; margin: 0 0 12px; }
   .command { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-family: monospace; font-size: 0.75rem; white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; cursor: copy; margin: 0 0 8px; }
 </style>
