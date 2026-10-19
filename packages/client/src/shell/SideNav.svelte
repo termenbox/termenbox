@@ -43,7 +43,7 @@
   const needs = $derived(groups.reduce((n, g) => n + g.sessions.filter((s) => s.state === 'needs-you').length, 0));
 </script>
 
-<aside aria-label="Workspace" data-shell="sidebar" style:width={width === undefined ? undefined : `${width}px`} class={cn('flex flex-col border-r border-line bg-panel', className, width === undefined && 'w-64 shrink-0')}>
+<aside aria-label="Workspace" data-shell="sidebar" style:width={width != null ? `${width}px` : undefined} class={cn('flex flex-col border-r border-line bg-panel', className)}>
   <nav aria-label="Main" class="flex flex-col gap-2 p-2">
     {#each DESTINATIONS as d (d.id)}
       <button type="button" data-destination={d.id} aria-current={current === d.id ? 'page' : undefined} onclick={() => onnavigate(d.id)}
