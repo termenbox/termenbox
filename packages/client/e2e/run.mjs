@@ -247,7 +247,7 @@ try {
   // 7. The real app on a phone: connect, open a session, go back to the server list and connect again.
   // Each lap used to risk a hang or a broken screen, so run several and fail on any page error.
   {
-    const paneClients = () => execFileSync('tmux', ['list-clients', '-F', '#{client_control_mode} #{client_pid}'], { env: { ...process.env, TMUX_TMPDIR: home }, encoding: 'utf8' }).trim().split('\n').filter((l) => l.startsWith('0 ')).length; // the server's own control-mode clients (window updates) are not terminals
+    const paneClients = () => execFileSync('tmux', ['-L', 'termenbox', 'list-clients', '-F', '#{client_control_mode} #{client_pid}'], { env: { ...process.env, TMUX_TMPDIR: home }, encoding: 'utf8' }).trim().split('\n').filter((l) => l.startsWith('0 ')).length; // the server's own control-mode clients (window updates) are not terminals
     const backgroundClients = paneClients();
     const ctx = await browser.newContext({ viewport: { width: 390, height: 800 }, hasTouch: true, isMobile: true, permissions: ['clipboard-read', 'clipboard-write'] });
     // A counting stand-in for Web Audio, so the bell can be checked without a sound card.
@@ -419,21 +419,21 @@ try {
         });
         await page.keyboard.press('Enter');
         await waitFor(
-          () => /^world$/m.test(execFileSync('tmux', ['capture-pane', '-p', '-t', 's1'], { env: { ...process.env, TMUX_TMPDIR: home }, encoding: 'utf8' })),
+          () => /^world$/m.test(execFileSync('tmux', ['-L', 'termenbox', 'capture-pane', '-p', '-t', 's1'], { env: { ...process.env, TMUX_TMPDIR: home }, encoding: 'utf8' })),
           'the replacement word in the shell output',
           10000,
         ).catch((e) => {
-          console.log('pane:', execFileSync('tmux', ['capture-pane', '-p', '-t', 's1'], { env: { ...process.env, TMUX_TMPDIR: home }, encoding: 'utf8' }).split('\n').filter(Boolean).slice(-6));
+          console.log('pane:', execFileSync('tmux', ['-L', 'termenbox', 'capture-pane', '-p', '-t', 's1'], { env: { ...process.env, TMUX_TMPDIR: home }, encoding: 'utf8' }).split('\n').filter(Boolean).slice(-6));
           throw e;
         });
-        const pane = execFileSync('tmux', ['capture-pane', '-p', '-t', 's1'], { env: { ...process.env, TMUX_TMPDIR: home }, encoding: 'utf8' });
+        const pane = execFileSync('tmux', ['-L', 'termenbox', 'capture-pane', '-p', '-t', 's1'], { env: { ...process.env, TMUX_TMPDIR: home }, encoding: 'utf8' });
         if (/^hello$/m.test(pane)) fail('the old word reached the shell as well');
         // Other alphabets: Cyrillic typed on the phone must reach the shell as text, not as octal bytes.
         await page.keyboard.press('Control+u');
         await page.keyboard.type('echo привет');
         await page.keyboard.press('Enter');
         const utf8 = { ...process.env, TMUX_TMPDIR: home, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' };
-        await waitFor(() => /^привет$/m.test(execFileSync('tmux', ['capture-pane', '-p', '-t', 's1'], { env: utf8, encoding: 'utf8' })), 'Cyrillic text in the shell output', 10000);
+        await waitFor(() => /^привет$/m.test(execFileSync('tmux', ['-L', 'termenbox', 'capture-pane', '-p', '-t', 's1'], { env: utf8, encoding: 'utf8' })), 'Cyrillic text in the shell output', 10000);
         // Russian iOS keyboard: a swiped word arrives as keydown key="чем" followed by insertText (captured on an iPhone).
         // xterm drops such a word unless the keydown is kept from it.
         await page.keyboard.press('Control+u');
@@ -447,7 +447,7 @@ try {
           area.dispatchEvent(new KeyboardEvent('keyup', { key: 'чем', bubbles: true }));
         });
         await page.keyboard.press('Enter');
-        await waitFor(() => /^чем$/m.test(execFileSync('tmux', ['capture-pane', '-p', '-t', 's1'], { env: utf8, encoding: 'utf8' })), 'the swiped Cyrillic word in the shell output', 8000);
+        await waitFor(() => /^чем$/m.test(execFileSync('tmux', ['-L', 'termenbox', 'capture-pane', '-p', '-t', 's1'], { env: utf8, encoding: 'utf8' })), 'the swiped Cyrillic word in the shell output', 8000);
         // The hidden input mirrors the last two words typed (iOS builds its suggestions from it), never stale text.
         await page.keyboard.press('Control+u');
         await page.evaluate(() => { document.querySelector('.xterm-helper-textarea').value = 'утромпа'; });
@@ -478,7 +478,7 @@ try {
           area.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: 'спорт', bubbles: true, composed: true }));
         });
         await page.keyboard.press('Enter');
-        await waitFor(() => /^паспорт$/m.test(execFileSync('tmux', ['capture-pane', '-p', '-t', 's1'], { env: utf8, encoding: 'utf8' })), 'the suggestion tail completing the typed word', 8000);
+        await waitFor(() => /^паспорт$/m.test(execFileSync('tmux', ['-L', 'termenbox', 'capture-pane', '-p', '-t', 's1'], { env: utf8, encoding: 'utf8' })), 'the suggestion tail completing the typed word', 8000);
         // A suggestion that completes the typed word ("у" -> "утро") arrives as new text; the typed part must go first.
         await page.keyboard.press('Control+u');
         await page.keyboard.type('echo у');
@@ -490,8 +490,8 @@ try {
           area.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: 'утро', bubbles: true, composed: true }));
         });
         await page.keyboard.press('Enter');
-        await waitFor(() => /^утро$/m.test(execFileSync('tmux', ['capture-pane', '-p', '-t', 's1'], { env: utf8, encoding: 'utf8' })), 'the completed word without the typed letter', 8000);
-        if (/^уутро$/m.test(execFileSync('tmux', ['capture-pane', '-p', '-t', 's1'], { env: utf8, encoding: 'utf8' }))) fail('the typed letter stayed in front of the suggestion');
+        await waitFor(() => /^утро$/m.test(execFileSync('tmux', ['-L', 'termenbox', 'capture-pane', '-p', '-t', 's1'], { env: utf8, encoding: 'utf8' })), 'the completed word without the typed letter', 8000);
+        if (/^уутро$/m.test(execFileSync('tmux', ['-L', 'termenbox', 'capture-pane', '-p', '-t', 's1'], { env: utf8, encoding: 'utf8' }))) fail('the typed letter stayed in front of the suggestion');
         // Hiding the keyboard leaves the terminal active (focused, no keyboard); a tap brings the keyboard back.
         await page.evaluate(() => document.querySelector('.xterm-helper-textarea').blur());
         await page.waitForFunction(() => document.activeElement?.classList.contains('xterm-helper-textarea') && document.activeElement.getAttribute('inputmode') === 'none', null, { timeout: 3000 }).catch(() => fail('the terminal went inactive when the keyboard was hidden'));
@@ -513,7 +513,7 @@ try {
         if ((await page.locator('.xterm-helper-textarea').getAttribute('inputmode')) !== 'none') fail('the system keyboard is not suppressed while Fn is open');
         await fnKb.getByRole('button', { name: 'Symbols', exact: true }).click();
         await fnKb.getByRole('button', { name: '{', exact: true }).click();
-        await waitFor(() => /echo \{/.test(execFileSync('tmux', ['capture-pane', '-p', '-t', 's1'], { env: utf8, encoding: 'utf8' })), 'the symbol typed from the Fn keyboard', 8000);
+        await waitFor(() => /echo \{/.test(execFileSync('tmux', ['-L', 'termenbox', 'capture-pane', '-p', '-t', 's1'], { env: utf8, encoding: 'utf8' })), 'the symbol typed from the Fn keyboard', 8000);
         await fnKb.getByRole('button', { name: 'Back to the system keyboard' }).click();
         if (await page.getByRole('group', { name: 'Function keyboard' }).count()) fail('the Fn keyboard did not close');
         if ((await page.locator('.xterm-helper-textarea').getAttribute('inputmode')) !== 'text') fail('the system keyboard was not restored');
@@ -525,10 +525,10 @@ try {
         await page.keyboard.press('Control+u');
         await page.keyboard.type('clear; echo SELECTME');
         await page.keyboard.press('Enter');
-        await waitFor(() => /^SELECTME$/m.test(execFileSync('tmux', ['capture-pane', '-p', '-t', 's1'], { env: utf8, encoding: 'utf8' })), 'SELECTME on the screen', 8000);
+        await waitFor(() => /^SELECTME$/m.test(execFileSync('tmux', ['-L', 'termenbox', 'capture-pane', '-p', '-t', 's1'], { env: utf8, encoding: 'utf8' })), 'SELECTME on the screen', 8000);
         await sleep(400);
         // Where SELECTME is on the screen, from tmux: its row, and the client's total rows (including the status line).
-        const tm = (...args) => execFileSync('tmux', args, { env: utf8, encoding: 'utf8' });
+        const tm = (...args) => execFileSync('tmux', ['-L', 'termenbox', ...args], { env: utf8, encoding: 'utf8' });
         const row = tm('capture-pane', '-p', '-t', 's1').split('\n').findIndex((l) => l === 'SELECTME');
         const total = Number(tm('list-clients', '-F', '#{client_control_mode} #{client_height}').split('\n').find((l) => l.startsWith('0 ')).slice(2));
         await page.evaluate(

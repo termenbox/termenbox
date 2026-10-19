@@ -49,7 +49,7 @@ if [ "$(id -u)" -ne 0 ]; then
   [ -n "$KEEP_STATE" ] || rm -rf "$USTATE"
   rm -rf "$UJOURNAL"
   systemctl --user daemon-reload >/dev/null 2>&1 || true
-  say "Removed. Sessions already running in tmux were not stopped (list them with: tmux ls; the tmux bundled with Termenbox, if it installed one, was removed with it, so that needs a tmux of your own)."
+  say "Removed. Sessions already running in tmux were not stopped (list them with: tmux -L termenbox ls, or plain tmux ls if this install kept your default tmux server, decision 0120; the tmux bundled with Termenbox, if it installed one, was removed with it, so that needs a tmux of your own)."
   exit 0
 fi
 
@@ -92,7 +92,7 @@ if [ -x "$BIN" ] || [ -d "$JOURNAL" ]; then
     fi
     [ -n "$KEEP_STATE" ] || rm -rf "$STATE"
     systemctl daemon-reload >/dev/null 2>&1 || true
-    say "Removed. Sessions already running in tmux were not stopped (list them with: tmux ls, as their user; the tmux bundled with Termenbox, if it installed one, was removed with it, so that needs a tmux of your own)."
+    say "Removed. Sessions already running in tmux were not stopped (list them with: tmux -L termenbox ls, or plain tmux ls if this install kept the default tmux server, as their user, decision 0120; the tmux bundled with Termenbox, if it installed one, was removed with it, so that needs a tmux of your own)."
   fi
 fi
 
