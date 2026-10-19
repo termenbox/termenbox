@@ -11,7 +11,8 @@ pub const SOCKET: &str = "termenbox";
 pub enum Socket {
     /// Termenbox's own server (`-L termenbox`, `-f` the config below).
     Private,
-    /// The user's default socket and config, as before 0120; kept for installs that already have sessions there.
+    /// The user's default socket and config. Only an explicit `TERMENBOX_TMUX_SOCKET=default` selects it (decision
+    /// 0121): the user's server can be any tmux version, and a client of another version cannot attach to it.
     Default,
 }
 
@@ -41,18 +42,11 @@ pub fn save(dir: &Path, socket: Socket) -> std::io::Result<()> {
     write_atomic(&dir.join("tmux_socket"), socket.as_str())
 }
 
-/// An explicit setting wins, then the saved choice. With neither, an install that already has sessions on the
-/// default socket keeps them there, and anything else gets the private server.
-pub fn decide(
-    explicit: Option<Socket>,
-    saved: Option<Socket>,
-    default_has_sessions: bool,
-) -> Socket {
-    explicit.or(saved).unwrap_or(if default_has_sessions {
-        Socket::Default
-    } else {
-        Socket::Private
-    })
+/// The private server, unless the owner explicitly asked for the default socket (decision 0121). Neither the saved
+/// choice nor sessions already running on the default socket decide it: the tmux the server runs is pinned, and
+/// it can only attach to a server of its own version, which a tmux the user started earlier may not be.
+pub fn decide(explicit: Option<Socket>) -> Socket {
+    explicit.unwrap_or(Socket::Private)
 }
 
 /// The config of the private server. `term` is the `default-terminal` the host's terminfo supports; `local` is the
@@ -91,13 +85,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_explicit_choice_beats_the_saved_one_and_sessions_only_decide_when_nothing_is_set() {
+    fn the_private_server_is_the_default_and_only_an_explicit_setting_picks_the_user_s() {
         use Socket::*;
-        assert_eq!(decide(Some(Private), Some(Default), true), Private);
-        assert_eq!(decide(None, Some(Default), false), Default);
-        assert_eq!(decide(None, Some(Private), true), Private);
-        assert_eq!(decide(None, None, true), Default);
-        assert_eq!(decide(None, None, false), Private);
+        assert_eq!(decide(None), Private);
+        assert_eq!(decide(Some(Private)), Private);
+        assert_eq!(decide(Some(Default)), Default);
     }
 
     #[test]
