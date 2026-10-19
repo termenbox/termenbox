@@ -6,12 +6,12 @@ tags: [deployment, server]
 date: 2026-10-17
 kind: environmental
 governed-by: 0115
-last-verified: 2026-10-17
+last-verified: 2026-10-19
 ---
 
 # One machine can hold a system install and a user install per user
 
-Read from `packages/client/public/install.sh` and `packages/server/src/main.rs`; the installer was **not run** with two users. A two-user CI test is plan step 1.6.
+Read from `packages/client/public/install.sh` and `packages/server/src/main.rs`, then run in CI (PR #200, job "installer", mode host-me, Debian 12 and Ubuntu 24.04, `.github/scripts/test-user-install.sh`): a system `host-user` install, `alice` and a non-sudoer `bob` (both `host-me`) side by side. Passed: three different server keys, distinct UDP ports (the users' in 4443-4542), separate state dirs unreadable across users, stopping or uninstalling one left the others running, bob never reached `sudo` and was told the range. The conflicts below were found before the port range of 0118 and are not re-measured here.
 
 **Separate per instance:** binary (`/usr/local/bin` vs `~/.local/bin`), state and keys (`/var/lib/termenbox` vs `~/.config/termenbox`), service unit (system vs `~/.config/systemd/user`), journal (`/var/lib/termenbox-root` vs `~/.local/state/termenbox`), stored ports, tmux sockets (per uid). The "already installed" checks test those exact paths, so one install does not hide another. Each has its own server key and owner.
 
