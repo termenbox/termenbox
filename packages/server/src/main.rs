@@ -39,6 +39,7 @@ mod release;
 mod requests;
 mod rtc;
 mod sessions;
+mod terminfo;
 mod transcript;
 mod uninstall;
 mod updater;
