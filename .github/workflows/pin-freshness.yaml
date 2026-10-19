@@ -1,0 +1,39 @@
+name: Pin Freshness
+
+# Decision 0119: the bundled tmux is built from pinned sources, so security releases reach users only when a pin moves.
+# Weekly, compare the pins in build-tmux.sh with the upstream release feeds and open one issue per newer release.
+on:
+  schedule:
+    - cron: '41 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  pins:
+    name: Check tmux, libevent and ncurses pins
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Open an issue for each pin that is behind
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          behind="$(.github/scripts/check-pins.sh)"
+          if [ -z "$behind" ]; then echo "all pins are current"; exit 0; fi
+          printf '%s\n' "$behind" | while IFS="$(printf '\t')" read -r name pinned latest url; do
+            title="build-tmux: $name $latest is out (pinned $pinned)"
+            # One issue per release, open or closed: a closed one means the maintainers decided already.
+            if gh issue list --state all --limit 200 --json title --jq '.[].title' | grep -qxF "$title"; then
+              echo "already filed: $title"; continue
+            fi
+            gh issue create --title "$title" --body "The weekly pin check (decision 0119) found a newer $name release.
+
+          - Pinned in \`.github/scripts/build-tmux.sh\`: $pinned
+          - Latest upstream: $latest ($url)
+
+          Read the release notes for security fixes, then move the version and sha256 pin together in a reviewed change. A pin bump is a patch release of termenbox."
+          done
