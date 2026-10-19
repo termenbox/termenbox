@@ -1,15 +1,16 @@
 ---
 id: 0119-native-installs-bundle-a-pinned-static-tmux
 title: Native installs carry a pinned, statically linked tmux, so no install needs tmux from the distribution
-status: draft
+status: active
 date: 2026-10-19
 track: product
+accepted-by: Sergey Strebulaev <s@vivantel.dev>
 tags: [deployment, server, security, build]
 ---
 
 ## Decision
 
-Status is `draft`: it records the proposal for R23 and awaits the owner's acceptance. Nothing in 2.2 or 2.3 of `docs/plans/multi-account-servers.md` is built until it is accepted. It would remove the "tmux must already be installed" limit of 0113.
+Accepted 2026-10-19. This removes the "tmux must already be installed" limit of 0113.
 
 - **What is bundled.** One tmux binary per architecture (x86_64 and aarch64), built static against musl, libevent and ncurses. The server's session backend (0054) needs tmux 3.2 or newer for control mode; the pin is above that floor.
 - **Pinned version: tmux 3.8**, the latest release when this was written (tagged 2026-09-09; `tmux-3.8.tar.gz`, sha256 `e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e`, checked against the GitHub release asset). The build pins the tarball hash and the libevent and ncurses versions and hashes too; moving any of them is a reviewed change. A tmux or dependency bump is a patch release of termenbox.
