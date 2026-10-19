@@ -29,6 +29,7 @@ mod directory;
 mod e2e;
 mod events;
 mod helper;
+mod history;
 mod journal;
 mod link;
 mod locale;
@@ -146,6 +147,24 @@ struct Args {
     /// With --register: draw the QR even when stdout is not a terminal (used through `docker exec`).
     #[arg(long, default_value = "false")]
     qr: bool,
+
+    /// How many days of agent history the server keeps (decision 0105).
+    #[arg(
+        long,
+        env = "TERMENBOX_HISTORY_DAYS",
+        default_value_t = history::DEFAULT_DAYS,
+        value_parser = clap::value_parser!(u32).range(1..=3650)
+    )]
+    history_days: u32,
+
+    /// The most disk the agent history may use, in MB (decision 0105).
+    #[arg(
+        long,
+        env = "TERMENBOX_HISTORY_MAX_MB",
+        default_value_t = history::DEFAULT_MAX_MB,
+        value_parser = clap::value_parser!(u64).range(1..=1000)
+    )]
+    history_max_mb: u64,
 
     /// Directory of the change journal (root-only); see decision 0067.
     #[arg(
@@ -627,7 +646,12 @@ async fn main() -> anyhow::Result<()> {
     if mode.is_host() {
         info!(target: "audit", event = "host_mode_enabled", user = %mode.label());
     }
-    let hub = events::EventHub::load_or_create(&args.config_dir)?;
+    let history = Arc::new(history::History::open(
+        &args.config_dir,
+        history::Limits::new(args.history_days, args.history_max_mb),
+        events::now_ms(),
+    )?);
+    let hub = events::EventHub::load_or_create(&args.config_dir)?.with_history(history.clone());
     let socket = events::socket_path(&args.config_dir);
     tokio::spawn({
         let (hub, socket) = (hub.clone(), socket.clone());
@@ -647,6 +671,14 @@ async fn main() -> anyhow::Result<()> {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 hub.refresh(events::now_ms());
             }
+        }
+    });
+    // Records past their age go once an hour; the size limit is kept as records are written.
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            let history = history.clone();
+            let _ = tokio::task::spawn_blocking(move || history.maintain(events::now_ms())).await;
         }
     });
     let kinds = resolve_backends(&args.backend, &mode).await?;

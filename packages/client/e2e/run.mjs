@@ -214,6 +214,13 @@ try {
   await waitFor(() => e2e(alice, () => window.__e2e.output.includes('marker-42')), 'screen replay after reconnect');
   console.log('ok  reconnected and the earlier screen was replayed');
 
+  // History (U12): the server answers a range query and a delete over the real transport. No agent ran, so it is empty.
+  await e2e(alice, () => window.__e2e.send({ type: 'history', from: 0, to: Date.now() + 1000 }));
+  await waitFor(() => e2e(alice, () => window.__e2e.received.some((m) => m.includes('"type":"history"') && m.includes('"runs":[]') && m.includes('"keep_days":90'))), 'history answer');
+  await e2e(alice, () => window.__e2e.send({ type: 'history_delete' }));
+  await waitFor(() => e2e(alice, () => window.__e2e.received.some((m) => m.includes('"type":"history_deleted"') && m.includes('"removed":0'))), 'history deleted');
+  console.log('ok  the history range query and delete are answered over the real transport');
+
   // 5. Gate: server RSS with 10 sessions open.
   for (let i = 2; i <= 10; i++) {
     await e2e(alice, (n) => window.__e2e.send({ type: 'new_session', name: `s${n}` }), i);

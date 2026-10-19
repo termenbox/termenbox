@@ -429,6 +429,8 @@ pub struct EventHub {
     /// The turn-and-obligation reducer of each session whose agent reports turns (hooks, ACP).
     reducers: Arc<Mutex<HashMap<String, Reducer>>>,
     status_tx: broadcast::Sender<StatusChange>,
+    /// The tasks agents worked on, kept on disk (U12); absent in tests that do not need it.
+    history: Option<Arc<crate::history::History>>,
 }
 
 impl EventHub {
@@ -444,6 +446,46 @@ impl EventHub {
             derived: Arc::default(),
             reducers: Arc::default(),
             status_tx: broadcast::channel(256).0,
+            history: None,
+        }
+    }
+
+    /// Records the tasks this hub sees end (U12).
+    pub fn with_history(mut self, history: Arc<crate::history::History>) -> Self {
+        self.history = Some(history);
+        self
+    }
+
+    pub fn history(&self) -> Option<&Arc<crate::history::History>> {
+        self.history.as_ref()
+    }
+
+    /// What a fact from an agent means for the history: a state change opens or ends a task, a title names it.
+    /// Guesses from the screen or the scan are not recorded.
+    fn note_history(
+        &self,
+        session: &str,
+        source: Source,
+        confidence: Confidence,
+        kind: &EventKind,
+        ts: u64,
+    ) {
+        let Some(history) = &self.history else { return };
+        if tier(source) != Some(0) || confidence == Confidence::Low {
+            return;
+        }
+        match kind {
+            EventKind::State { state } => {
+                let agent = self.agents.lock().unwrap().get(session).cloned();
+                history.state(session, agent.as_deref(), *state, confidence, ts);
+            }
+            EventKind::Task { title } => history.task(session, title),
+            EventKind::Plan { items } => {
+                if let Some(item) = items.iter().find(|i| i.status.contains("progress")) {
+                    history.task(session, &item.text);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -722,6 +764,7 @@ impl EventHub {
             ring.events.pop_front();
         }
         drop(rings);
+        self.note_history(session, source, confidence, &event.kind, event.ts);
         // Counts and kinds only, never content (audit-logging-no-secrets).
         tracing::info!(target: "audit", event = "agent_event", session = %event.session, source = ?event.source, seq = event.seq);
         self.settle(session, source, confidence, &event.kind, prev_hook, now);
@@ -911,6 +954,9 @@ impl EventHub {
     /// Forget a session that no longer exists.
     /// Only ids that start with `prefix` are considered (one per session manager when several run).
     pub fn forget_except(&self, prefix: &str, live: &[String]) {
+        if let Some(history) = &self.history {
+            history.retain_live(prefix, live, now_ms());
+        }
         self.agents
             .lock()
             .unwrap()
@@ -2172,5 +2218,74 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].kind, AttentionKind::NeedsInput);
         assert_eq!(items[0].prompt.as_deref(), Some("Write a.txt"));
+    }
+
+    // ---- history (U12): what the hub records of a task ----
+
+    fn hub_with_history() -> (EventHub, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("termenbox-events-{}", uuid::Uuid::new_v4()));
+        let history =
+            crate::history::History::open(&dir, crate::history::Limits::new(90, 20), 0).unwrap();
+        (EventHub::new([1; 32]).with_history(Arc::new(history)), dir)
+    }
+
+    #[test]
+    fn a_hooked_task_lands_in_the_history_with_its_wait_and_without_the_prompt_body() {
+        let (h, dir) = hub_with_history();
+        let prompt = "Fix the login test\nthe secret plan is in the second line";
+        hook(
+            &h,
+            "UserPromptSubmit",
+            serde_json::json!({ "prompt": prompt }),
+            1_000,
+        );
+        hook(&h, "PreToolUse", ask(), 2_000);
+        hook(&h, "PostToolUse", ask(), 12_000);
+        hook(&h, "Stop", quiet(), 14_000);
+        let runs = h.history().unwrap().query(0, u64::MAX, 20_000).runs;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].task.as_deref(), Some("Fix the login test"));
+        assert_eq!(
+            runs[0].outcome,
+            Some(termenbox_core::protocol::RunOutcome::Finished)
+        );
+        assert_eq!(runs[0].blocked_ms, 10_000);
+        assert_eq!(
+            (runs[0].started_at, runs[0].ended_at),
+            (1_000, Some(14_000))
+        );
+        let file = std::fs::read_to_string(dir.join("history.jsonl")).unwrap();
+        assert!(!file.contains("second line") && !file.contains("secret plan"));
+    }
+
+    #[test]
+    fn a_guess_from_the_screen_is_not_a_task() {
+        let (h, _dir) = hub_with_history();
+        let state = |s: AgentState, now: u64| {
+            h.push(
+                "s",
+                Source::Screen,
+                Confidence::Medium,
+                EventKind::State { state: s },
+                now,
+            )
+        };
+        state(AgentState::Working, 1_000);
+        state(AgentState::Idle, 5_000);
+        let runs = h.history().unwrap().query(0, u64::MAX, 6_000).runs;
+        assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn a_session_that_goes_away_ends_its_task_as_stopped() {
+        let (h, _dir) = hub_with_history();
+        hook(&h, "UserPromptSubmit", quiet(), 1_000);
+        h.forget_except("", &[]);
+        let runs = h.history().unwrap().query(0, u64::MAX, u64::MAX / 2).runs;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(
+            runs[0].outcome,
+            Some(termenbox_core::protocol::RunOutcome::Stopped)
+        );
     }
 }

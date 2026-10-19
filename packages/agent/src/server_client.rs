@@ -170,6 +170,8 @@ impl ServerClient {
             | ServerMessage::SessionView { .. }
             | ServerMessage::AgentHooks { .. }
             | ServerMessage::AcpView(_)
+            | ServerMessage::History { .. }
+            | ServerMessage::HistoryDeleted { .. }
             | ServerMessage::ClaimPreview { .. }
             | ServerMessage::Unknown => {}
             ServerMessage::Error { message } => {

@@ -12,6 +12,6 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    rollupOptions: { input: { index: resolve(__dirname, 'index.html'), shell: resolve(__dirname, 'shell.html'), cards: resolve(__dirname, 'cards.html'), navigation: resolve(__dirname, 'navigation.html'), gallery: resolve(__dirname, 'gallery.html'), keyrow: resolve(__dirname, 'keyrow.html'), frame: resolve(__dirname, 'frame.html'), home: resolve(__dirname, 'home.html'), decision: resolve(__dirname, 'decision.html') } },
+    rollupOptions: { input: { index: resolve(__dirname, 'index.html'), shell: resolve(__dirname, 'shell.html'), cards: resolve(__dirname, 'cards.html'), navigation: resolve(__dirname, 'navigation.html'), gallery: resolve(__dirname, 'gallery.html'), keyrow: resolve(__dirname, 'keyrow.html'), frame: resolve(__dirname, 'frame.html'), home: resolve(__dirname, 'home.html'), decision: resolve(__dirname, 'decision.html'), activity: resolve(__dirname, 'activity.html') } },
   },
 });

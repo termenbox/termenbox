@@ -32,7 +32,9 @@
   import AppShell from './AppShell.svelte';
   import AppFrame from './shell/AppFrame.svelte';
   import SettingsView from './shell/SettingsView.svelte';
-  import { EmptyState, Segmented } from './lib/ds';
+  import ActivityView from './shell/ActivityView.svelte';
+  import { answered, asked, DeleteBook, type HistoryDeletion, type HistoryMap, type Range } from './lib/history';
+  import { Segmented } from './lib/ds';
   import SessionView from './SessionView.svelte';
   import AcpView from './AcpView.svelte';
   import { acpStreams, applyAcp, forgetAcp } from './lib/acpStore';
@@ -140,6 +142,8 @@
       else if (msg.type === 'acp_view') acpStreams.update(m => applyAcp(m, sessionKey(_id, msg.session), msg.session, msg));
       else if (msg.type === 'sessions') { openPending(_id, msg.sessions); acpStreams.update(m => forgetAcp(m, `${_id}/`, new Set(msg.sessions.map(x => sessionKey(_id, x.id))))); }
       else if (msg.type === 'attention') inbox.update(l => mergeAttention(l, _id, msg.items, s => sessionKey(_id, s), s => hub.findSession(sessionKey(_id, s))?.name ?? s));
+      else if (msg.type === 'history') historyMap = answered(historyMap, _id, msg);
+      else if (msg.type === 'history_deleted') historyDeletes.reply(_id, msg.removed);
       else if (msg.type === 'push_info') pushInfos = { ...pushInfos, [_id]: msg };
       else if (msg.type === 'agent_hooks') {
         hookMap = applyHookReply(hookMap, _id, msg);
@@ -151,6 +155,23 @@
     },
   });
   const snapshots = new SnapshotStore();
+  // Activity (U12): each connected server is asked for the range on screen and answers from its own history.
+  let historyMap: HistoryMap = {};
+  const historyDeletes = new DeleteBook();
+  function askHistory(range: Range) {
+    for (const s of $hubServers) {
+      if (s.state !== 'connected') continue;
+      historyMap = asked(historyMap, s.id, range, Date.now());
+      hub.send(s.id, { type: 'history', from: range.from, to: range.to });
+    }
+  }
+  async function deleteHistory(): Promise<HistoryDeletion> {
+    const ids = $hubServers.filter(s => s.state === 'connected').map(s => s.id);
+    const r = await historyDeletes.run(ids, id => hub.send(id, { type: 'history_delete' }));
+    historyMap = {};
+    const nameOf = (id: string) => $hubServers.find(s => s.id === id)?.server.server_name || 'A server';
+    return { servers: ids.length - r.failed.length, removed: r.removed, failedNames: r.failed.map(nameOf) };
+  }
   // The hook offer (decision 0106): what each server says about each agent's hooks, and this device's answers to the offer.
   const hookOffers = new HookOffers();
   let hookMap: HookMap = {};
@@ -812,9 +833,9 @@
           onanswer={(key, choice, prompt) => sendSession({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })}
           onreply={(key, text) => sendSession({ type: 'reply', session: key, text })} />
       {:else if $destination === 'activity'}
-        <EmptyState title="Activity" body="What your agents did, and what it cost, will appear here." />
+        <ActivityView servers={$hubServers} history={historyMap} {now} onask={askHistory} />
       {:else if $destination === 'settings'}
-        <SettingsView user={user ?? ''} {serverVersion} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} onmenu={() => { titleTapped(); menuOpen = true; }} onshortcuts={() => (helpOpen = true)} onreport={openReport} onlogout={logout} ondeletedata={deleteData} />
+        <SettingsView user={user ?? ''} {serverVersion} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} onmenu={() => { titleTapped(); menuOpen = true; }} onshortcuts={() => (helpOpen = true)} onreport={openReport} onlogout={logout} ondeletedata={deleteData} historyServers={$connectedCount} ondeletehistory={deleteHistory} />
       {:else}
         <div class="workspace" class:mobile={narrow}>
           <div class="terminal-pane">

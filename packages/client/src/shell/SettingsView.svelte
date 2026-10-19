@@ -3,11 +3,13 @@
   import HookPreview from '../HookPreview.svelte';
   import PrivacyView from './PrivacyView.svelte';
   import type { HookRow } from '../lib/hooks';
+  import type { HistoryDeletion } from '../lib/history';
   import { setShortcuts, shortcutsOn, SHORTCUTS, isMac } from '../lib/palette';
   /** The Settings destination: where the account, the servers and the app's own switches live. Preferences that exist
    *  today (theme, skin, cache, renderer) stay in the menu until they move here. */
-  let { user, serverVersion = '', hooks = [], onhook, onservers, onmenu, onshortcuts, onreport, onlogout, ondeletedata }: {
+  let { user, serverVersion = '', hooks = [], onhook, onservers, onmenu, onshortcuts, onreport, onlogout, ondeletedata, historyServers, ondeletehistory }: {
     user: string; serverVersion?: string; hooks?: HookRow[]; onhook?: (choice: 'preview' | 'enable' | 'remove' | 'again', row: HookRow) => void; onservers: () => void; onmenu: () => void; onshortcuts: () => void; onreport: () => void; onlogout: () => void; ondeletedata: () => Promise<number>;
+    historyServers: number; ondeletehistory: () => Promise<HistoryDeletion>;
   } = $props();
   let privacy = $state(false);
   const row = 'flex h-14 w-full items-center justify-between gap-3 rounded-card border border-line bg-panel px-4 text-left text-base text-fg';
@@ -19,7 +21,7 @@
 </script>
 
 {#if privacy}
-  <PrivacyView ondelete={ondeletedata} onback={() => (privacy = false)} {onlogout} />
+  <PrivacyView ondelete={ondeletedata} {historyServers} {ondeletehistory} onback={() => (privacy = false)} {onlogout} />
 {:else}
 <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4" data-shell="settings">
   <h1 class="text-title font-bold">Settings</h1>
