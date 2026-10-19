@@ -193,12 +193,14 @@ export const UDP_RANGE = '4443:4542';
 export const firewallCommand = `ufw allow ${UDP_RANGE}/udp`;
 
 /**
- * What the reachability check found: `reachable` (a transport opened), `unreachable` (WebRTC and any fallback
- * failed; `port` is the server's bound UDP port) or `unknown` (the check could not run or failed for another
- * reason, so nothing is claimed either way).
+ * What the reachability check found: `reachable` (WebRTC opened), `degraded` (WebRTC failed but the WebSocket
+ * fallback opened: it works, slower; `port` is the server's bound UDP port), `unreachable` (WebRTC and any
+ * fallback failed) or `unknown` (the check could not run or failed for another reason, so nothing is claimed
+ * either way).
  */
 export type Reachability =
   | { state: 'reachable' }
+  | { state: 'degraded'; port: number | null }
   | { state: 'unreachable'; port: number | null; message: string }
   | { state: 'unknown' };
 
@@ -212,6 +214,8 @@ export async function checkReachable(target: Target, deps: PreviewDeps = realPre
   try {
     const t = await deps.open(target);
     t.close();
+    // A record means WebRTC was tried first, so a WebSocket here is the fallback. A bare URL has no other path.
+    if (t.kind === 'ws' && target.record) return { state: 'degraded', port: target.record.udp_port ?? null };
     return { state: 'reachable' };
   } catch (e) {
     if (e instanceof Unreachable) return { state: 'unreachable', port: target.record?.udp_port ?? null, message: e.message };
