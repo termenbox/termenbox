@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { installCommand, scanCommand, claimLink, parseClaim, parseServerLink, serverCode, serverLink, pollDelay, waitForServer, previewClaim, ClaimTimeout, CLAIM_WINDOW_MS, type WaitDeps } from './onboard';
+import { installCommand, scanCommand, claimLink, parseClaim, parseServerLink, serverCode, serverLink, pollDelay, waitForServer, previewClaim, checkReachable, firewallCommand, ClaimTimeout, CLAIM_WINDOW_MS, type WaitDeps } from './onboard';
 import type { DirRecord } from './directory';
-import type { Transport } from './transport';
+import { Unreachable, type Transport } from './transport';
 
 const S = 'A'.repeat(43);
 const rec = { server_id: 'K'.repeat(43) } as DirRecord;
@@ -202,5 +202,31 @@ describe('previewClaim (decision 0117)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('checkReachable (decision 0118)', () => {
+  const withPort = { server_id: 'K'.repeat(43), udp_port: 4450 } as DirRecord;
+  it('is reachable when a transport opens, and closes it without authenticating', async () => {
+    const close = vi.fn();
+    const send = vi.fn();
+    const r = await checkReachable({ record: withPort }, { open: async () => ({ close, send } as unknown as Transport) });
+    expect(r).toEqual({ state: 'reachable' });
+    expect(close).toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('is unreachable with the bound port when the transport throws Unreachable', async () => {
+    const r = await checkReachable({ record: withPort }, { open: async () => { throw new Unreachable('Server unreachable on UDP port 4450.', []); } });
+    expect(r).toEqual({ state: 'unreachable', port: 4450, message: 'Server unreachable on UDP port 4450.' });
+  });
+
+  it('is unknown for any other failure, or when there is nothing to connect to', async () => {
+    expect(await checkReachable({ record: withPort }, { open: async () => { throw new Error('boom'); } })).toEqual({ state: 'unknown' });
+    expect(await checkReachable({}, { open: async () => { throw new Error('unused'); } })).toEqual({ state: 'unknown' });
+  });
+
+  it('names the range command the admin runs', () => {
+    expect(firewallCommand).toBe('ufw allow 4443:4542/udp');
   });
 });

@@ -3,7 +3,7 @@
 // the server announces itself to the directory with a proof that it knows the secret.
 import { pending, type DirRecord } from './directory';
 import type { ClientMessage, ServerMessage } from './protocol';
-import { openTransport, type Target, type Transport } from './transport';
+import { openTransport, Unreachable, type Target, type Transport } from './transport';
 
 /** Secrets are 43 url-safe characters (32 random bytes). */
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
@@ -186,4 +186,35 @@ export function previewClaim(
       (e) => finish(() => reject(e instanceof Error ? e : new Error('Server unreachable'))),
     );
   });
+}
+
+/** The reserved range a server binds from (decision 0118), and the one command an admin runs to open it. */
+export const UDP_RANGE = '4443:4542';
+export const firewallCommand = `ufw allow ${UDP_RANGE}/udp`;
+
+/**
+ * What the reachability check found: `reachable` (a transport opened), `unreachable` (WebRTC and any fallback
+ * failed; `port` is the server's bound UDP port) or `unknown` (the check could not run or failed for another
+ * reason, so nothing is claimed either way).
+ */
+export type Reachability =
+  | { state: 'reachable' }
+  | { state: 'unreachable'; port: number | null; message: string }
+  | { state: 'unknown' };
+
+/**
+ * Runs the real connect once, after the server is added (decision 0118). It opens a transport and closes it
+ * again without sending `auth`, so it never touches the claim. Advice only: the caller keeps the server
+ * whatever this returns (GUARDRAIL connections-warn-never-drop).
+ */
+export async function checkReachable(target: Target, deps: PreviewDeps = realPreviewDeps): Promise<Reachability> {
+  if (!target.record && !target.wsUrl) return { state: 'unknown' };
+  try {
+    const t = await deps.open(target);
+    t.close();
+    return { state: 'reachable' };
+  } catch (e) {
+    if (e instanceof Unreachable) return { state: 'unreachable', port: target.record?.udp_port ?? null, message: e.message };
+    return { state: 'unknown' };
+  }
 }
