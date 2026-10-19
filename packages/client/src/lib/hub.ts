@@ -7,6 +7,15 @@ import { applyWindowList, forgetWindows, type WindowMap } from './windows';
 
 export type HubConnection = Pick<Connection, 'start' | 'close' | 'subscribe' | 'send'> & Partial<Pick<Connection, 'kind' | 'rtt' | 'drops' | 'retry' | 'retryNow'>>;
 export type ServerState = ConnState | 'paused';
+export interface ServerHealth {
+  cpu_percent: number;
+  ram_percent: number;
+  disk_percent: number;
+  rtt_ms: number;
+  ts: number;
+  healthy: boolean;
+}
+
 export interface HubServer {
   id: string;
   server: ServerListItem;
@@ -21,6 +30,8 @@ export interface HubServer {
   tmuxVersion: string;
   /** tmux's prefix key (`C-b`); empty without tmux. */
   prefix: string;
+  /** Server health (U14). */
+  health?: ServerHealth;
 }
 export interface HubSession extends SessionInfo { serverId: string; key: string; serverName: string }
 interface Entry extends HubServer {
@@ -161,7 +172,7 @@ export class ServerHub {
     e.connection = connection;
     e.unsubscribe = connection.subscribe(msg => {
       if (!current()) return;
-      const changed = msg.type === 'sessions' || msg.type === 'agent_snapshot' || msg.type === 'agent_events' || msg.type === 'window_list' || msg.type === 'activity' || msg.type === 'attention';
+      const changed = msg.type === 'sessions' || msg.type === 'agent_snapshot' || msg.type === 'agent_events' || msg.type === 'window_list' || msg.type === 'activity' || msg.type === 'attention' || msg.type === 'server_health';
       if (msg.type === 'sessions') { e.sessions = msg.sessions; e.windows = forgetWindows(e.windows, msg.sessions.map(s => s.id)); }
       if (msg.type === 'window_list') e.windows = applyWindowList(e.windows, msg);
       if (msg.type === 'agent_snapshot') e.agents = applySnapshot(e.agents, msg.states);
@@ -171,6 +182,11 @@ export class ServerHub {
         const result = applyEvents(e.agents, msg.events); e.agents = result.map;
         if (result.gap) connection.send({ type: 'agent_sync', after: syncRequest(e.agents) });
       }
+      if (msg.type === 'server_health') {
+        const healthy = msg.cpu_percent <= 80 && msg.ram_percent <= 85 && msg.disk_percent <= 90 && msg.rtt_ms <= 500;
+        e.health = { cpu_percent: msg.cpu_percent, ram_percent: msg.ram_percent, disk_percent: msg.disk_percent, rtt_ms: msg.rtt_ms, ts: msg.ts, healthy };
+        this.publish();
+      }
       if (changed) this.publish();
       this.opts.onMessage?.(e.id, msg);
     });
@@ -178,7 +194,7 @@ export class ServerHub {
   }
   private publish() {
     const entries = [...this.entries.values()];
-    this.servers.set(entries.map(({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix }) => ({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix })));
+    this.servers.set(entries.map(({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix, health }) => ({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix, health })));
     this.allSessions.set(entries.filter(e => e.state !== 'paused').flatMap(e => e.sessions.map(s => ({ ...s,
       serverId: e.id, serverName: e.server.server_name || 'Server', key: sessionKey(e.id, s.id) }))));
     this.agents.set(Object.fromEntries(entries.filter(e => e.state !== 'paused').flatMap(e => Object.entries(e.agents).map(([id, a]) => [sessionKey(e.id, id), a]))));

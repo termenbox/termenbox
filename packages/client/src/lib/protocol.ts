@@ -74,6 +74,7 @@ export type ServerMessage =
   | { type: 'agent_hooks'; agent: string; action: string; state: 'connected' | 'not_connected' | 'unsupported' | 'unavailable' | string; preview?: string; error?: string }
   | HistoryMessage
   | { type: 'history_deleted'; removed: number }
+  | { type: 'server_health'; cpu_percent: number; ram_percent: number; disk_percent: number; rtt_ms: number; ts: number }
   | { type: 'error'; message: string }
   | { type: 'pong' };
 

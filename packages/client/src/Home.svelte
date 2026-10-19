@@ -8,6 +8,7 @@
   import type { FleetState } from './lib/ds/states';
   import type { AgentMap, SessionAgent } from './lib/agents';
   import type { HubServer, HubSession } from './lib/hub';
+  import type { ServerHealth } from './lib/protocol';
   import { ageText } from './lib/cards';
   import { continueTarget, fleetCounts, queueOf, rowOf, Settle, splitQueue, type HomeQueue, type Row } from './lib/home';
 
@@ -29,18 +30,27 @@
   let beat = $state(0);
   onMount(() => { const t = setInterval(() => beat++, 500); return () => clearInterval(t); });
 
+  // Build a map of serverId -> health for quick lookup
+  const healthByServer = $derived.by(() => {
+    const map = new Map<string, ServerHealth>();
+    for (const s of servers) {
+      if (s.health) map.set(s.id, s.health);
+    }
+    return map;
+  });
+
   const counts = $derived(fleetCounts(sessions, agents));
   const live = $derived.by(() => {
-    const q = splitQueue(queueOf(sessions, agents));
+    const q = splitQueue(queueOf(sessions, agents, healthByServer));
     return { ...q, decision: q.hero ? decisionFor(q.hero, agents[q.hero.key], now) : undefined, offerKey: offer ? `${offer.serverId}|${offer.agent}` : undefined };
   });
   const view = $derived.by(() => { beat; return settle.view(live, Date.now()); });
   const connected = $derived(new Set(servers.filter((s) => s.state === 'connected').map((s) => s.id)));
   const cont = $derived(continueTarget(lastKey, sessions, connected, [...(view.hero ? [view.hero] : []), ...view.rest]));
-  const filtered = $derived(filter ? sessions.map((s) => rowOf(s, agents[s.key])).filter((r) => r.state === filter) : []);
+  const filtered = $derived(filter ? sessions.map((s) => rowOf(s, agents[s.key], healthByServer.get(s.serverId))).filter((r) => r.state === filter) : []);
   const KIND_WORD = { needs_input: 'waiting', failed: 'failed', finished_unseen: 'finished' } as const;
 
-  const meta = (r: Row) => [r.serverName, r.kind && r.since ? `${KIND_WORD[r.kind]} ${ageText(r.since, now)}` : ''].filter(Boolean).join(' · ');
+  const meta = (r: Row) => [r.serverName, r.kind && r.since ? `${KIND_WORD[r.kind]} ${ageText(r.since, now)}` : '', r.health && !r.health.healthy ? '⚠ unhealthy' : ''].filter(Boolean).join(' · ');
   const detach = (id: number) => settle.touchUp(id);
 </script>
 
@@ -61,9 +71,9 @@
     </div>
 
     {#if filter}
-      <section class="flex flex-col gap-2" aria-label="Filtered sessions" data-home-filter>
+      <section class="flex flex-col gap-2" aria-label="Filtered sessions" data-home-filter">
         {#each filtered as r (r.key)}
-          <QueueItem name={r.name} summary={r.title} meta={meta(r)} state={r.state} agent={r.agent} onclick={() => onopen(r.key)} />
+          <QueueItem name={r.name} summary={r.title} meta={meta(r)} state={r.state} agent={r.agent} unhealthy={!!r.health && !r.health.healthy} onclick={() => onopen(r.key)} />
         {:else}
           <p class="py-6 text-center text-base text-soft">No sessions in this state.</p>
         {/each}
@@ -84,7 +94,7 @@
       {#if view.rest.length}
         <section class="flex flex-col gap-2" aria-label="Queue" data-home-queue>
           {#each view.rest as r (r.key)}
-            <QueueItem name={r.name} summary={r.title} meta={meta(r)} state={r.state} agent={r.agent} onclick={() => onopen(r.key)} />
+            <QueueItem name={r.name} summary={r.title} meta={meta(r)} state={r.state} agent={r.agent} unhealthy={!!r.health && !r.health.healthy} onclick={() => onopen(r.key)} />
           {/each}
         </section>
       {/if}
@@ -92,7 +102,7 @@
       {#if cont}
         <section class="flex flex-col gap-2" aria-label="Continue" data-home-continue>
           <h2 class="text-sm font-semibold text-soft">Continue</h2>
-          <QueueItem name={cont.name} meta={`${cont.serverName} · last used`} state={rowOf(cont, agents[cont.key]).state} agent={agents[cont.key]?.agent} onclick={() => onopen(cont.key)} />
+          <QueueItem name={cont.name} meta={`${cont.serverName} · last used`} state={rowOf(cont, agents[cont.key], healthByServer.get(cont.serverId)).state} agent={agents[cont.key]?.agent} unhealthy={!!healthByServer.get(cont.serverId) && !healthByServer.get(cont.serverId)!.healthy} onclick={() => onopen(cont.key)} />
         </section>
       {:else if !view.hero && !view.rest.length}
         {#if sessions.length === 0}

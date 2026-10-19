@@ -28,6 +28,7 @@ mod directory;
 #[cfg(test)]
 mod e2e;
 mod events;
+mod health;
 mod helper;
 mod history;
 mod journal;
@@ -51,6 +52,7 @@ mod websocket;
 
 use auth::AuthState;
 use backend::{CommandBackend, RunMode, SessionBackend, TmuxBackend};
+use health::{HealthCollector, HealthThresholds};
 use sessions::SessionManager;
 use websocket::handle_websocket;
 
@@ -270,6 +272,7 @@ pub struct AppState {
     /// `container` or `host:<user>`, shown to the owner.
     pub mode: String,
     pub rtc_info: Option<rtc::RtcInfo>,
+    pub health: Arc<HealthCollector>,
 }
 
 /// `0.1.0+abc1234`: the crate version and, in the Docker image, the commit it was built from.
@@ -747,6 +750,9 @@ async fn main() -> anyhow::Result<()> {
         build_backend(&args, &kinds[0], &mode, env, "")?
     };
     info!("Session backend: {}", backend.name());
+    // Start health collector (U14)
+    let health = Arc::new(HealthCollector::new(HealthThresholds::default()));
+    health.clone().start();
     let mut state = AppState {
         auth,
         sessions: Arc::new(
@@ -782,6 +788,7 @@ async fn main() -> anyhow::Result<()> {
         server_name: args.server_name.clone(),
         mode: mode.label(),
         rtc_info: None,
+        health,
     };
 
     if args.webrtc != "off" {

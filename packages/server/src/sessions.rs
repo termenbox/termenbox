@@ -12,7 +12,7 @@ use crate::backend::{RunMode, SessionBackend};
 use crate::control::WindowHub;
 use crate::events::EventHub;
 use crate::link::{Inbound, Link, LinkTx};
-use crate::pty::Attachment;
+use crate::health::HealthCollector;
 
 /// Clients ping every 5 s, so a minute of silence means the peer is gone.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -164,10 +164,11 @@ impl SessionManager {
         link: Link,
         identity: crate::auth::Identity,
         auth: &crate::auth::AuthState,
+        health: Arc<HealthCollector>,
     ) -> Result<()> {
         static NEXT_CONN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let conn = NEXT_CONN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let res = self.serve_conn(conn, link, identity, auth).await;
+        let res = self.serve_conn(conn, link, identity, auth, health).await;
         if let Some(p) = &self.push {
             p.set_foreground(conn, None);
         }
@@ -180,6 +181,7 @@ impl SessionManager {
         mut link: Link,
         identity: crate::auth::Identity,
         auth: &crate::auth::AuthState,
+        health: Arc<HealthCollector>,
     ) -> Result<()> {
         let mut attachment: Option<Attachment> = None;
         let (mut cols, mut rows) = (80u16, 24u16);
@@ -191,6 +193,24 @@ impl SessionManager {
         let mut acp: Option<AcpSub> = None;
         let mut acp_tick = tokio::time::interval(ACP_BATCH);
         acp_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut health_rx = Some(health.subscribe());
+
+        // Send initial health status
+        if let Ok(status) = health.status().await {
+            if let Some(sample) = status.latest {
+                let _ = send(
+                    &link.tx,
+                    &ServerMessage::ServerHealth {
+                        cpu_percent: sample.cpu_percent,
+                        ram_percent: sample.ram_percent,
+                        disk_percent: sample.disk_percent,
+                        rtt_ms: sample.rtt_ms,
+                        ts: sample.ts,
+                    },
+                )
+                .await;
+            }
+        }
 
         loop {
             tokio::select! {
@@ -279,6 +299,30 @@ impl SessionManager {
                         if !send(&link.tx, &msg).await { gone = true; break; }
                     }
                     if gone { break; }
+                }
+                sample = async {
+                    if let Some(rx) = &mut health_rx {
+                        rx.recv().await.ok()
+                    } else {
+                        std::future::pending().await
+                    }
+                } => {
+                    if let Some(sample) = sample {
+                        if !send(
+                            &link.tx,
+                            &ServerMessage::ServerHealth {
+                                cpu_percent: sample.cpu_percent,
+                                ram_percent: sample.ram_percent,
+                                disk_percent: sample.disk_percent,
+                                rtt_ms: sample.rtt_ms,
+                                ts: sample.ts,
+                            },
+                        )
+                        .await
+                        {
+                            break;
+                        }
+                    }
                 }
                 _ = &mut idle => {
                     info!("Closing idle connection of {}", identity.login);

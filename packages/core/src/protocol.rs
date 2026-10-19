@@ -370,6 +370,14 @@ pub enum ServerMessage {
         message: String,
     },
     Pong,
+    /// Server health metrics (U14): CPU, RAM, disk usage and round-trip time.
+    ServerHealth {
+        cpu_percent: f32,
+        ram_percent: f32,
+        disk_percent: f32,
+        rtt_ms: u32,
+        ts: u64,
+    },
     /// A message from a newer server; ignored.
     #[serde(other)]
     Unknown,

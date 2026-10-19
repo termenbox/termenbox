@@ -4,7 +4,7 @@
 import type { AgentMap, SessionAgent } from './agents';
 import { bannerChoices } from './notify';
 import type { HubSession } from './hub';
-import type { AttentionKind } from './protocol';
+import type { AttentionKind, ServerHealth } from './protocol';
 import type { FleetState } from './ds/states';
 
 export type QueueKind = Exclude<AttentionKind, 'unknown'>;
@@ -26,6 +26,8 @@ export interface Row {
   prompt?: NonNullable<SessionAgent['prompt']>;
   /** The question of a needs_input, when the server sent one. */
   question?: string;
+  /** Server health (U14). */
+  health?: ServerHealth;
 }
 
 const KIND_RANK: Record<QueueKind, number> = { needs_input: 0, failed: 1, finished_unseen: 2 };
@@ -46,7 +48,7 @@ export function fleetState(a: SessionAgent | undefined): FleetState {
   return a?.state === 'working' ? 'working' : 'idle';
 }
 
-export function rowOf(s: HubSession, a: SessionAgent | undefined): Row {
+export function rowOf(s: HubSession, a: SessionAgent | undefined, health?: ServerHealth): Row {
   const kind = kindOf(a);
   return {
     key: s.key, name: s.name, serverId: s.serverId, serverName: s.serverName, agent: a?.agent,
@@ -55,12 +57,13 @@ export function rowOf(s: HubSession, a: SessionAgent | undefined): Row {
     title: a?.attention?.task?.title ?? a?.task?.title,
     prompt: kind === 'needs_input' ? a?.prompt : undefined,
     question: kind === 'needs_input' ? a?.attention?.prompt : undefined,
+    health,
   };
 }
 
 /** Every open item across all servers: needs_input, then failed, then finished_unseen; the oldest wait first inside a kind. */
-export function queueOf(sessions: HubSession[], agents: AgentMap): Row[] {
-  return sessions.map((s, i) => ({ r: rowOf(s, agents[s.key]), i }))
+export function queueOf(sessions: HubSession[], agents: AgentMap, healthByServer: Map<string, ServerHealth>): Row[] {
+  return sessions.map((s, i) => ({ r: rowOf(s, agents[s.key], healthByServer.get(s.serverId)), i }))
     .filter((x) => x.r.kind)
     .sort((a, b) => KIND_RANK[a.r.kind!] - KIND_RANK[b.r.kind!] || (a.r.since ?? 0) - (b.r.since ?? 0) || a.i - b.i)
     .map((x) => x.r);
@@ -103,8 +106,8 @@ const GROUPS: { state: FleetState; title: string }[] = [
 ];
 
 /** The Sessions destination: every session, grouped by state, oldest wait first in the groups that wait. Empty groups are left out. */
-export function sessionGroups(sessions: HubSession[], agents: AgentMap): { state: FleetState; title: string; rows: Row[] }[] {
-  const rows = sessions.map((s) => rowOf(s, agents[s.key]));
+export function sessionGroups(sessions: HubSession[], agents: AgentMap, healthByServer: Map<string, ServerHealth>): { state: FleetState; title: string; rows: Row[] }[] {
+  const rows = sessions.map((s) => rowOf(s, agents[s.key], healthByServer.get(s.serverId)));
   return GROUPS.map((g) => ({
     ...g,
     rows: rows.map((r, i) => ({ r, i })).filter((x) => x.r.state === g.state)
