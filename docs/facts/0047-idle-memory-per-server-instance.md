@@ -11,7 +11,7 @@ last-verified: 2026-10-19
 
 # Idle memory per server instance
 
-Decision 0115 allows one server instance per OS user with no hard memory cap, "as low as possible". This is what an instance costs today, measured, so later changes have a number to beat. It is the baseline for plan step 1.7 (`docs/plans/multi-account-servers.md`).
+Decision 0115 allows one server instance per OS user with no hard memory cap, "as low as possible". This is what an instance costs today, measured, so later changes have a number to beat. It is the baseline for plan step 1.7 (`docs/plans/archive/multi-account-servers.md`).
 
 **Result** (mean of 3 runs; RSS of the `termenbox-server` process only, from `ps -o rss=`, summed over the instances):
 

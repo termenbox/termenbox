@@ -1,3 +1,5 @@
+> Archived 2026-10-20. All steps A.1-A.8 are done (landed in #135); decisions 0095-0097 are active. The agent-state derivation was later reworked by decision 0122 (turn-and-obligation reducer); this file is history.
+
 # Termenbox Plan: agent status redesign (Activity + Attention), two data channels, push, herdr removal
 
 Decisions (all draft until the owner accepts): 0095 (status model, task info, notifications), 0096 (two data channels), 0097 (herdr removed). Replaces the state part of 0061; 0079 and 0083 stand. Guardrails: `notifications-carry-no-agent-text`, `audit-logging-no-secrets`, `security-secrets-handling`, `internal-network-binding`, `resource-constraints`, `user-settings-are-wrapped-not-replaced`. Facts: 0029 (tool surfaces), 0034 (scan fallback), 0036 (pane title, unmeasured), 0037 (one shared channel today). Absorbs roadmap step R12 (Web Push and inbox). Not decided yet: nothing here is built until the owner accepts the decisions. This file alone is enough for a cold session.
