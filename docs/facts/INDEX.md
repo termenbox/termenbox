@@ -46,5 +46,6 @@
 | 0044 | Priced models are grouped into small, medium and large tiers per provider, and each host agent is mapped to the providers whose models it can run | model-routing, cost, host-agents | active |
 | 0045 | A dialog's input takes focus a moment after the dialog is visible, so typing straight away loses the first letters | client | active |
 | 0046 | One machine can already hold a system install and a user install for each user; what coexists and what conflicts | deployment, server | active |
+| 0047 | One server instance idles at about 8.3 MiB RSS (8.7 with three sessions); five instances cost about 41 to 44 MiB | deployment, server, performance | active |
 
 <!-- bootstrap-generated: true -->
