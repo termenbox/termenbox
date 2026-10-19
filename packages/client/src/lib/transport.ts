@@ -35,9 +35,13 @@ export interface Openers {
 export const RTC_TIMEOUT_MS = 10000;
 export const WS_TIMEOUT_MS = 8000;
 
-/** The user-facing reason when WebRTC could not open: the UDP port is the thing to check. */
-export function describeRtcFailure(record: DirRecord): string {
-  return `Server unreachable on UDP port ${record.udp_port}. Check that the port is open in the server's firewall and that this network allows UDP.`;
+/**
+ * The user-facing reason when WebRTC could not open: the UDP port is the thing to check. `cause` is what the
+ * attempt itself reported (a timeout, a failed ICE check), so a reader can tell a closed port from the rest.
+ */
+export function describeRtcFailure(record: DirRecord, cause?: string): string {
+  const why = cause ? ` (${cause})` : '';
+  return `Server unreachable on UDP port ${record.udp_port}${why}. Check that the port is open in the server's firewall and that this network allows UDP.`;
 }
 
 /**
@@ -52,8 +56,9 @@ export async function openTransport(target: Target, openers: Openers): Promise<T
     try {
       return await openers.rtc(target.record, RTC_TIMEOUT_MS);
     } catch (e) {
-      rtcFailure = describeRtcFailure(target.record);
-      attempts.push(`rtc: ${e instanceof Error ? e.message : String(e)}`);
+      const cause = e instanceof Error ? e.message : String(e);
+      rtcFailure = describeRtcFailure(target.record, cause);
+      attempts.push(`rtc: ${cause}`);
     }
   }
 
