@@ -523,9 +523,16 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     if args.connect_claude || args.disconnect_claude {
+        // A disconnect follows the file the connect changed (the journal says which), not the environment of
+        // whoever runs it: the uninstaller does not have the service's CLAUDE_CONFIG_DIR.
         let settings = args
             .claude_settings
             .clone()
+            .or_else(|| {
+                args.disconnect_claude
+                    .then(|| claude_hooks::journal_settings(&args.config_dir))
+                    .flatten()
+            })
             .unwrap_or_else(claude_hooks::default_settings_path);
         let outcome = if args.connect_claude {
             let binary = std::env::current_exe()?.display().to_string();
