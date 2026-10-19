@@ -1,6 +1,6 @@
 name: Release
 
-# A tag v<version> builds the static binaries, writes a manifest of their hashes, signs it with the release key
+# A tag v<version> builds the static server binaries and the bundled tmux (decision 0119), writes a manifest of their hashes, signs it with the release key
 # (decision 0076) and publishes both as a GitHub Release. Run by hand (workflow_dispatch) it does everything but
 # publish, with a throwaway key when the real one is not configured, so the pipeline can be tested.
 
@@ -42,7 +42,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install the musl toolchain
-        run: sudo apt-get update && sudo apt-get install -y musl-tools cmake
+        run: sudo apt-get update && sudo apt-get install -y musl-tools cmake bison
 
       - name: Build
         env:
@@ -61,10 +61,31 @@ jobs:
           mkdir -p dist
           cp "$bin" dist/termenbox-server-${{ matrix.arch }}-linux
 
+      - name: Build the bundled tmux (pinned sources, static, terminfo compiled in)
+        run: .github/scripts/build-tmux.sh tmux-out
+
+      - name: Gate - tmux is static and runs with an empty PATH and no terminfo on the host
+        run: |
+          .github/scripts/check-tmux.sh tmux-out/tmux
+          cp tmux-out/tmux dist/tmux-${{ matrix.arch }}-linux
+
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.arch }}
-          path: dist/termenbox-server-${{ matrix.arch }}-linux
+          path: |
+            dist/termenbox-server-${{ matrix.arch }}-linux
+            dist/tmux-${{ matrix.arch }}-linux
+          retention-days: 7
+
+      # The licence texts are the same for both architectures; one copy ships next to the binaries.
+      - uses: actions/upload-artifact@v4
+        if: matrix.arch == 'x86_64'
+        with:
+          name: release-tmux-notices
+          path: |
+            tmux-out/tmux-COPYING
+            tmux-out/tmux-libevent-LICENSE
+            tmux-out/tmux-ncurses-COPYING
           retention-days: 7
 
   manifest:
@@ -90,6 +111,18 @@ jobs:
 
       - name: Write the manifest
         run: python3 .github/scripts/make_manifest.py "${{ steps.v.outputs.version }}" dist dist/manifest.json
+
+      - name: The manifest lists tmux for both architectures, with its notices
+        run: |
+          cat dist/manifest.json
+          python3 - <<'PY'
+          import json
+          m = json.load(open("dist/manifest.json"))
+          for arch in ("x86_64", "aarch64"):
+              assert m["tmux"][arch]["url"].endswith(f"/tmux-{arch}-linux"), arch
+              assert len(m["tmux"][arch]["sha256"]) == 64, arch
+          assert sorted(m["tmux_notices"]) == ["tmux-COPYING", "tmux-libevent-LICENSE", "tmux-ncurses-COPYING"]
+          PY
 
       - name: Sign the manifest
         env:
@@ -137,4 +170,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes \
-            dist/termenbox-server-x86_64-linux dist/termenbox-server-aarch64-linux dist/manifest.json dist/manifest.json.sig
+            dist/termenbox-server-x86_64-linux dist/termenbox-server-aarch64-linux \
+            dist/tmux-x86_64-linux dist/tmux-aarch64-linux dist/tmux-COPYING dist/tmux-libevent-LICENSE dist/tmux-ncurses-COPYING \
+            dist/manifest.json dist/manifest.json.sig
