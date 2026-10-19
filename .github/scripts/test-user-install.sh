@@ -127,6 +127,74 @@ while [ -n "$(ls -A "$requests")" ] && [ $i -lt 30 ]; do i=$((i + 1)); sleep 1; 
 [ -z "$(ls -A "$requests")" ] || fail "the helper did not consume the requests"
 [ -f /etc/hostname ] || fail "a link in the requests directory damaged its target"
 
+echo "== a second user and a system install on the same machine (decisions 0115, 0118)"
+# bob is not a sudoer, and a sudo that records every call stands in front of the real one: bob's install must never reach it.
+useradd --create-home --shell /bin/bash bob
+! id -nG bob | tr ' ' '\n' | grep -qxE 'sudo|wheel|admin' || fail "bob is a sudoer; the test needs a user without root"
+B_UID="$(id -u bob)"
+systemctl start "user@$B_UID.service"
+i=0; while [ ! -S "/run/user/$B_UID/bus" ] && [ $i -lt 20 ]; do i=$((i + 1)); sleep 1; done
+[ -S "/run/user/$B_UID/bus" ] || fail "bob has no user manager in this machine"
+mkdir -p /tmp/nosudo
+printf '#!/bin/sh\necho "$@" >> /tmp/sudo-called\nexit 1\n' > /tmp/nosudo/sudo
+chmod 755 /tmp/nosudo /tmp/nosudo/sudo
+rm -f /tmp/sudo-called
+as_bob() {
+  runuser -u bob -- env HOME=/home/bob XDG_RUNTIME_DIR="/run/user/$B_UID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$B_UID/bus" \
+    PATH="/tmp/nosudo:$PATH" TERMENBOX_RELEASE_URL=file:///release TERMENBOX_RELEASE_KEYS="$(cat /keys.txt)" "$@"
+}
+bob_sc() { as_bob systemctl --user "$@"; }
+B_STATE=/home/bob/.config/termenbox
+SECRET2="$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)"
+# The system install first (host-user): one per machine, with its own user, state and unit.
+TERMENBOX_RELEASE_URL=file:///release TERMENBOX_RELEASE_KEYS="$(cat /keys.txt)" TERMENBOX_SKIP_FIREWALL=1 sh /install.sh "$SECRET" "$ORIGIN" host-user >/dev/null
+systemctl is-active --quiet termenbox || fail "the system service is not active"
+sys_port="$(sed -n 's/^Environment=TERMENBOX_PORT=//p' /etc/systemd/system/termenbox.service)"
+sys_udp="$(sed -n 's/^Environment=TERMENBOX_UDP_PORT=//p' /etc/systemd/system/termenbox.service)"
+as_bob sh /install.sh "$SECRET2" "$ORIGIN" host-me | tee /tmp/bob.txt
+[ ! -e /tmp/sudo-called ] || fail "bob's install called sudo: $(cat /tmp/sudo-called)"
+grep -q "4443-4542" /tmp/bob.txt || { cat /tmp/bob.txt; fail "bob's install did not print the UDP range note"; }
+! grep -q "Reusing the server" /tmp/bob.txt || fail "bob's fresh install took over someone else's state"
+bob_sc is-active --quiet termenbox || fail "bob's own service is not active next to the others"
+usr is-active --quiet termenbox || fail "bob's install stopped alice's service"
+systemctl is-active --quiet termenbox || fail "bob's install stopped the system service"
+
+echo "== the three servers have their own ports, identities and state"
+bob_port="$(sed -n 's/^Environment=TERMENBOX_PORT=//p' /home/bob/.config/systemd/user/termenbox.service)"
+bob_udp="$(cat "$B_STATE/udp_port")"
+alice_udp="$(cat "$STATE/udp_port")"
+{ [ "$bob_udp" -ge 4443 ] && [ "$bob_udp" -le 4542 ]; } || fail "bob's UDP port $bob_udp is outside 4443-4542"
+{ [ "$alice_udp" -ge 4443 ] && [ "$alice_udp" -le 4542 ]; } || fail "alice's UDP port $alice_udp is outside 4443-4542"
+[ "$alice_udp" != "$bob_udp" ] || fail "alice and bob took the same UDP port $alice_udp"
+[ -z "$sys_udp" ] || { [ "$sys_udp" != "$alice_udp" ] && [ "$sys_udp" != "$bob_udp" ]; } || fail "the system server shares a UDP port with a user server"
+alice_http="$(sed -n 's/^Environment=TERMENBOX_PORT=//p' "$UNITS/termenbox.service")"
+{ [ "$alice_http" != "$bob_port" ] && [ "$alice_http" != "$sys_port" ] && [ "$bob_port" != "$sys_port" ]; } || fail "two servers took the same health port"
+for p in "$sys_port" "$alice_http" "$bob_port"; do curl -fs "http://127.0.0.1:$p/health" >/dev/null || fail "no server answers on port $p"; done
+bob_pid="$(bob_sc show -p MainPID --value termenbox)"
+{ [ "$bob_pid" -gt 0 ] && [ "$(stat -c %U "/proc/$bob_pid")" = bob ]; } || fail "bob's server does not run as bob"
+a_sum="$(sha256sum "$STATE/server_key" | cut -d' ' -f1)"
+b_sum="$(sha256sum "$B_STATE/server_key" | cut -d' ' -f1)"
+s_sum="$(sha256sum /var/lib/termenbox/server_key | cut -d' ' -f1)"
+{ [ "$a_sum" != "$b_sum" ] && [ "$a_sum" != "$s_sum" ] && [ "$b_sum" != "$s_sum" ]; } || fail "two servers share an identity"
+{ [ "$(stat -c %U "$B_STATE")" = bob ] && [ "$(stat -c %U "$STATE")" = alice ]; } || fail "a state directory is not owned by its user"
+if as_bob cat "$STATE/server_key" >/dev/null 2>&1; then fail "bob can read alice's server key"; fi
+if as_alice cat "$B_STATE/server_key" >/dev/null 2>&1; then fail "alice can read bob's server key"; fi
+
+echo "== stopping one leaves the others running"
+usr stop termenbox
+bob_sc is-active --quiet termenbox || fail "stopping alice's server stopped bob's"
+systemctl is-active --quiet termenbox || fail "stopping alice's server stopped the system service"
+curl -fs "http://127.0.0.1:$bob_port/health" >/dev/null || fail "bob's server stopped answering"
+usr start termenbox
+i=0; until curl -fs "http://127.0.0.1:$alice_http/health" >/dev/null 2>&1 || [ $i -ge 20 ]; do i=$((i + 1)); sleep 1; done
+curl -fs "http://127.0.0.1:$alice_http/health" >/dev/null || fail "alice's server did not come back"
+bob_sc stop termenbox
+usr is-active --quiet termenbox || fail "stopping bob's server stopped alice's"
+systemctl is-active --quiet termenbox || fail "stopping bob's server stopped the system service"
+bob_sc start termenbox
+i=0; until curl -fs "http://127.0.0.1:$bob_port/health" >/dev/null 2>&1 || [ $i -ge 20 ]; do i=$((i + 1)); sleep 1; done
+curl -fs "http://127.0.0.1:$bob_port/health" >/dev/null || fail "bob's server did not come back"
+
 echo "== uninstall.sh as alice shows the plan first and changes nothing"
 before="$(snapshot)"
 as_alice sh /uninstall.sh | grep -q "Nothing was changed" || fail "the uninstall preview did not say it changed nothing"
@@ -141,33 +209,12 @@ as_alice sh /uninstall.sh --yes
 [ ! -e "$JOURNAL" ] || fail "the journal is still there"
 [ -d /home/alice ] || fail "alice's home was touched"
 [ "$(loginctl show-user alice -p Linger --value)" != yes ] || fail "lingering the installer enabled was left on"
+bob_sc is-active --quiet termenbox || fail "uninstalling alice's server stopped bob's"
+systemctl is-active --quiet termenbox || fail "uninstalling alice's server stopped the system service"
+[ -f "$B_STATE/server_key" ] && [ -f /var/lib/termenbox/server_key ] || fail "uninstalling alice's server removed another server's state"
+curl -fs "http://127.0.0.1:$bob_port/health" >/dev/null || fail "bob's server stopped answering after alice's uninstall"
 
-# ---------------------------------------------------------------------------------------------------------------------
-echo "== a system install and another user's own install live side by side"
-useradd --create-home --shell /bin/bash bob
-B_UID="$(id -u bob)"
-systemctl start "user@$B_UID.service"
-i=0; while [ ! -S "/run/user/$B_UID/bus" ] && [ $i -lt 20 ]; do i=$((i + 1)); sleep 1; done
-[ -S "/run/user/$B_UID/bus" ] || fail "bob has no user manager in this machine"
-as_bob() {
-  runuser -u bob -- env HOME=/home/bob XDG_RUNTIME_DIR="/run/user/$B_UID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$B_UID/bus" \
-    TERMENBOX_RELEASE_URL=file:///release TERMENBOX_RELEASE_KEYS="$(cat /keys.txt)" TERMENBOX_SKIP_FIREWALL=1 "$@"
-}
-SECRET2="$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)"
-TERMENBOX_RELEASE_URL=file:///release TERMENBOX_RELEASE_KEYS="$(cat /keys.txt)" TERMENBOX_SKIP_FIREWALL=1 sh /install.sh "$SECRET" "$ORIGIN" host-user >/dev/null
-systemctl is-active --quiet termenbox || fail "the system service is not active"
-sys_port="$(sed -n 's/^Environment=TERMENBOX_PORT=//p' /etc/systemd/system/termenbox.service)"
-as_bob sh /install.sh "$SECRET2" "$ORIGIN" host-me | tee /tmp/bob.txt
-as_bob systemctl --user is-active --quiet termenbox || fail "bob's own service is not active next to the system one"
-systemctl is-active --quiet termenbox || fail "bob's install stopped the system service"
-bob_port="$(sed -n 's/^Environment=TERMENBOX_PORT=//p' /home/bob/.config/systemd/user/termenbox.service)"
-[ "$bob_port" != "$sys_port" ] || fail "both servers took the same port"
-curl -fs "http://127.0.0.1:$sys_port/health" >/dev/null || fail "the system server does not answer"
-curl -fs "http://127.0.0.1:$bob_port/health" >/dev/null || fail "bob's server does not answer"
-bob_pid="$(as_bob systemctl --user show -p MainPID --value termenbox)"
-[ "$(stat -c %U "/proc/$bob_pid")" = bob ] || fail "bob's server does not run as bob"
-! cmp -s /var/lib/termenbox/server_key /home/bob/.config/termenbox/server_key || fail "the two servers share an identity"
-grep -q "Reusing the server" /tmp/bob.txt && fail "bob's fresh install took over someone else's state"
+# bob and the system install are still here from the section above.
 
 echo "== a system service that runs as the same user keeps the old route, and says why before asking for sudo"
 sed -i 's/^User=.*/User=bob/' /etc/systemd/system/termenbox.service
