@@ -110,9 +110,9 @@ struct Args {
     #[arg(long, env = "TERMENBOX_UDP_PORT")]
     udp_port: Option<u16>,
 
-    /// Which tmux server holds the sessions: `termenbox` (its own server and config, decision 0120) or `default`
-    /// (the user's own tmux server and config). Without it the saved choice is kept; a first start uses `default`
-    /// when sessions already run there and `termenbox` otherwise.
+    /// Which tmux server holds the sessions: `termenbox` (its own server and config, decisions 0120 and 0121, the
+    /// default) or `default` (the user's own tmux server and config; the tmux termenbox runs must then be the same
+    /// version as that server, or it cannot attach).
     #[arg(long, env = "TERMENBOX_TMUX_SOCKET")]
     tmux_socket: Option<String>,
 
@@ -841,15 +841,7 @@ async fn choose_tmux_server(args: &Args, mode: &RunMode) -> anyhow::Result<()> {
         None => None,
     };
     let saved = tmuxconf::saved(&args.config_dir);
-    let mut default_has_sessions = false;
-    if explicit.is_none() && saved.is_none() {
-        let ask = ["list-sessions", "-F", "#{session_name}"].map(String::from);
-        default_has_sessions = matches!(
-            mode.runner().run("tmux", &ask).await,
-            Ok(o) if o.status.success() && !o.stdout.is_empty()
-        );
-    }
-    let choice = tmuxconf::decide(explicit, saved, default_has_sessions);
+    let choice = tmuxconf::decide(explicit);
     if saved != Some(choice) {
         if let Err(e) = tmuxconf::save(&args.config_dir, choice) {
             tracing::warn!("cannot remember the tmux server choice: {e}");
