@@ -216,6 +216,18 @@ describe('checkReachable (decision 0118)', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it('is degraded when a record was given but only the WebSocket fallback opened', async () => {
+    const close = vi.fn();
+    const r = await checkReachable({ record: withPort }, { open: async () => ({ kind: 'ws', close } as unknown as Transport) });
+    expect(r).toEqual({ state: 'degraded', port: 4450 });
+    expect(close).toHaveBeenCalled();
+  });
+
+  it('is reachable over a WebSocket when that is the only path (a URL, no record)', async () => {
+    const r = await checkReachable({ wsUrl: 'wss://x.example/ws' }, { open: async () => ({ kind: 'ws', close: vi.fn() } as unknown as Transport) });
+    expect(r).toEqual({ state: 'reachable' });
+  });
+
   it('is unreachable with the bound port when the transport throws Unreachable', async () => {
     const r = await checkReachable({ record: withPort }, { open: async () => { throw new Unreachable('Server unreachable on UDP port 4450.', []); } });
     expect(r).toEqual({ state: 'unreachable', port: 4450, message: 'Server unreachable on UDP port 4450.' });

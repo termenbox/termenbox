@@ -194,6 +194,8 @@
 </script>
 
 <Dialog title="Add Server" {onclose}>
+    <!-- Once a server is found the setup steps are done: only its preview or result is shown. -->
+    {#if !found}
     <form class="have-link" on:submit|preventDefault={submitLink} style="margin-bottom: 16px;">
       <label for="have-link" style="display: block; font-size: 0.875rem; margin-bottom: 6px; color: var(--fg-muted);">Already added on another device? Paste its link or code</label>
       <div style="display: flex; gap: 8px;">
@@ -276,6 +278,7 @@
         </label>
       </div>
     {/if}
+    {/if}
 
     {#if added}
       <div class="preview" role="status" aria-live="polite">
@@ -284,6 +287,10 @@
           <p class="note">Checking that this device can reach it…</p>
         {:else if reach?.state === 'reachable'}
           <p class="note">This device can reach it.</p>
+        {:else if reach?.state === 'degraded'}
+          <p class="note">This device reached it only through the WebSocket fallback{reach.port ? `; UDP port ${reach.port} did not work` : ''}. Sessions work but can feel slower. It stays in your list.</p>
+          <p class="note">To use the direct path, an admin opens the range for Termenbox once:</p>
+          <pre class="command">{firewallCommand}</pre>
         {:else if reach?.state === 'unreachable'}
           <p class="note">This device could not reach it{reach.port ? ` on UDP port ${reach.port}` : ''}. It stays in your list and keeps retrying.</p>
           <p class="note">On the server, an admin opens the range for Termenbox once:</p>
