@@ -155,6 +155,8 @@ Server (environment variables of the container; the installer sets the first two
 | `TERMENBOX_SERVER_NAME` | Display name; default: the host's short hostname (the installer passes it into the container) |
 | `TERMENBOX_BACKEND` | `tmux` (default), `command`, `acp`, or a comma list such as `tmux,acp` |
 | `TERMENBOX_CONFIG_DIR` | Owner, keys and certificate (default `~/.config/termenbox`) |
+| `TERMENBOX_HISTORY_DAYS` | Days of agent history kept for the Activity view (default 90) |
+| `TERMENBOX_HISTORY_MAX_MB` | Most disk the history may use, oldest dropped first (default 20) |
 
 Client build: `VITE_GITHUB_CLIENT_ID`. The OAuth code exchange runs in a Pages Function that needs `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` and `CERT_SIGNING_KEY` (base64 PKCS#8 Ed25519) as secrets on the Pages project. Servers trust its public key from `packages/server/cert-keys.txt`; self-hosters set `TERMENBOX_CERT_KEYS=kid=<base64url key>` on their servers.
 
