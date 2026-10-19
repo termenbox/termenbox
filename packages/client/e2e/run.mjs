@@ -340,7 +340,7 @@ try {
     await openServers();
     page.once('dialog', (d) => d.dismiss());
     await page.getByRole('button', { name: 'Remove server' }).click();
-    if (!(await page.getByText('e2e-server').isVisible())) fail('the server was removed without confirmation');
+    if (!(await page.getByRole('heading', { name: 'e2e-server' }).isVisible())) fail('the server was removed without confirmation');
     for (let lap = 1; lap <= 3; lap++) {
       await page.getByRole('button', { name: '← Sessions', exact: true }).click();
       await page.locator('[data-shell=bottom-bar] [data-destination=sessions]').click(); // Home is the landing page now (U05)
