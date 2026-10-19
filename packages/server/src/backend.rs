@@ -256,6 +256,14 @@ impl Runner {
         self
     }
 
+    /// Whether this runner starts the bundled tmux (decision 0119), as opposed to a distribution or user-chosen one.
+    fn uses_bundled_tmux(&self) -> bool {
+        self.tmux
+            .as_deref()
+            .and_then(|t| std::path::Path::new(t).file_name())
+            .is_some_and(|n| n == BUNDLED_TMUX)
+    }
+
     /// For commands run on this machine as this process: container and native modes. Uses the tmux that
     /// `local_tmux` chose (a bad `TERMENBOX_TMUX` is reported by the startup self-check, not here).
     pub fn local() -> Self {
@@ -547,6 +555,20 @@ impl SessionBackend for TmuxBackend {
             .flat_map(|e| e.vars(&format!("{}{name}", self.event_prefix)))
         {
             args.extend(["-e".to_string(), var]);
+        }
+        // The bundled tmux has no terminfo database of its own to pick the panes' TERM from, so the server names
+        // one the host has (decision 0119). It can only be set before the first pane exists, so a fresh server gets
+        // it in the same command line; a running server keeps whatever it has.
+        if self.runner.uses_bundled_tmux() && matches!(self.list().await, Ok(l) if l.is_empty()) {
+            let mut fresh: Vec<String> = ["start-server", ";", "set", "-g", "default-terminal"]
+                .map(String::from)
+                .into();
+            fresh.extend([
+                crate::terminfo::host_pane_term().to_string(),
+                ";".to_string(),
+            ]);
+            fresh.extend(args);
+            args = fresh;
         }
         let out = self.runner.run_as(true, "tmux", &args).await?;
         if !out.status.success() {
@@ -1366,5 +1388,48 @@ mod tests {
         assert!(b.list().await.map(|l| l.is_empty()).unwrap_or(true));
         let _ = runner.run("tmux", &["kill-server".to_string()]).await;
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_bundled_tmux_gets_a_pane_term_the_host_knows_on_a_fresh_server_only() {
+        let Ok(which) = std::process::Command::new("sh")
+            .args(["-c", "command -v tmux"])
+            .output()
+        else {
+            return;
+        };
+        let real = String::from_utf8_lossy(&which.stdout).trim().to_string();
+        if real.is_empty() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("tm-term-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bundled = dir.join(BUNDLED_TMUX);
+        std::os::unix::fs::symlink(&real, &bundled).unwrap();
+        let tmpdir = dir.to_string_lossy().into_owned();
+        let mut runner =
+            Runner::default().with_env(&[("TMUX_TMPDIR", Some(tmpdir.as_str())), ("TMUX", None)]);
+        runner.tmux = Some(bundled.to_string_lossy().into_owned());
+        assert!(runner.uses_bundled_tmux());
+        let b = TmuxBackend::new(runner.clone());
+        let term = |r: &Runner| {
+            let r = r.clone();
+            async move {
+                let args = ["show-options", "-gv", "default-terminal"].map(String::from);
+                let out = r.run("tmux", &args).await.unwrap();
+                String::from_utf8_lossy(&out.stdout).trim().to_string()
+            }
+        };
+        b.create_with("one", None, None, None).await.unwrap();
+        assert_eq!(term(&runner).await, crate::terminfo::host_pane_term());
+        // A running server keeps what it has, so a later session does not undo a change made meanwhile.
+        let args = ["set-option", "-g", "default-terminal", "xterm"].map(String::from);
+        runner.run("tmux", &args).await.unwrap();
+        b.create_with("two", None, None, None).await.unwrap();
+        assert_eq!(term(&runner).await, "xterm");
+        let _ = runner.run("tmux", &["kill-server".to_string()]).await;
+        let _ = std::fs::remove_dir_all(&dir);
+        // A tmux that is not the bundled one is left to its own default.
+        assert!(!Runner::default().uses_bundled_tmux());
     }
 }
