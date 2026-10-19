@@ -27,7 +27,7 @@
   import { sendServerLink } from './lib/share';
   import { ServerHub, newSessionTargets, serverKey, sessionDestinations, sessionKey, type HubServer } from './lib/hub';
   import { lookup } from './lib/directory';
-  import { deleteMyData, registerServer } from './lib/account';
+  import { DeleteFailed, deleteMyData, registerServer, SIGN_IN_EXPIRED } from './lib/account';
   import { deviceKey, publicKeyB64, signChallenge, certExpiry, certUserId, avatarUrl } from './lib/device';
   import AppShell from './AppShell.svelte';
   import AppFrame from './shell/AppFrame.svelte';
@@ -340,9 +340,17 @@
   async function addAndLink(server: ServerListItem) {
     if (server.claim && server.record && deviceCert) {
       try { await registerServer(location.origin, { cert: deviceCert, pair: await deviceKey() }, server.claim); }
-      catch (e) { noteError(`account link: ${e instanceof Error ? e.message : e}`); }
+      catch (e) {
+        noteError(`account link: ${e instanceof Error ? e.message : e}`);
+        showToast('Server added, but it could not be linked to your account, so "Delete my data" will not cover it. Its record is removed 30 days after it goes quiet.', 'error');
+      }
     }
     addServer(server);
+  }
+
+  async function deleteData(): Promise<number> {
+    if (!deviceCert) throw new DeleteFailed(SIGN_IN_EXPIRED, true);
+    return deleteMyData(location.origin, { cert: deviceCert, pair: await deviceKey() });
   }
 
   async function handleOAuthCallback() {
@@ -725,7 +733,7 @@
       {:else if $destination === 'activity'}
         <EmptyState title="Activity" body="What your agents did, and what it cost, will appear here." />
       {:else if $destination === 'settings'}
-        <SettingsView user={user ?? ''} {serverVersion} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} onmenu={() => { titleTapped(); menuOpen = true; }} onshortcuts={() => (helpOpen = true)} onreport={openReport} onlogout={logout} ondeletedata={async () => deleteMyData(location.origin, { cert: deviceCert!, pair: await deviceKey() })} />
+        <SettingsView user={user ?? ''} {serverVersion} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} onmenu={() => { titleTapped(); menuOpen = true; }} onshortcuts={() => (helpOpen = true)} onreport={openReport} onlogout={logout} ondeletedata={deleteData} />
       {:else}
         <div class="workspace" class:mobile={narrow}>
           <div class="terminal-pane">

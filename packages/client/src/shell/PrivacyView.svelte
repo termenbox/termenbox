@@ -1,24 +1,31 @@
 <script lang="ts">
   /** Settings > Privacy and your data (DECISION-0066): what the hosted service stores, for how long, and a way to delete it. */
-  let { ondelete, onback }: { ondelete: () => Promise<number>; onback: () => void } = $props();
-  type Step = { name: 'idle' } | { name: 'confirm' } | { name: 'busy' } | { name: 'done'; servers: number } | { name: 'failed'; message: string };
+  import { DeleteFailed } from '../lib/account';
+  let { ondelete, onback, onlogout }: { ondelete: () => Promise<number>; onback: () => void; onlogout: () => void } = $props();
+  type Step = { name: 'idle' } | { name: 'confirm' } | { name: 'busy' } | { name: 'done'; servers: number } | { name: 'failed'; message: string; expired: boolean };
   let step = $state<Step>({ name: 'idle' });
+  // Swapping a step's buttons would drop the keyboard or screen-reader position, so each step puts focus on its own message.
+  // The first idle step is the page just opening: focus goes to the heading instead.
+  let moved = false;
+  const go = (next: Step) => ((moved = true), (step = next));
+  const focus = (el: HTMLElement, active: boolean) => { if (active) el.focus(); };
+  const heading = (el: HTMLElement) => el.focus();
   const btn = 'min-h-11 rounded-card px-4 text-base font-semibold disabled:opacity-60';
   const card = 'flex flex-col gap-2 rounded-card border border-line bg-panel p-4';
 
   async function remove() {
-    step = { name: 'busy' };
+    go({ name: 'busy' });
     try {
-      step = { name: 'done', servers: await ondelete() };
+      go({ name: 'done', servers: await ondelete() });
     } catch (e) {
-      step = { name: 'failed', message: e instanceof Error ? e.message : 'Something went wrong. Nothing was deleted.' };
+      go({ name: 'failed', message: e instanceof Error ? e.message : 'Something went wrong. Nothing was deleted.', expired: e instanceof DeleteFailed && e.expired });
     }
   }
 </script>
 
 <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4" data-shell="privacy">
-  <button type="button" class="{btn} self-start bg-raised text-fg" onclick={onback}>← Settings</button>
-  <h1 class="text-title font-bold">Privacy and your data</h1>
+  <button type="button" class="{btn} self-start bg-raised text-fg" onclick={onback}><span aria-hidden="true">←</span> Settings</button>
+  <h1 class="text-title font-bold outline-none" tabindex="-1" use:heading>Privacy and your data</h1>
 
   <section class={card} aria-labelledby="privacy-stored">
     <h2 id="privacy-stored" class="text-base font-semibold">What we store</h2>
@@ -43,26 +50,30 @@
     <h2 id="privacy-delete" class="text-base font-semibold">Delete my data</h2>
     {#if step.name === 'idle'}
       <p class="text-base text-soft">Removes the directory records of the servers you set up from this app, and their link to your account. Servers set up before this option existed are not linked yet; they disappear 30 days after they go quiet.</p>
-      <button type="button" class="{btn} bg-raised text-fg" onclick={() => (step = { name: 'confirm' })}>Delete my data…</button>
+      <button type="button" class="{btn} bg-raised text-fg" use:focus={moved} onclick={() => go({ name: 'confirm' })}>Delete my data…</button>
     {:else if step.name === 'confirm'}
-      <p class="text-base text-fg">Delete your records from our directory? This cannot be undone.</p>
-      <p class="text-base text-soft">Your servers keep running and keep their sessions, but this app can no longer find them by address until they check in again. A running server re-registers itself within 7 days; to stop that, uninstall it on its machine.</p>
-      <div class="grid grid-cols-2 gap-2">
+      <p class="text-base text-fg outline-none" tabindex="-1" use:focus={true}>Delete your records from our directory? This cannot be undone.</p>
+      <p class="text-base text-soft">Your servers keep running and keep their sessions, and this browser keeps its saved copy of each server's address, so it can still reach them. A server registers itself again when it next checks in: within 5 minutes if it has not been claimed yet, otherwise within 7 days. To stop that, uninstall it on its machine.</p>
+      <div class="flex flex-col gap-2">
         <button type="button" class="{btn} bg-bad/15 text-bad" onclick={remove}>Delete my data</button>
-        <button type="button" class="{btn} bg-raised text-fg" onclick={() => (step = { name: 'idle' })}>Keep my data</button>
+        <button type="button" class="{btn} bg-raised text-fg" onclick={() => go({ name: 'idle' })}>Keep my data</button>
       </div>
     {:else if step.name === 'busy'}
-      <p class="text-base text-soft" role="status">Deleting…</p>
+      <p class="text-base text-soft outline-none" role="status" tabindex="-1" use:focus={true}>Deleting…</p>
     {:else if step.name === 'done'}
-      <p class="text-base text-ok" role="status">
+      <p class="text-base text-ok outline-none" role="status" tabindex="-1" use:focus={true}>
         {step.servers === 0 ? 'Done. No server records were linked to your account.' : `Done. Removed the records of ${step.servers} ${step.servers === 1 ? 'server' : 'servers'} and their link to your account.`}
       </p>
       <p class="text-base text-soft">You are still signed in, and this browser still has your server list. Uninstall a server on its machine to stop it registering again.</p>
     {:else}
-      <p class="text-base text-bad" role="alert">{step.message}</p>
-      <div class="grid grid-cols-2 gap-2">
-        <button type="button" class="{btn} bg-raised text-fg" onclick={remove}>Try again</button>
-        <button type="button" class="{btn} bg-raised text-fg" onclick={() => (step = { name: 'idle' })}>Close</button>
+      <p class="text-base text-bad outline-none" role="alert" tabindex="-1" use:focus={true}>{step.message}</p>
+      <div class="flex flex-col gap-2">
+        {#if step.expired}
+          <button type="button" class="{btn} bg-raised text-fg" onclick={onlogout}>Sign out</button>
+        {:else}
+          <button type="button" class="{btn} bg-raised text-fg" onclick={remove}>Try again</button>
+        {/if}
+        <button type="button" class="{btn} bg-raised text-fg" onclick={() => go({ name: 'idle' })}>Close</button>
       </div>
     {/if}
   </section>

@@ -19,7 +19,7 @@
 </script>
 
 {#if privacy}
-  <PrivacyView ondelete={ondeletedata} onback={() => (privacy = false)} />
+  <PrivacyView ondelete={ondeletedata} onback={() => (privacy = false)} {onlogout} />
 {:else}
 <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4" data-shell="settings">
   <h1 class="text-title font-bold">Settings</h1>

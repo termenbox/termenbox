@@ -11,16 +11,17 @@ export interface AccountAuth {
 async function call(origin: string, auth: AccountAuth, path: string, body?: unknown): Promise<Response> {
   const action = `POST ${path}`;
   const ts = Date.now();
+  const text = body === undefined ? '' : JSON.stringify(body);
   return fetch(`${origin.replace(/\/$/, '')}${path}`, {
     method: 'POST',
     cache: 'no-store',
     headers: {
       Authorization: `Bearer ${auth.cert}`,
-      'X-Device-Signature': await signAccountAction(auth.pair, action, ts),
+      'X-Device-Signature': await signAccountAction(auth.pair, action, ts, text),
       'X-Device-Time': String(ts),
       ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: body === undefined ? undefined : text,
   });
 }
 
@@ -31,7 +32,14 @@ export async function registerServer(origin: string, auth: AccountAuth, claimSec
 }
 
 /** What went wrong, in words for the person who pressed Delete. */
-export class DeleteFailed extends Error {}
+export class DeleteFailed extends Error {
+  /** The sign-in is no longer valid: retrying cannot work, signing in again can. */
+  constructor(message: string, readonly expired = false) {
+    super(message);
+  }
+}
+
+export const SIGN_IN_EXPIRED = 'Your sign-in has expired. Sign out, sign in again and retry. Nothing was deleted.';
 
 /** Deletes the account's records. Resolves with how many servers' records were removed. */
 export async function deleteMyData(origin: string, auth: AccountAuth): Promise<number> {
@@ -41,7 +49,7 @@ export async function deleteMyData(origin: string, auth: AccountAuth): Promise<n
   } catch {
     throw new DeleteFailed('Could not reach the service. Check your connection and try again. Nothing was deleted.');
   }
-  if (res.status === 401) throw new DeleteFailed('Your sign-in has expired. Sign out, sign in again and retry. Nothing was deleted.');
+  if (res.status === 401) throw new DeleteFailed(SIGN_IN_EXPIRED, true);
   if (!res.ok) throw new DeleteFailed('Something went wrong on our side. Wait a moment and try again; deleting twice is harmless.');
   return ((await res.json()) as { servers: number }).servers;
 }

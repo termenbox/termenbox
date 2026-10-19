@@ -4,10 +4,17 @@
 import { b64urlDecode, claimHash, srcHash, type D1Like, type Reply } from '../directory/_lib';
 
 export const MAX_CLOCK_SKEW_MS = 5 * 60_000;
+const MAX_BODY = 500;
 
-/** The exact bytes the device key signs: one action, one moment. Keep in sync with packages/client/src/lib/account.ts. */
-export function accountMessage(action: string, ts: number): string {
-  return `termenbox-account-v1\n${action}\n${ts}`;
+/** SHA-256 of the request body as sent (empty string for none), hex. The signature covers it, so a captured request cannot carry another body. */
+export async function bodyDigest(text: string): Promise<string> {
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
+  return Array.from(d, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** The exact bytes the device key signs: one action, one moment, one body. Keep in sync with packages/client/src/lib/account.ts. */
+export function accountMessage(action: string, ts: number, bodyHash: string): string {
+  return `termenbox-account-v2\n${action}\n${ts}\n${bodyHash}`;
 }
 
 export interface Owner {
@@ -50,7 +57,7 @@ const deny = (reason: string): Auth => ({ denied: { status: 401, body: { error: 
 
 /**
  * Checks the certificate (our signature, not expired), then the device signature over `action` and a fresh
- * timestamp. Nothing here is trusted before both pass. `denied.body.error` is a short reason, never a secret.
+ * timestamp and the body hash. Nothing here is trusted before both pass. `denied.body.error` is a short reason, never a secret.
  */
 export async function authenticate(
   signingKey: string,
@@ -58,6 +65,7 @@ export async function authenticate(
   deviceSig: string | null,
   ts: string | null,
   action: string,
+  bodyHash: string,
   now: number,
 ): Promise<Auth> {
   if (!cert || !deviceSig || !ts) return deny('missing credentials');
@@ -72,7 +80,7 @@ export async function authenticate(
     const account = p.id || (p.sub !== undefined ? String(p.sub) : '');
     if (!account || typeof p.dpk !== 'string') return deny('bad certificate');
     const dpk = await crypto.subtle.importKey('raw', b64urlDecode(p.dpk), ECDSA_P256, false, ['verify']);
-    const signed = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, dpk, b64urlDecode(deviceSig), new TextEncoder().encode(accountMessage(action, when)));
+    const signed = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, dpk, b64urlDecode(deviceSig), new TextEncoder().encode(accountMessage(action, when, bodyHash)));
     if (!signed) return deny('bad device signature');
     return { owner: { key: `${(p.provider || 'github').toLowerCase()}:${account}` } };
   } catch {
@@ -99,8 +107,11 @@ export async function handleRegisterServer(db: D1Like, owner: Owner, body: unkno
 /** Removes the records of every server this owner set up, then the links themselves. Safe to repeat. */
 export async function handleDeleteOwner(db: D1Like, owner: Owner): Promise<Reply> {
   const { results } = await db.prepare('SELECT server_id FROM owner_servers WHERE owner = ?').bind(owner.key).all<{ server_id: string }>();
-  await db.prepare('DELETE FROM records WHERE server_id IN (SELECT server_id FROM owner_servers WHERE owner = ?)').bind(owner.key).run();
-  await db.prepare('DELETE FROM owner_servers WHERE owner = ?').bind(owner.key).run();
+  // One batch: records first (they are found through the links), then the links; either both go or neither.
+  await db.batch([
+    db.prepare('DELETE FROM records WHERE server_id IN (SELECT server_id FROM owner_servers WHERE owner = ?)').bind(owner.key),
+    db.prepare('DELETE FROM owner_servers WHERE owner = ?').bind(owner.key),
+  ]);
   return { status: 200, body: { ok: true, servers: results.length } };
 }
 
@@ -128,8 +139,10 @@ export async function serveAccountAction(
   const origin = request.headers.get('Origin');
   if (origin && origin !== new URL(request.url).origin) return json({ error: 'forbidden' }, 403);
   if (!env.CERT_SIGNING_KEY) return json({ error: 'not configured' }, 500);
+  // Refuse by the declared size before reading anything; the length check below covers a missing or false header.
+  if (Number(request.headers.get('Content-Length') ?? 0) > MAX_BODY) return json({ error: 'too large' }, 413);
   const text = await request.text();
-  if (text.length > 500) return json({ error: 'too large' }, 413);
+  if (text.length > MAX_BODY) return json({ error: 'too large' }, 413);
   let body: unknown = null;
   if (text) {
     try {
@@ -140,10 +153,11 @@ export async function serveAccountAction(
   }
   const now = Date.now();
   const bearer = /^Bearer (\S+)$/.exec(request.headers.get('Authorization') ?? '');
-  const auth = await authenticate(env.CERT_SIGNING_KEY, bearer?.[1] ?? null, request.headers.get('X-Device-Signature'), request.headers.get('X-Device-Time'), action, now);
+  const auth = await authenticate(env.CERT_SIGNING_KEY, bearer?.[1] ?? null, request.headers.get('X-Device-Signature'), request.headers.get('X-Device-Time'), action, await bodyDigest(text), now);
+  // Without a salt a reference to `github:<id>` could be recovered by trying ids, so no salt means no reference in the log.
   const salt = env.DIRECTORY_SALT ?? '';
   const audit = async (event: string, owner: Owner | null, result: Record<string, unknown>) =>
-    console.log(JSON.stringify({ ts: new Date(now).toISOString(), level: event === 'owner.denied' ? 'warn' : 'info', event, action, owner_ref: owner ? await srcHash(owner.key, salt) : undefined, ...result }));
+    console.log(JSON.stringify({ ts: new Date(now).toISOString(), level: event === 'owner.denied' ? 'warn' : 'info', event, action, owner_ref: owner && salt ? await srcHash(owner.key, salt) : undefined, ...result }));
   if ('denied' in auth) {
     await audit('owner.denied', null, { status: auth.denied.status, reason: auth.denied.body.error });
     return json(auth.denied.body, auth.denied.status);

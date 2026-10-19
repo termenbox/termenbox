@@ -23,7 +23,7 @@ const check = (c, m) => { if (!c) fail(m); };
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64').replace(/\+/g, '-').replace(/\//g, '_');
 const cert = `${b64({ exp: Math.floor(Date.now() / 1000) + 86400, sub: 1 })}.sig`;
 
-for (const [name, opts] of [['phone 390', { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }], ['desktop 1280', { viewport: { width: 1280, height: 800 }, isMobile: false, hasTouch: false }]]) {
+for (const [name, opts] of [['phone 360', { viewport: { width: 360, height: 740 }, isMobile: true, hasTouch: true }], ['phone 390', { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }], ['desktop 1280', { viewport: { width: 1280, height: 800 }, isMobile: false, hasTouch: false }]]) {
  const ctx = await browser.newContext(opts);
  await ctx.addInitScript(([c]) => {
    localStorage.setItem('termenbox_auth', JSON.stringify({ cert: c, login: 'tester' }));
@@ -58,12 +58,20 @@ for (const [name, opts] of [['phone 390', { viewport: { width: 390, height: 844 
  check(deletes === 0, `${name}: the first tap already deleted`);
  await page.getByRole('button', { name: 'Keep my data' }).click();
  await page.getByRole('button', { name: 'Delete my data…' }).click();
+ check(await page.evaluate(() => document.activeElement?.textContent?.includes('Delete your records')), `${name}: focus did not move to the confirmation`);
+ const row = (await page.getByRole('button', { name: 'Delete my data', exact: true }).boundingBox());
+ const rowKeep = await page.getByRole('button', { name: 'Keep my data' }).boundingBox();
+ check(row && rowKeep && row.height <= 48 && rowKeep.height <= 48 && row.x + row.width <= page.viewportSize().width, `${name}: the confirm buttons wrap or overflow`);
  await page.getByRole('button', { name: 'Delete my data', exact: true }).click();
  await page.getByRole('alert').filter({ hasText: 'sign-in has expired' }).waitFor();
- await page.getByRole('button', { name: 'Try again' }).click();
+ check((await page.getByRole('button', { name: 'Try again' }).count()) === 0, `${name}: an expired sign-in offers a retry that cannot work`);
+ await page.getByRole('button', { name: 'Sign out' }).waitFor();
+ await page.getByRole('button', { name: 'Close' }).click();
+ await page.getByRole('button', { name: 'Delete my data…' }).click();
+ await page.getByRole('button', { name: 'Delete my data', exact: true }).click();
  await page.getByText('Removed the records of 2 servers').waitFor();
  check(deletes === 2, `${name}: expected 2 delete requests, saw ${deletes}`);
- await page.getByRole('button', { name: '← Settings' }).click();
+ await page.locator('[data-shell=privacy] button').first().click();
  await page.getByRole('heading', { name: 'Settings', exact: true }).waitFor();
  // The Servers page belongs to Settings and Back leaves it.
  await page.getByRole('button', { name: /^Servers/ }).first().click();

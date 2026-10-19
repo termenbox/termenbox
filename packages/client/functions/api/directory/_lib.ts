@@ -11,6 +11,8 @@ export interface D1Like {
       all<T = Record<string, unknown>>(): Promise<{ results: T[] }>;
     };
   };
+  /** Runs statements prepared with `prepare(..).bind(..)` in order, all or nothing. */
+  batch(statements: unknown[]): Promise<unknown[]>;
 }
 
 export interface DirRecord {
@@ -228,8 +230,12 @@ export async function handleAnnounce(db: D1Like, body: unknown, src: string, now
     .run();
 
   // Housekeeping on writes only, so reads stay cheap: forget servers idle for 30 days, and who set them up.
-  await db.prepare('DELETE FROM records WHERE updated_at < ?').bind(now - IDLE_EXPIRY_MS).run();
-  await db.prepare('DELETE FROM owner_servers WHERE server_id NOT IN (SELECT server_id FROM records)').bind().run();
+  // Both statements touch only the expiring rows (records_updated index, owner_servers primary key): never scan owner_servers.
+  const cutoff = now - IDLE_EXPIRY_MS;
+  await db.batch([
+    db.prepare('DELETE FROM owner_servers WHERE server_id IN (SELECT server_id FROM records WHERE updated_at < ?)').bind(cutoff),
+    db.prepare('DELETE FROM records WHERE updated_at < ?').bind(cutoff),
+  ]);
   return { status: 200, body: { ok: true, seq: r.seq } };
 }
 

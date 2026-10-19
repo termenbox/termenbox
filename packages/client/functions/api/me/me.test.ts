@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { b64urlEncode, canonicalMessage, claimHash, handleAnnounce, handleLookup, IDLE_EXPIRY_MS, type D1Like, type DirRecord } from '../directory/_lib';
 import { issueCertificate } from '../oauth/exchange';
-import { testDb } from '../testdb';
-import { accountMessage, authenticate, handleDeleteOwner, handleRegisterServer, MAX_CLOCK_SKEW_MS } from './_lib';
+import { testDb } from '../_testdb';
+import { accountMessage, authenticate, bodyDigest, handleDeleteOwner, handleRegisterServer, MAX_CLOCK_SKEW_MS } from './_lib';
 import { onRequestPost as deleteMe } from './delete';
 import { onRequestPost as registerMe } from './servers';
 
@@ -10,6 +10,7 @@ const FP = 'sha-256 ' + Array(32).fill('AB').join(':');
 const T0 = 1_800_000_000_000;
 const DELETE = 'POST /api/me/delete';
 const REGISTER = 'POST /api/me/servers';
+const EMPTY = await bodyDigest('');
 
 const signingPair = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as CryptoKeyPair;
 const SIGNING_KEY = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.exportKey('pkcs8', signingPair.privateKey))));
@@ -19,8 +20,8 @@ async function person(id: number, over: { nowSecs?: number } = {}) {
   const pair = (await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])) as CryptoKeyPair;
   const dpk = b64urlEncode(new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey)));
   const { cert } = await issueCertificate({ CERT_SIGNING_KEY: SIGNING_KEY }, { id, login: `user${id}` }, dpk, over.nowSecs ?? Math.floor(T0 / 1000));
-  const sign = async (action: string, ts = T0) =>
-    b64urlEncode(new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, pair.privateKey, new TextEncoder().encode(accountMessage(action, ts)))));
+  const sign = async (action: string, ts = T0, body = '') =>
+    b64urlEncode(new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, pair.privateKey, new TextEncoder().encode(accountMessage(action, ts, await bodyDigest(body))))));
   return { cert, sign };
 }
 
@@ -41,14 +42,14 @@ const ownerRows = async (db: D1Like, owner: string) =>
 describe('authenticate', () => {
   it('accepts a fresh action signed by the device key named in our certificate', async () => {
     const p = await person(7);
-    expect(await authenticate(SIGNING_KEY, p.cert, await p.sign(DELETE), String(T0), DELETE, T0)).toEqual({ owner: { key: 'github:7' } });
+    expect(await authenticate(SIGNING_KEY, p.cert, await p.sign(DELETE), String(T0), DELETE, EMPTY, T0)).toEqual({ owner: { key: 'github:7' } });
   });
 
   it('refuses missing credentials', async () => {
     const p = await person(7);
     const sig = await p.sign(DELETE);
     for (const args of [[null, sig, String(T0)], [p.cert, null, String(T0)], [p.cert, sig, null]] as const) {
-      expect(await authenticate(SIGNING_KEY, args[0], args[1], args[2], DELETE, T0)).toMatchObject({ denied: { status: 401 } });
+      expect(await authenticate(SIGNING_KEY, args[0], args[1], args[2], DELETE, EMPTY, T0)).toMatchObject({ denied: { status: 401 } });
     }
   });
 
@@ -56,29 +57,29 @@ describe('authenticate', () => {
     const other = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as CryptoKeyPair;
     const otherKey = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.exportKey('pkcs8', other.privateKey))));
     const p = await person(7);
-    expect(await authenticate(otherKey, p.cert, await p.sign(DELETE), String(T0), DELETE, T0)).toMatchObject({ denied: { status: 401, body: { error: 'bad certificate' } } });
+    expect(await authenticate(otherKey, p.cert, await p.sign(DELETE), String(T0), DELETE, EMPTY, T0)).toMatchObject({ denied: { status: 401, body: { error: 'bad certificate' } } });
   });
 
   it('refuses an expired certificate', async () => {
     const p = await person(7, { nowSecs: Math.floor(T0 / 1000) - 8 * 24 * 3600 });
-    expect(await authenticate(SIGNING_KEY, p.cert, await p.sign(DELETE), String(T0), DELETE, T0)).toMatchObject({ denied: { body: { error: 'certificate expired' } } });
+    expect(await authenticate(SIGNING_KEY, p.cert, await p.sign(DELETE), String(T0), DELETE, EMPTY, T0)).toMatchObject({ denied: { body: { error: 'certificate expired' } } });
   });
 
   it("refuses a signature from someone else's device key, even with a valid certificate", async () => {
     const mine = await person(7), theirs = await person(8);
-    expect(await authenticate(SIGNING_KEY, mine.cert, await theirs.sign(DELETE), String(T0), DELETE, T0)).toMatchObject({ denied: { body: { error: 'bad device signature' } } });
+    expect(await authenticate(SIGNING_KEY, mine.cert, await theirs.sign(DELETE), String(T0), DELETE, EMPTY, T0)).toMatchObject({ denied: { body: { error: 'bad device signature' } } });
   });
 
   it('refuses a signature made for a different action or moment, and a stale clock', async () => {
     const p = await person(7);
-    expect(await authenticate(SIGNING_KEY, p.cert, await p.sign(REGISTER), String(T0), DELETE, T0)).toMatchObject({ denied: { status: 401 } });
-    expect(await authenticate(SIGNING_KEY, p.cert, await p.sign(DELETE, T0 - 1), String(T0), DELETE, T0)).toMatchObject({ denied: { status: 401 } });
+    expect(await authenticate(SIGNING_KEY, p.cert, await p.sign(REGISTER), String(T0), DELETE, EMPTY, T0)).toMatchObject({ denied: { status: 401 } });
+    expect(await authenticate(SIGNING_KEY, p.cert, await p.sign(DELETE, T0 - 1), String(T0), DELETE, EMPTY, T0)).toMatchObject({ denied: { status: 401 } });
     const old = T0 - MAX_CLOCK_SKEW_MS - 1;
-    expect(await authenticate(SIGNING_KEY, p.cert, await p.sign(DELETE, old), String(old), DELETE, T0)).toMatchObject({ denied: { body: { error: 'stale request' } } });
+    expect(await authenticate(SIGNING_KEY, p.cert, await p.sign(DELETE, old), String(old), DELETE, EMPTY, T0)).toMatchObject({ denied: { body: { error: 'stale request' } } });
   });
 
   it('refuses garbage without throwing', async () => {
-    expect(await authenticate(SIGNING_KEY, 'not.a-cert', 'x', String(T0), DELETE, T0)).toMatchObject({ denied: { status: 401 } });
+    expect(await authenticate(SIGNING_KEY, 'not.a-cert', 'x', String(T0), DELETE, EMPTY, T0)).toMatchObject({ denied: { status: 401 } });
   });
 });
 
@@ -101,6 +102,17 @@ describe('delete my data', () => {
     expect(await ownerRows(db, 'github:7')).toEqual([]);
     expect((await handleLookup(db, theirs, T0 + 2000)).status).toBe(200);
     expect(await ownerRows(db, 'github:8')).toHaveLength(1);
+  });
+
+  it('removes the records and the links together or not at all', async () => {
+    const real = testDb();
+    const id = await announced(real, secretOf(1));
+    await handleRegisterServer(real, { key: 'github:7' }, { claim_secret: secretOf(1) }, T0 + 1000);
+    // The second statement of the batch fails, as if D1 errored half way.
+    const failing: D1Like = { prepare: real.prepare, batch: (st) => real.batch(st.map((s, i) => (i === 1 ? { ...(s as object), sql: 'DELETE FROM missing_table' } : s))) };
+    await expect(handleDeleteOwner(failing, { key: 'github:7' })).rejects.toThrow();
+    expect((await handleLookup(real, id, T0 + 2000)).status).toBe(200);
+    expect(await ownerRows(real, 'github:7')).toHaveLength(1);
   });
 
   it('is safe to repeat and reports zero for an owner with nothing stored', async () => {
@@ -162,14 +174,14 @@ describe('the endpoints', () => {
   const env = () => ({ DB: db, CERT_SIGNING_KEY: SIGNING_KEY, DIRECTORY_SALT: 'salt' });
   const req = (path: string, headers: Record<string, string>, body?: unknown) =>
     new Request(`https://termenbox.example${path}`, { method: 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) });
-  const authed = async (p: Awaited<ReturnType<typeof person>>, action: string, extra: Record<string, string> = {}) => ({
-    Authorization: `Bearer ${p.cert}`, 'X-Device-Signature': await p.sign(action), 'X-Device-Time': String(T0), ...extra,
+  const authed = async (p: Awaited<ReturnType<typeof person>>, action: string, extra: Record<string, string> = {}, body = '') => ({
+    Authorization: `Bearer ${p.cert}`, 'X-Device-Signature': await p.sign(action, T0, body), 'X-Device-Time': String(T0), ...extra,
   });
 
   it('link a server, delete the account, and leave an audit trail without secrets', async () => {
     const p = await person(7);
     const id = await announced(db, secretOf(1));
-    const linked = await registerMe({ request: req('/api/me/servers', await authed(p, REGISTER), { claim_secret: secretOf(1) }), env: env() });
+    const linked = await registerMe({ request: req('/api/me/servers', await authed(p, REGISTER, {}, JSON.stringify({ claim_secret: secretOf(1) })), { claim_secret: secretOf(1) }), env: env() });
     expect(linked.status).toBe(200);
     const gone = await deleteMe({ request: req('/api/me/delete', await authed(p, DELETE)), env: env() });
     expect(gone.status).toBe(200);
@@ -193,6 +205,31 @@ describe('the endpoints', () => {
     }
     expect(await ownerRows(db, 'github:7')).toHaveLength(1);
     expect(logs.map((l) => JSON.parse(l)).every((e) => e.event === 'owner.denied' && e.level === 'warn' && typeof e.reason === 'string')).toBe(true);
+  });
+
+  it('refuse a captured request replayed with a different body', async () => {
+    const p = await person(7);
+    await announced(db, secretOf(1));
+    await announced(db, secretOf(2));
+    const headers = await authed(p, REGISTER, {}, JSON.stringify({ claim_secret: secretOf(1) }));
+    const res = await registerMe({ request: req('/api/me/servers', headers, { claim_secret: secretOf(2) }), env: env() });
+    expect(res.status).toBe(401);
+    expect(await ownerRows(db, 'github:7')).toEqual([]);
+  });
+
+  it('refuse a body that declares itself too large without reading it, and one that is too large anyway', async () => {
+    const p = await person(7);
+    const declared = await deleteMe({ request: req('/api/me/delete', await authed(p, DELETE, { 'Content-Length': '100000' })), env: env() });
+    expect(declared.status).toBe(413);
+    const big = await deleteMe({ request: req('/api/me/delete', await authed(p, DELETE), { pad: 'x'.repeat(600) }), env: env() });
+    expect(big.status).toBe(413);
+  });
+
+  it('keeps the owner out of the log when no salt is configured', async () => {
+    const p = await person(7);
+    const res = await deleteMe({ request: req('/api/me/delete', await authed(p, DELETE)), env: { ...env(), DIRECTORY_SALT: undefined } });
+    expect(res.status).toBe(200);
+    expect(JSON.parse(logs[0])).not.toHaveProperty('owner_ref');
   });
 
   it('refuse a request from another origin', async () => {

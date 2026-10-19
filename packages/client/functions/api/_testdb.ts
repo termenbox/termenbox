@@ -13,10 +13,24 @@ export function testDb(): D1Like {
   return {
     prepare: (sql: string) => ({
       bind: (...args: unknown[]) => ({
+        sql,
+        args,
         first: async <T,>() => ((sqlite.prepare(sql).get(...(args as never[])) as T | undefined) ?? null),
         run: async () => sqlite.prepare(sql).run(...(args as never[])),
         all: async <T,>() => ({ results: sqlite.prepare(sql).all(...(args as never[])) as T[] }),
       }),
     }),
+    // Like D1's batch: one transaction, rolled back if any statement fails.
+    batch: async (statements: unknown[]) => {
+      sqlite.exec('BEGIN');
+      try {
+        const out = (statements as { sql: string; args: unknown[] }[]).map((s) => sqlite.prepare(s.sql).run(...(s.args as never[])));
+        sqlite.exec('COMMIT');
+        return out;
+      } catch (e) {
+        sqlite.exec('ROLLBACK');
+        throw e;
+      }
+    },
   };
 }

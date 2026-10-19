@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { accountMessage } from '../../functions/api/me/_lib';
+import { accountMessage, bodyDigest } from '../../functions/api/me/_lib';
 import { deleteMyData, DeleteFailed, registerServer } from './account';
 import { b64url } from './device';
 
@@ -21,7 +21,7 @@ describe('deleteMyData', () => {
     expect(url).toBe('https://app.example/api/me/delete');
     expect(h.Authorization).toBe('Bearer the-cert');
     const sig = Uint8Array.from(atob(h['X-Device-Signature'].replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (h['X-Device-Signature'].length % 4)) % 4)), (c) => c.charCodeAt(0));
-    expect(await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, a.pair.publicKey, sig, new TextEncoder().encode(accountMessage('POST /api/me/delete', Number(h['X-Device-Time']))))).toBe(true);
+    expect(await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, a.pair.publicKey, sig, new TextEncoder().encode(accountMessage('POST /api/me/delete', Number(h['X-Device-Time']), await bodyDigest(''))))).toBe(true);
     expect(b64url(sig)).toBe(h['X-Device-Signature']);
   });
 
@@ -35,13 +35,26 @@ describe('deleteMyData', () => {
     expect(err).toBeInstanceOf(DeleteFailed);
     expect(err.message).toMatch(message);
   });
+
+  it('marks an expired sign-in so the page can offer Sign out instead of a retry', async () => {
+    stub(new Response('{}', { status: 401 }));
+    expect(await deleteMyData('https://app.example', await auth()).catch((e) => e)).toMatchObject({ expired: true });
+    stub(new Response('{}', { status: 500 }));
+    expect(await deleteMyData('https://app.example', await auth()).catch((e) => e)).toMatchObject({ expired: false });
+  });
 });
 
 describe('registerServer', () => {
   it('sends the claim secret in the body and throws when the directory refuses', async () => {
     stub(new Response('{}', { status: 404 }));
-    await expect(registerServer('https://app.example', await auth(), 'S'.repeat(43))).rejects.toThrow('404');
+    const a = await auth();
+    await expect(registerServer('https://app.example', a, 'S'.repeat(43))).rejects.toThrow('404');
     const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(init.body as string)).toEqual({ claim_secret: 'S'.repeat(43) });
+    // The device signature covers exactly these bytes, so the directory can bind it to this body.
+    const h = init.headers as Record<string, string>;
+    const sig = Uint8Array.from(atob(h['X-Device-Signature'].replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (h['X-Device-Signature'].length % 4)) % 4)), (c) => c.charCodeAt(0));
+    const message = accountMessage('POST /api/me/servers', Number(h['X-Device-Time']), await bodyDigest(init.body as string));
+    expect(await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, a.pair.publicKey, sig, new TextEncoder().encode(message))).toBe(true);
   });
 });
