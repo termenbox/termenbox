@@ -113,10 +113,94 @@ fn sha(bytes: &[u8]) -> String {
 /// Where Claude Code reads its user settings: `CLAUDE_CONFIG_DIR` when set (as Claude Code itself does, and as
 /// the transcript reader does), else `~/.claude`.
 pub fn default_settings_path() -> PathBuf {
-    settings_in(
-        std::env::var_os("CLAUDE_CONFIG_DIR"),
-        std::env::var_os("HOME"),
-    )
+    settings_in(config_dir(), std::env::var_os("HOME"))
+}
+
+/// Claude Code's config directory as the user's Claude Code has it: this process's `CLAUDE_CONFIG_DIR`, else the
+/// one the running `claude` processes of this user agree on. A service started by systemd does not inherit the
+/// variable a login shell sets, so without this the hooks land in `~/.claude` while Claude reads another dir.
+pub fn config_dir() -> Option<std::ffi::OsString> {
+    if let Some(d) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        return Some(d);
+    }
+    detected_config_dir()
+}
+
+/// How long a look at the process table is kept: it is read once per request, never in a loop.
+const DETECT_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn detected_config_dir() -> Option<std::ffi::OsString> {
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<(std::time::Instant, Option<std::ffi::OsString>)>> =
+        Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap();
+    if let Some((at, v)) = cache.as_ref() {
+        if at.elapsed() < DETECT_TTL {
+            return v.clone();
+        }
+    }
+    let v = scan_proc_for_config_dir();
+    *cache = Some((std::time::Instant::now(), v.clone()));
+    v
+}
+
+/// The values of `CLAUDE_CONFIG_DIR` in the environments of this user's `claude` processes (`None` for a process
+/// without it).
+#[cfg(target_os = "linux")]
+fn scan_proc_for_config_dir() -> Option<std::ffi::OsString> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    let me = std::fs::metadata("/proc/self").ok()?.uid();
+    let mut seen = Vec::new();
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        let name = entry.file_name();
+        if !name.as_bytes().iter().all(u8::is_ascii_digit) {
+            continue;
+        }
+        let dir = entry.path();
+        if std::fs::metadata(&dir).map(|m| m.uid()).ok() != Some(me) {
+            continue;
+        }
+        if std::fs::read(dir.join("comm"))
+            .ok()
+            .as_deref()
+            .map(<[u8]>::trim_ascii)
+            != Some(b"claude")
+        {
+            continue;
+        }
+        if let Ok(env) = std::fs::read(dir.join("environ")) {
+            seen.push(config_dir_in_environ(&env));
+            if seen.len() >= 64 {
+                break;
+            }
+        }
+    }
+    agreed_dir(seen)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn scan_proc_for_config_dir() -> Option<std::ffi::OsString> {
+    None
+}
+
+/// `CLAUDE_CONFIG_DIR` from a `/proc/<pid>/environ` blob, when it is a non-empty absolute path.
+fn config_dir_in_environ(environ: &[u8]) -> Option<std::ffi::OsString> {
+    use std::os::unix::ffi::OsStrExt;
+    environ
+        .split(|b| *b == 0)
+        .find_map(|kv| kv.strip_prefix(b"CLAUDE_CONFIG_DIR="))
+        .filter(|v| v.first() == Some(&b'/'))
+        .map(|v| std::ffi::OsStr::from_bytes(v).to_os_string())
+}
+
+/// The directory every process agrees on; no answer when they differ or when some have none, since then
+/// Claude Code is not using one place.
+fn agreed_dir(seen: Vec<Option<std::ffi::OsString>>) -> Option<std::ffi::OsString> {
+    let first = seen.first()?.clone()?;
+    seen.iter()
+        .all(|d| d.as_ref() == Some(&first))
+        .then_some(first)
 }
 
 fn settings_in(
@@ -175,6 +259,8 @@ pub fn planned_text(settings: &Path, binary: &str) -> Result<String> {
 #[derive(Clone, Debug)]
 pub struct Target {
     pub settings: PathBuf,
+    /// No file was named by the owner: find Claude Code's settings at each request (`default_settings_path`).
+    pub auto: bool,
     pub binary: String,
     pub state_dir: PathBuf,
 }
@@ -210,8 +296,13 @@ pub fn respond(target: Option<&Target>, agent: &str, action: &str) -> Reply {
             error: None,
         };
     };
-    let state = |t: &Target| {
-        if is_connected(&t.settings) {
+    let settings = if t.auto {
+        default_settings_path()
+    } else {
+        t.settings.clone()
+    };
+    let state = |settings: &Path| {
+        if is_connected(settings) {
             "connected"
         } else {
             "not_connected"
@@ -219,23 +310,32 @@ pub fn respond(target: Option<&Target>, agent: &str, action: &str) -> Reply {
     };
     let (preview, error) = match action {
         "status" => (None, None),
-        "preview" => match planned_text(&t.settings, &t.binary) {
+        "preview" => match planned_text(&settings, &t.binary) {
             Ok(text) => (Some(text), None),
             Err(e) => (None, Some(e.to_string())),
         },
-        "apply" => match connect(&t.settings, &t.binary, &t.state_dir, true) {
+        "apply" => match connect(&settings, &t.binary, &t.state_dir, true) {
             Ok(_) => (None, None),
             Err(e) => (None, Some(e.to_string())),
         },
-        "remove" if !t.settings.exists() => (None, None),
-        "remove" => match disconnect(&t.settings, &t.state_dir) {
-            Ok(_) => (None, None),
-            Err(e) => (None, Some(e.to_string())),
-        },
+        // A removal follows the file the connect changed (the journal says which), wherever the settings are now.
+        "remove" => {
+            let file = journal_settings(&t.state_dir)
+                .filter(|f| f.exists())
+                .unwrap_or_else(|| settings.clone());
+            if !file.exists() {
+                (None, None)
+            } else {
+                match disconnect(&file, &t.state_dir) {
+                    Ok(_) => (None, None),
+                    Err(e) => (None, Some(e.to_string())),
+                }
+            }
+        }
         _ => (None, Some("unknown action".to_string())),
     };
     Reply {
-        state: state(t),
+        state: state(&settings),
         preview,
         error,
     }
@@ -463,6 +563,7 @@ mod tests {
         std::fs::write(&settings, MINE).unwrap();
         let t = Target {
             settings: settings.clone(),
+            auto: false,
             binary: BIN.into(),
             state_dir: d.join("state"),
         };
@@ -490,6 +591,7 @@ mod tests {
         let d = tmpdir("q");
         let t = Target {
             settings: d.join("settings.json"),
+            auto: false,
             binary: BIN.into(),
             state_dir: d.join("state"),
         };
@@ -526,6 +628,56 @@ mod tests {
         assert!(settings.exists());
         disconnect(&settings, &d.join("state")).unwrap();
         assert!(!settings.exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn os(p: &str) -> Option<std::ffi::OsString> {
+        Some(std::ffi::OsString::from(p))
+    }
+
+    #[test]
+    fn the_config_dir_is_read_from_a_process_environment_when_it_is_absolute() {
+        let env = b"HOME=/home/u\0CLAUDE_CONFIG_DIR=/data/.claude\0TERM=xterm\0";
+        assert_eq!(config_dir_in_environ(env), os("/data/.claude"));
+        assert_eq!(config_dir_in_environ(b"HOME=/home/u\0"), None);
+        assert_eq!(config_dir_in_environ(b"CLAUDE_CONFIG_DIR=\0"), None);
+        assert_eq!(
+            config_dir_in_environ(b"CLAUDE_CONFIG_DIR=relative/dir\0"),
+            None
+        );
+    }
+
+    #[test]
+    fn processes_must_agree_on_the_config_dir() {
+        let a = os("/data/.claude");
+        assert_eq!(agreed_dir(vec![a.clone(), a.clone()]), a);
+        assert_eq!(
+            agreed_dir(vec![a.clone(), os("/other")]),
+            None,
+            "two places"
+        );
+        assert_eq!(
+            agreed_dir(vec![a.clone(), None]),
+            None,
+            "one uses the default"
+        );
+        assert_eq!(agreed_dir(vec![]), None);
+    }
+
+    #[test]
+    fn a_target_without_a_named_file_finds_the_settings_at_each_request() {
+        let d = std::env::temp_dir().join(format!("tm-auto-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let named = d.join("named.json");
+        let t = Target {
+            settings: named.clone(),
+            auto: false,
+            binary: "/bin/tb".into(),
+            state_dir: d.clone(),
+        };
+        assert_eq!(respond(Some(&t), "claude", "apply").error, None);
+        assert!(named.exists(), "a named file is used as it is");
+        assert_eq!(respond(Some(&t), "claude", "remove").error, None);
         let _ = std::fs::remove_dir_all(&d);
     }
 }
