@@ -9,13 +9,14 @@
 #   host-user   directly on this machine as a dedicated unprivileged user `termenbox`, as a systemd service
 #   host-me     directly on this machine as the user who runs this command: sessions open on their behalf, in their
 #               home, with their repositories, keys and agent logins. No user is created. No root is needed: it is a
-#               user systemd service (decision 0113); what would need root is printed at the end, not run.
+#               user systemd service (decision 0113); what would need root is stated up front, not run.
 #   host        directly on this machine as root, as a systemd service
 # The host modes give the owner's browser a shell on the machine itself and need no Docker.
 #
-# It picks a free UDP port, starts the server and hands it the claim secret. It asks nothing and needs nothing
-# afterwards: the server appears in Termenbox by itself. Safe to run again: a new secret re-claims the server
-# (root on this host already allows that).
+# It starts the server and hands it the claim secret. In host-me the server chooses its own UDP port from the
+# reserved range (DECISION-0118); the other modes still pick one. It asks nothing and needs nothing afterwards: the
+# server appears in Termenbox by itself. Safe to run again: a new secret re-claims the server (root on this host
+# already allows that).
 #
 # Host modes: every change is recorded in /var/lib/termenbox-root before it is made and can be undone with
 # `termenbox-server --revert`. The release is checked before anything is installed: its manifest must carry a valid
@@ -86,16 +87,27 @@ else
   fi
 fi
 
-# One UDP port for the WebRTC connection. The client learns it from the server's signed record, so any
-# free port works. Keep the same one across re-runs so firewalls and the directory stay stable.
-udp_in_use() {
-  command -v ss >/dev/null 2>&1 || return 1
-  ss -H -lun 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$1\$"
+# Whether a local port is already taken, so the next listener picks a free one. `ss` (iproute2) is the normal
+# source; on a machine without it (a minimal image) the kernel's own table is read instead, so two installs still
+# get different ports. There the port column is hex, and for TCP only sockets in LISTEN (state 0A) count.
+in_use() { # <tcp|udp> <port>
+  _proto="$1"; _port="$2"
+  if command -v ss >/dev/null 2>&1; then
+    _ssflag="-ltn"; [ "$_proto" = udp ] && _ssflag="-lun"
+    ss -H "$_ssflag" 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$_port\$"
+    return
+  fi
+  for _f in "/proc/net/$_proto" "/proc/net/${_proto}6"; do
+    [ -r "$_f" ] || continue
+    awk -v port="$_port" -v proto="$_proto" \
+      'BEGIN { want = sprintf("%04X", port) }
+       NR > 1 && (proto == "udp" || $4 == "0A") { n = split($2, a, ":"); if (toupper(a[n]) == want) found = 1 }
+       END { exit !found }' "$_f" && return 0
+  done
+  return 1
 }
-tcp_in_use() {
-  command -v ss >/dev/null 2>&1 || return 1
-  ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$1\$"
-}
+tcp_in_use() { in_use tcp "$1"; }
+udp_in_use() { in_use udp "$1"; }
 random_port() { echo $((20000 + $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 40000)); }
 # pick_port <in_use function> <first candidate> <file holding the previous choice>
 pick_port() {
@@ -181,7 +193,7 @@ JOURNAL=/var/lib/termenbox-root
 
 # Hands the claim over (or prints the registration QR) as the user the service runs as.
 native_claim() {
-  _env="TERMENBOX_CONFIG_DIR=$STATE TERMENBOX_CLIENT_URL=$ORIGIN TERMENBOX_UDP_PORT=$1"
+  _env="TERMENBOX_CONFIG_DIR=$STATE TERMENBOX_CLIENT_URL=$ORIGIN"
   # shellcheck disable=SC2086 # _env is a list of NAME=value words
   if [ "$RUN_USER" = root ] || [ "$RUN_USER" = "$(id -un)" ]; then _run="env $_env"; else _run="runuser -u $RUN_USER -- env $_env"; fi
   if [ "$SECRET" = "-" ]; then
@@ -328,8 +340,7 @@ install_native() {
       || say "Note: sessions already run as $RUN_USER and stay that way. To change that, remove Termenbox first (curl -fsSL <client>/uninstall.sh | sudo sh -s -- --yes) and install again."
     JBIN="$BIN"
     install_helper_units # installs from before the updater existed get it here
-    PORT="$(cat "$JOURNAL/udp_port")"
-    native_claim "$PORT"
+    native_claim
     return
   fi
 
@@ -444,14 +455,14 @@ install_native() {
   done
 
   install_helper_units
-  native_claim "$PORT"
+  native_claim
 }
 
 # ---------------------------------------------------------------------------------------------------------
 # This host, as you, without root (decision 0113): a user systemd service
 # ---------------------------------------------------------------------------------------------------------
 # Everything lives in the home of the user who ran the command and is recorded in a journal there. What would need
-# root (lingering when it is denied, a firewall rule) is printed at the end, never run.
+# root (lingering when it is denied, a firewall rule) is stated up front, never run.
 install_user() {
   ME="$(id -un)"
   RUN_USER="$ME"
@@ -486,28 +497,58 @@ install_user() {
     systemctl --user is-active --quiet "$SERVICE" || systemctl --user start "$SERVICE"
     JBIN="$BIN"
     install_user_helper_units
-    PORT="$(cat "$JOURNAL/udp_port")"
-    native_claim "$PORT"
+    native_claim
     return
   fi
 
+  # What will need root, said before anything is downloaded or changed (decision 0118, 0113). The firewall is
+  # detected without root (`systemctl is-active`, because reading its rules needs root). Lingering we may switch on
+  # ourselves; it is announced here and switched on below (after the dry-run guard), once a verified binary can
+  # journal it first.
+  FIREWALL=""
+  if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
+    FIREWALL=ufw
+  elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+    FIREWALL=firewalld
+  fi
+  # No answer (no login session for this user, e.g. after su) is not "off": we then do not claim a state we cannot see.
+  LINGER_WAS="$(loginctl show-user "$ME" -p Linger --value 2>/dev/null)" || LINGER_WAS=unknown
+  LINGER=off
+  say ""
+  say "What needs root (this installer never runs sudo):"
+  case "$FIREWALL" in
+    ufw) say "  - the firewall ufw is active. Open the WebRTC range once, as root:  ufw allow 4443:4542/udp" ;;
+    firewalld) say "  - the firewall firewalld is active. Open the WebRTC range once, as root:  firewall-cmd --permanent --add-port=4443-4542/udp && firewall-cmd --reload" ;;
+    *) say "  - no active ufw or firewalld was detected. With another firewall, open 4443-4542/udp yourself" ;;
+  esac
+  if [ -n "${TERMENBOX_SKIP_LINGER:-}" ]; then
+    LINGER=skipped
+    say "  - starting at boot is skipped (TERMENBOX_SKIP_LINGER); later, as root:  loginctl enable-linger $ME"
+  elif [ "$LINGER_WAS" = yes ]; then
+    LINGER=on
+    say "  - sessions start at boot: lingering is on"
+  elif [ "$LINGER_WAS" = unknown ]; then
+    LINGER=unknown
+    say "  - sessions start at boot: lingering could not be read; it will be tried, but not undone on uninstall. If it fails, as root:  loginctl enable-linger $ME"
+  else
+    say "  - sessions start at boot: switching lingering on for $ME (reversible); if that is not allowed, as root:  loginctl enable-linger $ME"
+  fi
+
   fetch_release
-  PORT="$(pick_port udp_in_use 4443 "$JOURNAL/udp_port")"
   HTTP_PORT="$(pick_port tcp_in_use 8080 "$JOURNAL/http_port")"
-  [ -n "$PORT" ] && [ -n "$HTTP_PORT" ] || die "could not find free ports"
+  [ -n "$HTTP_PORT" ] || die "could not find a free port"
   say ""
   say "Termenbox $VERSION will be installed for $ME, with no root (sessions run as $ME):"
   say "  - the server  $BIN"
   say "  - state       $STATE"
   say "  - a user service $SERVICE, and a daily update check (signed releases only), in $UNIT_DIR"
-  say "  - UDP port    $PORT"
+  say "  - UDP port    the server picks a free one from 4443-4542 and remembers it"
   say "Every change is recorded in $JOURNAL; undo them with: termenbox-server --journal-dir $JOURNAL --revert --dry-run, then --revert"
   say ""
   [ -z "${TERMENBOX_DRY_RUN:-}" ] || { say "(dry run: nothing was changed)"; return; }
 
   mkdir -p "$JOURNAL" "$UNIT_DIR"
   chmod 700 "$JOURNAL"
-  echo "$PORT" > "$JOURNAL/udp_port"
   echo "$HTTP_PORT" > "$JOURNAL/http_port"
 
   mkdir -p "$(dirname "$BIN")"
@@ -551,7 +592,6 @@ Environment=TERMENBOX_JOURNAL_DIR=$JOURNAL
 Environment=TERMENBOX_REQUESTS_DIR=$STATE/requests
 Environment=TERMENBOX_HOST=127.0.0.1
 Environment=TERMENBOX_PORT=$HTTP_PORT
-Environment=TERMENBOX_UDP_PORT=$PORT
 Environment=TERMENBOX_CLIENT_URL=$ORIGIN
 ExecStart=$BIN
 Restart=on-failure
@@ -572,32 +612,17 @@ UNIT
     sleep 1
   done
 
-  # Starting at boot, not only at login, needs lingering. systemd lets a user switch it on for themselves.
-  LINGER=yes
-  if [ -n "${TERMENBOX_SKIP_LINGER:-}" ]; then
-    LINGER=skipped
-  elif [ "$(loginctl show-user "$ME" -p Linger --value 2>/dev/null)" != yes ]; then
-    journal linger_enabled "user=$ME"
-    loginctl enable-linger "$ME" >/dev/null 2>&1 || LINGER=no
+  # Starting at boot, not only at login, needs lingering (announced in the summary above). Last, so a failed install
+  # leaves it alone. The user may switch it on for themselves; it is journaled before it is switched on, so uninstall
+  # undoes it, and it is reversible. Not journaled when we could not read the earlier state: it may not be ours.
+  if [ "$LINGER" = off ] || [ "$LINGER" = unknown ]; then
+    [ "$LINGER" = off ] && journal linger_enabled "user=$ME"
+    loginctl enable-linger "$ME" >/dev/null 2>&1 \
+      || say "Lingering could not be switched on: the server starts at login only. As root:  loginctl enable-linger $ME"
   fi
 
   install_user_helper_units
-  native_claim "$PORT"
-
-  # What would have needed root, and was not done. Optional: the server works without it.
-  _opt=""
-  if [ "$LINGER" = no ]; then
-    _opt="$_opt
-  - to start at boot, not only after you log in, run as root:  loginctl enable-linger $ME"
-  fi
-  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-    _opt="$_opt
-  - the firewall ufw is active; to allow connections run as root:  ufw allow $PORT/udp"
-  elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-    _opt="$_opt
-  - the firewall firewalld is active; to allow connections run as root:  firewall-cmd --permanent --add-port=$PORT/udp && firewall-cmd --reload"
-  fi
-  [ -z "$_opt" ] || say "Optional, needs root (not done):$_opt"
+  native_claim
 }
 
 # The updater timer and the request handler as user units (decisions 0076, 0077, 0113). They run the installed binary as
