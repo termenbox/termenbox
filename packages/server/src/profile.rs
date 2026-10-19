@@ -19,6 +19,7 @@
 //! [markers]                     # case-insensitive substrings of the last lines of the screen
 //! working = ["esc to interrupt"]
 //! idle    = ["? for shortcuts"]
+//! blocked = ["esc to cancel"]   # a dialog that waits for the human is on screen (any of these on the last lines)
 //!
 //! [task]
 //! prefix = "> "                 # a line starting with this holds the current task (the latest one wins)
@@ -87,6 +88,9 @@ struct Markers {
     working: Vec<String>,
     #[serde(default)]
     idle: Vec<String>,
+    /// The footer of a dialog that waits for the human: a permission, a question, a plan to approve.
+    #[serde(default)]
+    blocked: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -130,6 +134,7 @@ impl Profile {
             &p.prompt.numbered_labels,
             &p.markers.working,
             &p.markers.idle,
+            &p.markers.blocked,
         ];
         for l in lists {
             if l.len() > MAX_PATTERNS
@@ -195,6 +200,8 @@ pub struct ScreenView {
     pub task: Option<String>,
     pub working: bool,
     pub idle: bool,
+    /// A dialog that waits for the human is on screen (the profile's `blocked` markers, or a parsed prompt).
+    pub blocked: bool,
     pub prompt: Option<Prompt>,
 }
 
@@ -255,6 +262,11 @@ fn numbered_option(line: &str) -> Option<(char, String)> {
 }
 
 impl Profile {
+    /// Whether this profile can tell a working screen from an idle one, which the reconciliation and the scan rely on.
+    pub fn has_state_markers(&self) -> bool {
+        !self.markers.working.is_empty() && !self.markers.idle.is_empty()
+    }
+
     /// Reads a screen as `capture-pane -p` gives it.
     pub fn read(&self, screen: &str) -> ScreenView {
         let lines: Vec<String> = screen.lines().map(clean_line).collect();
@@ -277,11 +289,13 @@ impl Profile {
                 .map(|t| t.chars().take(crate::events::TASK_CHARS).collect())
         });
         let working = has(&self.markers.working);
+        let prompt = self.prompt_in(scan);
         ScreenView {
             working,
+            blocked: has(&self.markers.blocked) || prompt.is_some(),
             // A screen is not idle while it is working: some footers (opencode's) are on both.
             idle: !working && has(&self.markers.idle),
-            prompt: self.prompt_in(scan),
+            prompt,
             tail,
             task,
         }
@@ -652,5 +666,34 @@ mod tests {
         let a = g.read("Proceed? (y/n)").prompt.unwrap();
         assert_eq!(a.id(), g.read("Proceed? (y/n)").prompt.unwrap().id());
         assert_ne!(a.id(), g.read("Delete it? (y/n)").prompt.unwrap().id());
+    }
+
+    #[test]
+    fn claude_dialogs_are_blocked_screens_and_working_or_idle_ones_are_not() {
+        for name in [
+            "claude-permission",
+            "claude-question",
+            "claude-question-freetext",
+        ] {
+            let v = view("claude", name);
+            assert!(v.blocked && !v.working, "{name}");
+        }
+        for name in [
+            "claude-idle",
+            "claude-finished",
+            "claude-working",
+            "claude-working-tool",
+        ] {
+            assert!(!view("claude", name).blocked, "{name}");
+        }
+        let (p, _) = Profiles::builtin().for_agent(Some("claude"));
+        assert!(p.has_state_markers());
+    }
+
+    #[test]
+    fn a_redraw_is_not_inference_a_working_screen_is() {
+        // The scan used to call a pane working when it had just printed anything, such as a redraw on attach.
+        assert!(!view("claude", "claude-idle").working && view("claude", "claude-idle").idle);
+        assert!(view("claude", "claude-working").working);
     }
 }

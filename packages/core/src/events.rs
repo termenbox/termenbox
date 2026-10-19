@@ -104,6 +104,20 @@ pub enum EventKind {
     Commands {
         names: Vec<String>,
     },
+    /// A turn (one prompt and all the agent does until it answers) opened or closed. An input to the server's
+    /// reducer, which derives the state from it: never stored and never sent on to a client.
+    Turn {
+        open: bool,
+        /// How a closed turn ended: `done`, `error` or `idle`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<AgentState>,
+    },
+    /// Something that waits for the human (a permission, a question, an elicitation) opened or closed, named by
+    /// `key`. Like `Turn`, an input to the reducer only.
+    Block {
+        key: String,
+        open: bool,
+    },
     #[serde(other)]
     Unknown,
 }

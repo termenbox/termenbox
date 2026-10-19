@@ -124,3 +124,4 @@
 0119-native-installs-bundle-a-pinned-static-tmux,"Native installs carry a pinned, statically linked tmux, so no install needs tmux from the distribution","deployment, server, security, build",active
 0120-termenbox-runs-its-own-tmux-server-with-its-own-config,"Termenbox runs its own tmux server on a private socket with a config it owns, apart from the user's tmux","server, sessions, deployment, compatibility",active
 0121-the-tmux-server-is-always-the-private-one-unless-the-owner-opts-out,"Sessions always live on the private tmux server; the default one is used only when the owner opts in","server, sessions, deployment, compatibility",active
+0122-agent-state-comes-from-one-turn-and-obligation-reducer,"Agent state is derived by one reducer from open turns and open obligations, fed alike by hooks and ACP; the screen only closes what it no longer shows","agents, server, hooks, protocol",draft

@@ -15,7 +15,7 @@ Measured on the dev VPS, 2026-10-13, in a throwaway working directory and a thro
 
 | Tool | Surface | Verdict |
 |---|---|---|
-| Claude Code | `hooks` in a settings file (`--settings FILE` or `~/.claude/settings.json`): `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification`, `Stop`. Each hook command receives one JSON object on stdin. | Primary source for Claude Code, opt-in (0079). |
+| Claude Code | `hooks` in a settings file (`--settings FILE` or `~/.claude/settings.json`): `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionRequest`, `PermissionDenied`, `Elicitation`, `ElicitationResult`, `Notification` (typed: `permission_prompt`, `idle_prompt`, `auth_success`, `elicitation_dialog`), `Stop`, `StopFailure` (what we install; fact 0048). Each hook command receives one JSON object on stdin. | Primary source for Claude Code, opt-in (0079). |
 | Codex | A `notify` program in `config.toml` is documented to receive one JSON argument per event (turn complete). Not verified here. | Unverified; scan state only until P.5 can test it. |
 
 ## Claude Code samples (real)

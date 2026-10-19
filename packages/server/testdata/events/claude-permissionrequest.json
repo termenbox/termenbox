@@ -1,0 +1,18 @@
+{
+ "session_id": "00000000-0000-0000-0000-000000000000",
+ "transcript_path": "/home/user/.claude/projects/x/session.jsonl",
+ "cwd": "/home/user/project",
+ "scratchpad_dir": "/tmp/claude-1000/x/scratchpad",
+ "prompt_id": "00000000-0000-0000-0000-000000000001",
+ "permission_mode": "default",
+ "effort": {
+  "level": "medium"
+ },
+ "hook_event_name": "PermissionRequest",
+ "tool_name": "Bash",
+ "tool_input": {
+  "command": "touch allowed.txt",
+  "description": "Create empty file allowed.txt in working directory"
+ },
+ "permission_suggestions": []
+}

@@ -35,6 +35,7 @@ mod netutil;
 mod profile;
 mod pty;
 mod push;
+mod reducer;
 mod release;
 mod requests;
 mod rtc;

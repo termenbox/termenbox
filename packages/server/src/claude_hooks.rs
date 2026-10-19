@@ -6,13 +6,23 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-pub const EVENTS: [&str; 6] = [
+/// Every event the turn-and-obligation reducer reads (`adapters::claude`). `PermissionRequest` is the one that
+/// says a dialog is open (`Notification` follows it by seconds and covers only some of them); the rest end a wait
+/// or a turn. Settings written by an earlier version lack the newer ones: `merge` adds them, nothing else.
+pub const EVENTS: [&str; 13] = [
     "SessionStart",
+    "SessionEnd",
     "UserPromptSubmit",
     "PreToolUse",
     "PostToolUse",
+    "PostToolUseFailure",
+    "PermissionRequest",
+    "PermissionDenied",
+    "Elicitation",
+    "ElicitationResult",
     "Notification",
     "Stop",
+    "StopFailure",
 ];
 /// Marks an entry as ours; `remove` touches nothing else.
 const MARKER: &str = "--hook claude";
