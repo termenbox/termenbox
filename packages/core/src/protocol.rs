@@ -17,6 +17,11 @@ pub enum ClientMessage {
         #[serde(default)]
         channels: bool,
     },
+    /// Decision 0117: instead of `auth`, asks what a claim link would add. The token authorises it; the answer is
+    /// `claim_preview`. It binds nobody, leaves the token valid and needs no device certificate.
+    ClaimPreview {
+        server_token: String,
+    },
     /// Owner-only: refuse this device key from now on.
     RevokeDevice {
         device: String,
@@ -170,6 +175,15 @@ pub enum ServerMessage {
     },
     DeviceRevoked {
         device: String,
+    },
+    /// Answer to `claim_preview` (decision 0117): what the claim would add. No secret, session or path.
+    /// `mode` is `container` or `host`; `run_user` is the OS user sessions run as (empty in a container).
+    ClaimPreview {
+        name: String,
+        mode: String,
+        #[serde(default)]
+        run_user: String,
+        version: String,
     },
     /// The server wiped its configuration and will stop; `mode` is `container` or `host:<user>`.
     UninstallDone {
@@ -411,6 +425,21 @@ mod tests {
         })
         .unwrap();
         assert_eq!(v["type"], "auth_ok");
+        let v = serde_json::to_value(ClientMessage::ClaimPreview {
+            server_token: "t".into(),
+        })
+        .unwrap();
+        assert_eq!(v["type"], "claim_preview");
+        assert_eq!(v["server_token"], "t");
+        let v = serde_json::to_value(ServerMessage::ClaimPreview {
+            name: "vps".into(),
+            mode: "host".into(),
+            run_user: "alice".into(),
+            version: "0.1.0+dev".into(),
+        })
+        .unwrap();
+        assert_eq!(v["type"], "claim_preview");
+        assert_eq!(v["run_user"], "alice");
         let v = serde_json::to_value(ClientMessage::AgentSync {
             after: [("a".to_string(), 4u64)].into(),
         })

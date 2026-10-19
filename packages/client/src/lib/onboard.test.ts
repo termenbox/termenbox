@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { installCommand, scanCommand, claimLink, parseClaim, parseServerLink, serverCode, serverLink, pollDelay, waitForServer, ClaimTimeout, CLAIM_WINDOW_MS, type WaitDeps } from './onboard';
+import { installCommand, scanCommand, claimLink, parseClaim, parseServerLink, serverCode, serverLink, pollDelay, waitForServer, previewClaim, ClaimTimeout, CLAIM_WINDOW_MS, type WaitDeps } from './onboard';
 import type { DirRecord } from './directory';
+import type { Transport } from './transport';
 
 const S = 'A'.repeat(43);
 const rec = { server_id: 'K'.repeat(43) } as DirRecord;
@@ -119,5 +120,87 @@ describe('server link', () => {
     const id = 'K'.repeat(43);
     expect(serverLink('https://app.example.dev/', id)).toBe(`https://app.example.dev/#server=${id}`);
     expect(parseServerLink(serverLink('https://app.example.dev', id))).toBe(id);
+  });
+});
+
+describe('previewClaim (decision 0117)', () => {
+  /** A server that answers `claim_preview` for `good` only, and counts what it was sent. */
+  const server = (good: string) => {
+    const sent: any[] = [];
+    let opened = 0;
+    let closed = 0;
+    const open = async (): Promise<Transport> => {
+      opened++;
+      const t: Transport = {
+        kind: 'ws', onmessage: null, onclose: null,
+        send(text) {
+          const m = JSON.parse(text);
+          sent.push(m);
+          const reply = (r: unknown) => queueMicrotask(() => t.onmessage?.(JSON.stringify(r)));
+          if (m.type === 'hello') reply({ type: 'challenge', nonce: 'n', server_id: rec.server_id });
+          else if (m.type === 'claim_preview') {
+            reply(m.server_token === good
+              ? { type: 'claim_preview', name: 'vps-1', mode: 'host', run_user: 'alice', version: '0.1.0+abc' }
+              : { type: 'error', message: 'This claim link is not valid (any more)' });
+          }
+        },
+        close() { closed++; },
+      };
+      return t;
+    };
+    return { sent, open, opened: () => opened, closed: () => closed };
+  };
+  const live = () => new AbortController().signal;
+
+  it('previews twice without ever presenting a device certificate or a claim', async () => {
+    const s = server(S);
+    const a = await previewClaim({ record: rec }, S, live(), { open: s.open });
+    const b = await previewClaim({ record: rec }, S, live(), { open: s.open });
+    expect(a).toEqual({ name: 'vps-1', mode: 'host', run_user: 'alice', version: '0.1.0+abc' });
+    expect(b).toEqual(a);
+    expect(s.sent.map((m) => m.type)).toEqual(['hello', 'claim_preview', 'hello', 'claim_preview']);
+    expect(s.sent.some((m) => m.type === 'auth')).toBe(false);
+    expect(s.closed()).toBe(2);
+  });
+
+  it('gets no preview for a wrong or expired token', async () => {
+    const s = server(S);
+    await expect(previewClaim({ record: rec }, 'B'.repeat(43), live(), { open: s.open })).rejects.toThrow(/not valid/);
+    expect(s.closed()).toBe(1);
+  });
+
+  it('refuses a server whose challenge names another server id', async () => {
+    const s = server(S);
+    const other = { server_id: 'Z'.repeat(43) } as DirRecord;
+    await expect(previewClaim({ record: other }, S, live(), { open: s.open })).rejects.toThrow(/not the one/);
+    expect(s.sent.map((m) => m.type)).toEqual(['hello']);
+  });
+
+  it('sends nothing and closes when the dialog is closed first', async () => {
+    const s = server(S);
+    const ctl = new AbortController();
+    ctl.abort();
+    await expect(previewClaim({ record: rec }, S, ctl.signal, { open: s.open })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(s.opened()).toBe(0);
+
+    const late = new AbortController();
+    const p = previewClaim({ record: rec }, S, late.signal, { open: s.open });
+    late.abort();
+    await expect(p).rejects.toMatchObject({ name: 'AbortError' });
+    expect(s.sent.some((m) => m.type === 'auth')).toBe(false);
+    expect(s.closed()).toBeGreaterThanOrEqual(1);
+  });
+
+  it('gives up when the server never answers', async () => {
+    vi.useFakeTimers();
+    try {
+      const hang = async (): Promise<Transport> => ({ kind: 'ws', onmessage: null, onclose: null, send() {}, close() {} });
+      const p = previewClaim({ record: rec }, S, live(), { open: hang }, 1000);
+      const check = expect(p).rejects.toThrow(/did not answer/);
+      await vi.advanceTimersByTimeAsync(1001);
+      await check;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

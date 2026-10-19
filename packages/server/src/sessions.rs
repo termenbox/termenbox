@@ -284,7 +284,9 @@ impl SessionManager {
     ) -> Result<()> {
         match msg {
             // The handshake happens once, before this loop (connection.rs).
-            ClientMessage::Hello | ClientMessage::Auth { .. } => {}
+            ClientMessage::Hello
+            | ClientMessage::Auth { .. }
+            | ClientMessage::ClaimPreview { .. } => {}
             ClientMessage::Uninstall { confirm_name, .. } => {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
