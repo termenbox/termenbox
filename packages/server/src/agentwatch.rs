@@ -51,6 +51,19 @@ impl PromptTracker {
     }
 }
 
+/// What a recognised screen says: a waiting dialog, a working agent, or an idle one. Nothing when it shows none.
+fn screen_state(v: &crate::profile::ScreenView) -> Option<AgentState> {
+    if v.blocked {
+        Some(AgentState::NeedsInput)
+    } else if v.working {
+        Some(AgentState::Working)
+    } else if v.idle {
+        Some(AgentState::Idle)
+    } else {
+        None
+    }
+}
+
 pub fn hex8(s: &str) -> String {
     Sha256::digest(s.as_bytes())[..4]
         .iter()
@@ -160,6 +173,16 @@ pub async fn scan_tmux_once(
         let view =
             (profile.has_state_markers() && !screen.is_empty()).then(|| profile.read(&screen));
         if let Some(v) = &view {
+            // Without hooks the screen is the only witness: a dialog that waits is `needs_input`, as a hint (never
+            // a push), and the screen says so again when it is gone, so the hint cannot outlive the dialog.
+            if let Some(state) = screen_state(v) {
+                hub.report(
+                    &p.session,
+                    Source::Screen,
+                    Confidence::Low,
+                    EventKind::State { state },
+                );
+            }
             hub.reconcile(
                 &p.session,
                 Screen {
@@ -328,5 +351,25 @@ mod tests {
                 && matches!(k, EventKind::Prompt { .. })),
             "{kinds:?}"
         );
+    }
+
+    #[test]
+    fn a_recorded_claude_screen_maps_to_its_state() {
+        let (p, _) = Profiles::builtin().for_agent(Some("claude"));
+        let read = |n: &str| {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("testdata/screens")
+                .join(format!("{n}.txt"));
+            screen_state(&p.read(&std::fs::read_to_string(path).unwrap()))
+        };
+        for dialog in [
+            "claude-question",
+            "claude-question-freetext",
+            "claude-permission",
+        ] {
+            assert_eq!(read(dialog), Some(AgentState::NeedsInput), "{dialog}");
+        }
+        assert_eq!(read("claude-working"), Some(AgentState::Working));
+        assert_eq!(read("claude-idle"), Some(AgentState::Idle));
     }
 }
