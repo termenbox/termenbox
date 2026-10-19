@@ -33,12 +33,9 @@ UNITS=/home/alice/.config/systemd/user
 usr() { as_alice systemctl --user "$@"; }
 snapshot() { (cd /home/alice && find . -path ./.cache -prune -o -print | sort | md5sum); ls -A /etc/systemd/system /usr/local/bin | sort | md5sum; }
 
-echo "== without tmux it stops and says what to run, having changed nothing"
-before="$(snapshot)"
-if as_alice sh /install.sh "$SECRET" "$ORIGIN" host-me >/tmp/notmux.txt 2>&1; then fail "installed without tmux"; fi
-grep -q "tmux is needed" /tmp/notmux.txt || { cat /tmp/notmux.txt; fail "the refusal does not say why"; }
-[ "$(snapshot)" = "$before" ] || fail "a refused install changed the machine"
-apt-get install -y -qq tmux >/dev/null 2>&1 || fail "could not install tmux for the rest of the test"
+echo "== this machine has no tmux of its own (the install must bring one, decision 0119)"
+if command -v tmux >/dev/null 2>&1; then fail "this test needs a machine with no tmux"; fi
+BUNDLED=/home/alice/.local/bin/termenbox-tmux
 
 echo "== a dry run changes nothing"
 before="$(snapshot)"
@@ -61,6 +58,28 @@ grep -q '^WantedBy=default.target' "$UNITS/termenbox.service" || fail "the unit 
 [ "$(ls -A /etc/systemd/system /usr/local/bin /var/lib | sort | md5sum)" = "$before_system" ] || fail "something outside alice's home was changed"
 as_alice "$BIN" --journal-dir "$JOURNAL" --journal-list | grep -q unit_installed || fail "the journal has no unit entry"
 as_alice "$BIN" --journal-dir "$JOURNAL" --journal-list | grep -q file_created || fail "the journal has no binary entry"
+echo "== the bundled tmux is in place, verified, owned by alice, journaled, and the server runs on it"
+[ -x "$BUNDLED" ] || fail "the bundled tmux is not in alice's ~/.local/bin"
+[ "$(stat -c %U "$BUNDLED")" = alice ] || fail "the bundled tmux does not belong to alice"
+[ "$(sha256sum "$BUNDLED" | cut -d' ' -f1)" = "$(sha256sum /release/tmux-x86_64-linux | cut -d' ' -f1)" ] || fail "the bundled tmux is not the signed one"
+for n in tmux-COPYING tmux-libevent-LICENSE tmux-ncurses-COPYING; do
+  [ -f "/home/alice/.local/bin/termenbox-$n" ] || fail "the notice $n is not beside the tmux"
+done
+as_alice "$BUNDLED" -V | grep -q '^tmux ' || fail "the bundled tmux does not run"
+as_alice "$BIN" --journal-dir "$JOURNAL" --journal-list | grep -q termenbox-tmux || fail "the journal has no tmux entry"
+! command -v tmux >/dev/null 2>&1 || fail "a tmux was installed on the machine; the bundled one is all there should be"
+# The server refuses to start without a tmux (startup self-check), and the machine has none on PATH: it is up, so it found the bundled one.
+usr is-active --quiet termenbox || fail "the server is not running without a tmux on PATH"
+if ! grep -q "stub tmux" "$BUNDLED"; then
+  # A real tmux: a session that runs a command, and control mode, which is what the server speaks.
+  tm() { as_alice env TERM=xterm-256color TMUX_TMPDIR=/tmp/alice-tmux "$BUNDLED" -f /dev/null "$@"; }
+  as_alice mkdir -p /tmp/alice-tmux
+  tm new-session -d -s probe -x 80 -y 24 'echo session-ok; exec sleep 30'
+  sleep 1
+  tm capture-pane -p -t probe | grep -q session-ok || fail "the bundled tmux did not run a session"
+  printf 'list-sessions\n' | tm -C attach -t probe 2>&1 | grep -q '^%begin' || fail "control mode did not answer"
+  tm kill-server
+fi
 # Starting at boot needs lingering: either alice could switch it on for herself, or the installer said what root would have to run.
 if [ "$(loginctl show-user alice -p Linger --value)" = yes ]; then
   as_alice "$BIN" --journal-dir "$JOURNAL" --journal-list | grep -q linger_enabled || fail "lingering was enabled but is not in the journal"
@@ -103,10 +122,13 @@ echo "== a newer release is installed by alice's own updater, the old binary is 
 helper /release2 | grep -q "updated .* -> 9.0.1" || fail "the update did not report success"
 [ "$(sha "$BIN")" = "$(sha /release2/termenbox-server-x86_64-linux)" ] || fail "the new binary is not in place"
 [ -f "$BIN.prev" ] || fail "the previous binary was not kept"
+[ "$(sha "$BUNDLED")" = "$(sha /release2/tmux-x86_64-linux)" ] || fail "the update did not carry the new tmux"
 usr is-active --quiet termenbox || fail "the service is not active after the update"
 
 echo "== a release that does not come up is rolled back"
 good_sha="$(sha "$BIN")"
+good_tmux="$(sha "$BUNDLED")"
+# release3 carries the first tmux again, so a rollback that ignored tmux would leave it swapped.
 set +e
 helper /release3 > /tmp/rollback.txt 2>&1
 code=$?
@@ -114,6 +136,7 @@ set -e
 [ "$code" = 2 ] || { cat /tmp/rollback.txt; fail "a failed update did not exit with 2 (got $code)"; }
 grep -q "rolled back" /tmp/rollback.txt || fail "the rollback was not reported"
 [ "$(sha "$BIN")" = "$good_sha" ] || fail "the old binary was not restored"
+[ "$(sha "$BUNDLED")" = "$good_tmux" ] || fail "the tmux was not put back with the server"
 usr is-active --quiet termenbox || fail "the service is not active after the rollback"
 
 echo "== a request from the server reaches the user helper, and junk does not"
@@ -205,6 +228,8 @@ echo "== uninstall.sh --yes, as alice, removes it all"
 as_alice sh /uninstall.sh --yes
 [ ! -e "$UNITS/termenbox.service" ] || fail "the unit is still there"
 [ ! -e "$BIN" ] || fail "the binary is still there"
+[ ! -e "$BUNDLED" ] || fail "the bundled tmux is still there"
+ls /home/alice/.local/bin/termenbox-tmux-* >/dev/null 2>&1 && fail "a tmux notice is still there"
 [ ! -e "$STATE" ] || fail "the state directory is still there"
 [ ! -e "$JOURNAL" ] || fail "the journal is still there"
 [ -d /home/alice ] || fail "alice's home was touched"

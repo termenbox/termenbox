@@ -27,6 +27,8 @@ pub trait Service: Send + Sync {
     async fn healthy(&self) -> bool;
     /// Whether the downloaded file runs at all on this machine.
     async fn smoke(&self, binary: &Path) -> bool;
+    /// Whether the downloaded tmux runs at all on this machine (`tmux -V`).
+    async fn smoke_tmux(&self, binary: &Path) -> bool;
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -64,15 +66,66 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+fn suffixed(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(suffix);
+    path.with_file_name(name)
+}
+
+/// A bundled tmux downloaded, verified and staged beside the installed one, to be swapped in with the server.
+struct StagedTmux {
+    path: PathBuf,
+    staged: PathBuf,
+    sha256: String,
+}
+
 fn core_version(v: &str) -> &str {
     v.split(['+', '-']).next().unwrap_or(v)
 }
 
 impl Updater<'_> {
     fn sibling(&self, suffix: &str) -> PathBuf {
-        let mut name = self.binary.file_name().unwrap_or_default().to_os_string();
-        name.push(suffix);
-        self.binary.with_file_name(name)
+        suffixed(&self.binary, suffix)
+    }
+
+    /// Where the installer put the bundled tmux (decision 0119): beside the server.
+    fn tmux_path(&self) -> PathBuf {
+        self.binary.with_file_name(crate::backend::BUNDLED_TMUX)
+    }
+
+    /// The new bundled tmux, downloaded, checked against the signed hash and run once, or `None` when this release
+    /// has none for this architecture, or this install has none to update (it uses the machine's own tmux: an update
+    /// does not add one under running sessions), or the installed one is already the signed one.
+    async fn stage_tmux(&self, manifest: &Manifest, base: &str) -> Result<Option<StagedTmux>> {
+        let path = self.tmux_path();
+        let Some(entry) = manifest.tmux(&self.arch) else {
+            return Ok(None);
+        };
+        if !path.is_file() {
+            return Ok(None);
+        }
+        let expected = entry.sha256.to_ascii_lowercase();
+        if crate::journal::hash_file(&path)? == expected {
+            return Ok(None);
+        }
+        let bytes = self
+            .fetch
+            .get(&format!("{base}/tmux-{}-linux", self.arch))
+            .await?;
+        if hex(&Sha256::digest(&bytes)) != expected {
+            bail!("the downloaded tmux does not match the signed hash; nothing was changed");
+        }
+        let staged = suffixed(&path, ".new");
+        write_executable(&staged, &bytes)?;
+        if !self.service.smoke_tmux(&staged).await {
+            let _ = std::fs::remove_file(&staged);
+            bail!("the new tmux does not run on this machine; nothing was changed");
+        }
+        Ok(Some(StagedTmux {
+            path,
+            staged,
+            sha256: expected,
+        }))
     }
 
     pub async fn run(&self) -> Result<Outcome> {
@@ -104,6 +157,14 @@ impl Updater<'_> {
             let _ = std::fs::remove_file(&staged);
             bail!("the new server does not run on this machine; nothing was changed");
         }
+        // The bundled tmux goes with the server: both are swapped, both are put back together.
+        let tmux = match self.stage_tmux(&manifest, base).await {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = std::fs::remove_file(&staged);
+                return Err(e);
+            }
+        };
 
         // Journal first, with a backup of what is there now, then swap.
         let journal = Journal::open(&self.root_dir)?;
@@ -123,6 +184,25 @@ impl Updater<'_> {
         })?;
         let previous = self.sibling(".prev");
         std::fs::copy(&self.binary, &previous)?;
+        let mut swapped_tmux = None;
+        if let Some(t) = tmux {
+            let backup = backups.join(format!(
+                "{}.{}.{}",
+                crate::backend::BUNDLED_TMUX,
+                core_version(&self.current),
+                &crate::journal::hash_file(&t.path)?[..12]
+            ));
+            std::fs::copy(&t.path, &backup)?;
+            let tmux_entry = journal.record(Change::FileReplaced {
+                path: t.path.display().to_string(),
+                backup: backup.display().to_string(),
+                sha256: t.sha256.clone(),
+            })?;
+            let tmux_previous = suffixed(&t.path, ".prev");
+            std::fs::copy(&t.path, &tmux_previous)?;
+            std::fs::rename(&t.staged, &t.path)?;
+            swapped_tmux = Some((t.path, tmux_previous, tmux_entry));
+        }
         std::fs::rename(&staged, &self.binary)?;
 
         self.service.restart().await?;
@@ -136,6 +216,10 @@ impl Updater<'_> {
         // The new server did not come up: put the old one back and say so.
         std::fs::rename(&previous, &self.binary)?;
         journal.mark_done(entry)?;
+        if let Some((path, tmux_previous, tmux_entry)) = swapped_tmux {
+            std::fs::rename(&tmux_previous, &path)?;
+            journal.mark_done(tmux_entry)?;
+        }
         let _ = self.service.restart().await;
         Ok(Outcome::RolledBack {
             to: manifest.version,
@@ -225,6 +309,11 @@ impl Service for Systemd {
         let run = tokio::process::Command::new(binary).arg("--help").output();
         matches!(tokio::time::timeout(Duration::from_secs(10), run).await, Ok(Ok(o)) if o.status.success())
     }
+
+    async fn smoke_tmux(&self, binary: &Path) -> bool {
+        let run = tokio::process::Command::new(binary).arg("-V").output();
+        matches!(tokio::time::timeout(Duration::from_secs(10), run).await, Ok(Ok(o)) if o.status.success() && String::from_utf8_lossy(&o.stdout).starts_with("tmux "))
+    }
 }
 
 #[cfg(test)]
@@ -255,6 +344,7 @@ mod tests {
         /// Health answers per restart: the n-th restart is healthy when `healthy_from <= n`.
         healthy_from: u32,
         runs: bool,
+        tmux_runs: bool,
         binary: PathBuf,
         seen_healthy_with: Mutex<Vec<Vec<u8>>>,
     }
@@ -279,6 +369,9 @@ mod tests {
         async fn smoke(&self, _: &Path) -> bool {
             self.runs
         }
+        async fn smoke_tmux(&self, _: &Path) -> bool {
+            self.tmux_runs
+        }
     }
 
     const BASE: &str = "https://github.com/termenbox/termenbox/releases/download/v9.9.9";
@@ -292,10 +385,27 @@ mod tests {
 
     /// A signed release 9.9.9 whose x86_64 binary is `new_binary`, signed with the real ssh-keygen. None without it.
     fn world(version: &str, freeze: bool, new_binary: &[u8]) -> Option<World> {
+        world_with_tmux(version, freeze, new_binary, None)
+    }
+
+    /// Like `world`, and the release also carries `new_tmux` as the x86_64 bundled tmux. The installed one, beside
+    /// the server, is `old tmux`.
+    fn world_with_tmux(
+        version: &str,
+        freeze: bool,
+        new_binary: &[u8],
+        new_tmux: Option<&[u8]>,
+    ) -> Option<World> {
         let dir = std::env::temp_dir().join(format!("termenbox-updater-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).ok()?;
+        let tmux_entry = new_tmux.map_or(String::new(), |t| {
+            format!(
+                r#","tmux":{{"x86_64":{{"url":"{BASE}/tmux-x86_64-linux","sha256":"{}"}}}}"#,
+                hex(&Sha256::digest(t))
+            )
+        });
         let manifest = format!(
-            r#"{{"version":"{version}","freeze":{freeze},"notes":"","binaries":{{"x86_64":{{"url":"{BASE}/termenbox-server-x86_64-linux","sha256":"{}"}}}}}}"#,
+            r#"{{"version":"{version}","freeze":{freeze},"notes":"","binaries":{{"x86_64":{{"url":"{BASE}/termenbox-server-x86_64-linux","sha256":"{}"}}}}{tmux_entry}}}"#,
             hex(&Sha256::digest(new_binary))
         );
         let key = dir.join("key");
@@ -343,6 +453,10 @@ mod tests {
             "https://rel/termenbox-server-x86_64-linux".to_string(),
             new_binary.to_vec(),
         );
+        if let Some(t) = new_tmux {
+            files.insert("https://rel/tmux-x86_64-linux".to_string(), t.to_vec());
+            std::fs::write(dir.join("termenbox-tmux"), b"old tmux").ok()?;
+        }
         let binary = dir.join("termenbox-server");
         std::fs::write(&binary, b"old binary").ok()?;
         Some(World {
@@ -373,6 +487,7 @@ mod tests {
             restarts: Mutex::new(0),
             healthy_from,
             runs,
+            tmux_runs: true,
             binary: w.binary.clone(),
             seen_healthy_with: Mutex::new(vec![]),
         }
@@ -572,6 +687,123 @@ mod tests {
         assert_eq!(
             *s.restarts.lock().unwrap() + *broken.restarts.lock().unwrap(),
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn the_bundled_tmux_is_updated_with_the_server_and_both_are_journaled() {
+        let Some(w) = world_with_tmux("9.9.9", false, b"new binary", Some(b"new tmux")) else {
+            return;
+        };
+        let (f, s) = (fake(&w), svc(&w, 1, true));
+        let out = updater(&w, &f, &s, "0.1.0").run().await.unwrap();
+        assert!(matches!(out, Outcome::Updated { .. }), "{out:?}");
+        let tmux = w.dir.join("termenbox-tmux");
+        assert_eq!(std::fs::read(&tmux).unwrap(), b"new tmux");
+        assert_eq!(std::fs::read(&w.binary).unwrap(), b"new binary");
+        assert!(!w.dir.join("termenbox-tmux.new").exists());
+        // one journal entry per file, and reverting puts both back
+        let journal = Journal::open(&w.dir.join("root")).unwrap();
+        assert_eq!(journal.pending().unwrap().len(), 2);
+        let report = journal
+            .revert(&mut crate::journal::RealOps, &Default::default())
+            .unwrap();
+        assert_eq!(report.reverted.len(), 2, "{report:?}");
+        assert_eq!(std::fs::read(&tmux).unwrap(), b"old tmux");
+        assert_eq!(std::fs::read(&w.binary).unwrap(), b"old binary");
+    }
+
+    #[tokio::test]
+    async fn an_unhealthy_update_puts_the_old_server_and_the_old_tmux_back_together() {
+        let Some(w) = world_with_tmux("9.9.9", false, b"new binary", Some(b"new tmux")) else {
+            return;
+        };
+        let (f, s) = (fake(&w), svc(&w, 2, true));
+        let out = updater(&w, &f, &s, "0.1.0").run().await.unwrap();
+        assert!(matches!(out, Outcome::RolledBack { .. }), "{out:?}");
+        assert_eq!(std::fs::read(&w.binary).unwrap(), b"old binary");
+        assert_eq!(
+            std::fs::read(w.dir.join("termenbox-tmux")).unwrap(),
+            b"old tmux"
+        );
+        let journal = Journal::open(&w.dir.join("root")).unwrap();
+        assert!(journal.pending().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_bad_tmux_changes_nothing_not_even_the_server() {
+        let Some(w) = world_with_tmux("9.9.9", false, b"new binary", Some(b"new tmux")) else {
+            return;
+        };
+        // a tmux that is not what the manifest signed
+        let mut swapped = fake(&w);
+        swapped
+            .files
+            .insert("https://rel/tmux-x86_64-linux".into(), b"evil".to_vec());
+        let s = svc(&w, 1, true);
+        let err = updater(&w, &swapped, &s, "0.1.0").run().await.unwrap_err();
+        assert!(err.to_string().contains("signed hash"), "{err}");
+        // a tmux that does not run
+        let mut broken = svc(&w, 1, true);
+        broken.tmux_runs = false;
+        let f = fake(&w);
+        let err = updater(&w, &f, &broken, "0.1.0").run().await.unwrap_err();
+        assert!(err.to_string().contains("tmux does not run"), "{err}");
+        assert_eq!(std::fs::read(&w.binary).unwrap(), b"old binary");
+        assert_eq!(
+            std::fs::read(w.dir.join("termenbox-tmux")).unwrap(),
+            b"old tmux"
+        );
+        assert!(!w.dir.join("termenbox-server.new").exists());
+        assert!(!w.dir.join("termenbox-tmux.new").exists());
+        assert_eq!(
+            *s.restarts.lock().unwrap() + *broken.restarts.lock().unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn an_install_without_a_bundled_tmux_is_not_given_one_and_an_old_manifest_still_works() {
+        // the release has a tmux, this install has none beside the server
+        let Some(w) = world_with_tmux("9.9.9", false, b"new binary", Some(b"new tmux")) else {
+            return;
+        };
+        std::fs::remove_file(w.dir.join("termenbox-tmux")).unwrap();
+        let (f, s) = (fake(&w), svc(&w, 1, true));
+        updater(&w, &f, &s, "0.1.0").run().await.unwrap();
+        assert!(!w.dir.join("termenbox-tmux").exists());
+        assert!(!f.fetched.lock().unwrap().iter().any(|u| u.contains("tmux")));
+        // an older manifest without the tmux keys leaves an installed tmux alone
+        let Some(w) = world("9.9.9", false, b"new binary") else {
+            return;
+        };
+        std::fs::write(w.dir.join("termenbox-tmux"), b"old tmux").unwrap();
+        let (f, s) = (fake(&w), svc(&w, 1, true));
+        updater(&w, &f, &s, "0.1.0").run().await.unwrap();
+        assert_eq!(
+            std::fs::read(w.dir.join("termenbox-tmux")).unwrap(),
+            b"old tmux"
+        );
+        // a release whose tmux is the one already installed does not download it again
+        let Some(w) = world_with_tmux("9.9.9", false, b"new binary", Some(b"same")) else {
+            return;
+        };
+        std::fs::write(w.dir.join("termenbox-tmux"), b"same").unwrap();
+        let (f, s) = (fake(&w), svc(&w, 1, true));
+        updater(&w, &f, &s, "0.1.0").run().await.unwrap();
+        assert!(!f
+            .fetched
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|u| u.contains("tmux-")));
+        assert_eq!(
+            Journal::open(&w.dir.join("root"))
+                .unwrap()
+                .pending()
+                .unwrap()
+                .len(),
+            1
         );
     }
 

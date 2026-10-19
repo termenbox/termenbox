@@ -160,6 +160,12 @@ pub struct Manifest {
     pub notes: String,
     /// By architecture name (`x86_64`, `aarch64`).
     pub binaries: BTreeMap<String, Binary>,
+    /// The bundled tmux by architecture (decision 0119). Absent in releases from before it was bundled.
+    #[serde(default)]
+    pub tmux: BTreeMap<String, Binary>,
+    /// Licence notices that travel with the bundled tmux, by file name.
+    #[serde(default)]
+    pub tmux_notices: BTreeMap<String, Binary>,
 }
 
 impl Manifest {
@@ -174,12 +180,23 @@ impl Manifest {
         let manifest: Manifest =
             serde_json::from_slice(bytes).map_err(|e| anyhow!("bad manifest: {e}"))?;
         parse_version(&manifest.version)?;
-        for (arch, b) in &manifest.binaries {
+        let all = manifest
+            .binaries
+            .iter()
+            .map(|(k, b)| (format!("{k} binary"), b))
+            .chain(manifest.tmux.iter().map(|(k, b)| (format!("{k} tmux"), b)))
+            .chain(
+                manifest
+                    .tmux_notices
+                    .iter()
+                    .map(|(k, b)| (format!("{k} notice"), b)),
+            );
+        for (what, b) in all {
             if !b.url.starts_with(url_prefix) || b.url.contains("..") {
-                bail!("the {arch} binary is not hosted by this project's releases");
+                bail!("the {what} is not hosted by this project's releases");
             }
             if b.sha256.len() != 64 || !b.sha256.chars().all(|c| c.is_ascii_hexdigit()) {
-                bail!("the {arch} hash is not a SHA-256");
+                bail!("the {what} hash is not a SHA-256");
             }
         }
         Ok((manifest, kid))
@@ -189,6 +206,11 @@ impl Manifest {
         self.binaries
             .get(arch)
             .ok_or_else(|| anyhow!("this release has no {arch} binary"))
+    }
+
+    /// The bundled tmux for `arch`, when this release carries one.
+    pub fn tmux(&self, arch: &str) -> Option<&Binary> {
+        self.tmux.get(arch)
     }
 
     /// Whether this release is newer than the running `current` version.
@@ -310,6 +332,42 @@ mod tests {
     }
 
     #[test]
+    fn the_tmux_keys_are_optional_and_checked_like_the_binaries() {
+        let url = format!("{PREFIX}v1.2.3/termenbox-server-x86_64-linux");
+        let plain = manifest_json("1.2.3", &url);
+        let h = "b".repeat(64);
+        let tmux_url = format!("{PREFIX}v1.2.3/tmux-x86_64-linux");
+        let with = plain.replacen(
+            r#""binaries""#,
+            &format!(
+                r#""tmux":{{"x86_64":{{"url":"{tmux_url}","sha256":"{h}"}}}},"tmux_notices":{{"tmux-COPYING":{{"url":"{PREFIX}v1.2.3/tmux-COPYING","sha256":"{h}"}}}},"binaries""#
+            ),
+            1,
+        );
+        let Some((keys, sig)) = sign_with_ssh_keygen(&plain, NAMESPACE) else {
+            return;
+        };
+        let (old, _) = Manifest::verify(plain.as_bytes(), &sig, &keys, PREFIX).unwrap();
+        assert!(old.tmux("x86_64").is_none() && old.tmux_notices.is_empty());
+        let Some((keys, sig)) = sign_with_ssh_keygen(&with, NAMESPACE) else {
+            return;
+        };
+        let (new, _) = Manifest::verify(with.as_bytes(), &sig, &keys, PREFIX).unwrap();
+        assert_eq!(new.tmux("x86_64").unwrap().url, tmux_url);
+        assert!(new.tmux("aarch64").is_none());
+        assert_eq!(new.tmux_notices.len(), 1);
+        // a tmux entry elsewhere or with a bad hash is refused like a server binary
+        let bad = with.replace(&tmux_url, "https://evil.example/tmux");
+        let Some((keys, sig)) = sign_with_ssh_keygen(&bad, NAMESPACE) else {
+            return;
+        };
+        let err = Manifest::verify(bad.as_bytes(), &sig, &keys, PREFIX)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("tmux is not hosted"), "{err}");
+    }
+
+    #[test]
     fn a_manifest_pointing_elsewhere_or_with_a_bad_hash_is_refused_even_when_signed() {
         for (m, why) in [
             (
@@ -346,6 +404,8 @@ mod tests {
             freeze: false,
             notes: String::new(),
             binaries: BTreeMap::new(),
+            tmux: BTreeMap::new(),
+            tmux_notices: BTreeMap::new(),
         };
         assert!(m("0.10.0").is_newer_than("0.9.9").unwrap());
         assert!(!m("1.0.0").is_newer_than("1.0.0").unwrap());

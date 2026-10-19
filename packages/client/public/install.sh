@@ -21,6 +21,8 @@
 # Host modes: every change is recorded in /var/lib/termenbox-root before it is made and can be undone with
 # `termenbox-server --revert`. The release is checked before anything is installed: its manifest must carry a valid
 # signature by the release key below (checked with ssh-keygen), and the binary must match the signed SHA-256.
+# The host modes also install a pinned, statically linked tmux next to the server (decision 0119), verified the same
+# way, so no tmux has to be installed first and no package manager or root is needed for it. Docker keeps its own.
 set -eu
 
 SECRET="${1:--}"
@@ -286,10 +288,7 @@ fetch_release() {
     || die "the release signature is not valid, so nothing was installed"
   grep -q '"freeze": *true' "$TMP/manifest.json" && die "new installs are paused by the maintainers (a signed freeze); try again later"
   VERSION="$(sed -n 's/.*"version": *"\([0-9.]*\)".*/\1/p' "$TMP/manifest.json" | head -1)"
-  SHA="$(awk -v arch="$ARCH" '
-    $0 ~ "\"" arch "\": *[{]" { inside = 1; next }
-    inside && /"sha256":/ { gsub(/.*"sha256": *"/, ""); gsub(/".*/, ""); print; exit }
-    inside && /[}]/ { inside = 0 }' "$TMP/manifest.json")"
+  SHA="$(manifest_sha binaries "$ARCH")"
   case "$SHA" in
     *[!0-9a-f]*|"") die "the release has no $ARCH binary" ;;
   esac
@@ -299,6 +298,71 @@ fetch_release() {
   chmod 755 "$TMP/termenbox-server"
   "$TMP/termenbox-server" --help >/dev/null 2>&1 || die "the downloaded server does not run on this machine"
   JBIN="$TMP/termenbox-server"
+  fetch_tmux
+}
+
+# manifest_sha SECTION KEY  prints the SHA-256 of manifest.json[SECTION][KEY] (the manifest is written with one key per line).
+manifest_sha() {
+  awk -v sec="$1" -v key="$2" '
+    function nm(l) { sub(/^[^"]*"/, "", l); sub(/".*/, "", l); return l }
+    /[{][ \t]*$/ { depth++; if (depth == 2) s = nm($0); else if (depth == 3) k = nm($0); next }
+    /^[ \t]*[}]/ { depth--; next }
+    depth == 3 && s == sec && k == key && /"sha256":/ { v = $0; sub(/.*"sha256": *"/, "", v); sub(/".*/, "", v); print v; exit }' "$TMP/manifest.json"
+}
+
+# The bundled tmux and its licence notices (decision 0119), checked against the signed manifest like the server.
+# Sets TMUX_SHA (empty for a release from before tmux was bundled) and TMUX_NOTICES (the notice names downloaded).
+TMUX_NOTICE_NAMES="tmux-COPYING tmux-libevent-LICENSE tmux-ncurses-COPYING"
+fetch_tmux() {
+  TMUX_SHA=""
+  TMUX_NOTICES=""
+  _t="$(manifest_sha tmux "$ARCH")"
+  [ -n "$_t" ] || return 0
+  [ "${#_t}" -eq 64 ] && [ -z "$(printf '%s' "$_t" | tr -d '0-9a-f')" ] || die "the release has no valid $ARCH tmux hash"
+  curl -fsSL --retry 3 -o "$TMP/termenbox-tmux" "$RELEASE_URL/tmux-$ARCH-linux" || die "could not download tmux"
+  echo "$_t  $TMP/termenbox-tmux" | sha256sum -c - >/dev/null 2>&1 || die "the downloaded tmux does not match the signed hash, so nothing was installed"
+  chmod 755 "$TMP/termenbox-tmux"
+  "$TMP/termenbox-tmux" -V 2>/dev/null | grep -q '^tmux ' || die "the downloaded tmux does not run on this machine"
+  for _n in $TMUX_NOTICE_NAMES; do
+    _h="$(manifest_sha tmux_notices "$_n")"
+    [ -n "$_h" ] || continue
+    curl -fsSL --retry 3 -o "$TMP/$_n" "$RELEASE_URL/$_n" || die "could not download $_n"
+    echo "$_h  $TMP/$_n" | sha256sum -c - >/dev/null 2>&1 || die "the downloaded $_n does not match the signed hash, so nothing was installed"
+    TMUX_NOTICES="$TMUX_NOTICES $_n"
+  done
+  TMUX_SHA="$_t"
+}
+
+# put_file SRC DEST MODE  journals the file (as created, or as replaced with a backup), then puts it in place.
+put_file() {
+  _sum="$(sha256sum "$1" | cut -d' ' -f1)"
+  if [ -e "$2" ]; then
+    mkdir -p "$JOURNAL/backups"
+    _backup="$JOURNAL/backups/$(basename "$2").$(date +%s)"
+    cp -p "$2" "$_backup"
+    journal file_replaced "path=$2" "backup=$_backup" "sha256=$_sum"
+  else
+    journal file_created "path=$2" "sha256=$_sum"
+  fi
+  install -m "$3" "$1" "$2"
+}
+
+# The bundled tmux and its notices go beside the server, where the user the sessions run as can reach them. The server
+# looks there first, before tmux on PATH. Nothing to do for a release without one.
+install_tmux() {
+  [ -n "$TMUX_SHA" ] || return 0
+  _dir="$(dirname "$BIN")"
+  put_file "$TMP/termenbox-tmux" "$_dir/termenbox-tmux" 0755
+  for _n in $TMUX_NOTICES; do
+    put_file "$TMP/$_n" "$_dir/termenbox-$_n" 0644
+  done
+}
+
+# A release from before tmux was bundled needs the machine's own. Said before anything is changed.
+need_system_tmux() {
+  [ -z "$TMUX_SHA" ] || return 0
+  command -v tmux >/dev/null 2>&1 && return 0
+  [ "$1" = root ] || die "this release has no bundled tmux and none is installed (sessions are tmux sessions); installing one takes root. Install it, for example: sudo apt-get install -y tmux   (or dnf, pacman, apk), then run this command again. Nothing was changed."
 }
 
 install_native() {
@@ -345,6 +409,7 @@ install_native() {
   fi
 
   fetch_release
+  need_system_tmux root
 
   # 2. What will change. Everything below is recorded in the journal first.
   PORT="$(pick_port udp_in_use 4443 "$JOURNAL/udp_port")"
@@ -354,7 +419,11 @@ install_native() {
   say "Termenbox $VERSION will be installed on this machine (sessions run as $RUN_USER):"
   say "  - the server  $BIN"
   [ "$RUN_USER" = root ] || { id "$RUN_USER" >/dev/null 2>&1 || say "  - a new user  $RUN_USER"; }
-  command -v tmux >/dev/null 2>&1 || say "  - the package tmux (sessions are tmux sessions)"
+  if [ -n "$TMUX_SHA" ]; then
+    say "  - tmux        $(dirname "$BIN")/termenbox-tmux (a pinned static build, used before any tmux on PATH)"
+  else
+    command -v tmux >/dev/null 2>&1 || say "  - the package tmux (sessions are tmux sessions)"
+  fi
   say "  - state       $STATE"
   say "  - a service   $UNIT_NAME (starts at boot), and a daily update check (root-owned, signed releases only)"
   say "  - UDP port    $PORT (opened in the firewall if one is active)"
@@ -377,6 +446,7 @@ install_native() {
     journal file_created "path=$BIN" "sha256=$SHA"
   fi
   install -m 0755 "$TMP/termenbox-server" "$BIN"
+  install_tmux
 
   if [ "$RUN_USER" != root ] && ! id "$RUN_USER" >/dev/null 2>&1; then
     journal user_created "name=$RUN_USER" "home=/home/$RUN_USER"
@@ -385,7 +455,7 @@ install_native() {
       || die "could not create the user $RUN_USER"
   fi
 
-  if ! command -v tmux >/dev/null 2>&1; then
+  if [ -z "$TMUX_SHA" ] && ! command -v tmux >/dev/null 2>&1; then
     say "Installing tmux..."
     if command -v apt-get >/dev/null 2>&1; then
       journal package_installed manager=apt name=tmux
@@ -475,7 +545,6 @@ install_user() {
   command -v curl >/dev/null 2>&1 || die "curl is needed"
   command -v sha256sum >/dev/null 2>&1 || die "sha256sum is needed"
   command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is needed to check the release signature (install openssh-client) and nothing was changed"
-  command -v tmux >/dev/null 2>&1 || die "tmux is needed (sessions are tmux sessions) and installing it takes root. Install it, for example: sudo apt-get install -y tmux   (or dnf, pacman, apk), then run this command again. Nothing was changed."
   case "$(uname -m)" in
     x86_64|amd64) ARCH=x86_64 ;;
     aarch64|arm64) ARCH=aarch64 ;;
@@ -535,11 +604,13 @@ install_user() {
   fi
 
   fetch_release
+  need_system_tmux user
   HTTP_PORT="$(pick_port tcp_in_use 8080 "$JOURNAL/http_port")"
   [ -n "$HTTP_PORT" ] || die "could not find a free port"
   say ""
   say "Termenbox $VERSION will be installed for $ME, with no root (sessions run as $ME):"
   say "  - the server  $BIN"
+  [ -z "$TMUX_SHA" ] || say "  - tmux        $(dirname "$BIN")/termenbox-tmux (a pinned static build, used before any tmux on PATH)"
   say "  - state       $STATE"
   say "  - a user service $SERVICE, and a daily update check (signed releases only), in $UNIT_DIR"
   say "  - UDP port    the server picks a free one from 4443-4542 and remembers it"
@@ -561,6 +632,7 @@ install_user() {
     journal file_created "path=$BIN" "sha256=$SHA"
   fi
   install -m 0755 "$TMP/termenbox-server" "$BIN"
+  install_tmux
 
   if [ ! -d "$STATE" ]; then
     journal dir_created "path=$STATE"
