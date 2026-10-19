@@ -1,6 +1,8 @@
 export type ClientMessage =
   | { type: 'hello' }
   | { type: 'auth'; cert: string; signature: string; server_token: string; channels?: boolean }
+  /** Decision 0117: sent instead of `auth`; the token authorises a read-only preview and nothing is bound. */
+  | { type: 'claim_preview'; server_token: string }
   | { type: 'revoke_device'; device: string }
   | { type: 'uninstall'; confirm_name: string; delete_user?: boolean; remove_tmux?: boolean; kill_sessions?: boolean }
   | { type: 'agent_sync'; after: Record<string, number> }
@@ -36,6 +38,8 @@ export type ClientMessage =
 export type ServerMessage =
   | { type: 'challenge'; nonce: string; server_id: string }
   | { type: 'device_revoked'; device: string }
+  /** Answer to `claim_preview`: `mode` is `container` or `host`; `run_user` is empty in a container. */
+  | { type: 'claim_preview'; name: string; mode: string; run_user?: string; version: string }
   | { type: 'uninstall_done'; mode: string }
   | { type: 'auth_ok'; channels?: string[]; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string }
   | { type: 'sessions'; sessions: SessionInfo[] }

@@ -25,6 +25,25 @@ async fn send(link: &Link, msg: &ServerMessage) -> bool {
     link.tx.send(serde_json::to_string(msg).unwrap()).await
 }
 
+/// What a claim would add: the name, how sessions run, as which OS user, and the version. Nothing secret.
+fn claim_preview(state: &AppState) -> ServerMessage {
+    let (mode, run_user) = split_mode(&state.mode);
+    ServerMessage::ClaimPreview {
+        name: state.server_name.clone(),
+        mode,
+        run_user,
+        version: crate::version(),
+    }
+}
+
+/// `container` -> (`container`, ""); `host:alice` -> (`host`, `alice`).
+fn split_mode(label: &str) -> (String, String) {
+    match label.split_once(':') {
+        Some((mode, user)) => (mode.to_string(), user.to_string()),
+        None => (label.to_string(), String::new()),
+    }
+}
+
 /// One client connection from first byte to last, on any transport.
 /// Browsers cannot set headers on a WebSocket and a data channel has none, so the handshake is in-band:
 /// `hello`, a `challenge` carrying a fresh nonce and this server's id, then `auth` with the device
@@ -52,6 +71,22 @@ pub async fn run(mut link: Link, state: AppState) {
         return;
     }
     let (cert, signature, claim, lanes) = match next(&mut link).await {
+        // Decision 0117: the dialog asks what it is about to add. One answer, then the connection ends; nothing is
+        // bound and the token stays valid.
+        Some(ClientMessage::ClaimPreview { server_token }) => {
+            let reply = if state
+                .auth
+                .preview_claim(&server_token, link.peer_ip.as_deref())
+            {
+                claim_preview(&state)
+            } else {
+                ServerMessage::Error {
+                    message: "This claim link is not valid (any more)".into(),
+                }
+            };
+            send(&link, &reply).await;
+            return;
+        }
         Some(ClientMessage::Auth {
             cert,
             signature,
@@ -118,5 +153,16 @@ pub async fn run(mut link: Link, state: AppState) {
 
     if let Err(e) = state.sessions.serve(link, identity, &state.auth).await {
         tracing::error!("Session error: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_mode;
+
+    #[test]
+    fn the_run_mode_label_splits_into_mode_and_run_user() {
+        assert_eq!(split_mode("container"), ("container".into(), "".into()));
+        assert_eq!(split_mode("host:alice"), ("host".into(), "alice".into()));
     }
 }

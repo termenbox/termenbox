@@ -251,6 +251,18 @@ impl AuthState {
         }
     }
 
+    /// Decision 0117: does `token` match the live claim of an unclaimed server? Read-only: binds nobody, keeps the
+    /// token, never makes a new one. Audit-logged with the outcome and the peer, never the token.
+    pub fn preview_claim(&self, token: &str, ip: Option<&str>) -> bool {
+        let ip = ip.unwrap_or("-");
+        let ok = !token.is_empty()
+            && self
+                .active_claim()
+                .is_some_and(|expected| constant_time_eq(token.as_bytes(), expected.as_bytes()));
+        info!(target: "audit", event = "claim_preview", success = ok, ip);
+        ok
+    }
+
     fn revoked_path(&self) -> PathBuf {
         self.dir.join("revoked_devices.json")
     }
@@ -596,6 +608,58 @@ mod tests {
             "the old owner is gone"
         );
         assert!(a.reclaim("").is_err());
+    }
+
+    #[test]
+    fn a_preview_of_the_claim_binds_nobody_and_can_repeat_before_the_claim_works() {
+        let a = auth();
+        let claim = a.claim_token().unwrap().unwrap();
+        assert!(a.preview_claim(&claim, Some("1.2.3.4")));
+        assert!(a.preview_claim(&claim, None));
+        assert!(!a.is_claimed(), "a preview never binds the owner");
+        assert_eq!(a.active_claim().as_deref(), Some(claim.as_str()));
+        assert_eq!(
+            a.authorize(&id(1), Some(&claim)).unwrap(),
+            Decision::Allowed
+        );
+        assert!(a.is_claimed());
+        assert!(
+            !a.preview_claim(&claim, None),
+            "a spent token previews nothing"
+        );
+    }
+
+    #[test]
+    fn a_wrong_empty_or_expired_token_gets_no_preview_and_makes_no_token() {
+        let a = auth();
+        assert!(!a.preview_claim("anything", None), "no claim exists yet");
+        assert!(
+            a.active_claim().is_none(),
+            "a preview must not mint a claim"
+        );
+        let claim = a.claim_token().unwrap().unwrap();
+        assert!(!a.preview_claim("wrong", None));
+        assert!(!a.preview_claim("", None));
+        assert!(a.preview_claim(&claim, None));
+
+        let mut b = auth();
+        b.set_claim_ttl(Duration::from_millis(1));
+        b.provide_claim("late").unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!b.preview_claim("late", None), "expired");
+    }
+
+    #[test]
+    fn a_closed_dialog_leaves_the_claim_usable() {
+        // The client opens a preview connection and drops it; the server keeps no state from it.
+        let a = auth();
+        let claim = a.claim_token().unwrap().unwrap();
+        assert!(a.preview_claim(&claim, Some("9.9.9.9")));
+        assert_eq!(a.active_claim().as_deref(), Some(claim.as_str()));
+        assert_eq!(
+            a.authorize(&id(5), Some(&claim)).unwrap(),
+            Decision::Allowed
+        );
     }
 
     #[test]
