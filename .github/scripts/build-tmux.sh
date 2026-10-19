@@ -54,12 +54,16 @@ make -j"$JOBS" >/dev/null
 make install >/dev/null
 
 cd "$WORK/tmux"
+# The terminfo library is part of libncursesw here. Naming every library and hiding the host's pkg-config files keeps
+# the host's own (glibc) libtinfo, which runners may have installed, out of the probes.
+export PKG_CONFIG_LIBDIR=/nonexistent
 ./configure --enable-static \
   LIBEVENT_CFLAGS="-I$DEPS/include" LIBEVENT_LIBS="-L$DEPS/lib -levent" \
+  LIBTINFO_CFLAGS="-I$DEPS/include -I$DEPS/include/ncursesw" LIBTINFO_LIBS="-L$DEPS/lib -lncursesw" \
   LIBNCURSES_CFLAGS="-I$DEPS/include -I$DEPS/include/ncursesw" LIBNCURSES_LIBS="-L$DEPS/lib -lncursesw" \
   CFLAGS="-Os" LDFLAGS="-static" >/dev/null
 # musl has forkpty in libc; if configure's probe misses it tmux builds a compat copy that clashes with <pty.h>.
-if ! grep -q '^#define HAVE_FORKPTY 1' config.h; then
+if grep -q '^ac_cv_search_forkpty=no' config.log; then
   echo "configure did not find forkpty:"
   grep -n -B2 -A12 forkpty config.log | tail -80
   exit 1
