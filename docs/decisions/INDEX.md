@@ -122,3 +122,4 @@
 0117-a-claim-link-is-previewed-and-consumed-only-on-confirm,"A claim link is previewed first and consumed only when the user confirms, and the name is editable there","security, auth, client, protocol",active
 0118-user-installs-use-a-reserved-udp-range-and-say-what-needs-root-first,"User installs bind a port from a reserved UDP range and say what needs root before changing anything","deployment, network, security, client",active
 0119-native-installs-bundle-a-pinned-static-tmux,"Native installs carry a pinned, statically linked tmux, so no install needs tmux from the distribution","deployment, server, security, build",active
+0120-termenbox-runs-its-own-tmux-server-with-its-own-config,"Termenbox runs its own tmux server on a private socket with a config it owns, apart from the user's tmux","server, sessions, deployment, compatibility",active
