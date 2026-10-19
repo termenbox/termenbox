@@ -27,6 +27,7 @@
   import { sendServerLink } from './lib/share';
   import { ServerHub, newSessionTargets, serverKey, sessionDestinations, sessionKey, type HubServer } from './lib/hub';
   import { lookup } from './lib/directory';
+  import { deleteMyData, registerServer } from './lib/account';
   import { deviceKey, publicKeyB64, signChallenge, certExpiry, certUserId, avatarUrl } from './lib/device';
   import AppShell from './AppShell.svelte';
   import AppFrame from './shell/AppFrame.svelte';
@@ -330,6 +331,18 @@
     saveServers([...servers.filter((s) => !same(s)), server]);
     hub.add(server);
     showWorkspace();
+  }
+
+  /**
+   * Links a freshly set-up server to this account so "delete my data" can find it, before the first connection:
+   * once the server has an owner it stops announcing the claim secret that proves who set it up. The server is added either way.
+   */
+  async function addAndLink(server: ServerListItem) {
+    if (server.claim && server.record && deviceCert) {
+      try { await registerServer(location.origin, { cert: deviceCert, pair: await deviceKey() }, server.claim); }
+      catch (e) { noteError(`account link: ${e instanceof Error ? e.message : e}`); }
+    }
+    addServer(server);
   }
 
   async function handleOAuthCallback() {
@@ -712,7 +725,7 @@
       {:else if $destination === 'activity'}
         <EmptyState title="Activity" body="What your agents did, and what it cost, will appear here." />
       {:else if $destination === 'settings'}
-        <SettingsView user={user ?? ''} {serverVersion} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} onmenu={() => { titleTapped(); menuOpen = true; }} onshortcuts={() => (helpOpen = true)} onreport={openReport} onlogout={logout} />
+        <SettingsView user={user ?? ''} {serverVersion} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} onmenu={() => { titleTapped(); menuOpen = true; }} onshortcuts={() => (helpOpen = true)} onreport={openReport} onlogout={logout} ondeletedata={async () => deleteMyData(location.origin, { cert: deviceCert!, pair: await deviceKey() })} />
       {:else}
         <div class="workspace" class:mobile={narrow}>
           <div class="terminal-pane">
@@ -774,7 +787,7 @@
   {/if}
 
   {#if showAddServer}
-    <AddServerModal origin={location.origin} prefillSecret={addPrefill} onserver={(id) => { showAddServer = false; void addServerById(id); }} onclose={() => showAddServer = false} onadd={(server) => addServer(server)} />
+    <AddServerModal origin={location.origin} prefillSecret={addPrefill} onserver={(id) => { showAddServer = false; void addServerById(id); }} onclose={() => showAddServer = false} onadd={(server) => void addAndLink(server)} />
   {/if}
 
   {#if toast}

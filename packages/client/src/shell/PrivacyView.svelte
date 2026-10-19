@@ -1,0 +1,69 @@
+<script lang="ts">
+  /** Settings > Privacy and your data (DECISION-0066): what the hosted service stores, for how long, and a way to delete it. */
+  let { ondelete, onback }: { ondelete: () => Promise<number>; onback: () => void } = $props();
+  type Step = { name: 'idle' } | { name: 'confirm' } | { name: 'busy' } | { name: 'done'; servers: number } | { name: 'failed'; message: string };
+  let step = $state<Step>({ name: 'idle' });
+  const btn = 'min-h-11 rounded-card px-4 text-base font-semibold disabled:opacity-60';
+  const card = 'flex flex-col gap-2 rounded-card border border-line bg-panel p-4';
+
+  async function remove() {
+    step = { name: 'busy' };
+    try {
+      step = { name: 'done', servers: await ondelete() };
+    } catch (e) {
+      step = { name: 'failed', message: e instanceof Error ? e.message : 'Something went wrong. Nothing was deleted.' };
+    }
+  }
+</script>
+
+<div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4" data-shell="privacy">
+  <button type="button" class="{btn} self-start bg-raised text-fg" onclick={onback}>← Settings</button>
+  <h1 class="text-title font-bold">Privacy and your data</h1>
+
+  <section class={card} aria-labelledby="privacy-stored">
+    <h2 id="privacy-stored" class="text-base font-semibold">What we store</h2>
+    <ul class="list-disc space-y-1 pl-5 text-base text-soft">
+      <li>Your GitHub account id, linked to each server you set up from this app. Not your name, email or GitHub token: the token is used once at sign-in and dropped.</li>
+      <li>For each server: its public key, IP address, port, security fingerprint, optional tunnel address, the time it last checked in, and a hash of its one-time setup code.</li>
+      <li>A scrambled hash of the address a server checked in from. It only limits abuse and cannot be turned back into the address.</li>
+    </ul>
+  </section>
+
+  <section class={card} aria-labelledby="privacy-retention">
+    <h2 id="privacy-retention" class="text-base font-semibold">How long we keep it</h2>
+    <p class="text-base text-soft">A server that has not checked in for 30 days stops being served and is deleted at the next clean-up, along with its link to your account. A running server checks in at least every 7 days, so it stays as long as it runs.</p>
+  </section>
+
+  <section class={card} aria-labelledby="privacy-device">
+    <h2 id="privacy-device" class="text-base font-semibold">What never reaches us</h2>
+    <p class="text-base text-soft">Terminal content goes directly between this browser and your server. Your server list, settings, usage and device key stay in this browser. If you dictate, your browser's own speech service may process the audio; none of it comes to us. The site is hosted on Cloudflare, which sees requests the way any web host does.</p>
+  </section>
+
+  <section class={card} aria-labelledby="privacy-delete" data-delete-step={step.name}>
+    <h2 id="privacy-delete" class="text-base font-semibold">Delete my data</h2>
+    {#if step.name === 'idle'}
+      <p class="text-base text-soft">Removes the directory records of the servers you set up from this app, and their link to your account. Servers set up before this option existed are not linked yet; they disappear 30 days after they go quiet.</p>
+      <button type="button" class="{btn} bg-raised text-fg" onclick={() => (step = { name: 'confirm' })}>Delete my data…</button>
+    {:else if step.name === 'confirm'}
+      <p class="text-base text-fg">Delete your records from our directory? This cannot be undone.</p>
+      <p class="text-base text-soft">Your servers keep running and keep their sessions, but this app can no longer find them by address until they check in again. A running server re-registers itself within 7 days; to stop that, uninstall it on its machine.</p>
+      <div class="grid grid-cols-2 gap-2">
+        <button type="button" class="{btn} bg-bad/15 text-bad" onclick={remove}>Delete my data</button>
+        <button type="button" class="{btn} bg-raised text-fg" onclick={() => (step = { name: 'idle' })}>Keep my data</button>
+      </div>
+    {:else if step.name === 'busy'}
+      <p class="text-base text-soft" role="status">Deleting…</p>
+    {:else if step.name === 'done'}
+      <p class="text-base text-ok" role="status">
+        {step.servers === 0 ? 'Done. No server records were linked to your account.' : `Done. Removed the records of ${step.servers} ${step.servers === 1 ? 'server' : 'servers'} and their link to your account.`}
+      </p>
+      <p class="text-base text-soft">You are still signed in, and this browser still has your server list. Uninstall a server on its machine to stop it registering again.</p>
+    {:else}
+      <p class="text-base text-bad" role="alert">{step.message}</p>
+      <div class="grid grid-cols-2 gap-2">
+        <button type="button" class="{btn} bg-raised text-fg" onclick={remove}>Try again</button>
+        <button type="button" class="{btn} bg-raised text-fg" onclick={() => (step = { name: 'idle' })}>Close</button>
+      </div>
+    {/if}
+  </section>
+</div>

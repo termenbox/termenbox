@@ -30,7 +30,7 @@ Assumptions: 10^5 users, 1 server each, 2 devices each; 20% of users active per 
 
 | Service | Metric | Load | Limit | Used |
 |---|---|---|---|---|
-| Workers / Pages Functions | requests/day | 46k: certificate and login 14.3k, announces 17.8k, pending polls 10k, user-data writes 3k, other 1k | 100k | 46% |
+| Workers / Pages Functions | requests/day | 47k: certificate and login 14.3k, announces 17.8k, pending polls 10k, user-data writes 3k, account links 0.5k (one per Add Server, R08), other 1k | 100k | 47% |
 | Workers | CPU per request | about 1–3 ms (Ed25519 or P-256 verify, HKDF) | 10 ms | 10–30% |
 | Workers | subrequests per request | at most 2–3 | 50 | under 10% |
 | R2 | Class A ops/month (writes) | 0.62M: record puts 17.8k/day, user-data puts 3k/day | 1M | 62% |

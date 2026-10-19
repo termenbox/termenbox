@@ -1,28 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
-
-// Vite does not know node:sqlite as a builtin yet, so load it through require.
-const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite');
+import { testDb } from '../testdb';
 import {
   b64urlEncode, canonicalMessage, handleAnnounce, handleLookup, handlePending, isPublicIp, parseAnnounce, verifySignature,
   MIN_ANNOUNCE_INTERVAL_MS, NEW_IDS_PER_SRC_PER_HOUR, CLAIM_TTL_MS, IDLE_EXPIRY_MS, type D1Like, type DirRecord,
 } from './_lib';
-
-/** A D1-shaped wrapper over node:sqlite, loaded with the real migration. */
-function testDb(): D1Like {
-  const sqlite = new DatabaseSync(':memory:');
-  sqlite.exec(readFileSync(new URL('../../../migrations/0001_directory.sql', import.meta.url), 'utf8'));
-  return {
-    prepare: (sql: string) => ({
-      bind: (...args: unknown[]) => ({
-        first: async <T,>() => ((sqlite.prepare(sql).get(...(args as never[])) as T | undefined) ?? null),
-        run: async () => sqlite.prepare(sql).run(...(args as never[])),
-        all: async <T,>() => ({ results: sqlite.prepare(sql).all(...(args as never[])) as T[] }),
-      }),
-    }),
-  };
-}
 
 const FP = 'sha-256 ' + Array(32).fill('AB').join(':');
 

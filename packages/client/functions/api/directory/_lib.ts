@@ -189,6 +189,11 @@ export async function srcHash(address: string, salt: string): Promise<string> {
   return b64urlEncode(new Uint8Array(d)).slice(0, 22);
 }
 
+/** What the directory stores of a claim secret: its SHA-256, so the secret itself never reaches it. */
+export async function claimHash(secret: string): Promise<string> {
+  return b64urlEncode(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret))));
+}
+
 export async function handleAnnounce(db: D1Like, body: unknown, src: string, now: number): Promise<Reply> {
   const r = parseAnnounce(body);
   if (typeof r === 'string') return { status: 400, body: { error: r } };
@@ -222,8 +227,9 @@ export async function handleAnnounce(db: D1Like, body: unknown, src: string, now
     .bind(r.server_id, r.seq, r.ip, r.udp_port, r.fingerprint, r.ws_url, r.claim_hash, r.claim_proof, r.sig, src, existing?.created_at ?? now, now, r.claim_hash ? now + CLAIM_TTL_MS : 0)
     .run();
 
-  // Housekeeping on writes only, so reads stay cheap: forget servers idle for 30 days.
+  // Housekeeping on writes only, so reads stay cheap: forget servers idle for 30 days, and who set them up.
   await db.prepare('DELETE FROM records WHERE updated_at < ?').bind(now - IDLE_EXPIRY_MS).run();
+  await db.prepare('DELETE FROM owner_servers WHERE server_id NOT IN (SELECT server_id FROM records)').bind().run();
   return { status: 200, body: { ok: true, seq: r.seq } };
 }
 

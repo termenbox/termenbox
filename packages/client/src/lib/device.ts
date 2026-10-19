@@ -1,6 +1,7 @@
 // Device key (DECISION-0062): a non-extractable ECDSA P-256 key pair kept in IndexedDB. The GitHub token is
 // never stored; a certificate from the hosted function says this key belongs to a GitHub user, and the
 // key signs each server's challenge, so no server can replay it elsewhere.
+import { accountMessage } from '../../functions/api/me/_lib';
 
 const ALG = { name: 'ECDSA', namedCurve: 'P-256' } as const;
 
@@ -80,6 +81,12 @@ export function challengeMessage(serverId: string, nonce: string): Uint8Array<Ar
 /** Raw r||s signature, base64url. */
 export async function signChallenge(pair: CryptoKeyPair, serverId: string, nonce: string): Promise<string> {
   const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, pair.privateKey, challengeMessage(serverId, nonce));
+  return b64url(sig);
+}
+
+/** Raw r||s signature over one account action and the moment it is made, base64url (see functions/api/me/_lib.ts). */
+export async function signAccountAction(pair: CryptoKeyPair, action: string, ts: number): Promise<string> {
+  const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, pair.privateKey, new TextEncoder().encode(accountMessage(action, ts)));
   return b64url(sig);
 }
 

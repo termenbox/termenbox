@@ -1,13 +1,15 @@
 <script lang="ts">
   import { Switch } from 'bits-ui';
   import HookPreview from '../HookPreview.svelte';
+  import PrivacyView from './PrivacyView.svelte';
   import type { HookRow } from '../lib/hooks';
   import { setShortcuts, shortcutsOn, SHORTCUTS, isMac } from '../lib/palette';
   /** The Settings destination: where the account, the servers and the app's own switches live. Preferences that exist
    *  today (theme, skin, cache, renderer) stay in the menu until they move here. */
-  let { user, serverVersion = '', hooks = [], onhook, onservers, onmenu, onshortcuts, onreport, onlogout }: {
-    user: string; serverVersion?: string; hooks?: HookRow[]; onhook?: (choice: 'preview' | 'enable' | 'remove' | 'again', row: HookRow) => void; onservers: () => void; onmenu: () => void; onshortcuts: () => void; onreport: () => void; onlogout: () => void;
+  let { user, serverVersion = '', hooks = [], onhook, onservers, onmenu, onshortcuts, onreport, onlogout, ondeletedata }: {
+    user: string; serverVersion?: string; hooks?: HookRow[]; onhook?: (choice: 'preview' | 'enable' | 'remove' | 'again', row: HookRow) => void; onservers: () => void; onmenu: () => void; onshortcuts: () => void; onreport: () => void; onlogout: () => void; ondeletedata: () => Promise<number>;
   } = $props();
+  let privacy = $state(false);
   const row = 'flex h-14 w-full items-center justify-between gap-3 rounded-card border border-line bg-panel px-4 text-left text-base text-fg';
   /** The row whose Enable is waiting for the user to read the exact change. */
   let confirming = $state<string | null>(null);
@@ -16,6 +18,9 @@
   const key = isMac() ? SHORTCUTS[0].mac : SHORTCUTS[0].other;
 </script>
 
+{#if privacy}
+  <PrivacyView ondelete={ondeletedata} onback={() => (privacy = false)} />
+{:else}
 <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4" data-shell="settings">
   <h1 class="text-title font-bold">Settings</h1>
   <p class="text-base text-soft">Signed in as {user}{serverVersion ? ` · server ${serverVersion}` : ''}</p>
@@ -58,6 +63,8 @@
     </Switch.Root>
   </div>
   <button type="button" class={row} onclick={onshortcuts}><span>Show the shortcut list</span><span aria-hidden="true" class="text-soft">›</span></button>
+  <button type="button" class={row} onclick={() => (privacy = true)}><span>Privacy and your data</span><span aria-hidden="true" class="text-soft">›</span></button>
   <button type="button" class={row} onclick={onreport}><span>Report a problem</span><span aria-hidden="true" class="text-soft">›</span></button>
   <button type="button" class={row} onclick={onlogout}><span>Sign out</span></button>
 </div>
+{/if}

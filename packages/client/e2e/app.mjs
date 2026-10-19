@@ -45,6 +45,26 @@ for (const [name, opts] of [['phone 390', { viewport: { width: 390, height: 844 
  await go('home', 'Home');
  await go('activity', 'Activity');
  await go('settings', 'Settings');
+ // Privacy and your data: the notice, then a delete that needs a confirmation, shows a plain failure, and can be retried.
+ let deletes = 0;
+ await page.route('**/api/me/delete', (route) => {
+   deletes++;
+   return deletes === 1 ? route.fulfill({ status: 401, json: { error: 'bad certificate' } }) : route.fulfill({ json: { ok: true, servers: 2 } });
+ });
+ await page.getByRole('button', { name: /^Privacy and your data/ }).click();
+ await page.getByRole('heading', { name: 'Privacy and your data', exact: true }).waitFor();
+ check((await page.getByText('30 days').count()) > 0, `${name}: the 30-day retention is not stated`);
+ await page.getByRole('button', { name: 'Delete my data…' }).click();
+ check(deletes === 0, `${name}: the first tap already deleted`);
+ await page.getByRole('button', { name: 'Keep my data' }).click();
+ await page.getByRole('button', { name: 'Delete my data…' }).click();
+ await page.getByRole('button', { name: 'Delete my data', exact: true }).click();
+ await page.getByRole('alert').filter({ hasText: 'sign-in has expired' }).waitFor();
+ await page.getByRole('button', { name: 'Try again' }).click();
+ await page.getByText('Removed the records of 2 servers').waitFor();
+ check(deletes === 2, `${name}: expected 2 delete requests, saw ${deletes}`);
+ await page.getByRole('button', { name: '← Settings' }).click();
+ await page.getByRole('heading', { name: 'Settings', exact: true }).waitFor();
  // The Servers page belongs to Settings and Back leaves it.
  await page.getByRole('button', { name: /^Servers/ }).first().click();
  await page.getByText('Add server', { exact: false }).first().waitFor({ timeout: 5000 }).catch(() => fail(`${name}: the Servers page did not open from Settings`));

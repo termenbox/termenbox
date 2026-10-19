@@ -103,7 +103,7 @@
     {:else if $destination === 'activity'}
       <EmptyState title="Activity" body="What your agents did will appear here." />
     {:else}
-      <SettingsView user="test" onservers={() => {}} onmenu={() => {}} onshortcuts={() => (helpOpen = true)} onreport={() => {}} onlogout={() => {}} />
+      <SettingsView user="test" onservers={() => {}} onmenu={() => {}} onshortcuts={() => (helpOpen = true)} onreport={() => {}} onlogout={() => {}} ondeletedata={async () => 0} />
     {/if}
     {#snippet right()}
       <SessionSheet sessions={$sessions} agents={$agents} servers={$servers} {activeKey} mobile={false} bind:height onopen={open} onnew={() => {}} onrefresh={() => {}} onretry={() => {}} send={() => {}} />
