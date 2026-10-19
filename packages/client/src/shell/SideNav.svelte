@@ -10,9 +10,9 @@
    * The desktop sidebar: destinations, then every server with its sessions and their state. The list holds still while a
    * pointer is down and for 2 s after it scrolls (ui-never-moves-under-the-finger); a state change shows in place.
    */
-  let { current, onnavigate, groups, activeKey = null, onopen, onserver, onnew, onsearch, searchHint, rightOpen = false, onright, class: className = '' }: {
+  let { current, onnavigate, groups, activeKey = null, onopen, onserver, onnew, onsearch, searchHint, rightOpen = false, onright, width, class: className = '' }: {
     current: Destination; onnavigate: (d: Destination) => void; groups: NavGroup[]; activeKey?: string | null; onopen: (key: string) => void; onserver: (id: string) => void;
-    onnew?: () => void; onsearch: () => void; searchHint: string; rightOpen?: boolean; onright?: () => void; class?: string;
+    onnew?: () => void; onsearch: () => void; searchHint: string; rightOpen?: boolean; onright?: () => void; width?: number; class?: string;
   } = $props();
 
   const held = new HeldView();
@@ -43,7 +43,7 @@
   const needs = $derived(groups.reduce((n, g) => n + g.sessions.filter((s) => s.state === 'needs-you').length, 0));
 </script>
 
-<aside aria-label="Workspace" data-shell="sidebar" class={cn('flex w-64 shrink-0 flex-col border-r border-line bg-panel', className)}>
+<aside aria-label="Workspace" data-shell="sidebar" style:width={width === undefined ? undefined : `${width}px`} class={cn('flex flex-col border-r border-line bg-panel', className, width === undefined && 'w-64 shrink-0')}>
   <nav aria-label="Main" class="flex flex-col gap-2 p-2">
     {#each DESTINATIONS as d (d.id)}
       <button type="button" data-destination={d.id} aria-current={current === d.id ? 'page' : undefined} onclick={() => onnavigate(d.id)}
