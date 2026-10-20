@@ -199,6 +199,8 @@ pub enum ClientMessage {
     },
     /// Forgets the server's whole history; the answer is `history_deleted`.
     HistoryDelete,
+    /// U14: asks for the server's recent health samples; the answer is `health_history`. Older servers do not answer.
+    HealthHistory,
     /// A message from a newer client; ignored.
     #[serde(other)]
     Unknown,
@@ -370,13 +372,32 @@ pub enum ServerMessage {
         message: String,
     },
     Pong,
-    /// Server health metrics (U14): CPU, RAM, disk usage and round-trip time.
+    /// U14 (decision 0105): the server's health, pushed after sign-in and after each 10 s sample. `healthy` is the
+    /// server's own verdict (a level held for several samples, with a lower level to recover), so clients show it and
+    /// never decide it. `unhealthy` names the metrics over their level (`cpu`, `ram`, `disk`). An older server sends
+    /// none, and no dot appears.
     ServerHealth {
-        cpu_percent: f32,
-        ram_percent: f32,
-        disk_percent: f32,
-        rtt_ms: u32,
-        ts: u64,
+        healthy: bool,
+        unhealthy: Vec<String>,
+        /// `container` when the RAM figure is against a cgroup limit, `host` when it is against the machine.
+        scope: String,
+        #[serde(flatten)]
+        point: HealthPoint,
+    },
+    /// Answers `health_history`: the in-memory samples, oldest first, at most 360 of them (each the highest of the
+    /// `step_s` seconds it stands for, so a spike is not averaged away), with the levels the verdict uses.
+    HealthHistory {
+        /// Seconds between two samples the server takes.
+        interval_s: u32,
+        /// Seconds each returned point covers (a multiple of `interval_s`).
+        step_s: u32,
+        healthy: bool,
+        unhealthy: Vec<String>,
+        scope: String,
+        /// How many samples in a row cross a level before the verdict flips either way.
+        confirm: u32,
+        levels: Vec<HealthLevel>,
+        samples: Vec<HealthPoint>,
     },
     /// A message from a newer server; ignored.
     #[serde(other)]
@@ -541,6 +562,28 @@ pub struct AcpInfo {
     pub commands: Vec<AcpCommand>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<AcpUsage>,
+}
+
+/// One health sample: whole percents, absent when the server could not read it (never zero in its place). CPU is
+/// absent for the first sample after start, as it is a difference between two readings.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct HealthPoint {
+    #[serde(default)]
+    pub ts: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_percent: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ram_percent: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_percent: Option<u8>,
+}
+
+/// A health level: a metric turns unhealthy at `enter` and healthy again only below `exit`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct HealthLevel {
+    pub metric: String,
+    pub enter: u8,
+    pub exit: u8,
 }
 
 /// One task an agent worked on: metadata only, never a prompt or terminal text (decision 0105).
@@ -718,6 +761,23 @@ mod tests {
         let v = serde_json::to_value(ClientMessage::History { from: 1, to: 2 }).unwrap();
         assert_eq!(v["type"], "history");
         assert_eq!(v["from"], 1);
+        let v = serde_json::to_value(ClientMessage::HealthHistory).unwrap();
+        assert_eq!(v["type"], "health_history");
+        let v = serde_json::to_value(ServerMessage::ServerHealth {
+            healthy: false,
+            unhealthy: vec!["ram".into()],
+            scope: "container".into(),
+            point: HealthPoint {
+                ts: 5,
+                cpu_percent: None,
+                ram_percent: Some(93),
+                disk_percent: Some(40),
+            },
+        })
+        .unwrap();
+        assert_eq!(v["type"], "server_health");
+        assert_eq!(v["ram_percent"], 93);
+        assert!(v.get("cpu_percent").is_none(), "unknown is absent, not 0");
         let v = serde_json::to_value(ClientMessage::HistoryDelete).unwrap();
         assert_eq!(v["type"], "history_delete");
         let v = serde_json::to_value(ServerMessage::HistoryDeleted { removed: 3 }).unwrap();

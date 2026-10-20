@@ -152,11 +152,7 @@ pub async fn run(mut link: Link, state: AppState) {
         link.tx.enable_lanes();
     }
 
-    if let Err(e) = state
-        .sessions
-        .serve(link, identity, &state.auth, state.health)
-        .await
-    {
+    if let Err(e) = state.sessions.serve(link, identity, &state.auth).await {
         tracing::error!("Session error: {e}");
     }
 }

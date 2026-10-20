@@ -172,6 +172,8 @@ impl ServerClient {
             | ServerMessage::AcpView(_)
             | ServerMessage::History { .. }
             | ServerMessage::HistoryDeleted { .. }
+            | ServerMessage::ServerHealth { .. }
+            | ServerMessage::HealthHistory { .. }
             | ServerMessage::ClaimPreview { .. }
             | ServerMessage::Unknown => {}
             ServerMessage::Error { message } => {

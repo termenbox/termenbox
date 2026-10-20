@@ -1,371 +1,844 @@
-//! Server health collection (U14): samples CPU, RAM, disk and RTT every 10 s, keeps a 6-hour ring buffer.
+//! Server health (U14, decision 0105): CPU, RAM and disk sampled every 10 s into an in-memory ring of 6 hours, and a
+//! verdict (`healthy`) the server decides so no client has to.
+//!
+//! What is measured, against what:
+//! - **RAM** is the working set of the container (cgroup v2 `memory.current` less inactive file cache, else cgroup v1)
+//!   against its limit, so a 512 MB container reads 100% at 512 MB. Without a cgroup memory limit it is the machine's
+//!   `MemTotal` against `MemAvailable`.
+//! - **CPU** is the CPU time the cgroup used between two ticks over the wall time and the cores it may use
+//!   (`cpu.max`; else every core). Without cgroup accounting it is the `/proc/stat` busy share between two ticks. The
+//!   first sample has nothing to compare with and is unknown.
+//! - **Disk** is `statvfs` of the data directory, the way `df` counts it, not the root of an overlay.
+//! - **Round trip** is not here: it belongs to one client's path to the server, so each client measures its own from its
+//!   heartbeat ping.
+//!
+//! A value that cannot be read is unknown (absent), never zero. Nothing is written to disk and nothing leaves the
+//! process except through the messages of the authenticated owner: the ring is lost on restart by design.
+//!
+//! Verdict: a metric turns unhealthy when it stays at or above its `enter` level for [`CONFIRM`] samples in a row
+//! (30 s) and healthy again when it stays at or below its `exit` level for [`CONFIRM`] samples, so one busy tick does
+//! not flip a dot and a value hovering at a level does not flicker. The levels are [`LEVELS`].
+//!
+//! Cost: a tick reads six small files and one `statvfs` on a blocking thread, and wakes the process once per 10 s.
 
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::ffi::CString;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, broadcast};
-use tokio::time::interval;
 
-/// One health sample.
-#[derive(Clone, Debug)]
-pub struct HealthSample {
-    pub cpu_percent: f32,
-    pub ram_percent: f32,
-    pub disk_percent: f32,
-    pub rtt_ms: u32,
-    pub ts: u64,
+use termenbox_core::protocol::{HealthLevel, HealthPoint, ServerMessage};
+use tokio::sync::broadcast;
+
+/// Seconds between two samples.
+pub const INTERVAL_S: u32 = 10;
+/// Six hours of samples.
+pub const RING_SIZE: usize = 6 * 60 * 60 / INTERVAL_S as usize;
+/// The most points one `health_history` answer carries: one per minute over the full ring.
+pub const REPLY_MAX: usize = 360;
+/// Samples in a row that must cross a level, either way, before the verdict changes.
+pub const CONFIRM: u32 = 3;
+
+/// A level pair in percent: unhealthy from `enter`, healthy again only at or below `exit`.
+#[derive(Clone, Copy, Debug)]
+pub struct Level {
+    pub enter: u8,
+    pub exit: u8,
 }
 
-/// Ring buffer of health samples (6 hours at 10 s interval = 2160 samples).
-const RING_SIZE: usize = 6 * 60 * 6; // 2160
-
-/// Health thresholds: a server is unhealthy when any metric exceeds its threshold.
-#[derive(Clone, Debug)]
-pub struct HealthThresholds {
-    pub cpu_percent: f32,
-    pub ram_percent: f32,
-    pub disk_percent: f32,
-    pub rtt_ms: u32,
+/// The levels per metric. CPU 90% of the cores the container may use is the point where the guardrail's burst
+/// allowance (100% for under 5 s) has become the steady state; RAM 90% of the limit is close to the OOM killer; disk
+/// 90% is when a log or a checkpoint can fail to write.
+#[derive(Clone, Copy, Debug)]
+pub struct Levels {
+    pub cpu: Level,
+    pub ram: Level,
+    pub disk: Level,
 }
 
-impl Default for HealthThresholds {
-    fn default() -> Self {
-        Self {
-            cpu_percent: 80.0,
-            ram_percent: 85.0,
-            disk_percent: 90.0,
-            rtt_ms: 500,
+pub const LEVELS: Levels = Levels {
+    cpu: Level {
+        enter: 90,
+        exit: 75,
+    },
+    ram: Level {
+        enter: 90,
+        exit: 80,
+    },
+    disk: Level {
+        enter: 90,
+        exit: 85,
+    },
+};
+
+/// One metric's verdict with its hysteresis.
+#[derive(Clone, Copy, Debug, Default)]
+struct Latch {
+    unhealthy: bool,
+    run: u32,
+}
+
+impl Latch {
+    /// An unknown value changes nothing: it is neither evidence of trouble nor of recovery.
+    fn step(&mut self, value: Option<u8>, level: Level, confirm: u32) {
+        let Some(v) = value else { return };
+        let crossing = if self.unhealthy {
+            v <= level.exit
+        } else {
+            v >= level.enter
+        };
+        if !crossing {
+            self.run = 0;
+            return;
+        }
+        self.run += 1;
+        if self.run >= confirm {
+            self.unhealthy = !self.unhealthy;
+            self.run = 0;
         }
     }
 }
 
-/// Aggregated health status for a server.
-#[derive(Clone, Debug)]
-pub struct HealthStatus {
+/// The server's verdict at one moment.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Verdict {
     pub healthy: bool,
-    pub latest: Option<HealthSample>,
-    pub thresholds: HealthThresholds,
+    /// Which metrics are over their level: `cpu`, `ram`, `disk`.
+    pub unhealthy: Vec<String>,
+    /// RAM is against a container limit rather than the machine.
+    pub container: bool,
 }
 
-/// Collects system health metrics and broadcasts them.
-#[derive(Clone)]
+impl Verdict {
+    fn scope(&self) -> String {
+        if self.container { "container" } else { "host" }.into()
+    }
+}
+
+/// A sample with the verdict it led to, as pushed to connections.
+#[derive(Clone, Debug)]
+pub struct Update {
+    pub point: HealthPoint,
+    pub verdict: Verdict,
+}
+
+impl Update {
+    pub fn message(&self) -> ServerMessage {
+        ServerMessage::ServerHealth {
+            healthy: self.verdict.healthy,
+            unhealthy: self.verdict.unhealthy.clone(),
+            scope: self.verdict.scope(),
+            point: self.point.clone(),
+        }
+    }
+}
+
+struct Inner {
+    ring: VecDeque<HealthPoint>,
+    cpu: Latch,
+    ram: Latch,
+    disk: Latch,
+    container: bool,
+}
+
+impl Inner {
+    fn verdict(&self) -> Verdict {
+        let unhealthy: Vec<String> = [("cpu", self.cpu), ("ram", self.ram), ("disk", self.disk)]
+            .into_iter()
+            .filter(|(_, l)| l.unhealthy)
+            .map(|(m, _)| m.to_string())
+            .collect();
+        Verdict {
+            healthy: unhealthy.is_empty(),
+            unhealthy,
+            container: self.container,
+        }
+    }
+}
+
+/// Keeps the ring and the verdict and tells the connections about each sample.
 pub struct HealthCollector {
-    ring: Arc<Mutex<Vec<HealthSample>>>,
-    thresholds: HealthThresholds,
-    tx: broadcast::Sender<HealthSample>,
-    // RTT tracking
-    rtt_samples: Arc<Mutex<Vec<u32>>>,
+    inner: Mutex<Inner>,
+    levels: Levels,
+    confirm: u32,
+    tx: broadcast::Sender<Update>,
+}
+
+impl Default for HealthCollector {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HealthCollector {
-    pub fn new(thresholds: HealthThresholds) -> Self {
-        let (tx, _) = broadcast::channel(256);
+    pub fn new() -> Self {
+        let (tx, _) = broadcast::channel(16);
         Self {
-            ring: Arc::new(Mutex::new(Vec::with_capacity(RING_SIZE))),
-            thresholds,
+            inner: Mutex::new(Inner {
+                ring: VecDeque::with_capacity(RING_SIZE),
+                cpu: Latch::default(),
+                ram: Latch::default(),
+                disk: Latch::default(),
+                container: false,
+            }),
+            levels: LEVELS,
+            confirm: CONFIRM,
             tx,
-            rtt_samples: Arc::new(Mutex::new(Vec::with_capacity(60))), // last 60 RTT samples (10 min)
         }
     }
 
-    /// Subscribe to health samples.
-    pub fn subscribe(&self) -> broadcast::Receiver<HealthSample> {
+    pub fn subscribe(&self) -> broadcast::Receiver<Update> {
         self.tx.subscribe()
     }
 
-    /// Record an RTT measurement (in ms).
-    pub async fn record_rtt(&self, rtt_ms: u32) {
-        let mut samples = self.rtt_samples.lock().await;
-        samples.push(rtt_ms);
-        if samples.len() > 60 {
-            samples.remove(0);
+    /// Takes one sample into the ring (dropping the oldest past six hours), updates the verdict and tells subscribers.
+    pub fn record(&self, point: HealthPoint, container: bool) -> Update {
+        let update = {
+            let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if g.ring.len() == RING_SIZE {
+                g.ring.pop_front();
+            }
+            g.ring.push_back(point.clone());
+            g.container = container;
+            let (l, c) = (self.levels, self.confirm);
+            g.cpu.step(point.cpu_percent, l.cpu, c);
+            g.ram.step(point.ram_percent, l.ram, c);
+            g.disk.step(point.disk_percent, l.disk, c);
+            Update {
+                point,
+                verdict: g.verdict(),
+            }
+        };
+        let _ = self.tx.send(update.clone()); // no subscriber is not an error
+        update
+    }
+
+    /// The newest sample and the verdict, or nothing before the first tick.
+    pub fn latest(&self) -> Option<Update> {
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        g.ring.back().map(|p| Update {
+            point: p.clone(),
+            verdict: g.verdict(),
+        })
+    }
+
+    /// The answer to `health_history`: the ring cut to at most [`REPLY_MAX`] points.
+    pub fn history(&self) -> ServerMessage {
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let samples: Vec<HealthPoint> = g.ring.iter().cloned().collect();
+        let (samples, group) = downsample(&samples, REPLY_MAX);
+        let v = g.verdict();
+        let l = self.levels;
+        ServerMessage::HealthHistory {
+            interval_s: INTERVAL_S,
+            step_s: INTERVAL_S * group as u32,
+            healthy: v.healthy,
+            scope: v.scope(),
+            unhealthy: v.unhealthy,
+            confirm: self.confirm,
+            levels: [("cpu", l.cpu), ("ram", l.ram), ("disk", l.disk)]
+                .into_iter()
+                .map(|(m, l)| HealthLevel {
+                    metric: m.into(),
+                    enter: l.enter,
+                    exit: l.exit,
+                })
+                .collect(),
+            samples,
         }
     }
 
-    /// Get the current median RTT.
-    async fn current_rtt(&self) -> u32 {
-        let samples = self.rtt_samples.lock().await;
-        if samples.is_empty() {
-            return 0;
-        }
-        let mut sorted = samples.clone();
-        sorted.sort_unstable();
-        sorted[sorted.len() / 2]
-    }
-
-    /// Sample CPU, RAM, disk from /proc.
-    async fn sample_system() -> (f32, f32, f32) {
-        let cpu = read_cpu_percent().await;
-        let ram = read_ram_percent().await;
-        let disk = read_disk_percent().await;
-        (cpu, ram, disk)
-    }
-
-    /// Start the collection loop (runs every 10 seconds).
-    pub fn start(self: Arc<Self>) {
+    /// Samples every [`INTERVAL_S`] seconds for the life of the process. The reads run on a blocking thread so a slow
+    /// filesystem cannot hold a runtime worker.
+    pub fn spawn(self: &Arc<Self>, data_dir: PathBuf) {
+        let me = self.clone();
         tokio::spawn(async move {
-            let mut tick = interval(Duration::from_secs(10));
+            let mut sampler = Sampler::new(data_dir);
+            let mut tick = tokio::time::interval(Duration::from_secs(INTERVAL_S.into()));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tick.tick().await;
-                let (cpu, ram, disk) = Self::sample_system().await;
-                let rtt = self.current_rtt().await;
-                let ts = now_ms();
-
-                let sample = HealthSample {
-                    cpu_percent: cpu,
-                    ram_percent: ram,
-                    disk_percent: disk,
-                    rtt_ms: rtt,
-                    ts,
+                let Ok((s, reading)) = tokio::task::spawn_blocking(move || {
+                    let r = sampler.sample();
+                    (sampler, r)
+                })
+                .await
+                else {
+                    return; // the sampler panicked: no health beats a spinning loop
                 };
-
-                // Add to ring buffer
-                {
-                    let mut ring = self.ring.lock().await;
-                    ring.push(sample.clone());
-                    if ring.len() > RING_SIZE {
-                        ring.remove(0);
-                    }
-                }
-
-                // Broadcast to subscribers
-                let _ = self.tx.send(sample);
+                sampler = s;
+                me.record(reading.point, reading.container);
             }
         });
     }
-
-    /// Get the current health status.
-    pub async fn status(&self) -> HealthStatus {
-        let ring = self.ring.lock().await;
-        let latest = ring.last().cloned();
-        let healthy = latest.map_or(true, |s| self.is_healthy(&s));
-        HealthStatus {
-            healthy,
-            latest,
-            thresholds: self.thresholds.clone(),
-        }
-    }
-
-    /// Check if a sample is healthy.
-    fn is_healthy(&self, s: &HealthSample) -> bool {
-        s.cpu_percent <= self.thresholds.cpu_percent
-            && s.ram_percent <= self.thresholds.ram_percent
-            && s.disk_percent <= self.thresholds.disk_percent
-            && s.rtt_ms <= self.thresholds.rtt_ms
-    }
-
-    /// Get all samples in the ring (for debugging/inspection).
-    pub async fn all_samples(&self) -> Vec<HealthSample> {
-        self.ring.lock().await.clone()
-    }
 }
 
-/// Current time in ms since epoch.
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-/// Read CPU usage from /proc/stat.
-async fn read_cpu_percent() -> f32 {
-    let stat1 = read_proc_stat().await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let stat2 = read_proc_stat().await;
-
-    let (idle1, total1) = cpu_times(&stat1);
-    let (idle2, total2) = cpu_times(&stat2);
-
-    let idle_delta = idle2.saturating_sub(idle1) as f32;
-    let total_delta = total2.saturating_sub(total1) as f32;
-
-    if total_delta > 0.0 {
-        100.0 * (1.0 - idle_delta / total_delta)
-    } else {
-        0.0
-    }
-}
-
-fn cpu_times(stat: &str) -> (u64, u64) {
-    let line = stat.lines().next().unwrap_or("");
-    let parts: Vec<u64> = line
-        .split_whitespace()
-        .skip(1)
-        .filter_map(|s| s.parse().ok())
+/// Cuts `samples` to at most `max` points by taking the highest of each group of consecutive samples per metric, so a
+/// spike survives; returns the points and the group size. Each point keeps the time of the newest sample in its group.
+pub fn downsample(samples: &[HealthPoint], max: usize) -> (Vec<HealthPoint>, usize) {
+    let group = samples.len().div_ceil(max.max(1)).max(1);
+    let hi = |a: Option<u8>, b: Option<u8>| match (a, b) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    };
+    let out = samples
+        .chunks(group)
+        .map(|c| {
+            c.iter().fold(
+                HealthPoint {
+                    ts: c.last().map_or(0, |p| p.ts),
+                    ..HealthPoint::default()
+                },
+                |acc, p| HealthPoint {
+                    ts: acc.ts,
+                    cpu_percent: hi(acc.cpu_percent, p.cpu_percent),
+                    ram_percent: hi(acc.ram_percent, p.ram_percent),
+                    disk_percent: hi(acc.disk_percent, p.disk_percent),
+                },
+            )
+        })
         .collect();
-    let total: u64 = parts.iter().sum();
-    let idle = parts.get(3).copied().unwrap_or(0); // idle is the 4th field
-    (idle, total)
+    (out, group)
 }
 
-async fn read_proc_stat() -> String {
-    tokio::fs::read_to_string("/proc/stat")
-        .await
-        .unwrap_or_default()
+// ---- Reading the machine.
+
+/// One reading of the CPU: time used, and what it is measured against.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CpuReading {
+    /// CPU time used so far: cgroup microseconds, or `/proc/stat` busy jiffies.
+    used: u64,
+    /// Wall microseconds since the sampler started (cgroup), or total jiffies (`/proc/stat`).
+    basis: u64,
+    /// Cores the cgroup may use; absent for `/proc/stat`, whose basis already spans every core.
+    cores: Option<f64>,
 }
 
-/// Read RAM usage from /proc/meminfo.
-async fn read_ram_percent() -> f32 {
-    let meminfo = tokio::fs::read_to_string("/proc/meminfo")
-        .await
-        .unwrap_or_default();
+/// CPU use between two readings in whole percent of what was available; unknown when the readings are not comparable.
+fn cpu_percent(prev: CpuReading, cur: CpuReading) -> Option<u8> {
+    if prev.cores.is_some() != cur.cores.is_some() {
+        return None;
+    }
+    let db = cur.basis.checked_sub(prev.basis).filter(|d| *d > 0)? as f64;
+    let du = cur.used.checked_sub(prev.used)? as f64;
+    let share = du / (db * cur.cores.unwrap_or(1.0));
+    Some((share * 100.0).round().clamp(0.0, 100.0) as u8)
+}
 
-    let mut total = 0u64;
-    let mut available = 0u64;
+/// What one tick measured.
+pub struct Reading {
+    pub point: HealthPoint,
+    /// RAM is against a container limit.
+    pub container: bool,
+}
 
-    for line in meminfo.lines() {
-        if line.starts_with("MemTotal:") {
-            total = line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-        } else if line.starts_with("MemAvailable:") {
-            available = line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+pub struct Sampler {
+    cgroup: PathBuf,
+    proc_dir: PathBuf,
+    data_dir: PathBuf,
+    start: Instant,
+    prev: Option<CpuReading>,
+}
+
+impl Sampler {
+    pub fn new(data_dir: PathBuf) -> Self {
+        Self::at("/sys/fs/cgroup".into(), "/proc".into(), data_dir)
+    }
+
+    fn at(cgroup: PathBuf, proc_dir: PathBuf, data_dir: PathBuf) -> Self {
+        Self {
+            cgroup,
+            proc_dir,
+            data_dir,
+            start: Instant::now(),
+            prev: None,
         }
     }
 
-    if total > 0 {
-        100.0 * (1.0 - available as f32 / total as f32)
-    } else {
-        0.0
+    pub fn sample(&mut self) -> Reading {
+        let now_us = self.start.elapsed().as_micros() as u64;
+        self.sample_at(now_us)
+    }
+
+    fn sample_at(&mut self, now_us: u64) -> Reading {
+        let cur = self.read_cpu(now_us);
+        let cpu = match (self.prev, cur) {
+            (Some(p), Some(c)) => cpu_percent(p, c),
+            _ => None,
+        };
+        self.prev = cur;
+        let (ram, container) = self.read_ram();
+        Reading {
+            point: HealthPoint {
+                ts: crate::events::now_ms(),
+                cpu_percent: cpu,
+                ram_percent: ram,
+                disk_percent: disk_percent(&self.data_dir),
+            },
+            container,
+        }
+    }
+
+    fn read(&self, base: &Path, rel: &str) -> Option<String> {
+        std::fs::read_to_string(base.join(rel)).ok()
+    }
+
+    fn read_cpu(&self, now_us: u64) -> Option<CpuReading> {
+        // cgroup v2, then v1, then the machine.
+        if let Some(used) = self
+            .read(&self.cgroup, "cpu.stat")
+            .and_then(|s| stat_value(&s, "usage_usec"))
+        {
+            let cores = self
+                .read(&self.cgroup, "cpu.max")
+                .and_then(|s| parse_cpu_max(&s));
+            return Some(CpuReading {
+                used,
+                basis: now_us,
+                cores: Some(cores.unwrap_or_else(all_cores)),
+            });
+        }
+        for dir in ["cpuacct", "cpu,cpuacct"] {
+            let d = self.cgroup.join(dir);
+            if let Some(ns) = self
+                .read(&d, "cpuacct.usage")
+                .and_then(|s| s.trim().parse::<u64>().ok())
+            {
+                let quota = ["cpu", "cpu,cpuacct"].iter().find_map(|c| {
+                    let d = self.cgroup.join(c);
+                    parse_cfs(
+                        &self.read(&d, "cpu.cfs_quota_us")?,
+                        &self.read(&d, "cpu.cfs_period_us")?,
+                    )
+                });
+                return Some(CpuReading {
+                    used: ns / 1000,
+                    basis: now_us,
+                    cores: Some(quota.unwrap_or_else(all_cores)),
+                });
+            }
+        }
+        let stat = self.read(&self.proc_dir, "stat")?;
+        let f: Vec<u64> = stat
+            .lines()
+            .next()?
+            .split_whitespace()
+            .skip(1)
+            .filter_map(|x| x.parse().ok())
+            .collect();
+        let total: u64 = f.iter().take(8).sum(); // user..steal; guest time is already inside user
+        let idle = f.get(3)? + f.get(4).copied().unwrap_or(0); // idle + iowait
+        Some(CpuReading {
+            used: total.saturating_sub(idle),
+            basis: total,
+            cores: None,
+        })
+    }
+
+    /// RAM in whole percent and whether it is against a container limit.
+    fn read_ram(&self) -> (Option<u8>, bool) {
+        let num = |base: &Path, rel: &str| self.read(base, rel)?.trim().parse::<u64>().ok();
+        let v2 = || {
+            let max = num(&self.cgroup, "memory.max")?; // "max" does not parse: no limit
+            let cur = num(&self.cgroup, "memory.current")?;
+            let cache = self
+                .read(&self.cgroup, "memory.stat")
+                .and_then(|s| stat_value(&s, "inactive_file"))
+                .unwrap_or(0);
+            Some((cur.saturating_sub(cache), max))
+        };
+        let v1 = || {
+            let d = self.cgroup.join("memory");
+            let max = num(&d, "memory.limit_in_bytes")?;
+            if max >= 1 << 60 {
+                return None; // the kernel's "unlimited"
+            }
+            let cur = num(&d, "memory.usage_in_bytes")?;
+            let cache = self
+                .read(&d, "memory.stat")
+                .and_then(|s| stat_value(&s, "total_inactive_file"))
+                .unwrap_or(0);
+            Some((cur.saturating_sub(cache), max))
+        };
+        if let Some((used, max)) = v2().or_else(v1).filter(|(_, m)| *m > 0) {
+            return (Some(percent(used, max)), true);
+        }
+        let info = self.read(&self.proc_dir, "meminfo").unwrap_or_default();
+        let kb = |k: &str| {
+            info.lines().find_map(|l| {
+                l.strip_prefix(k)?
+                    .trim()
+                    .strip_suffix("kB")?
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+            })
+        };
+        match (kb("MemTotal:"), kb("MemAvailable:")) {
+            (Some(total), Some(avail)) if total > 0 => {
+                (Some(percent(total.saturating_sub(avail), total)), false)
+            }
+            _ => (None, false),
+        }
     }
 }
 
-/// Read disk usage for the root filesystem.
-async fn read_disk_percent() -> f32 {
-    use std::os::unix::fs::MetadataExt;
-    let output = tokio::process::Command::new("df")
-        .args(["-P", "/"])
-        .output()
-        .await
-        .ok();
+fn percent(used: u64, total: u64) -> u8 {
+    ((used as f64 / total as f64) * 100.0)
+        .round()
+        .clamp(0.0, 100.0) as u8
+}
 
-    let stdout = output.and_then(|o| String::from_utf8(o.stdout).ok()).unwrap_or_default();
-    let lines: Vec<&str> = stdout.lines().collect();
-    if lines.len() < 2 {
-        return 0.0;
-    }
-    let parts: Vec<&str> = lines[1].split_whitespace().collect();
-    if parts.len() < 5 {
-        return 0.0;
-    }
-    parts[4]
-        .trim_end_matches('%')
-        .parse::<f32>()
-        .unwrap_or(0.0)
+fn all_cores() -> f64 {
+    std::thread::available_parallelism().map_or(1.0, |n| n.get() as f64)
+}
+
+/// The value of `key` in a `key value` per line file such as `cpu.stat` or `memory.stat`.
+fn stat_value(text: &str, key: &str) -> Option<u64> {
+    text.lines().find_map(|l| {
+        let mut p = l.split_whitespace();
+        (p.next()? == key).then(|| p.next()?.parse().ok())?
+    })
+}
+
+/// Cores allowed by cgroup v2 `cpu.max` (`max 100000` or `50000 100000`); none when unlimited.
+fn parse_cpu_max(text: &str) -> Option<f64> {
+    let mut p = text.split_whitespace();
+    let quota: f64 = p.next()?.parse().ok()?; // "max" does not parse: no limit
+    let period: f64 = p.next()?.parse().ok()?;
+    (quota > 0.0 && period > 0.0).then(|| quota / period)
+}
+
+/// Cores allowed by cgroup v1 `cpu.cfs_quota_us` / `cpu.cfs_period_us`; a quota of -1 is no limit.
+fn parse_cfs(quota: &str, period: &str) -> Option<f64> {
+    parse_cpu_max(&format!("{} {}", quota.trim(), period.trim()))
+}
+
+/// Used share of the filesystem holding `path`, counted as `df` does (used over used plus what a user may still take).
+fn disk_percent(path: &Path) -> Option<u8> {
+    let c = CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: `c` is a valid NUL-terminated path and `s` is a zeroed statvfs the call fills.
+    let s = unsafe {
+        let mut s: libc::statvfs = std::mem::zeroed();
+        if libc::statvfs(c.as_ptr(), &mut s) != 0 {
+            return None;
+        }
+        s
+    };
+    #[allow(clippy::unnecessary_cast)] // u32 on some targets
+    let (blocks, free, avail) = (s.f_blocks as u64, s.f_bfree as u64, s.f_bavail as u64);
+    let used = blocks.saturating_sub(free);
+    let denom = used + avail;
+    (denom > 0).then(|| percent(used, denom))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn ring_buffer_bounds_at_2160() {
-        let collector = HealthCollector::new(HealthThresholds::default());
-        let arc = Arc::new(collector);
-
-        // Fill beyond capacity
-        for i in 0..2500 {
-            let sample = HealthSample {
-                cpu_percent: 10.0,
-                ram_percent: 20.0,
-                disk_percent: 30.0,
-                rtt_ms: 50,
-                ts: i as u64,
-            };
-            {
-                let mut ring = arc.ring.lock().await;
-                ring.push(sample);
-                if ring.len() > RING_SIZE {
-                    ring.remove(0);
-                }
-            }
+    fn pt(ts: u64, cpu: Option<u8>, ram: Option<u8>, disk: Option<u8>) -> HealthPoint {
+        HealthPoint {
+            ts,
+            cpu_percent: cpu,
+            ram_percent: ram,
+            disk_percent: disk,
         }
-
-        let ring = arc.ring.lock().await;
-        assert_eq!(ring.len(), RING_SIZE);
-        // Oldest should be at index 0 with ts around 340 (2500 - 2160)
-        assert!(ring[0].ts >= 340);
     }
 
-    #[tokio::test]
-    async fn health_thresholds_work() {
-        let thresholds = HealthThresholds {
-            cpu_percent: 50.0,
-            ram_percent: 50.0,
-            disk_percent: 50.0,
-            rtt_ms: 100,
+    #[test]
+    fn ring_holds_six_hours_and_drops_the_oldest() {
+        let c = HealthCollector::new();
+        for i in 0..(RING_SIZE as u64 + 500) {
+            c.record(pt(i, Some(1), Some(1), Some(1)), false);
+        }
+        {
+            let g = c.inner.lock().unwrap();
+            assert_eq!(g.ring.len(), RING_SIZE);
+            assert_eq!(g.ring.front().unwrap().ts, 500);
+        }
+        let ServerMessage::HealthHistory {
+            samples, step_s, ..
+        } = c.history()
+        else {
+            panic!("not a history")
         };
-        let collector = HealthCollector::new(thresholds);
-
-        // Healthy sample
-        let healthy = HealthSample {
-            cpu_percent: 10.0,
-            ram_percent: 20.0,
-            disk_percent: 30.0,
-            rtt_ms: 50,
-            ts: 1,
-        };
-        assert!(collector.is_healthy(&healthy));
-
-        // Unhealthy CPU
-        let unhealthy_cpu = HealthSample {
-            cpu_percent: 60.0,
-            ram_percent: 20.0,
-            disk_percent: 30.0,
-            rtt_ms: 50,
-            ts: 2,
-        };
-        assert!(!collector.is_healthy(&unhealthy_cpu));
-
-        // Unhealthy RAM
-        let unhealthy_ram = HealthSample {
-            cpu_percent: 10.0,
-            ram_percent: 60.0,
-            disk_percent: 30.0,
-            rtt_ms: 50,
-            ts: 3,
-        };
-        assert!(!collector.is_healthy(&unhealthy_ram));
-
-        // Unhealthy disk
-        let unhealthy_disk = HealthSample {
-            cpu_percent: 10.0,
-            ram_percent: 20.0,
-            disk_percent: 60.0,
-            rtt_ms: 50,
-            ts: 4,
-        };
-        assert!(!collector.is_healthy(&unhealthy_disk));
-
-        // Unhealthy RTT
-        let unhealthy_rtt = HealthSample {
-            cpu_percent: 10.0,
-            ram_percent: 20.0,
-            disk_percent: 30.0,
-            rtt_ms: 200,
-            ts: 5,
-        };
-        assert!(!collector.is_healthy(&unhealthy_rtt));
+        // The reply is bounded and says what a point covers.
+        assert!(samples.len() <= REPLY_MAX);
+        assert_eq!(step_s, INTERVAL_S * 6);
+        assert_eq!(samples.last().unwrap().ts, RING_SIZE as u64 + 499);
     }
 
-    #[tokio::test]
-    async fn rtt_median_calculation() {
-        let collector = HealthCollector::new(HealthThresholds::default());
-        let arc = Arc::new(collector);
-
-        arc.record_rtt(100).await;
-        arc.record_rtt(200).await;
-        arc.record_rtt(50).await;
-        // median of [50, 100, 200] is 100
-        let rtt = arc.current_rtt().await;
-        assert_eq!(rtt, 100);
+    #[test]
+    fn a_short_ring_is_returned_whole() {
+        let c = HealthCollector::new();
+        for i in 0..5 {
+            c.record(pt(i, Some(10), None, Some(30)), true);
+        }
+        let ServerMessage::HealthHistory {
+            samples,
+            step_s,
+            scope,
+            ..
+        } = c.history()
+        else {
+            panic!()
+        };
+        assert_eq!((samples.len(), step_s), (5, INTERVAL_S));
+        assert_eq!(scope, "container");
     }
 
-    #[tokio::test]
-    async fn status_reports_healthy_when_ring_empty() {
-        let collector = HealthCollector::new(HealthThresholds::default());
-        let arc = Arc::new(collector);
+    #[test]
+    fn downsampling_keeps_a_spike() {
+        let pts: Vec<_> = (0..10)
+            .map(|i| pt(i, Some(if i == 3 { 99 } else { 5 }), None, Some(40)))
+            .collect();
+        let (out, group) = downsample(&pts, 5);
+        assert_eq!((out.len(), group), (5, 2));
+        assert_eq!(
+            out[1].cpu_percent,
+            Some(99),
+            "the group with the spike keeps it"
+        );
+        assert_eq!(out[1].ts, 3, "and the time of its newest sample");
+        assert_eq!(out[0].ram_percent, None, "unknown stays unknown");
+    }
 
-        let status = arc.status().await;
-        assert!(status.healthy);
-        assert!(status.latest.is_none());
+    fn feed(c: &HealthCollector, cpu: u8, n: usize) -> Update {
+        let mut u = None;
+        for _ in 0..n {
+            u = Some(c.record(pt(1, Some(cpu), Some(10), Some(10)), false));
+        }
+        u.unwrap()
+    }
+
+    #[test]
+    fn needs_consecutive_samples_to_turn_unhealthy() {
+        let c = HealthCollector::new();
+        assert!(
+            feed(&c, 95, 2).verdict.healthy,
+            "two busy ticks are not enough"
+        );
+        assert!(feed(&c, 10, 1).verdict.healthy);
+        assert!(
+            feed(&c, 95, 2).verdict.healthy,
+            "the run was broken by a calm tick"
+        );
+        let u = feed(&c, 95, 1);
+        assert!(!u.verdict.healthy);
+        assert_eq!(u.verdict.unhealthy, vec!["cpu"]);
+    }
+
+    #[test]
+    fn recovers_only_below_the_exit_level_and_not_on_one_tick() {
+        let c = HealthCollector::new();
+        assert!(!feed(&c, 95, 3).verdict.healthy);
+        // Between exit (75) and enter (90): still unhealthy, no flicker.
+        assert!(!feed(&c, 80, 10).verdict.healthy);
+        assert!(
+            !feed(&c, 70, 2).verdict.healthy,
+            "two calm ticks are not enough"
+        );
+        assert!(
+            !feed(&c, 80, 1).verdict.healthy,
+            "a bounce above the exit level restarts the count"
+        );
+        assert!(!feed(&c, 70, 2).verdict.healthy);
+        assert!(feed(&c, 70, 1).verdict.healthy);
+        // A reading just under the enter level does not trip it again.
+        assert!(feed(&c, 89, 10).verdict.healthy);
+    }
+
+    #[test]
+    fn unknown_values_change_nothing_and_each_metric_is_named() {
+        let c = HealthCollector::new();
+        c.record(pt(1, Some(95), Some(95), None), false);
+        c.record(pt(2, None, Some(95), None), false); // an unreadable CPU: neither evidence nor a break
+        let u = c.record(pt(3, Some(95), Some(95), None), false);
+        assert_eq!(
+            u.verdict.unhealthy,
+            vec!["ram"],
+            "cpu has two readings so far, not three"
+        );
+        let u = c.record(pt(4, Some(95), Some(95), None), false);
+        assert_eq!(u.verdict.unhealthy, vec!["cpu", "ram"]);
+        assert_eq!(c.latest().unwrap().verdict, u.verdict);
+    }
+
+    #[test]
+    fn every_record_reaches_subscribers() {
+        let c = HealthCollector::new();
+        let mut rx = c.subscribe();
+        c.record(pt(7, Some(1), Some(2), Some(3)), false);
+        let got = rx.try_recv().unwrap();
+        assert_eq!(got.point.ts, 7);
+        let ServerMessage::ServerHealth {
+            healthy,
+            scope,
+            point,
+            ..
+        } = got.message()
+        else {
+            panic!()
+        };
+        assert!(healthy);
+        assert_eq!(scope, "host");
+        assert_eq!(point.ram_percent, Some(2));
+    }
+
+    #[test]
+    fn cpu_share_is_a_difference_over_the_cores_allowed() {
+        let a = CpuReading {
+            used: 1_000_000,
+            basis: 10_000_000,
+            cores: Some(1.0),
+        };
+        let b = CpuReading {
+            used: 1_500_000,
+            basis: 20_000_000,
+            cores: Some(1.0),
+        };
+        assert_eq!(cpu_percent(a, b), Some(5)); // 0.5 s of 10 s on one core
+        let two = |r: CpuReading| CpuReading {
+            cores: Some(2.0),
+            ..r
+        };
+        assert_eq!(cpu_percent(two(a), two(b)), Some(3)); // 2.5% rounds up
+        assert_eq!(cpu_percent(b, b), None, "no time passed");
+        let host = CpuReading { cores: None, ..b };
+        assert_eq!(
+            cpu_percent(a, host),
+            None,
+            "a source change is not comparable"
+        );
+    }
+
+    #[test]
+    fn parses_cgroup_limits() {
+        assert_eq!(parse_cpu_max("max 100000\n"), None);
+        assert_eq!(parse_cpu_max("50000 100000\n"), Some(0.5));
+        assert_eq!(parse_cfs("-1\n", "100000\n"), None);
+        assert_eq!(parse_cfs("200000\n", "100000\n"), Some(2.0));
+        assert_eq!(
+            stat_value("a 1\nusage_usec 42\nb 3\n", "usage_usec"),
+            Some(42)
+        );
+        assert_eq!(stat_value("a 1\n", "usage_usec"), None);
+    }
+
+    fn fixture(name: &str, files: &[(&str, &str)]) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("tb-health-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (p, body) in files {
+            let f = root.join(p);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, body).unwrap();
+        }
+        (root.join("cg"), root.join("proc"))
+    }
+
+    const MEMINFO: &str = "MemTotal: 8000000 kB\nMemFree: 100 kB\nMemAvailable: 2000000 kB\n";
+
+    #[test]
+    fn container_v2_reads_the_limit_not_the_host() {
+        let (cg, pr) = fixture(
+            "v2",
+            &[
+                ("cg/cpu.stat", "usage_usec 1000000\nuser_usec 1\n"),
+                ("cg/cpu.max", "100000 100000\n"),
+                ("cg/memory.max", "536870912\n"),
+                ("cg/memory.current", "314572800\n"),
+                ("cg/memory.stat", "anon 1\ninactive_file 52428800\n"),
+                ("proc/meminfo", MEMINFO),
+            ],
+        );
+        let mut s = Sampler::at(cg.clone(), pr, std::env::temp_dir());
+        let first = s.sample_at(0);
+        assert_eq!(
+            first.point.cpu_percent, None,
+            "the first CPU sample is unknown"
+        );
+        // (300 MB - 50 MB cache) of 512 MB, not 75% of the 8 GB host.
+        assert_eq!(first.point.ram_percent, Some(49));
+        assert!(first.container);
+        std::fs::write(cg.join("cpu.stat"), "usage_usec 6000000\n").unwrap();
+        let second = s.sample_at(10_000_000);
+        assert_eq!(
+            second.point.cpu_percent,
+            Some(50),
+            "5 s of one allowed core in 10 s"
+        );
+        assert!(
+            second.point.disk_percent.is_some(),
+            "statvfs of the data directory"
+        );
+    }
+
+    #[test]
+    fn container_v1_reads_cpuacct_and_memory() {
+        let (cg, pr) = fixture(
+            "v1",
+            &[
+                ("cg/cpuacct/cpuacct.usage", "1000000000\n"),
+                ("cg/cpu/cpu.cfs_quota_us", "50000\n"),
+                ("cg/cpu/cpu.cfs_period_us", "100000\n"),
+                ("cg/memory/memory.limit_in_bytes", "1000000\n"),
+                ("cg/memory/memory.usage_in_bytes", "900000\n"),
+                ("cg/memory/memory.stat", "total_inactive_file 100000\n"),
+                ("proc/meminfo", MEMINFO),
+            ],
+        );
+        let mut s = Sampler::at(cg.clone(), pr, std::env::temp_dir());
+        let first = s.sample_at(0);
+        assert_eq!(first.point.ram_percent, Some(80));
+        std::fs::write(cg.join("cpuacct/cpuacct.usage"), "2000000000\n").unwrap(); // +1 s
+        let second = s.sample_at(10_000_000);
+        assert_eq!(
+            second.point.cpu_percent,
+            Some(20),
+            "1 s of half a core in 10 s"
+        );
+    }
+
+    #[test]
+    fn without_cgroups_it_uses_the_machine() {
+        let (cg, pr) = fixture(
+            "host",
+            &[
+                (
+                    "proc/stat",
+                    "cpu 100 0 100 700 100 0 0 0 0 0\ncpu0 1 1 1 1\n",
+                ),
+                ("proc/meminfo", MEMINFO),
+            ],
+        );
+        let mut s = Sampler::at(cg, pr.clone(), std::env::temp_dir());
+        let first = s.sample_at(0);
+        assert_eq!(
+            (first.point.cpu_percent, first.point.ram_percent),
+            (None, Some(75))
+        );
+        assert!(!first.container);
+        std::fs::write(pr.join("stat"), "cpu 200 0 200 800 100 0 0 0 0 0\n").unwrap();
+        // 200 busy of 300 total jiffies since the last tick.
+        assert_eq!(s.sample_at(10_000_000).point.cpu_percent, Some(67));
+    }
+
+    #[test]
+    fn an_unreadable_machine_gives_unknown_not_zero() {
+        let mut s = Sampler::at(
+            "/nonexistent/cg".into(),
+            "/nonexistent/proc".into(),
+            "/nonexistent/data".into(),
+        );
+        let r = s.sample_at(0);
+        assert_eq!(
+            (
+                r.point.cpu_percent,
+                r.point.ram_percent,
+                r.point.disk_percent
+            ),
+            (None, None, None)
+        );
     }
 }

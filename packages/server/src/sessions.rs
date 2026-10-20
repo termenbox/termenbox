@@ -11,8 +11,8 @@ use std::sync::Arc;
 use crate::backend::{RunMode, SessionBackend};
 use crate::control::WindowHub;
 use crate::events::EventHub;
-use crate::link::{Inbound, Link, LinkTx};
 use crate::health::HealthCollector;
+use crate::link::{Inbound, Link, LinkTx};
 use crate::pty::Attachment;
 
 /// Clients ping every 5 s, so a minute of silence means the peer is gone.
@@ -54,6 +54,8 @@ pub struct SessionManager {
     transcripts: Arc<crate::transcript::Transcripts>,
     /// Where the owner can enable Claude Code's hooks from the app (U10).
     hooks: Option<crate::claude_hooks::Target>,
+    /// Samples of the server's CPU, RAM and disk (U14).
+    health: Option<Arc<HealthCollector>>,
 }
 
 impl SessionManager {
@@ -71,6 +73,7 @@ impl SessionManager {
             prefix: String::new(),
             transcripts: Arc::default(),
             hooks: None,
+            health: None,
         }
     }
 
@@ -107,6 +110,12 @@ impl SessionManager {
     /// Serves the agent event stream (plan v6) to every connection.
     pub fn with_events(mut self, hub: EventHub) -> Self {
         self.events = Some(hub);
+        self
+    }
+
+    /// Serves the server's health samples to every connection (U14).
+    pub fn with_health(mut self, health: Arc<HealthCollector>) -> Self {
+        self.health = Some(health);
         self
     }
 
@@ -165,11 +174,10 @@ impl SessionManager {
         link: Link,
         identity: crate::auth::Identity,
         auth: &crate::auth::AuthState,
-        health: Arc<HealthCollector>,
     ) -> Result<()> {
         static NEXT_CONN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let conn = NEXT_CONN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let res = self.serve_conn(conn, link, identity, auth, health).await;
+        let res = self.serve_conn(conn, link, identity, auth).await;
         if let Some(p) = &self.push {
             p.set_foreground(conn, None);
         }
@@ -182,7 +190,6 @@ impl SessionManager {
         mut link: Link,
         identity: crate::auth::Identity,
         auth: &crate::auth::AuthState,
-        health: Arc<HealthCollector>,
     ) -> Result<()> {
         let mut attachment: Option<Attachment> = None;
         let (mut cols, mut rows) = (80u16, 24u16);
@@ -194,22 +201,11 @@ impl SessionManager {
         let mut acp: Option<AcpSub> = None;
         let mut acp_tick = tokio::time::interval(ACP_BATCH);
         acp_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut health_rx = Some(health.subscribe());
-
-        // Send initial health status
-        if let Ok(status) = health.status().await {
-            if let Some(sample) = status.latest {
-                let _ = send(
-                    &link.tx,
-                    &ServerMessage::ServerHealth {
-                        cpu_percent: sample.cpu_percent,
-                        ram_percent: sample.ram_percent,
-                        disk_percent: sample.disk_percent,
-                        rtt_ms: sample.rtt_ms,
-                        ts: sample.ts,
-                    },
-                )
-                .await;
+        // None once the collector is gone: the arm below then waits for ever instead of spinning on a closed channel.
+        let mut health_rx = self.health.as_ref().map(|h| h.subscribe());
+        if let Some(u) = self.health.as_ref().and_then(|h| h.latest()) {
+            if !send(&link.tx, &u.message()).await {
+                return Ok(());
             }
         }
 
@@ -301,28 +297,17 @@ impl SessionManager {
                     }
                     if gone { break; }
                 }
-                sample = async {
-                    if let Some(rx) = &mut health_rx {
-                        rx.recv().await.ok()
-                    } else {
-                        std::future::pending().await
+                update = async {
+                    match &mut health_rx {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
                     }
                 } => {
-                    if let Some(sample) = sample {
-                        if !send(
-                            &link.tx,
-                            &ServerMessage::ServerHealth {
-                                cpu_percent: sample.cpu_percent,
-                                ram_percent: sample.ram_percent,
-                                disk_percent: sample.disk_percent,
-                                rtt_ms: sample.rtt_ms,
-                                ts: sample.ts,
-                            },
-                        )
-                        .await
-                        {
-                            break;
-                        }
+                    match update {
+                        Ok(u) => { if !send(&link.tx, &u.message()).await { break; } }
+                        // Behind by a few samples: the next one carries the same story.
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => health_rx = None,
                     }
                 }
                 _ = &mut idle => {
@@ -753,6 +738,12 @@ impl SessionManager {
                     },
                 )
                 .await?;
+            }
+            ClientMessage::HealthHistory => {
+                let Some(health) = &self.health else {
+                    return Err(anyhow::anyhow!("Health is not available"));
+                };
+                send_r(tx, &health.history()).await?;
             }
             ClientMessage::HistoryDelete => {
                 let history = self.events.as_ref().and_then(|h| h.history()).cloned();
