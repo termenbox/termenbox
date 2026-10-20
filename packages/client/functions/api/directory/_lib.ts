@@ -11,6 +11,8 @@ export interface D1Like {
       all<T = Record<string, unknown>>(): Promise<{ results: T[] }>;
     };
   };
+  /** Runs statements prepared with `prepare(..).bind(..)` in order, all or nothing. */
+  batch(statements: unknown[]): Promise<unknown[]>;
 }
 
 export interface DirRecord {
@@ -189,6 +191,11 @@ export async function srcHash(address: string, salt: string): Promise<string> {
   return b64urlEncode(new Uint8Array(d)).slice(0, 22);
 }
 
+/** What the directory stores of a claim secret: its SHA-256, so the secret itself never reaches it. */
+export async function claimHash(secret: string): Promise<string> {
+  return b64urlEncode(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret))));
+}
+
 export async function handleAnnounce(db: D1Like, body: unknown, src: string, now: number): Promise<Reply> {
   const r = parseAnnounce(body);
   if (typeof r === 'string') return { status: 400, body: { error: r } };
@@ -222,8 +229,13 @@ export async function handleAnnounce(db: D1Like, body: unknown, src: string, now
     .bind(r.server_id, r.seq, r.ip, r.udp_port, r.fingerprint, r.ws_url, r.claim_hash, r.claim_proof, r.sig, src, existing?.created_at ?? now, now, r.claim_hash ? now + CLAIM_TTL_MS : 0)
     .run();
 
-  // Housekeeping on writes only, so reads stay cheap: forget servers idle for 30 days.
-  await db.prepare('DELETE FROM records WHERE updated_at < ?').bind(now - IDLE_EXPIRY_MS).run();
+  // Housekeeping on writes only, so reads stay cheap: forget servers idle for 30 days, and who set them up.
+  // Both statements touch only the expiring rows (records_updated index, owner_servers primary key): never scan owner_servers.
+  const cutoff = now - IDLE_EXPIRY_MS;
+  await db.batch([
+    db.prepare('DELETE FROM owner_servers WHERE server_id IN (SELECT server_id FROM records WHERE updated_at < ?)').bind(cutoff),
+    db.prepare('DELETE FROM records WHERE updated_at < ?').bind(cutoff),
+  ]);
   return { status: 200, body: { ok: true, seq: r.seq } };
 }
 

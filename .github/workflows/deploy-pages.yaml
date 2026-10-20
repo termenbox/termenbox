@@ -74,9 +74,10 @@ jobs:
           GITHUB_CLIENT_ID: ${{ secrets.TERMENBOX_GITHUB_CLIENT_ID }}
           GITHUB_CLIENT_SECRET: ${{ secrets.TERMENBOX_GITHUB_CLIENT_SECRET }}
           CERT_SIGNING_KEY: ${{ secrets.TERMENBOX_CERT_SIGNING_KEY }}
+          DIRECTORY_SALT: ${{ secrets.TERMENBOX_DIRECTORY_SALT }}
         run: |
           umask 077
-          node -e 'const o={};for(const k of ["GITHUB_CLIENT_ID","GITHUB_CLIENT_SECRET","CERT_SIGNING_KEY"])if(process.env[k])o[k]=process.env[k];require("fs").writeFileSync(process.env.RUNNER_TEMP+"/pages-secrets.json",JSON.stringify(o))'
+          node -e 'const o={};for(const k of ["GITHUB_CLIENT_ID","GITHUB_CLIENT_SECRET","CERT_SIGNING_KEY","DIRECTORY_SALT"])if(process.env[k])o[k]=process.env[k];require("fs").writeFileSync(process.env.RUNNER_TEMP+"/pages-secrets.json",JSON.stringify(o))'
           wrangler pages secret bulk "$RUNNER_TEMP/pages-secrets.json" --project-name=${{ vars.TERMENBOX_PAGES_PROJECT_NAME || 'termenbox' }}
           rm -f "$RUNNER_TEMP/pages-secrets.json"
 

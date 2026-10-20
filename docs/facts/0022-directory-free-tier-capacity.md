@@ -30,7 +30,7 @@ Assumptions: 10^5 users, 1 server each, 2 devices each; 20% of users active per 
 
 | Service | Metric | Load | Limit | Used |
 |---|---|---|---|---|
-| Workers / Pages Functions | requests/day | 46k: certificate and login 14.3k, announces 17.8k, pending polls 10k, user-data writes 3k, other 1k | 100k | 46% |
+| Workers / Pages Functions | requests/day | 47k: certificate and login 14.3k, announces 17.8k, pending polls 10k, user-data writes 3k, account links 0.5k (one per Add Server, R08), other 1k | 100k | 47% |
 | Workers | CPU per request | about 1–3 ms (Ed25519 or P-256 verify, HKDF) | 10 ms | 10–30% |
 | Workers | subrequests per request | at most 2–3 | 50 | under 10% |
 | R2 | Class A ops/month (writes) | 0.62M: record puts 17.8k/day, user-data puts 3k/day | 1M | 62% |
@@ -38,6 +38,8 @@ Assumptions: 10^5 users, 1 server each, 2 devices each; 20% of users active per 
 | R2 | storage | records 70 MB, user data 400 MB | 10 GB | 5% |
 | D1 (claims only) | rows read / written per day | about 12k / 2k | 5M / 100k | 0.2% / 2% |
 | D1 | storage | under 10 MB | 5 GB | under 1% |
+
+D1 read cost of the owner links (R08, migration 0002): D1 bills rows scanned, not rows returned. The clean-up that runs on each announce deletes only the links of the records it expires (`owner_servers` rows found through the `records_updated` index and the link's primary key), so it reads about as many rows as it deletes, one per record lifetime. A clean-up written as `DELETE FROM owner_servers WHERE server_id NOT IN (SELECT server_id FROM records)` scans the whole link table on every announce: with 300 links and 17.8k announces/day that is about 5.3M rows/day, the entire free read limit. Estimated by calculation, not measured on D1; `functions/api/directory/directory.test.ts` pins that the clean-up statement is the targeted one.
 | Static assets / CDN | requests, egress | about 8k cold loads/day at 0.2 MB, plus public-bucket reads | unlimited | no cap |
 | GitHub API | calls/day | 14k from our Workers; 10^5 updater checks from the servers' own IPs | 5k/h per token; 60/h per IP | far under |
 | GHCR | pulls | about 500 installs/day at about 120 MB | free for public images (unverified) | n/a |
