@@ -7,7 +7,7 @@ import { edgeSwipeBack } from './edgeswipe';
 import type { HubServer, HubSession } from './hub';
 import type { AgentMap, SessionAgent } from './agents';
 
-const server = (id: string, state: HubServer['state'] = 'connected'): HubServer => ({ id, server: { server_id: id, server_name: id, server_url: '', registered_at: 0 }, state, reason: '', version: '', backends: [], controlMode: false, tmuxVersion: '', prefix: '' });
+const server = (id: string, state: HubServer['state'] = 'connected'): HubServer => ({ id, server: { server_id: id, server_name: id, server_url: '', registered_at: 0 }, state, reason: '', version: '', backends: [], acpAgents: [], controlMode: false, tmuxVersion: '', prefix: '' });
 const session = (serverId: string, id: string): HubSession => ({ id, name: id, agent: null, serverId, key: `${serverId}/${id}`, serverName: serverId } as HubSession);
 const agent = (state: SessionAgent['state']): SessionAgent => ({ state, seq: 1, stale: false, ts: 0 });
 

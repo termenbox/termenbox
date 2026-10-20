@@ -169,6 +169,7 @@ impl ServerClient {
             | ServerMessage::WindowList { .. }
             | ServerMessage::SessionView { .. }
             | ServerMessage::AgentHooks { .. }
+            | ServerMessage::AcpView(_)
             | ServerMessage::ClaimPreview { .. }
             | ServerMessage::Unknown => {}
             ServerMessage::Error { message } => {

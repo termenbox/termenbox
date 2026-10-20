@@ -21,11 +21,12 @@ use serde_json::{json, Value};
 use termenbox_core::events::{
     AgentState, Confidence, Decision, DecisionOption, EventKind, PlanItem, Source, ToolPhase,
 };
-use termenbox_core::protocol::SessionInfo;
+use termenbox_core::protocol::{AcpView, SessionInfo};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
+use crate::acp_stream::{ModeVia, Stream};
 use crate::backend::{valid_dir, valid_name, SessionBackend};
 use crate::events::EventHub;
 use crate::pty::Attachment;
@@ -337,12 +338,16 @@ struct Inner {
     turn: bool,
     /// `session/load` replays history as updates; those are not news.
     replaying: bool,
+    /// What the session view shows (T0): kept here, bounded, and handed to a client on `acp_open`.
+    stream: Stream,
 }
 
 struct Live {
     event_name: String,
     hub: Option<EventHub>,
     inner: Mutex<Inner>,
+    /// The stream's revision, for the connections that show this session.
+    changed: watch::Sender<u64>,
     out: mpsc::UnboundedSender<String>,
     kill: Mutex<Option<oneshot::Sender<()>>>,
 }
@@ -352,6 +357,17 @@ impl Live {
         if let Some(hub) = &self.hub {
             hub.report(&self.event_name, Source::Acp, Confidence::High, kind);
         }
+    }
+
+    /// Runs `f` on the stream and wakes the connections that show this session.
+    fn stream<R>(&self, f: impl FnOnce(&mut Stream) -> R) -> R {
+        let (r, rev) = {
+            let mut g = self.inner.lock().unwrap();
+            let r = f(&mut g.stream);
+            (r, g.stream.rev())
+        };
+        self.changed.send_replace(rev);
+        r
     }
 
     /// The turn opens at `session/prompt` and closes with its response; the state is derived from this and from
@@ -442,13 +458,15 @@ impl Live {
     }
 
     fn on_update(&self, update: &Value) {
-        let kinds = {
+        let (kinds, rev) = {
             let mut g = self.inner.lock().unwrap();
             if g.replaying {
                 return;
             }
-            g.mapper.map(update)
+            g.stream.update(update);
+            (g.mapper.map(update), g.stream.rev())
         };
+        self.changed.send_replace(rev);
         for k in kinds {
             self.emit(k);
         }
@@ -473,6 +491,7 @@ impl Live {
             );
             id
         };
+        self.stream(|st| st.permission(&prompt_id, params, options.clone()));
         let tool = params.get("toolCall").unwrap_or(&Value::Null);
         let detail = Some(first_line(s(tool, "title"))).filter(|d| !d.is_empty());
         self.block(&prompt_id, true);
@@ -497,6 +516,7 @@ impl Live {
         for p in perms {
             self.respond(&p.rpc_id, json!({"outcome": {"outcome": "cancelled"}}));
         }
+        self.stream(|st| st.cancel_open_permissions());
     }
 
     /// The process is gone (or was told to go): nothing answers any more.
@@ -508,6 +528,10 @@ impl Live {
             std::mem::replace(&mut g.status, status.clone())
         };
         if was == SessionStatus::Running {
+            self.stream(|st| match &status {
+                SessionStatus::Failed(text) => st.status("failed", Some(text)),
+                _ => st.status("ended", None),
+            });
             self.turn_close(match status {
                 SessionStatus::Failed(_) => AgentState::Error,
                 _ => AgentState::Done,
@@ -554,6 +578,7 @@ async fn read_bounded_line<R: AsyncBufRead + Unpin>(
 
 fn spawn_agent(
     profile: &AgentProfile,
+    agent: &str,
     dir: &str,
     name: &str,
     hub: Option<EventHub>,
@@ -581,6 +606,7 @@ fn spawn_agent(
     let live = Arc::new(Live {
         event_name,
         hub,
+        changed: watch::channel(0).0,
         inner: Mutex::new(Inner {
             status: SessionStatus::Running,
             next_id: 0,
@@ -591,6 +617,7 @@ fn spawn_agent(
             acp_id: String::new(),
             turn: false,
             replaying: false,
+            stream: Stream::new(agent, dir, crate::events::now_ms()),
         }),
         out,
         kill: Mutex::new(Some(kill_tx)),
@@ -661,11 +688,14 @@ async fn handshake(live: &Live, dir: &str, resume: Option<&str>) -> Result<Strin
                     Some(SETUP_TIMEOUT),
                 )
                 .await?;
+            live.stream(|st| st.session_state(&r));
             Ok(s(&r, "sessionId").to_string())
         }
         Some(id) if caps["sessionCapabilities"].get("resume").is_some() => {
-            live.request("session/resume", params(id), Some(SETUP_TIMEOUT))
+            let r = live
+                .request("session/resume", params(id), Some(SETUP_TIMEOUT))
                 .await?;
+            live.stream(|st| st.session_state(&r));
             Ok(id.to_string())
         }
         Some(id) if caps["loadSession"].as_bool() == Some(true) => {
@@ -673,10 +703,13 @@ async fn handshake(live: &Live, dir: &str, resume: Option<&str>) -> Result<Strin
             let r = live
                 .request("session/load", params(id), Some(SETUP_TIMEOUT))
                 .await;
-            let mut g = live.inner.lock().unwrap();
-            g.replaying = false;
-            g.mapper = UpdateMapper::default();
-            r?;
+            let r = {
+                let mut g = live.inner.lock().unwrap();
+                g.replaying = false;
+                g.mapper = UpdateMapper::default();
+                r?
+            };
+            live.stream(|st| st.session_state(&r));
             Ok(id.to_string())
         }
         Some(_) => Err(anyhow!("the agent can neither resume nor load a session")),
@@ -804,6 +837,7 @@ impl AcpBackend {
             .ok_or_else(|| anyhow!("Unknown agent"))?;
         let live = spawn_agent(
             profile,
+            agent,
             dir,
             name,
             self.hub.clone(),
@@ -819,7 +853,20 @@ impl AcpBackend {
             }
         };
         live.inner.lock().unwrap().acp_id = id;
+        if resume.is_some() {
+            // `session/load` replays are not shown (they would arrive as one burst), so say what is missing.
+            live.stream(|st| {
+                st.notice(
+                    "info",
+                    "Restored after a server restart. Earlier output is not shown.",
+                )
+            });
+        }
         live.turn_close(AgentState::Idle);
+        // The agent is known from the start (there is no process to scan): Home and the tabs show its icon.
+        if let Some(hub) = &self.hub {
+            hub.set_agent(&format!("{}{name}", self.event_prefix), agent);
+        }
         self.sessions.lock().unwrap().insert(
             name.to_string(),
             Entry {
@@ -874,7 +921,6 @@ impl AcpBackend {
 
     /// The owner's tap on a permission prompt. `option_id` must be one the agent offered and that was shown
     /// (`allow_once` or `reject_once`); it is sent back exactly as it came.
-    #[allow(dead_code)] // the wire step that carries a tap or an interrupt from a client calls this
     pub async fn answer_permission(
         &self,
         id: &str,
@@ -897,13 +943,78 @@ impl AcpBackend {
                 json!({"outcome": {"outcome": "selected", "optionId": option_id}}),
             );
         }
+        live.stream(|st| st.permission_answered(prompt_id, option_id));
         // Resolved: the turn resumes unless another request is still open.
         live.block(prompt_id, false);
         Ok(())
     }
 
+    /// The session view's stream (T0). A session that could not be brought back after a restart has no agent, so it
+    /// is shown as ended.
+    fn stream_view(
+        &self,
+        id: &str,
+        after: Option<u64>,
+        epoch: Option<u64>,
+        info_seen: u64,
+    ) -> Result<(AcpView, u64)> {
+        let (live, agent, dir) = {
+            let g = self.sessions.lock().unwrap();
+            let e = g.get(id).ok_or_else(|| anyhow!("Unknown session"))?;
+            (e.live.clone(), e.agent.clone(), e.dir.clone())
+        };
+        match live {
+            Some(l) => {
+                let mut g = l.inner.lock().unwrap();
+                Ok(g.stream.view(id, after, epoch, info_seen))
+            }
+            None => {
+                let mut st = Stream::new(&agent, &dir, 0);
+                st.status("ended", None);
+                Ok(st.view(id, after, epoch, info_seen))
+            }
+        }
+    }
+
+    /// `session/set_mode`, or `session/set_config_option` for an agent that lists its modes only as a config option.
+    /// Only a mode the agent itself listed is sent.
+    pub async fn set_mode(&self, id: &str, mode: &str) -> Result<()> {
+        let live = self.live(id)?;
+        let (via, ids, acp_id) = {
+            let g = live.inner.lock().unwrap();
+            (
+                g.stream.mode_via().clone(),
+                g.stream.mode_ids(),
+                g.acp_id.clone(),
+            )
+        };
+        if !ids.iter().any(|m| m == mode) {
+            return Err(anyhow!("The agent does not offer that mode"));
+        }
+        match via {
+            ModeVia::Modes => {
+                live.request(
+                    "session/set_mode",
+                    json!({"sessionId": acp_id, "modeId": mode}),
+                    Some(SETUP_TIMEOUT),
+                )
+                .await?
+            }
+            ModeVia::Config(config_id) => {
+                live.request(
+                    "session/set_config_option",
+                    json!({"sessionId": acp_id, "configId": config_id, "value": mode}),
+                    Some(SETUP_TIMEOUT),
+                )
+                .await?
+            }
+            ModeVia::None => return Err(anyhow!("This agent has no modes")),
+        };
+        live.stream(|st| st.set_mode(mode));
+        Ok(())
+    }
+
     /// Interrupt: open requests are answered `cancelled`, then `session/cancel` ends the turn.
-    #[allow(dead_code)] // the wire step that carries a tap or an interrupt from a client calls this
     pub async fn interrupt(&self, id: &str) -> Result<()> {
         let live = self.live(id)?;
         live.cancel_pending();
@@ -1008,6 +1119,7 @@ impl SessionBackend for AcpBackend {
         live.emit(EventKind::Task {
             title: first_line(text),
         });
+        live.stream(|st| st.user(text));
         live.turn_open();
         let text = text.to_string();
         tokio::spawn(async move {
@@ -1031,6 +1143,10 @@ impl SessionBackend for AcpBackend {
             if live.inner.lock().unwrap().status != SessionStatus::Running {
                 return;
             }
+            live.stream(|st| match &r {
+                Ok(v) => st.turn_end(v["stopReason"].as_str(), None),
+                Err(e) => st.turn_end(None, Some(&e.to_string())),
+            });
             live.turn_close(match r {
                 Ok(v) if s(&v, "stopReason") == "end_turn" => AgentState::Done,
                 Ok(_) => AgentState::Idle,
@@ -1038,6 +1154,48 @@ impl SessionBackend for AcpBackend {
             });
         });
         Ok(())
+    }
+
+    fn acp_agents(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.config.agents.keys().cloned().collect();
+        v.sort();
+        v
+    }
+
+    fn acp_watch(&self, id: &str) -> Result<watch::Receiver<u64>> {
+        let g = self.sessions.lock().unwrap();
+        let e = g.get(id).ok_or_else(|| anyhow!("Unknown session"))?;
+        Ok(match &e.live {
+            Some(l) => l.changed.subscribe(),
+            // Nothing will ever change: the sender is gone, which the connection reads as "no more updates".
+            None => watch::channel(0).1,
+        })
+    }
+
+    fn acp_view(
+        &self,
+        id: &str,
+        after: Option<u64>,
+        epoch: Option<u64>,
+        info_seen: u64,
+    ) -> Result<(AcpView, u64)> {
+        self.stream_view(id, after, epoch, info_seen)
+    }
+
+    async fn acp_prompt(&self, id: &str, text: &str) -> Result<()> {
+        self.send_text(id, text).await
+    }
+
+    async fn acp_interrupt(&self, id: &str) -> Result<()> {
+        self.interrupt(id).await
+    }
+
+    async fn acp_answer(&self, id: &str, prompt_id: &str, option_id: &str) -> Result<()> {
+        self.answer_permission(id, prompt_id, option_id).await
+    }
+
+    async fn acp_mode(&self, id: &str, mode: &str) -> Result<()> {
+        self.set_mode(id, mode).await
     }
 
     async fn kill(&self, id: &str) -> Result<()> {

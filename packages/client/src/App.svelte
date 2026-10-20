@@ -34,6 +34,9 @@
   import SettingsView from './shell/SettingsView.svelte';
   import { EmptyState, Segmented } from './lib/ds';
   import SessionView from './SessionView.svelte';
+  import AcpView from './AcpView.svelte';
+  import { acpStreams, applyAcp, forgetAcp } from './lib/acpStore';
+  import { openMessage, shellName } from './lib/acpStream';
   import { merge as mergeView, requestView, type ViewModel } from './lib/sessionView';
   import { loadPaneModes, withPaneMode, type PaneMode } from './lib/paneMode';
   import { rowOf } from './lib/home';
@@ -124,7 +127,7 @@
       const key = activeKey;
       // Retry and Resume replace the connection: mount its terminal before accepting a repaint.
       void tick().then(() => {
-        if (!away && id === activeServerId && key === activeKey) hub.sendToSession(key, { type: 'attach', session_id: key });
+        if (!away && id === activeServerId && key === activeKey) showSession(key);
       });
     },
     onDrop: (_id, reason, upMs) => noteError(`connection lost after ${Math.round(upMs / 1000)} s: ${reason}`),
@@ -134,7 +137,8 @@
       if (msg.type === 'snapshot') snapshots.apply(sessionKey(_id, msg.session), msg);
       else if (msg.type === 'session_attached') preview = null;
       else if (msg.type === 'session_view') { if (id === activeServerId && msg.session === activeSessionId) heldView = mergeView(heldView, msg); }
-      else if (msg.type === 'sessions') openPending(_id, msg.sessions);
+      else if (msg.type === 'acp_view') acpStreams.update(m => applyAcp(m, sessionKey(_id, msg.session), msg.session, msg));
+      else if (msg.type === 'sessions') { openPending(_id, msg.sessions); acpStreams.update(m => forgetAcp(m, `${_id}/`, new Set(msg.sessions.map(x => sessionKey(_id, x.id))))); }
       else if (msg.type === 'attention') inbox.update(l => mergeAttention(l, _id, msg.items, s => sessionKey(_id, s), s => hub.findSession(sessionKey(_id, s))?.name ?? s));
       else if (msg.type === 'push_info') pushInfos = { ...pushInfos, [_id]: msg };
       else if (msg.type === 'agent_hooks') {
@@ -184,7 +188,7 @@
   function setPaneMode(m: string) { if (activeKey) paneModes = withPaneMode(paneModes, activeKey, m === 'decision' ? 'decision' : 'terminal'); }
   let heldView: ViewModel | null = null;
   $: activeKey, (heldView = null);
-  $: viewPolling = !!activeKey && !away && pageVisible && (paneMode === 'decision' || split) && connState === 'connected';
+  $: viewPolling = !!activeKey && !away && pageVisible && (paneMode === 'decision' || split) && connState === 'connected' && !activeIsAcp;
   let viewPoll: ReturnType<typeof setInterval> | undefined;
   function requestSessionView() { if (activeKey) hub.sendToSession(activeKey, requestView(activeSessionId ?? '', heldView)); }
   $: { activeKey; if (viewPoll) clearInterval(viewPoll); viewPoll = undefined; if (viewPolling) { requestSessionView(); viewPoll = setInterval(requestSessionView, 2000); } }
@@ -262,6 +266,44 @@
   $: actionSession = $allSessions.find(s => s.key === actionKey);
   $: menuSession = $allSessions.find(s => s.key === menuKey);
   const backendOf = (s: { backend?: string; serverId: string } | undefined) => s ? (s.backend ?? $hubServers.find(h => h.id === s.serverId)?.backends[0] ?? '') : '';
+  // An ACP session (T0) has no terminal: opening it shows its stream (decision 0111). The stream is per connection, so it
+  // is asked for again whenever the session is shown, and dropped from the server when it is not.
+  $: activeIsAcp = !!activeSession && backendOf(activeSession) === 'acp';
+  let acpServer: string | null = null;
+  function closeAcp() {
+    if (acpServer) hub.send(acpServer, { type: 'acp_close' });
+    acpServer = null;
+  }
+  /** Shows a session: an ACP session opens its stream, any other attaches its terminal. */
+  function showSession(key: string) {
+    const s = hub.findSession(key);
+    if (!s) return;
+    if (backendOf(s) === 'acp') {
+      // A terminal still attached on this server would go on streaming to a view that is gone, keep its size and count
+      // as someone looking: let go of it first.
+      hub.send(s.serverId, { type: 'detach' });
+      acpServer = s.serverId;
+      hub.sendToSession(key, openMessage(key, $acpStreams[key]));
+    } else {
+      closeAcp();
+      hub.sendToSession(key, { type: 'attach', session_id: key });
+    }
+  }
+  const sendAcp = (m: import('./lib/protocol').ClientMessage) => { if (activeKey) hub.sendToSession(activeKey, m); };
+  /** The companion shell (decision 0109): a plain tmux session in the ACP session's working directory, made on the first
+   *  tap and opened on every tap after. ACP gives the owner no terminal of the agent's own. */
+  function openShell(key: string) {
+    const s = hub.findSession(key);
+    if (!s) return;
+    const wanted = shellName(s.name);
+    const existing = $allSessions.find(x => x.serverId === s.serverId && backendOf(x) === 'tmux' && x.name === wanted);
+    if (existing) { void attach(existing.key); return; }
+    // Without the directory a new shell would open in the server's default one and look like the session's own.
+    const dir = $acpStreams[key]?.info?.cwd;
+    if (!dir) { showToast('The session’s directory is not known yet. Try again in a moment.', 'error'); return; }
+    createSession({ serverId: s.serverId, backend: 'tmux', dir, name: wanted });
+  }
+  $: canShell = !!activeSession && ($hubServers.find(h => h.id === activeSession.serverId)?.backends.includes('tmux') ?? false);
   $: tabSessions = openTabs($allSessions, $allAgents, hidden);
   $: waiting = waitingList($allSessions, $allAgents);
   $: announce(waiting.length);
@@ -426,6 +468,7 @@
       return;
     }
     crumb('open session tab');
+    closeAcp();
     sheetHeight = 'closed';
     prevAway = false; // this open sends its own attach below; the away/back watcher must not send a second
     if (hidden.has(key)) { hidden.delete(key); hidden = new Set(hidden); saveHidden(hidden); }
@@ -439,7 +482,7 @@
     lastKey = key;
     // Mount the receiving terminal before attach can produce a repaint on another server.
     await tick();
-    if (activeKey === key) hub.sendToSession(key, { type: 'attach', session_id: key });
+    if (activeKey === key) showSession(key);
   }
 
   /** Opens a window and shows it. The session is attached first when it is not the open one: attaching lands on the
@@ -460,6 +503,7 @@
   function detach(key: string) {
     crumb('detach');
     forget(key);
+    if (key === activeKey) closeAcp();
     hidden = new Set(hidden).add(key); saveHidden(hidden);
     if (key === activeKey) {
       if (activeServerId) hub.send(activeServerId, { type: 'detach' });
@@ -472,6 +516,7 @@
   function closeSession(key: string) {
     crumb('close session');
     forget(key);
+    if (key === activeKey) closeAcp();
     hub.sendToSession(key, { type: 'close_session', session: key });
     if (key === activeKey) { activeKey = null; activeServerId = null; preview = null; sheetHeight = 'half'; }
   }
@@ -479,7 +524,8 @@
   function openWindowMenu(key: string) {
     crumb('window menu opened');
     menuKey = key;
-    hub.sendToSession(key, { type: 'windows', session: key });
+    const s = hub.findSession(key);
+    if (backendOf(s) !== 'acp') hub.sendToSession(key, { type: 'windows', session: key }); // an ACP session has no windows
   }
 
   function createSession(req: { serverId: string; backend?: string; dir?: string; template?: string; name: string }) {
@@ -521,6 +567,7 @@
   }
 
   function logout() {
+    closeAcp();
     localStorage.removeItem('termenbox_auth');
     hub.close();
     user = null;
@@ -553,11 +600,11 @@
   function syncAway(now: boolean) {
     if (now === prevAway) return;
     prevAway = now;
-    if (now) { if (activeServerId) hub.send(activeServerId, { type: 'detach' }); }
+    if (now) { closeAcp(); if (activeServerId) hub.send(activeServerId, { type: 'detach' }); }
     else if (activeKey) {
       const key = activeKey;
       void tick().then(() => {
-        if (!away && activeKey === key && connState === 'connected') hub.sendToSession(key, { type: 'attach', session_id: key });
+        if (!away && activeKey === key && connState === 'connected') showSession(key);
       });
     }
   }
@@ -773,6 +820,13 @@
           <div class="terminal-pane">
             {#if !activeKey}
               <SessionGroups sessions={$allSessions} agents={$allAgents} {now} onopen={attach} onnew={newSession} />
+            {:else if connection && connState !== 'paused' && activeIsAcp && activeSession}
+              {#key activeKey}
+                <AcpView sessionKey={activeSession.key} name={activeSession.name} agent={activeRow?.agent} fleet={activeRow?.state} stream={$acpStreams[activeSession.key]} {connState} {now} {canShell}
+                  onprompt={(text) => sendAcp({ type: 'acp_prompt', session: activeSession.key, text })} oninterrupt={() => sendAcp({ type: 'acp_interrupt', session: activeSession.key })}
+                  onanswer={(promptId, optionId) => sendAcp({ type: 'acp_answer', session: activeSession.key, prompt_id: promptId, option_id: optionId })}
+                  onmode={(mode) => sendAcp({ type: 'acp_mode', session: activeSession.key, mode })} onshell={() => openShell(activeSession.key)} />
+              {/key}
             {:else if connection && connState !== 'paused'}
               {#if !(keyboardOpen && paneMode === 'terminal')}
                 <div class="pane-switch">
@@ -818,7 +872,7 @@
 
   {#if menuOpen && user}<MenuSheet {user} {avatar} {serverVersion} onservers={leaveServer} onreport={openReport} onlogout={logout} onclose={() => menuOpen = false} unread={unreadCount($inbox)} oninbox={() => inboxOpen = true} push={pushView} onpush={togglePush} />{/if}
   {#if inboxOpen}<InboxSheet items={$inbox} {now} agents={$allAgents} onanswer={(key, choice, prompt) => sendSession({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })} onreply={(key, text) => sendSession({ type: 'reply', session: key, text })} onopen={attach} onhome={() => go('home')} onread={() => inbox.update(markAllRead)} onclear={() => inbox.set([])} onclose={() => { inboxOpen = false; inbox.update(markAllRead); }} />{/if}
-  {#if actionSession}<SessionActions session={actionSession} canClose={backendOf(actionSession) === 'tmux'} confirmFirst={actionConfirm} ondetach={() => detach(actionSession.key)} onclosesession={() => closeSession(actionSession.key)} onclose={() => actionKey = null} />{/if}
+  {#if actionSession}<SessionActions session={actionSession} canClose={['tmux', 'acp'].includes(backendOf(actionSession))} confirmFirst={actionConfirm} ondetach={() => detach(actionSession.key)} onclosesession={() => closeSession(actionSession.key)} onclose={() => actionKey = null} />{/if}
   {#if menuSession && menuKey}
     <WindowMenu session={menuSession} data={$allWindows[menuSession.key]} supported={backendOf(menuSession) === 'tmux'}
       onselect={(index) => hub.sendToSession(menuSession.key, { type: 'select_window', session: menuSession.key, index })}

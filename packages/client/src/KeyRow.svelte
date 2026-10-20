@@ -31,6 +31,9 @@
     onselect = () => {},
     bell = true,
     onbell = () => {},
+    /** A fixed row (the ACP prompt's): these key ids in this order, nothing under More, and `label` names the toolbar. */
+    keys: fixedKeys,
+    label = 'Terminal keys',
   }: {
     mods?: Mods;
     onkey: (data: string) => void;
@@ -53,6 +56,8 @@
     onselect?: () => void;
     bell?: boolean;
     onbell?: () => void;
+    keys?: readonly string[];
+    label?: string;
   } = $props();
 
   let width = $state(0);
@@ -68,10 +73,10 @@
   });
   const mode = $derived(rowMode($keyRowConfig.desktop, finePointer));
 
-  const rowIds = $derived(resolveRow($keyRowConfig, profile));
+  const rowIds = $derived(fixedKeys ? [...fixedKeys] : resolveRow($keyRowConfig, profile));
   const defs = $derived(rowIds.map((id) => KEY_BY_ID.get(id)).filter((k): k is KeyDef => !!k && (k.needs !== 'voice' || voiceSupported)));
-  const layout = $derived(layoutRow(defs, width, needsMore(rowIds, [], profile, voiceSupported)));
-  const hidden = $derived(moreKeys(defs.map((k) => k.id), layout.overflow.map((k) => k.id), profile, voiceSupported));
+  const layout = $derived(layoutRow(defs, width, fixedKeys ? false : needsMore(rowIds, [], profile, voiceSupported)));
+  const hidden = $derived(fixedKeys ? layout.overflow : moreKeys(defs.map((k) => k.id), layout.overflow.map((k) => k.id), profile, voiceSupported));
 
   const langName = $derived(voiceLang === 'auto' ? 'follows what you type' : voiceLang === 'en' ? 'English' : 'Russian');
 
@@ -134,7 +139,7 @@
         <button type="button" class={cap + ' min-w-11 flex-none px-3'} use:press={() => (moreOpen = false)}>Close</button>
       </div>
     {/if}
-    <div class="flex gap-0.5 border-t border-line bg-panel px-1 py-[3px] [overflow:hidden] [contain:inline-size] [overscroll-behavior:contain] [touch-action:none]" role="toolbar" aria-label="Terminal keys" data-mode="full" bind:clientWidth={width}>
+    <div class="flex gap-0.5 border-t border-line bg-panel px-1 py-[3px] [overflow:hidden] [contain:inline-size] [overscroll-behavior:contain] [touch-action:none]" role="toolbar" aria-label={label} data-mode="full" bind:clientWidth={width}>
       {#each layout.shown as k (k.id)}
         {@const v = view(k)}
         <button type="button" class={cap + ' flex-1 basis-0' + (k.small ? ' !text-xs' : '')} aria-label={v.name} aria-pressed={k.kind === 'mod' ? v.pressed : undefined} data-testid={v.testid} use:press={v.run}>{v.label}</button>

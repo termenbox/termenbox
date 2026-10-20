@@ -14,6 +14,8 @@ export interface HubServer {
   reason: string;
   version: string;
   backends: string[];
+  /** The agents the owner allows as ACP sessions (T0); empty when the server runs none. */
+  acpAgents: string[];
   /** Live window updates run (tmux 3.2+); false shows a notice in the server's status. */
   controlMode: boolean;
   tmuxVersion: string;
@@ -81,7 +83,7 @@ export class ServerHub {
       else this.publish();
       return;
     }
-    const entry: Entry = { id, server, state: 'connecting', reason: '', version: '', backends: [], controlMode: false, tmuxVersion: '', prefix: '', connection: null,
+    const entry: Entry = { id, server, state: 'connecting', reason: '', version: '', backends: [], acpAgents: [], controlMode: false, tmuxVersion: '', prefix: '', connection: null,
       sessions: [], agents: {}, windows: {}, refresh: !server.record && !!server.server_id, everReady: false };
     this.entries.set(id, entry);
     this.connect(entry);
@@ -143,7 +145,7 @@ export class ServerHub {
         e.everReady = true;
         const { claim, ...saved } = e.server;
         e.server = { ...saved, server_name: saved.server_name || msg.server_name };
-        e.version = msg.version ?? ''; e.backends = msg.backends ?? [];
+        e.version = msg.version ?? ''; e.backends = msg.backends ?? []; e.acpAgents = msg.acp_agents ?? [];
         e.controlMode = !!msg.control_mode; e.tmuxVersion = msg.tmux_version ?? ''; e.prefix = msg.prefix ?? '';
         this.publish(); this.opts.onSaved?.(e.server);
         connection.send({ type: 'list_sessions' });
@@ -176,7 +178,7 @@ export class ServerHub {
   }
   private publish() {
     const entries = [...this.entries.values()];
-    this.servers.set(entries.map(({ id, server, state, reason, version, backends, controlMode, tmuxVersion, prefix }) => ({ id, server, state, reason, version, backends, controlMode, tmuxVersion, prefix })));
+    this.servers.set(entries.map(({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix }) => ({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix })));
     this.allSessions.set(entries.filter(e => e.state !== 'paused').flatMap(e => e.sessions.map(s => ({ ...s,
       serverId: e.id, serverName: e.server.server_name || 'Server', key: sessionKey(e.id, s.id) }))));
     this.agents.set(Object.fromEntries(entries.filter(e => e.state !== 'paused').flatMap(e => Object.entries(e.agents).map(([id, a]) => [sessionKey(e.id, id), a]))));

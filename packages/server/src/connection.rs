@@ -142,6 +142,7 @@ pub async fn run(mut link: Link, state: AppState) {
         control_mode: state.sessions.control_mode(),
         tmux_version: state.sessions.tmux_version().to_string(),
         prefix: state.sessions.prefix().to_string(),
+        acp_agents: state.sessions.acp_agents(),
     };
     if !send(&link, &ok).await {
         return;

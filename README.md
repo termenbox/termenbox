@@ -107,6 +107,19 @@ TERMENBOX_BACKEND_ATTACH=zellij attach {id}
 
 The attach command runs in a PTY. It must repaint the session when it starts and only detach when it is killed; that is how a dropped connection resumes. The zellij lines are an illustration and untested. Otherwise implement the `SessionBackend` trait (`packages/server/src/backend.rs`).
 
+### Agent sessions over ACP (T0)
+
+An agent that speaks the Agent Client Protocol can run as a session the server starts itself, with a view the app draws (Markdown replies, tool calls, diffs, the plan, permission questions you answer with one tap) instead of a terminal. The server starts only the commands you list, in `acp-agents.toml` in the config directory (a missing file means none):
+
+```
+max_sessions = 2            # agents at once; each is a Node or Rust process of a few hundred MB
+[agents.claude]
+command = "claude-agent-acp"
+env_remove = ["CLAUDECODE"]
+```
+
+Run `TERMENBOX_BACKEND=tmux,acp` to offer both: New session then asks for the manager ("Agent session (ACP)") and the directory. Keep `tmux` in the list: the **Shell** key in an agent session opens a plain tmux session in the same directory (an ACP agent has no terminal of its own). See `docs/skills/probe-an-agent-over-acp.md` for adding an agent.
+
 ## Notifications
 
 When a Claude Code session asks for you, finishes or fails, the server raises an item the app shows in the banner, the tab title, the app badge and the Inbox (Settings → Appearance, notifications and more → Inbox). To also get a notification on a phone that is not looking at the app, set up Web Push once:
@@ -140,7 +153,7 @@ Server (environment variables of the container; the installer sets the first two
 | `TERMENBOX_PUBLIC_IP` | Address clients connect to; detected when unset |
 | `TERMENBOX_WEBRTC` | `off` for WebSocket only |
 | `TERMENBOX_SERVER_NAME` | Display name; default: the host's short hostname (the installer passes it into the container) |
-| `TERMENBOX_BACKEND` | `tmux` (default) or `command` |
+| `TERMENBOX_BACKEND` | `tmux` (default), `command`, `acp`, or a comma list such as `tmux,acp` |
 | `TERMENBOX_CONFIG_DIR` | Owner, keys and certificate (default `~/.config/termenbox`) |
 
 Client build: `VITE_GITHUB_CLIENT_ID`. The OAuth code exchange runs in a Pages Function that needs `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` and `CERT_SIGNING_KEY` (base64 PKCS#8 Ed25519) as secrets on the Pages project. Servers trust its public key from `packages/server/cert-keys.txt`; self-hosters set `TERMENBOX_CERT_KEYS=kid=<base64url key>` on their servers.

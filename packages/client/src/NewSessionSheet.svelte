@@ -27,17 +27,23 @@
 
   $: server = servers.find(s => s.id === serverId);
   $: if (server && (!backend || !server.backends.includes(backend))) backend = server.backends[0] ?? '';
+  // An ACP session (T0): the server starts the agent itself, in a directory, from the owner's list of agents.
+  $: acp = !!server && backend === 'acp';
+  $: acpAgents = server?.acpAgents ?? [];
+  $: choices = acp ? acpAgents.map(id => ({ id, label: TEMPLATES.find(t => t.id === id)?.label ?? id })) : TEMPLATES;
+  $: if (acp && !acpAgents.includes(template)) template = acpAgents[0] ?? '';
+  $: if (!acp && !TEMPLATES.some(t => t.id === template)) template = 'claude';
   $: dirs = recentDirs(windows, `${serverId}/`);
   $: taken = sessions.filter(s => s.serverId === serverId).map(s => s.id);
   $: if (!nameTouched) name = suggestName(dir, template, taken);
   // Only tmux can start in a directory or run an agent; the sheet says so for other managers instead of ignoring them.
   $: tmux = !server || server.backends.length === 0 || backend === 'tmux';
-  $: ok = !!server && validName(name) && validDir(dir) && !taken.includes(name);
-  $: problem = !validDir(dir) ? 'The directory must be an absolute path, like /home/you/project.' : taken.includes(name) ? 'That name is taken.' : !validName(name) ? 'Use letters, digits, - and _ (up to 64).' : '';
+  $: ok = !!server && validName(name) && validDir(dir) && !taken.includes(name) && (!acp || (!!template && dir !== ''));
+  $: problem = acp && !template ? 'This server allows no agent sessions yet.' : acp && dir === '' ? 'Choose the directory the agent works in, like /home/you/project.' : !validDir(dir) ? 'The directory must be an absolute path, like /home/you/project.' : taken.includes(name) ? 'That name is taken.' : !validName(name) ? 'Use letters, digits, - and _ (up to 64).' : '';
 
   function create() {
     if (!ok || !server) return;
-    oncreate({ serverId, backend: server.backends.length > 1 ? backend : undefined, name, ...(tmux && dir ? { dir } : {}), ...(tmux && template !== 'shell' ? { template } : {}) });
+    oncreate({ serverId, backend: server.backends.length > 1 ? backend : undefined, name, ...((tmux || acp) && dir ? { dir } : {}), ...((tmux && template !== 'shell') || acp ? { template } : {}) });
     onclose();
   }
 </script>
@@ -49,17 +55,17 @@
       <label>Server <NativeSelect bind:value={serverId}>{#each servers as s}<option value={s.id}>{s.server.server_name || 'Server'}</option>{/each}</NativeSelect></label>
     {/if}
     {#if server && server.backends.length > 1}
-      <label>Manager <NativeSelect bind:value={backend}>{#each server.backends as b}<option value={b}>{b}</option>{/each}</NativeSelect></label>
+      <label>Manager <NativeSelect bind:value={backend}>{#each server.backends as b}<option value={b}>{b === 'acp' ? 'Agent session (ACP)' : b}</option>{/each}</NativeSelect></label>
     {/if}
-    {#if tmux}
+    {#if tmux || acp}
       <div class="templates" role="radiogroup" aria-label="Start with">
-        {#each TEMPLATES as t}
+        {#each choices as t}
           <button type="button" role="radio" aria-checked={template === t.id} class:on={template === t.id} on:click={() => template = t.id}>
             <AgentIcon command={t.id === 'shell' ? 'bash' : t.id} agent={t.id === 'shell' ? undefined : t.id} size={24} /><span>{t.label}</span>
           </button>
         {/each}
       </div>
-      <label class="stack">Directory <input bind:value={dir} placeholder="/home/you/project (optional)" autocapitalize="off" autocomplete="off" spellcheck="false" inputmode="url" /></label>
+      <label class="stack">Directory <input bind:value={dir} placeholder={acp ? '/home/you/project' : '/home/you/project (optional)'} autocapitalize="off" autocomplete="off" spellcheck="false" inputmode="url" /></label>
       {#if dirs.length}
         <div class="dirs" aria-label="Directories in use">{#each dirs as d}<button type="button" class="secondary" on:click={() => dir = d}>{d}</button>{/each}</div>
       {/if}

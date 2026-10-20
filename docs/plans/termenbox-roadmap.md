@@ -42,7 +42,7 @@ Scoring procedure: `docs/skills/prioritise-the-roadmap-by-wsjf.md`. Lane `paid` 
 | 4 | [U12](roadmap/U12.md) | History store, Activity timeline and daily digest | P0 | server | both | pending | 1.8 | - |
 | 5 | [U13](roadmap/U13.md) | Usage and cost view | P0 | server | both | pending | 2.2 | U12 |
 | 6 | [U14](roadmap/U14.md) | Server health collection and view | P0 | server | both | pending | 3.3 | - |
-| 7 | [U07b](roadmap/U07b.md) | ACP session view: a general TUI we render | P0 | terminal | both | pending | 1.8 | - |
+| 7 | [U07b](roadmap/U07b.md) | ACP session view: a general TUI we render | P0 | terminal | both | built, awaiting merge (iPhone checklist carried to U16) | 1.8 | - |
 | 8 | [R36](roadmap/R36.md) | Desktop browser regression matrix and WebKit in CI | P1 | ci | both | pending | 4.2 | - |
 | 9 | [U16](roadmap/U16.md) | Real-device gate and the free gate | P0 | ux | mobile | pending | 8.3 | U07b, U11, U12, U13, U14, R03, R36 |
 | 10 | [R07](roadmap/R07.md) | Request-budget alarm (C.5) | P1 | cloud | n/a | pending | 5.0 | - |

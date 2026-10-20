@@ -128,6 +128,7 @@ jobs:
           node e2e/desktop.mjs
           node e2e/app.mjs
           node e2e/pane.mjs
+          node e2e/acp.mjs
           node e2e/hookoffer.mjs
           node e2e/add-server.mjs
   # The native host mode (decision 0075) ships one static musl binary per architecture: no glibc, no OpenSSL,

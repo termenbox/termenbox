@@ -81,6 +81,41 @@ pub trait SessionBackend: Send + Sync {
     async fn new_window(&self, _id: &str) -> Result<()> {
         Err(anyhow!("this session manager has no windows"))
     }
+
+    // ---- T0: ACP sessions (decision 0111). A manager that runs none refuses all of these.
+
+    /// The agents the owner allows as ACP sessions.
+    fn acp_agents(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// Wakes when the stream of ACP session `id` has a new revision; a closed channel means it never will.
+    fn acp_watch(&self, _id: &str) -> Result<tokio::sync::watch::Receiver<u64>> {
+        Err(anyhow!("This session is not an ACP session"))
+    }
+    /// What changed in the stream since the client's revision (see `Stream::view`), and the info revision now.
+    fn acp_view(
+        &self,
+        _id: &str,
+        _after: Option<u64>,
+        _epoch: Option<u64>,
+        _info_seen: u64,
+    ) -> Result<(termenbox_core::protocol::AcpView, u64)> {
+        Err(anyhow!("This session is not an ACP session"))
+    }
+    /// The owner's next prompt (`session/prompt`).
+    async fn acp_prompt(&self, _id: &str, _text: &str) -> Result<()> {
+        Err(anyhow!("This session is not an ACP session"))
+    }
+    async fn acp_interrupt(&self, _id: &str) -> Result<()> {
+        Err(anyhow!("This session is not an ACP session"))
+    }
+    /// Answers permission `prompt_id` with exactly `option_id`.
+    async fn acp_answer(&self, _id: &str, _prompt_id: &str, _option_id: &str) -> Result<()> {
+        Err(anyhow!("This session is not an ACP session"))
+    }
+    async fn acp_mode(&self, _id: &str, _mode: &str) -> Result<()> {
+        Err(anyhow!("This session is not an ACP session"))
+    }
 }
 
 /// Session ids/names we accept from clients; they end up in argv, never in a shell.
@@ -930,6 +965,63 @@ impl SessionBackend for CompositeBackend {
             .split_once(':')
             .ok_or_else(|| anyhow!("Unknown session"))?;
         self.part(kind)?.new_window(name).await
+    }
+
+    fn acp_agents(&self) -> Vec<String> {
+        self.parts
+            .iter()
+            .flat_map(|(_, b)| b.acp_agents())
+            .collect()
+    }
+
+    fn acp_watch(&self, id: &str) -> Result<tokio::sync::watch::Receiver<u64>> {
+        let (kind, name) = id
+            .split_once(':')
+            .ok_or_else(|| anyhow!("Unknown session"))?;
+        self.part(kind)?.acp_watch(name)
+    }
+
+    fn acp_view(
+        &self,
+        id: &str,
+        after: Option<u64>,
+        epoch: Option<u64>,
+        info_seen: u64,
+    ) -> Result<(termenbox_core::protocol::AcpView, u64)> {
+        let (kind, name) = id
+            .split_once(':')
+            .ok_or_else(|| anyhow!("Unknown session"))?;
+        self.part(kind)?.acp_view(name, after, epoch, info_seen)
+    }
+
+    async fn acp_prompt(&self, id: &str, text: &str) -> Result<()> {
+        let (kind, name) = id
+            .split_once(':')
+            .ok_or_else(|| anyhow!("Unknown session"))?;
+        self.part(kind)?.acp_prompt(name, text).await
+    }
+
+    async fn acp_interrupt(&self, id: &str) -> Result<()> {
+        let (kind, name) = id
+            .split_once(':')
+            .ok_or_else(|| anyhow!("Unknown session"))?;
+        self.part(kind)?.acp_interrupt(name).await
+    }
+
+    async fn acp_answer(&self, id: &str, prompt_id: &str, option_id: &str) -> Result<()> {
+        let (kind, name) = id
+            .split_once(':')
+            .ok_or_else(|| anyhow!("Unknown session"))?;
+        self.part(kind)?
+            .acp_answer(name, prompt_id, option_id)
+            .await
+    }
+
+    async fn acp_mode(&self, id: &str, mode: &str) -> Result<()> {
+        let (kind, name) = id
+            .split_once(':')
+            .ok_or_else(|| anyhow!("Unknown session"))?;
+        self.part(kind)?.acp_mode(name, mode).await
     }
 }
 

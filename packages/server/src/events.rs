@@ -101,6 +101,74 @@ pub fn sanitize_text(input: &str, max: usize) -> String {
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
+    let out = scrub_spans(&flat);
+    let collapsed = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed.chars().take(max).collect()
+}
+
+/// Several lines of untrusted text (a Markdown reply, a diff) for the ACP session view: newlines and the
+/// indentation stay (a tab is two spaces), every other control character (so every escape sequence) becomes a
+/// space, zero-width and bidirectional-override characters are dropped, secrets and addresses are replaced
+/// exactly as in `sanitize_text`, and the result is cut at `max` characters and at most `max_lines` lines. Runs
+/// of blank lines collapse to one.
+pub fn sanitize_block(input: &str, max: usize, max_lines: usize) -> String {
+    sanitize_block_cut(input, max, max_lines).0
+}
+
+/// `sanitize_block`, and whether anything but blank space was left out because of `max` or `max_lines`.
+pub fn sanitize_block_cut(input: &str, max: usize, max_lines: usize) -> (String, bool) {
+    let mut out = String::new();
+    // The characters in `out`, kept as lines are added: counting `out` again after every line is quadratic.
+    let mut chars = 0usize;
+    let mut blank = false;
+    let mut lines = 0;
+    let mut cut = false;
+    let text = input.replace("\r\n", "\n").replace('\r', "\n");
+    let mut rest = text.split('\n');
+    let has_more = |rest: std::str::Split<'_, char>| rest.into_iter().any(|l| !l.trim().is_empty());
+    while let Some(raw) = rest.next() {
+        let flat: String = raw
+            .replace('\t', "  ")
+            .chars()
+            .filter(|c| !is_invisible(*c))
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        let line = scrub_spans(&flat).trim_end().to_string();
+        if line.is_empty() {
+            if blank {
+                continue;
+            }
+            blank = true;
+        } else {
+            blank = false;
+        }
+        if lines == max_lines {
+            cut = !line.is_empty() || has_more(rest.clone());
+            break;
+        }
+        if lines > 0 {
+            out.push('\n');
+            chars += 1;
+        }
+        out.push_str(&line);
+        chars += line.chars().count();
+        lines += 1;
+        if chars >= max {
+            cut = chars > max || has_more(rest.clone());
+            break;
+        }
+    }
+    out.truncate(out.trim_end().len());
+    (out.chars().take(max).collect(), cut)
+}
+
+/// Zero-width and bidirectional-override characters: they can reorder or hide text, so they are dropped.
+fn is_invisible(c: char) -> bool {
+    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
+}
+
+/// Replaces tokens that look like secrets or addresses, keeping every other character (and so all spacing).
+fn scrub_spans(flat: &str) -> String {
     // Values that follow an authorization keyword are secrets whatever they look like.
     let mut out = String::new();
     let mut hide_next = 0u8;
@@ -145,8 +213,7 @@ pub fn sanitize_text(input: &str, max: usize) -> String {
         }
     }
     flush(&mut tok, &mut out, &mut hide_next);
-    let collapsed = out.split_whitespace().collect::<Vec<_>>().join(" ");
-    collapsed.chars().take(max).collect()
+    out
 }
 
 /// An option id is echoed back to the agent unchanged, so it is kept exact or dropped: never rewritten.
@@ -692,8 +759,17 @@ impl EventHub {
                         self.raise(session, k, source, now);
                     }
                 }
-                EventKind::Message { summary } => {
-                    // The notification text arrives right after its `needs_input`.
+                // The notification text arrives right after its `needs_input`; a T0 request names its action
+                // (the agent's one-line title of the tool call) in the same way.
+                EventKind::Message { summary }
+                | EventKind::Prompt {
+                    decision:
+                        Some(termenbox_core::events::Decision {
+                            detail: Some(summary),
+                            ..
+                        }),
+                    ..
+                } => {
                     let mut list = self.attention.lock().unwrap();
                     if let Some(a) = list.iter_mut().find(|a| {
                         a.session == session
@@ -1122,6 +1198,54 @@ pub fn run_hook_with(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_block_keeps_lines_and_indentation_but_not_escapes_secrets_or_runs_of_blank_lines() {
+        let out = sanitize_block(
+            "# T\n\n\n\n    code\tx\u{1b}[31m red\r\nkey ghp_abcdefghijklmnopqrstuvwxyz0123 \u{202e}end\n\n",
+            1000,
+            50,
+        );
+        assert_eq!(out, "# T\n\n    code  x [31m red\nkey [token] end");
+        assert!(!out.contains('\u{1b}') && !out.contains('\u{202e}'));
+        assert_eq!(sanitize_block("a\nb\nc\nd", 1000, 2), "a\nb");
+        assert_eq!(sanitize_block("abcdef", 3, 9), "abc");
+        assert_eq!(sanitize_block("", 10, 10), "");
+    }
+
+    #[test]
+    fn a_block_says_whether_it_was_cut() {
+        let cut = |t: &str, max, lines| sanitize_block_cut(t, max, lines).1;
+        assert!(!cut("abc", 3, 5));
+        assert!(
+            !cut("abc\n\n  \n", 3, 5),
+            "trailing blank space is not text"
+        );
+        assert!(cut("abcd", 3, 5));
+        assert!(cut("ab\ncd", 3, 5), "the cap falls inside a later line");
+        assert!(
+            cut("abc\ndef", 3, 5),
+            "the cap falls at a line end with text after it"
+        );
+        assert!(!cut("a\nb", 100, 2));
+        assert!(cut("a\nb\nc", 100, 2));
+        assert!(cut("a\nb\n\nc", 100, 2), "text after a blank line is cut");
+        assert!(!cut("a\nb\n\n", 100, 2));
+    }
+
+    /// A long block costs one pass, not one per line (the character count is kept, not redone).
+    #[test]
+    fn a_block_of_many_short_lines_is_cut_in_linear_time() {
+        let text = "x\n".repeat(150_000);
+        let start = std::time::Instant::now();
+        let (out, cut) = sanitize_block_cut(&text, 10_000_000, 1_000_000);
+        assert!(!cut && out.chars().count() == 299_999);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(3),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+
     use super::*;
 
     fn hub() -> EventHub {
@@ -2007,5 +2131,46 @@ mod tests {
         assert_eq!(h.snapshot_at(4_000)[0].state, AgentState::NeedsInput);
         ev(block("acp-2", false), 3_500);
         assert_eq!(h.snapshot_at(4_000)[0].state, AgentState::Working);
+    }
+
+    #[test]
+    fn a_t0_request_names_its_action_on_the_open_attention_item() {
+        use termenbox_core::events::{Decision, DecisionOption};
+        let h = EventHub::new([1; 32]);
+        let ev = |kind: EventKind, now: u64| h.feed("a", Source::Acp, Confidence::High, kind, now);
+        ev(
+            EventKind::Turn {
+                open: true,
+                outcome: None,
+            },
+            1_000,
+        );
+        ev(
+            EventKind::Block {
+                key: "acp-1".into(),
+                open: true,
+            },
+            2_000,
+        );
+        ev(
+            EventKind::Prompt {
+                id: "acp-1".into(),
+                prompt_kind: "permission".into(),
+                choices: vec!["Yes".into()],
+                decision: Some(Decision {
+                    options: vec![DecisionOption {
+                        id: "y".into(),
+                        kind: "allow_once".into(),
+                        name: "Yes".into(),
+                    }],
+                    detail: Some("Write a.txt".into()),
+                }),
+            },
+            2_050,
+        );
+        let items = h.attention_items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, AttentionKind::NeedsInput);
+        assert_eq!(items[0].prompt.as_deref(), Some("Write a.txt"));
     }
 }

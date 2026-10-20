@@ -4,6 +4,7 @@ use super::*;
 use std::io::{BufRead, Write};
 use std::path::Path;
 use termenbox_core::events::AgentEvent;
+use termenbox_core::protocol::{AcpBody, AcpView};
 
 // ---------------------------------------------------------------------------------------------------
 // The fake agent
@@ -138,7 +139,11 @@ fn fake_agent() {
                 "loadSession": mode.contains("load"),
                 "sessionCapabilities": if mode.contains("resume") { json!({"resume": {}}) } else { json!({}) }
             }})),
+            "session/new" if mode.contains("modes") => reply(json!({"sessionId": "acp-1",
+                "modes": {"currentModeId": "ask", "availableModes": [
+                    {"id": "ask", "name": "Ask", "description": "Ask first"}, {"id": "plan", "name": "Plan"}]}})),
             "session/new" => reply(json!({"sessionId": "acp-1"})),
+            "session/set_mode" => reply(json!({})),
             "session/resume" => reply(json!({})),
             "session/load" => {
                 update(
@@ -698,4 +703,240 @@ async fn after_a_restart_sessions_come_back_by_resume_or_load_else_end() {
     assert!(b.backend.send_text("s1", "hi").await.is_err());
     assert_eq!(last_state(&b, "s1"), Some(AgentState::Done));
     a.backend.kill("s1").await.unwrap();
+}
+
+// ---------------------------------------------------------------------------------------------------
+// T0 session view: the stream a client opens, the way it is answered, interrupted and switched
+// ---------------------------------------------------------------------------------------------------
+
+fn view(r: &Rig, name: &str) -> AcpView {
+    r.backend.acp_view(name, None, None, 0).unwrap().0
+}
+
+fn bodies(v: &AcpView) -> Vec<AcpBody> {
+    v.entries.iter().map(|e| e.body.clone()).collect()
+}
+
+#[tokio::test]
+async fn the_stream_keeps_the_whole_turn_and_wakes_the_watcher_when_it_changes() {
+    let r = rig("");
+    r.create("s1").await;
+    let mut rx = r.backend.acp_watch("s1").unwrap();
+    let before = *rx.borrow_and_update();
+    r.prompt("s1", "updates").await;
+    until("the turn to finish", || {
+        last_state(&r, "s1") == Some(AgentState::Done)
+    })
+    .await;
+    assert!(rx.has_changed().unwrap(), "a watcher is woken by the turn");
+    assert!(*rx.borrow() > before);
+    let v = view(&r, "s1");
+    let b = bodies(&v);
+    assert!(matches!(&b[0], AcpBody::User { text } if text == "updates"));
+    assert!(b
+        .iter()
+        .any(|e| matches!(e, AcpBody::Thought { text, .. } if text == "hmm ok")));
+    assert!(b
+        .iter()
+        .any(|e| matches!(e, AcpBody::Message { text, .. } if text == "Hello world")));
+    assert!(b.iter().any(
+        |e| matches!(e, AcpBody::Tool { title, tool_kind, status, .. }
+        if title == "Run ls" && tool_kind == "execute" && status == "completed")
+    ));
+    assert!(b
+        .iter()
+        .any(|e| matches!(e, AcpBody::Plan { items } if items[0].text == "step one")));
+    let info = v.info.unwrap();
+    assert_eq!(info.agent, "fake");
+    assert_eq!(
+        r.hub
+            .snapshot()
+            .into_iter()
+            .find(|s| s.session == "s1")
+            .and_then(|s| s.agent)
+            .as_deref(),
+        Some("fake"),
+        "Home and the tabs know the agent without a process scan"
+    );
+    assert_eq!(info.dir, r.dir.to_str().unwrap());
+    assert_eq!(
+        (info.title.as_deref(), info.mode.as_deref()),
+        (Some("My title"), Some("plan"))
+    );
+    assert_eq!(
+        info.usage.as_ref().map(|u| (u.used, u.size)),
+        Some((500, 1000))
+    );
+    assert_eq!(info.commands[0].name, "compact");
+    assert!(!info.working && info.status == "running");
+    // Raw tool input and output are not in the stream.
+    let wire = serde_json::to_string(&view(&r, "s1")).unwrap();
+    assert!(!wire.contains("SECRET"), "{wire}");
+    r.backend.kill("s1").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_permission_shows_in_the_stream_and_records_exactly_the_tapped_option() {
+    let r = rig("");
+    r.create("s1").await;
+    r.prompt("s1", "perm").await;
+    until("the prompt", || r.hub.current_prompt("s1").is_some()).await;
+    let open = bodies(&view(&r, "s1"));
+    let Some(AcpBody::Permission {
+        prompt_id,
+        options,
+        state,
+        title,
+        ..
+    }) = open
+        .iter()
+        .find(|b| matches!(b, AcpBody::Permission { .. }))
+        .cloned()
+    else {
+        panic!("no permission entry in {open:?}")
+    };
+    assert_eq!(state, "open");
+    assert_eq!(title, "Write a.txt");
+    assert_eq!(
+        options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
+        ["allow-once", "reject"]
+    );
+    r.backend
+        .acp_answer("s1", &prompt_id, "reject")
+        .await
+        .unwrap();
+    until("the turn", || {
+        last_state(&r, "s1") == Some(AgentState::Done)
+    })
+    .await;
+    let done = bodies(&view(&r, "s1"));
+    assert!(done
+        .iter()
+        .any(|b| matches!(b, AcpBody::Permission { state, chosen, .. }
+        if state == "answered" && chosen.as_deref() == Some("reject"))));
+    r.backend.kill("s1").await.unwrap();
+}
+
+#[tokio::test]
+async fn an_interrupt_cancels_the_open_request_and_the_stream_says_interrupted() {
+    let r = rig("");
+    r.create("s1").await;
+    r.prompt("s1", "perm").await;
+    until("the prompt", || r.hub.current_prompt("s1").is_some()).await;
+    r.backend.acp_interrupt("s1").await.unwrap();
+    until("the turn to end", || {
+        bodies(&view(&r, "s1"))
+            .iter()
+            .any(|b| matches!(b, AcpBody::Notice { text, .. } if text == "Interrupted"))
+    })
+    .await;
+    let b = bodies(&view(&r, "s1"));
+    assert!(b.iter().any(
+        |b| matches!(b, AcpBody::Permission { state, chosen: None, .. } if state == "cancelled")
+    ));
+    assert!(!view(&r, "s1").info.unwrap().working);
+    r.backend.kill("s1").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_mode_is_sent_only_if_the_agent_listed_it() {
+    let r = rig("modes");
+    r.create("s1").await;
+    let info = view(&r, "s1").info.unwrap();
+    assert_eq!(info.mode.as_deref(), Some("ask"));
+    assert_eq!(
+        info.modes.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+        ["ask", "plan"]
+    );
+    assert!(r.backend.acp_mode("s1", "yolo").await.is_err());
+    assert!(
+        r.logged().iter().all(|m| m["method"] != "session/set_mode"),
+        "an unlisted mode is never sent"
+    );
+    r.backend.acp_mode("s1", "plan").await.unwrap();
+    let sent = r
+        .logged()
+        .into_iter()
+        .find(|m| m["method"] == "session/set_mode")
+        .unwrap();
+    assert_eq!(sent["params"]["modeId"], "plan");
+    assert_eq!(sent["params"]["sessionId"], "acp-1");
+    assert_eq!(view(&r, "s1").info.unwrap().mode.as_deref(), Some("plan"));
+    // An agent without modes has nothing to switch.
+    let none = rig("");
+    none.create("s2").await;
+    assert!(none.backend.acp_mode("s2", "plan").await.is_err());
+    r.backend.kill("s1").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_crash_is_failed_in_the_stream_and_a_closed_session_has_no_stream() {
+    let r = rig("");
+    r.create("s1").await;
+    r.prompt("s1", "crash").await;
+    until("the failure", || {
+        r.backend
+            .acp_view("s1", None, None, 0)
+            .unwrap()
+            .0
+            .info
+            .is_some_and(|i| i.status == "failed")
+    })
+    .await;
+    let v = view(&r, "s1");
+    assert!(bodies(&v)
+        .iter()
+        .any(|b| matches!(b, AcpBody::Notice { level, .. } if level == "error")));
+    assert!(v.info.unwrap().status_text.unwrap().contains('3'));
+    r.backend.kill("s1").await.unwrap();
+    assert!(r.backend.acp_view("s1", None, None, 0).is_err());
+    assert!(r.backend.acp_watch("s1").is_err());
+}
+
+#[tokio::test]
+async fn hostile_text_is_scrubbed_and_capped_in_the_stream_too() {
+    let r = rig("");
+    r.create("s1").await;
+    r.prompt("s1", "hostile").await;
+    until("the turn", || {
+        last_state(&r, "s1") == Some(AgentState::Done)
+    })
+    .await;
+    let b = bodies(&view(&r, "s1"));
+    let Some(AcpBody::Message { text, .. }) =
+        b.iter().find(|b| matches!(b, AcpBody::Message { .. }))
+    else {
+        panic!("no message")
+    };
+    assert!(
+        !text.contains('\u{1b}') && !text.contains("ghp_"),
+        "{}",
+        &text[..60]
+    );
+    assert!(text.chars().count() <= 16_000);
+    assert!(view(&r, "s1").info.unwrap().title.unwrap().chars().count() <= 200);
+    r.backend.kill("s1").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_restored_session_says_that_its_earlier_output_is_not_shown() {
+    let dir = tmp();
+    let a = rig_with("load", 2, dir.clone(), true);
+    a.create("s1").await;
+    a.prompt("s1", "updates").await;
+    until("the turn", || {
+        last_state(&a, "s1") == Some(AgentState::Done)
+    })
+    .await;
+    let b = rig_with("load", 2, dir, true);
+    b.backend.restore().await;
+    let v = view(&b, "s1");
+    assert!(bodies(&v)
+        .iter()
+        .any(|e| matches!(e, AcpBody::Notice { text, .. } if text.contains("Restored"))));
+    assert!(!bodies(&v)
+        .iter()
+        .any(|e| matches!(e, AcpBody::Message { text, .. } if text.contains("REPLAYED"))));
+    a.backend.kill("s1").await.unwrap();
+    b.backend.kill("s1").await.unwrap();
 }
