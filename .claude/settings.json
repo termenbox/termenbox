@@ -1,4 +1,7 @@
 {
+  "enabledPlugins": {
+    "go-getter@go-getter": true
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -42,9 +45,6 @@
         ]
       }
     ]
-  },
-  "enabledPlugins": {
-    "go-getter@go-getter": true
   },
   "promptCacheTtl": "1h",
   "subagentPromptCacheTtl": "5m"
