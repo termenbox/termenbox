@@ -83,6 +83,14 @@ export function syncTextarea(field: MirrorTarget, word: string): boolean {
   return true;
 }
 
+/** The hidden input mirror: shows the phrase that already reached the terminal. */
+export interface InputMirror {
+  /** Shows the phrase that already reached the terminal; never touches the field during composition. */
+  sync(): void;
+  /** Removes the composition listeners. */
+  dispose(): void;
+}
+
 /**
  * xterm never cleans its hidden input, so after a few words it holds stale text (captured: "утромпа" while typing
  * "па"). iOS builds suggestions from that text and answers differently depending on it: the whole word when the
@@ -96,13 +104,6 @@ export function syncTextarea(field: MirrorTarget, word: string): boolean {
  * Writing on those events put the previous phrase back before xterm looked, so every character was read as empty
  * (issue #250). iOS sends most typing synchronously instead, which is why the same mirror never hurt there.
  */
-export interface InputMirror {
-  /** Shows the phrase that already reached the terminal; never touches the field during composition. */
-  sync(): void;
-  /** Removes the composition listeners. */
-  dispose(): void;
-}
-
 export function attachInputMirror(area: HTMLTextAreaElement, words: WordTracker): InputMirror {
   let composing = false;
   const onStart = () => (composing = true);

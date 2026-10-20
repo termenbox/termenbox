@@ -151,6 +151,21 @@ describe('input mirror', () => {
     expect(area.value).toBe('hello ');
   });
 
+  it('does not mirror on compositionend: only a send may', async () => {
+    const area = field('hello w');
+    const words = new WordTracker();
+    words.feed('hello ');
+    const mirror = attachInputMirror(asArea(area), words);
+    area.emit('compositionstart');
+    area.value = 'hello wo';
+    area.emit('compositionend');
+    await Promise.resolve();
+    expect(area.value).toBe('hello wo');
+    mirror.sync();
+    await Promise.resolve();
+    expect(area.value).toBe('hello ');
+  });
+
   it('keeps a composed character until xterm’s deferred Android read (issue #250)', async () => {
     const area = field();
     const words = new WordTracker();
@@ -231,11 +246,13 @@ describe('input mirror', () => {
     expect(area.value).toBe('');
   });
 
-  it('removes both composition listeners on dispose', () => {
+  it('removes both composition listeners and adds no input/keyup listeners', () => {
     const area = field();
     const mirror = attachInputMirror(asArea(area), new WordTracker());
     expect(area.count('compositionstart')).toBe(1);
     expect(area.count('compositionend')).toBe(1);
+    expect(area.count('input')).toBe(0);
+    expect(area.count('keyup')).toBe(0);
     mirror.dispose();
     expect(area.count('compositionstart')).toBe(0);
     expect(area.count('compositionend')).toBe(0);

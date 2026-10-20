@@ -168,12 +168,29 @@ try {
 
   await page.evaluate(() => {
     const ta = document.querySelector('.xterm-helper-textarea');
+    ta.value += 'q'; // the real event updates the field as well as data (fact 0027)
     ta.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: 'q' }));
   });
   await sleep(150);
   const ios = await sentNow();
   if (ios !== 'q') fail(`an insertText character sent ${JSON.stringify(ios)}, want "q" (iOS path)`);
   else console.log('ok  the iOS insertText path still reaches the terminal');
+
+  // 4. A tapped suggestion replaces the selected word. The mirror must follow the bytes the swipe path sent,
+  //    not only the paths that go through typed()/sendKey().
+  await page.evaluate(() => {
+    const ta = document.querySelector('.xterm-helper-textarea');
+    ta.value = 'hello';
+    ta.setSelectionRange(0, 5);
+    ta.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertReplacementText', data: "he'll" }));
+  });
+  await sleep(150);
+  const replaced = await sentNow();
+  const replacement = '\x7f'.repeat(5) + "he'll";
+  if (replaced !== replacement) fail(`a replacement sent ${JSON.stringify(replaced)}, want ${JSON.stringify(replacement)} (iOS swipe path)`);
+  const mirrored = await page.evaluate(() => document.querySelector('.xterm-helper-textarea').value);
+  if (mirrored !== "he'll") fail(`the field after a replacement holds ${JSON.stringify(mirrored)}, want "he'll"`);
+  else console.log('ok  an iOS replacement reaches the terminal and leaves the field mirrored');
   if (process.env.HOLD) await sleep(Number(process.env.HOLD));
 } finally {
   await browser?.close();

@@ -134,8 +134,13 @@
     refusedTimer = setTimeout(() => (inputRefused = false), 1500);
   }
   function sendInput(data: string) {
-    if (offline) return refuseInput();
+    if (offline) {
+      inputMirror?.sync();
+      return refuseInput();
+    }
     batch.add(data);
+    // Every send path mirrors after it has fed `words`; xterm has already consumed the textarea (Android reads it deferred).
+    inputMirror?.sync();
   }
 
   /** The sticky Prefix key: the next key goes out behind tmux's prefix, once. */
@@ -226,7 +231,6 @@
     if (used) mods = { ctrl: false, alt: false, shift: false };
     words.feed(out);
     sendInput(withPrefix(out));
-    inputMirror?.sync(); // after the send, so xterm has already consumed the textarea (Android reads it deferred)
   }
 
   // Dictation (plan R53): the browser's own recognizer; final text is typed as if typed, never followed by Enter.
@@ -274,7 +278,6 @@
     }
     words.feed(data);
     sendInput(withPrefix(data));
-    inputMirror?.sync();
   }
 
   /** Text the system clipboard would not give us: the user pastes it into a field of our own, then sends it. */
