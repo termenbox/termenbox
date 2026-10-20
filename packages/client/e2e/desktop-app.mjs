@@ -387,15 +387,15 @@ async function shortcuts(shared) {
   await page.keyboard.press('Alt+n');
   await page.waitForFunction(() => true);
   const deadline = Date.now() + 3000;
-  while (typedBytes(server).length < 2 && Date.now() < deadline) await page.waitForTimeout(50);
-  t.check(typedBytes(server).join('|') === '\x1by|\x1bn', `shortcuts: the terminal got ${JSON.stringify(typedBytes(server))} for Alt+Y, Alt+N`);
+  while (typedBytes(server).join('').length < 4 && Date.now() < deadline) await page.waitForTimeout(50); // the terminal may batch both keys into one message
+  t.check(typedBytes(server).join('') === '\x1by\x1bn', `shortcuts: the terminal got ${JSON.stringify(typedBytes(server))} for Alt+Y, Alt+N`);
   t.check(sentAnswers(server).length === 0, 'shortcuts: a terminal key answered the decision');
   // Ctrl+C reaches the terminal and the browser keys we avoided are not taken.
   server.clear();
   await page.keyboard.press('Control+c');
   const d2 = Date.now() + 3000;
-  while (typedBytes(server).length < 1 && Date.now() < d2) await page.waitForTimeout(50);
-  t.check(typedBytes(server).join('|') === '\x03', 'shortcuts: Ctrl+C did not reach the terminal');
+  while (typedBytes(server).join('').length < 1 && Date.now() < d2) await page.waitForTimeout(50);
+  t.check(typedBytes(server).join('') === '\x03', 'shortcuts: Ctrl+C did not reach the terminal');
   t.ok('from the terminal, Alt+Y and Alt+N are the shell\'s own keys and answer nothing');
 
   // The palette reaches the same actions from the terminal.
