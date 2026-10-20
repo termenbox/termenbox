@@ -188,9 +188,10 @@ fn opencode_tool_summary(name: &str, input: &Value) -> String {
 }
 
 /// OpenCode v2 plugin events (fact 0038: shapes recorded from OpenCode 2.0.31 on 2026-10-20). The plugin reports
-/// `session.execution.*` (the precise turn edges), `session.idle`, permissions, forms (OpenCode's questions), and
-/// tool calls; `session.status` is not used because `busy` after a pending permission would clear the obligation
-/// and `idle` repeats the turn end. The samples in testdata follow those captured events.
+/// `session.execution.*` (the precise turn edges), permissions, forms (OpenCode's questions), and tool calls.
+/// `session.status` is not used because `busy` after a pending permission would clear the obligation. `session.idle`
+/// is ignored too: it repeats the end that `session.execution.*` already carries, and a late idle would downgrade
+/// Done to Idle and clear a block. The samples in testdata follow those captured events.
 pub fn opencode(d: &Value) -> Option<Adapted> {
     let data = d.get("data").unwrap_or(&Value::Null);
     let block = |key: String, open: bool| EventKind::Block { key, open };
@@ -248,7 +249,7 @@ pub fn opencode(d: &Value) -> Option<Adapted> {
             k
         }
         // Esc, a shutdown or a superseded prompt: the turn is over and nothing waits.
-        "session.execution.interrupted" | "session.idle" => vec![turn_end(AgentState::Idle)],
+        "session.execution.interrupted" => vec![turn_end(AgentState::Idle)],
         "permission.asked" => {
             let mut k = vec![block(id("permission"), true)];
             let detail = text(data, "message");
@@ -668,12 +669,8 @@ mod tests {
                 .2,
             vec![end(AgentState::Idle)]
         );
-        assert_eq!(
-            opencode(&json!({"type": "session.idle", "data": {"sessionID": "s"}}))
-                .unwrap()
-                .2,
-            vec![end(AgentState::Idle)]
-        );
+        // A late idle must not close (and clear) a turn that execution.succeeded already ended as Done.
+        assert!(opencode(&json!({"type": "session.idle", "data": {"sessionID": "s"}})).is_none());
         assert!(opencode(
             &json!({"type": "session.inbox.enqueued", "data": {"item": {"type": "compaction"}}})
         )

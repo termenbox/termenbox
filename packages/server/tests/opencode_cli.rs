@@ -89,6 +89,34 @@ fn disconnect_follows_the_journal_when_the_config_directory_is_not_named() {
 }
 
 #[test]
+fn a_second_connect_at_another_directory_is_what_disconnect_undoes() {
+    let d = dir("move");
+    let config = d.join("state");
+    let a = d.join("a");
+    let b = d.join("b");
+    for odir in [&a, &b] {
+        let apply = run(
+            &config,
+            &[
+                "--opencode-dir",
+                odir.to_str().unwrap(),
+                "--connect-opencode",
+                "--yes",
+            ],
+            &[],
+        );
+        assert!(apply.status.success(), "{apply:?}");
+        assert!(odir.join("plugins/termenbox.js").exists());
+    }
+    // No directory named: the journal points at the file the latest connect wrote, so disconnect takes out B,
+    // not the older A (which would report success while leaving B installed).
+    let disconnect = run(&config, &["--disconnect-opencode"], &[]);
+    assert!(disconnect.status.success(), "{disconnect:?}");
+    assert!(!b.join("plugins/termenbox.js").exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn the_environment_names_the_plugin_directory_when_the_flag_does_not() {
     let d = dir("env");
     let config = d.join("state");
