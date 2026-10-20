@@ -28,6 +28,7 @@ mod directory;
 #[cfg(test)]
 mod e2e;
 mod events;
+mod health;
 mod helper;
 mod history;
 mod journal;
@@ -51,6 +52,7 @@ mod websocket;
 
 use auth::AuthState;
 use backend::{CommandBackend, RunMode, SessionBackend, TmuxBackend};
+use health::HealthCollector;
 use sessions::SessionManager;
 use websocket::handle_websocket;
 
@@ -747,6 +749,9 @@ async fn main() -> anyhow::Result<()> {
         build_backend(&args, &kinds[0], &mode, env, "")?
     };
     info!("Session backend: {}", backend.name());
+    // Server health (U14): sampled every 10 s into memory; the data directory is the disk it reports.
+    let health = Arc::new(HealthCollector::new());
+    health.spawn(args.config_dir.clone());
     let mut state = AppState {
         auth,
         sessions: Arc::new(
@@ -759,6 +764,7 @@ async fn main() -> anyhow::Result<()> {
             .with_prefix(tmux_prefix.clone())
             .with_push(push.clone())
             .with_events(hub.clone())
+            .with_health(health)
             .with_claude_hooks(claude_hooks::Target {
                 auto: args.claude_settings.is_none(),
                 settings: args

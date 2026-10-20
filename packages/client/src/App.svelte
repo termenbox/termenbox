@@ -33,6 +33,7 @@
   import AppFrame from './shell/AppFrame.svelte';
   import SettingsView from './shell/SettingsView.svelte';
   import ActivityView from './shell/ActivityView.svelte';
+  import { answeredHealth, askedHealth, type HealthMap } from './lib/health';
   import { answered, asked, DeleteBook, type HistoryDeletion, type HistoryMap, type Range } from './lib/history';
   import { Segmented } from './lib/ds';
   import SessionView from './SessionView.svelte';
@@ -143,6 +144,7 @@
       else if (msg.type === 'sessions') { openPending(_id, msg.sessions); acpStreams.update(m => forgetAcp(m, `${_id}/`, new Set(msg.sessions.map(x => sessionKey(_id, x.id))))); }
       else if (msg.type === 'attention') inbox.update(l => mergeAttention(l, _id, msg.items, s => sessionKey(_id, s), s => hub.findSession(sessionKey(_id, s))?.name ?? s));
       else if (msg.type === 'history') historyMap = answered(historyMap, _id, msg);
+      else if (msg.type === 'health_history') healthMap = answeredHealth(healthMap, _id, msg);
       else if (msg.type === 'history_deleted') historyDeletes.reply(_id, msg.removed);
       else if (msg.type === 'push_info') pushInfos = { ...pushInfos, [_id]: msg };
       else if (msg.type === 'agent_hooks') {
@@ -157,6 +159,16 @@
   const snapshots = new SnapshotStore();
   // Activity (U12): each connected server is asked for the range on screen and answers from its own history.
   let historyMap: HistoryMap = {};
+  // Server health (U14): the in-memory samples of each connected server, asked for with the history.
+  let healthMap: HealthMap = {};
+  function askHealth(restart = false) {
+    for (const s of $hubServers) {
+      if (s.state !== 'connected') continue;
+      healthMap = askedHealth(healthMap, s.id, Date.now(), restart);
+      hub.send(s.id, { type: 'health_history' });
+    }
+  }
+  $: unhealthyServers = new Set($hubServers.filter(s => s.health && !s.health.healthy).map(s => s.id));
   const historyDeletes = new DeleteBook();
   function askHistory(range: Range) {
     for (const s of $hubServers) {
@@ -835,14 +847,14 @@
           onanswer={(key, choice, prompt) => sendSession({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })}
           onreply={(key, text) => sendSession({ type: 'reply', session: key, text })} />
       {:else if $destination === 'activity'}
-        <ActivityView servers={$hubServers} history={historyMap} {now} onask={askHistory} caches={warmCaches} ttlMs={$settings.cacheTtlMs} />
+        <ActivityView servers={$hubServers} history={historyMap} {now} onask={askHistory} caches={warmCaches} ttlMs={$settings.cacheTtlMs} health={healthMap} onhealth={askHealth} rttOf={(id) => hub.rtt(id)} />
       {:else if $destination === 'settings'}
         <SettingsView user={user ?? ''} {serverVersion} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} onmenu={() => { titleTapped(); menuOpen = true; }} onshortcuts={() => (helpOpen = true)} onreport={openReport} onlogout={logout} ondeletedata={deleteData} historyServers={$connectedCount} ondeletehistory={deleteHistory} />
       {:else}
         <div class="workspace" class:mobile={narrow}>
           <div class="terminal-pane">
             {#if !activeKey}
-              <SessionGroups sessions={$allSessions} agents={$allAgents} {now} onopen={attach} onnew={newSession} />
+              <SessionGroups sessions={$allSessions} agents={$allAgents} {now} unhealthy={unhealthyServers} onopen={attach} onnew={newSession} />
             {:else if connection && connState !== 'paused' && activeIsAcp && activeSession}
               {#key activeKey}
                 <AcpView sessionKey={activeSession.key} name={activeSession.name} agent={activeRow?.agent} fleet={activeRow?.state} stream={$acpStreams[activeSession.key]} {connState} {now} {canShell}

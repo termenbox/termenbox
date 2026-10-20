@@ -15,6 +15,8 @@ export type ClientMessage =
   | { type: 'close_window'; session: string; index: number }
   | { type: 'close_session'; session: string }
   | { type: 'list_sessions' }
+  /** U14: the server's in-memory health samples; the answer is `health_history`. Older servers do not answer. */
+  | { type: 'health_history' }
   | { type: 'new_session'; name: string; backend?: string; dir?: string; template?: string }
   | { type: 'ping' }
   | { type: 'attach'; session_id: string }
@@ -72,10 +74,38 @@ export type ServerMessage =
   | { type: 'push_info'; configured: boolean; public_key: string; devices: number; subscribed: boolean }
   | { type: 'agent_event'; event: AgentEventType; agent: string; session_id: string }
   | { type: 'agent_hooks'; agent: string; action: string; state: 'connected' | 'not_connected' | 'unsupported' | 'unavailable' | string; preview?: string; error?: string }
+  | ({ type: 'server_health' } & ServerHealth)
+  | HealthHistoryMessage
   | HistoryMessage
   | { type: 'history_deleted'; removed: number }
   | { type: 'error'; message: string }
   | { type: 'pong' };
+
+/** One health sample in whole percents. A metric the server could not read is absent, never 0 (the first CPU sample is always absent). */
+export interface HealthPoint { ts: number; cpu_percent?: number; ram_percent?: number; disk_percent?: number }
+
+/** U14: pushed after sign-in and every 10 s. `healthy` is the server's own verdict (hysteresis included): clients show it and never recompute it. */
+export interface ServerHealth extends HealthPoint {
+  healthy: boolean;
+  /** The metrics over their level: `cpu`, `ram`, `disk`. */
+  unhealthy: string[];
+  /** `container`: RAM is against the container's limit; `host`: against the machine. */
+  scope: string;
+}
+
+/** Answers `health_history`: oldest first, at most 360 points, each the highest of the `step_s` seconds it stands for. */
+export interface HealthHistoryMessage {
+  type: 'health_history';
+  interval_s: number;
+  step_s: number;
+  healthy: boolean;
+  unhealthy: string[];
+  scope: string;
+  /** Samples in a row across a level before the verdict flips either way. */
+  confirm: number;
+  levels: { metric: string; enter: number; exit: number }[];
+  samples: HealthPoint[];
+}
 
 /** One task an agent worked on: metadata only. `task` is scrubbed text, shown as text; no `ended_at` while it still runs. */
 export interface HistoryRun {

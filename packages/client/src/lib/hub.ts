@@ -1,7 +1,7 @@
 import { derived, writable } from 'svelte/store';
 import { Connection, type ConnectionOptions, type ConnState } from './connection';
 import { applyActivity, applyAttention, applyEvents, applySnapshot, syncRequest, type AgentMap } from './agents';
-import type { ClientMessage, ServerListItem, ServerMessage, SessionInfo } from './protocol';
+import type { ClientMessage, ServerHealth, ServerListItem, ServerMessage, SessionInfo } from './protocol';
 import type { Target } from './transport';
 import { applyWindowList, forgetWindows, type WindowMap } from './windows';
 
@@ -21,6 +21,8 @@ export interface HubServer {
   tmuxVersion: string;
   /** tmux's prefix key (`C-b`); empty without tmux. */
   prefix: string;
+  /** Server health (U14). */
+  health?: ServerHealth;
 }
 export interface HubSession extends SessionInfo { serverId: string; key: string; serverName: string }
 interface Entry extends HubServer {
@@ -89,6 +91,8 @@ export class ServerHub {
     this.connect(entry);
   }
   connection(id: string) { return this.entries.get(id)?.connection ?? null; }
+  /** This device's last round trip to a server, from its heartbeat; null before the first one. */
+  rtt(id: string): number | null { return this.entries.get(id)?.connection?.rtt ?? null; }
   send(id: string, message: ClientMessage) { this.connection(id)?.send(message); }
   /** Global keys stay in the UI; the wire always carries the original server-local session id. */
   sendToSession(key: string, message: ClientMessage) {
@@ -133,6 +137,7 @@ export class ServerHub {
       onState: (state, detail) => {
         if (!current()) return;
         e.state = state;
+        if (state !== 'connected') e.health = undefined; // a verdict from before the link dropped is not today's
         if (detail !== undefined) e.reason = detail;
         if (state === 'connected') e.reason = '';
         if (state === 'connected') e.refresh = false;
@@ -154,7 +159,8 @@ export class ServerHub {
       },
       onDrop: (reason, upMs) => {
         if (!current()) return;
-        e.reason = reason; this.publish(); this.opts.onDrop?.(e.id, reason, upMs);
+        // A sample from before the drop is not the server's health now.
+        e.reason = reason; e.health = undefined; this.publish(); this.opts.onDrop?.(e.id, reason, upMs);
       },
       onFatal: reason => { if (current()) { e.state = 'closed'; e.reason = reason; this.publish(); this.opts.onFatal?.(e.id, reason); } },
     });
@@ -171,14 +177,19 @@ export class ServerHub {
         const result = applyEvents(e.agents, msg.events); e.agents = result.map;
         if (result.gap) connection.send({ type: 'agent_sync', after: syncRequest(e.agents) });
       }
+      if (msg.type === 'server_health') { const { type: _, ...h } = msg; e.health = h; this.publishServers(); }
       if (changed) this.publish();
       this.opts.onMessage?.(e.id, msg);
     });
     this.publish(); connection.start();
   }
+  /** The server list alone: a health sample every 10 s per server must not rebuild the session, agent and window stores. */
+  private publishServers(entries = [...this.entries.values()]) {
+    this.servers.set(entries.map(({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix, health }) => ({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix, health })));
+  }
   private publish() {
     const entries = [...this.entries.values()];
-    this.servers.set(entries.map(({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix }) => ({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix })));
+    this.publishServers(entries);
     this.allSessions.set(entries.filter(e => e.state !== 'paused').flatMap(e => e.sessions.map(s => ({ ...s,
       serverId: e.id, serverName: e.server.server_name || 'Server', key: sessionKey(e.id, s.id) }))));
     this.agents.set(Object.fromEntries(entries.filter(e => e.state !== 'paused').flatMap(e => Object.entries(e.agents).map(([id, a]) => [sessionKey(e.id, id), a]))));

@@ -174,3 +174,47 @@ describe('ServerHub', () => {
     ]);
   });
 });
+
+describe('server health (U14)', () => {
+  it('keeps the verdict the server sent, publishes it once, and forgets it when the link drops', () => {
+    const { hub, connections } = setup();
+    hub.start([server('a')]);
+    connections[0].ready();
+    let published = 0;
+    const off = hub.servers.subscribe(() => { published++; });
+    published = 0;
+    connections[0].emit({ type: 'server_health', ts: 5, healthy: false, unhealthy: ['ram'], scope: 'container', ram_percent: 93 });
+    expect(published).toBe(1);
+    expect(get(hub.servers)[0].health).toEqual({ ts: 5, healthy: false, unhealthy: ['ram'], scope: 'container', ram_percent: 93 });
+    connections[0].opts.onState('reconnecting');
+    expect(get(hub.servers)[0].health).toBeUndefined();
+    off();
+  });
+  it('does not rebuild the session, agent and window lists for a health sample', () => {
+    const { hub, connections } = setup();
+    hub.start([server('a')]);
+    connections[0].ready();
+    let sessions = 0;
+    let agents = 0;
+    const offS = hub.allSessions.subscribe(() => { sessions++; });
+    const offA = hub.agents.subscribe(() => { agents++; });
+    sessions = 0; agents = 0;
+    connections[0].emit({ type: 'server_health', ts: 5, healthy: true, unhealthy: [], scope: 'host', ram_percent: 20 });
+    expect([sessions, agents]).toEqual([0, 0]);
+    offS(); offA();
+  });
+  it('shows no health for a server that sends none (an older server)', () => {
+    const { hub, connections } = setup();
+    hub.start([server('a')]);
+    connections[0].ready();
+    expect(get(hub.servers)[0].health).toBeUndefined();
+  });
+  it('reports the round trip of the connection, or null before one', () => {
+    const { hub, connections } = setup();
+    hub.start([server('a')]);
+    expect(hub.rtt('a')).toBeNull();
+    (connections[0] as unknown as { rtt: number }).rtt = 37;
+    expect(hub.rtt('a')).toBe(37);
+    expect(hub.rtt('missing')).toBeNull();
+  });
+});

@@ -11,6 +11,7 @@ use std::sync::Arc;
 use crate::backend::{RunMode, SessionBackend};
 use crate::control::WindowHub;
 use crate::events::EventHub;
+use crate::health::HealthCollector;
 use crate::link::{Inbound, Link, LinkTx};
 use crate::pty::Attachment;
 
@@ -53,6 +54,8 @@ pub struct SessionManager {
     transcripts: Arc<crate::transcript::Transcripts>,
     /// Where the owner can enable Claude Code's hooks from the app (U10).
     hooks: Option<crate::claude_hooks::Target>,
+    /// Samples of the server's CPU, RAM and disk (U14).
+    health: Option<Arc<HealthCollector>>,
 }
 
 impl SessionManager {
@@ -70,6 +73,7 @@ impl SessionManager {
             prefix: String::new(),
             transcripts: Arc::default(),
             hooks: None,
+            health: None,
         }
     }
 
@@ -106,6 +110,12 @@ impl SessionManager {
     /// Serves the agent event stream (plan v6) to every connection.
     pub fn with_events(mut self, hub: EventHub) -> Self {
         self.events = Some(hub);
+        self
+    }
+
+    /// Serves the server's health samples to every connection (U14).
+    pub fn with_health(mut self, health: Arc<HealthCollector>) -> Self {
+        self.health = Some(health);
         self
     }
 
@@ -191,6 +201,13 @@ impl SessionManager {
         let mut acp: Option<AcpSub> = None;
         let mut acp_tick = tokio::time::interval(ACP_BATCH);
         acp_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // None once the collector is gone: the arm below then waits for ever instead of spinning on a closed channel.
+        let mut health_rx = self.health.as_ref().map(|h| h.subscribe());
+        if let Some(u) = self.health.as_ref().and_then(|h| h.latest()) {
+            if !send(&link.tx, &u.message()).await {
+                return Ok(());
+            }
+        }
 
         loop {
             tokio::select! {
@@ -279,6 +296,19 @@ impl SessionManager {
                         if !send(&link.tx, &msg).await { gone = true; break; }
                     }
                     if gone { break; }
+                }
+                update = async {
+                    match &mut health_rx {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    match update {
+                        Ok(u) => { if !send(&link.tx, &u.message()).await { break; } }
+                        // Behind by a few samples: the next one carries the same story.
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => health_rx = None,
+                    }
                 }
                 _ = &mut idle => {
                     info!("Closing idle connection of {}", identity.login);
@@ -708,6 +738,12 @@ impl SessionManager {
                     },
                 )
                 .await?;
+            }
+            ClientMessage::HealthHistory => {
+                let Some(health) = &self.health else {
+                    return Err(anyhow::anyhow!("Health is not available"));
+                };
+                send_r(tx, &health.history()).await?;
             }
             ClientMessage::HistoryDelete => {
                 let history = self.events.as_ref().and_then(|h| h.history()).cloned();
