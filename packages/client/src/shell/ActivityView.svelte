@@ -9,11 +9,15 @@
     type HistoryMap, type Mode, type Outcome, type Range, type UsageTotals,
   } from '../lib/history';
   import { cacheText } from '../lib/cache';
+  import HealthSection from './HealthSection.svelte';
+  import type { HealthMap } from '../lib/health';
 
   /** The Activity destination (U12, decision 0105): what the agents of the connected servers did, as a digest, two charts and
    *  a timeline per day. Each server keeps its own history; this view only asks for a range and lays the answers out. */
-  let { servers, history, now, onask, caches = [], ttlMs = 300_000 }: {
+  let { servers, history, now, onask, caches = [], ttlMs = 300_000, health = {}, onhealth = () => {}, rttOf = () => null }: {
     servers: HubServer[]; history: HistoryMap; now: number; onask: (range: Range) => void;
+    /** What each server said about its health (U14), the request for it, and this device's round trip to a server. */
+    health?: HealthMap; onhealth?: () => void; rttOf?: (id: string) => number | null;
     /** Claude Code sessions that are idle with a warm prompt cache right now, with the estimated time left (decision 0083). */
     caches?: { key: string; name: string; server: string; remainingMs: number }[]; ttlMs?: number;
   } = $props();
@@ -44,7 +48,7 @@
   const many = $derived(connected.length > 1);
   const isToday = $derived(anchor >= startOfDay(now));
 
-  const ask = () => untrack(() => onask(range));
+  const ask = () => untrack(() => { onask(range); onhealth(); });
   // Ask again when the range or the set of connected servers changes, and every 30 s while the view is open. What the
   // asker reads is not a dependency: it writes the answers this view shows.
   $effect(() => { range; connectedIds; ask(); });
@@ -205,6 +209,7 @@
       {/each}
       <p class="text-sm text-soft">History stays on your servers, for up to {keepDays} days. It holds session names, a short task title (the first line of your prompt, scrubbed), the folder name, times, outcomes and the counts an agent reported (tokens, a cost it gave, rate-limit hits), never the rest of a prompt, replies or terminal text. Delete it under Privacy and your data in Settings.</p>
     {/if}
+    <HealthSection servers={connected} {health} {now} onask={onhealth} {rttOf} />
   {/if}
 </div>
 </div>

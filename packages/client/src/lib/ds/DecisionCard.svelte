@@ -1,13 +1,14 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import AgentBadge from './AgentBadge.svelte';
+  import HealthDot from './HealthDot.svelte';
   import type { FleetState } from './states';
   import { cn } from '../ui/utils';
   /** The frame of a decision (decision 0104): who asks, the task, how long it has waited, the question with its
    *  context, then the options. The options and the free-text field are children. `task`, `step` and `context` are
    *  text from an agent or a terminal: they are rendered as text and nothing else. `tier` says how much to trust the options. */
-  let { agent, command, session, waited, task, context, step, tier, question, state = 'needs-you', children, class: className = '' }:
-    { agent?: string; command?: string; session: string; waited?: string; task?: string; context?: string; step?: { name: string; summary: string };
+  let { agent, command, session, waited, task, context, unhealthy, step, tier, question, state = 'needs-you', children, class: className = '' }:
+    { agent?: string; command?: string; session: string; waited?: string; task?: string; context?: string; unhealthy?: boolean; step?: { name: string; summary: string };
       tier?: { name: string; detail: string }; question: string; state?: FleetState; children: Snippet; class?: string } = $props();
 </script>
 
@@ -20,7 +21,9 @@
     </div>
     {#if waited}<small class="shrink-0 text-xs font-semibold text-warn" data-decision-waited>Waiting {waited}</small>{/if}
   </header>
-  {#if context}<p class="text-base text-soft">{context}</p>{/if}
+  {#if context || unhealthy}
+    <p class="flex flex-wrap items-center gap-x-3 text-base text-soft">{#if context}<span>{context}</span>{/if}{#if unhealthy}<HealthDot />{/if}</p>
+  {/if}
   <h2 class="text-title leading-tight font-bold tracking-tight">{question}</h2>
   {#if step}
     <div class="flex flex-col gap-1 rounded-card bg-sunken p-3" data-decision-step>

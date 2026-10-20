@@ -1,21 +1,12 @@
 import { derived, writable } from 'svelte/store';
 import { Connection, type ConnectionOptions, type ConnState } from './connection';
 import { applyActivity, applyAttention, applyEvents, applySnapshot, syncRequest, type AgentMap } from './agents';
-import type { ClientMessage, ServerListItem, ServerMessage, SessionInfo } from './protocol';
+import type { ClientMessage, ServerHealth, ServerListItem, ServerMessage, SessionInfo } from './protocol';
 import type { Target } from './transport';
 import { applyWindowList, forgetWindows, type WindowMap } from './windows';
 
 export type HubConnection = Pick<Connection, 'start' | 'close' | 'subscribe' | 'send'> & Partial<Pick<Connection, 'kind' | 'rtt' | 'drops' | 'retry' | 'retryNow'>>;
 export type ServerState = ConnState | 'paused';
-export interface ServerHealth {
-  cpu_percent: number;
-  ram_percent: number;
-  disk_percent: number;
-  rtt_ms: number;
-  ts: number;
-  healthy: boolean;
-}
-
 export interface HubServer {
   id: string;
   server: ServerListItem;
@@ -100,6 +91,8 @@ export class ServerHub {
     this.connect(entry);
   }
   connection(id: string) { return this.entries.get(id)?.connection ?? null; }
+  /** This device's last round trip to a server, from its heartbeat; null before the first one. */
+  rtt(id: string): number | null { return this.entries.get(id)?.connection?.rtt ?? null; }
   send(id: string, message: ClientMessage) { this.connection(id)?.send(message); }
   /** Global keys stay in the UI; the wire always carries the original server-local session id. */
   sendToSession(key: string, message: ClientMessage) {
@@ -144,6 +137,7 @@ export class ServerHub {
       onState: (state, detail) => {
         if (!current()) return;
         e.state = state;
+        if (state !== 'connected') e.health = undefined; // a verdict from before the link dropped is not today's
         if (detail !== undefined) e.reason = detail;
         if (state === 'connected') e.reason = '';
         if (state === 'connected') e.refresh = false;
@@ -182,11 +176,7 @@ export class ServerHub {
         const result = applyEvents(e.agents, msg.events); e.agents = result.map;
         if (result.gap) connection.send({ type: 'agent_sync', after: syncRequest(e.agents) });
       }
-      if (msg.type === 'server_health') {
-        const healthy = msg.cpu_percent <= 80 && msg.ram_percent <= 85 && msg.disk_percent <= 90 && msg.rtt_ms <= 500;
-        e.health = { cpu_percent: msg.cpu_percent, ram_percent: msg.ram_percent, disk_percent: msg.disk_percent, rtt_ms: msg.rtt_ms, ts: msg.ts, healthy };
-        this.publish();
-      }
+      if (msg.type === 'server_health') { const { type: _, ...h } = msg; e.health = h; }
       if (changed) this.publish();
       this.opts.onMessage?.(e.id, msg);
     });

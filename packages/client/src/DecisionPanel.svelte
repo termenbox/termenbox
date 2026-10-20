@@ -10,8 +10,8 @@
    *  the server clears the Attention item and the parent stops passing the decision. Until then it says it is waiting.
    *  If the server has not cleared it after a few seconds, the card says so and the options come back.
    *  `detail` is what the question is about when the card has more than a line to show (the diff of an ACP edit). */
-  let { decision, now, composer = true, server, detail, onpick, onreply, onopen, class: className = '' }: {
-    decision: Decision; now: number; composer?: boolean; server?: string; detail?: Snippet;
+  let { decision, now, composer = true, server, detail, unhealthy, onpick, onreply, onopen, class: className = '' }: {
+    decision: Decision; now: number; composer?: boolean; server?: string; detail?: Snippet; unhealthy?: boolean;
     onpick: (index: number) => void; onreply?: (line: string) => void; onopen?: () => void; class?: string;
   } = $props();
 
@@ -34,7 +34,7 @@
 </script>
 
 <DecisionCard agent={decision.agent} session={decision.name} task={decision.task} waited={decision.since ? ageText(decision.since, now) : undefined}
-  context={server} step={decision.step} tier={TIER_LABEL[decision.tier]} question={decision.question} class={className}>
+  context={server} {unhealthy} step={decision.step} tier={TIER_LABEL[decision.tier]} question={decision.question} class={className}>
   {#if detail}{@render detail()}{/if}
   {#if decision.options.length}
     <div class="flex flex-col gap-2" data-hero-options aria-busy={!!sent}>

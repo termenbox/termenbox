@@ -4,6 +4,8 @@ import ActivityView from './ActivityView.svelte';
 import type { HubServer } from '../lib/hub';
 import { ANSWER_TIMEOUT_MS, rangeOf, startOfDay, type HistoryMap } from '../lib/history';
 import { answer, NOW, REPORTED, RUNS } from '../lib/historyFixture';
+import { healthyHistory, history as healthHistory, live } from '../lib/healthFixture';
+import type { HealthMap } from '../lib/health';
 
 const server = (id: string, state = 'connected') => ({ id, state, server: { server_name: id } }) as unknown as HubServer;
 const range = rangeOf('day', startOfDay(NOW));
@@ -179,5 +181,56 @@ describe('Activity says what is going on', () => {
     const week = rangeOf('week', startOfDay(NOW));
     const out = html([server('alpha')], { alpha: { ...week, sentAt: NOW - 1000, answer: answer(RUNS, 'week') } });
     expect(out).toContain('Loading activity');
+  });
+});
+
+describe('Server health from a fixture (U14)', () => {
+  const srv = (id = 'alpha', h?: ReturnType<typeof live>) => ({ ...server(id), health: h }) as unknown as HubServer;
+  const view = (servers: HubServer[], health: HealthMap, now = NOW, rtt: number | null = 41) =>
+    render(ActivityView, { props: { servers, history: {}, now, onask: () => {}, health, rttOf: () => rtt } }).body;
+
+  it('says an unhealthy server is unhealthy in words, names the metric and explains the levels', () => {
+    const out = view([srv('alpha', live())], { alpha: { sentAt: NOW, answer: healthHistory() } });
+    expect(out).toContain('data-activity-health');
+    expect(out).toContain('data-health-verdict="unhealthy"');
+    expect(out).toContain('RAM is over its level, held for 30 seconds');
+    expect(out).toContain('Level 90%, healthy again at 80% or less');
+    expect(out).toContain("of the container's memory limit");
+  });
+  it('draws three charts, each with a spoken summary and a dashed level line, not colour alone', () => {
+    const out = view([srv()], { alpha: { sentAt: NOW, answer: healthHistory() } });
+    expect(out.match(/data-health-chart/g)).toHaveLength(3);
+    const labels = [...out.matchAll(/role="img" aria-label="([^"]+)"/g)].map((m) => m[1]);
+    expect(labels).toHaveLength(3);
+    expect(labels[0]).toMatch(/^CPU over the last hours: now \d+%, highest 96% at \d\d:\d\d( [AP]M)?, at or above its 90% level for about 5 min/);
+    expect(labels[2]).toContain('never at its 90% level');
+    expect(out).toContain('stroke-dasharray');
+    expect(view([srv()], { alpha: { sentAt: NOW, answer: healthyHistory() } })).toContain('data-health-verdict="healthy"');
+  });
+  it('shows this device\'s round trip, and that it is not measured yet', () => {
+    const h = { alpha: { sentAt: NOW, answer: healthyHistory() } };
+    expect(view([srv()], h, NOW, 41)).toContain('41 ms');
+    expect(view([srv()], h, NOW, null)).toContain('not measured yet');
+  });
+  it('is honest while loading, for an older server that never answers, and for a server that just started', () => {
+    expect(view([srv()], { alpha: { sentAt: NOW } })).toContain('Loading health');
+    const old = view([srv()], { alpha: { sentAt: NOW - ANSWER_TIMEOUT_MS - 1 } });
+    expect(old).toContain('data-health-state="unavailable"');
+    expect(old).toContain('did not report its health');
+    expect(old).toContain('Try again');
+    const fresh = view([srv()], { alpha: { sentAt: NOW, answer: healthHistory({ samples: [] }) } });
+    expect(fresh).toContain('data-health-state="empty"');
+    expect(fresh).toContain('has just started');
+  });
+  it('says plainly when a metric could not be read', () => {
+    const samples = healthyHistory().samples.map((p) => ({ ts: p.ts, ram_percent: p.ram_percent }));
+    const out = view([srv()], { alpha: { sentAt: NOW, answer: healthHistory({ healthy: true, unhealthy: [], samples }) } });
+    expect(out).toContain('not available');
+    expect(out.match(/data-health-chart/g)).toHaveLength(1);
+  });
+  it('shows the health of every connected server, each under its own name', () => {
+    const out = view([srv('alpha'), srv('beta')], { alpha: { sentAt: NOW, answer: healthyHistory() }, beta: { sentAt: NOW, answer: healthHistory() } });
+    expect(out.match(/data-health-server=/g)).toHaveLength(2);
+    expect(out.split('data-health-server="beta"')[1]).toContain('data-health-verdict="unhealthy"');
   });
 });

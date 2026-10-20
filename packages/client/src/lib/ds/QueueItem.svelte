@@ -1,5 +1,6 @@
 <script lang="ts">
   import AgentBadge from './AgentBadge.svelte';
+  import HealthDot from './HealthDot.svelte';
   import StatusChip from './StatusChip.svelte';
   import type { FleetState } from './states';
   import { cn } from '../ui/utils';
@@ -14,11 +15,7 @@
     <b class="text-base font-semibold">{name}</b>
     {#if summary}<span class="truncate text-sm text-soft">{summary}</span>{/if}
     {#if meta}<small class="text-xs text-muted">{meta}</small>{/if}
+    {#if unhealthy}<HealthDot />{/if}
   </span>
-  {#if unhealthy}
-    <span class="flex items-center gap-1 text-xs text-red-500" aria-label="Server unhealthy">
-      <span class="relative top-[1px] w-1.5 h-1.5 rounded-full bg-red-500" aria-hidden="true"></span>
-    </span>
-  {/if}
   <StatusChip {state} />
 </button>

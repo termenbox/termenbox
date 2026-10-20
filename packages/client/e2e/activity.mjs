@@ -81,6 +81,32 @@ try {
     await page.waitForTimeout(150);
     check((await page.evaluate(() => window.__activity.asks.length)) === asked, `${name}: a new servers array with the same connected servers re-asked for the history`);
 
+    // Server health (U14): the server's own verdict in words, three charts with a spoken summary, a dashed level line, this device's round trip.
+    const hs = page.locator('[data-activity-health]');
+    check((await hs.locator('[data-health-verdict]').getAttribute('data-health-verdict')) === 'unhealthy', `${name}: the unhealthy server is not shown as unhealthy`);
+    const hText = await hs.innerText();
+    check(hText.includes('Unhealthy') && hText.includes('RAM is over its level, held for 30 seconds'), `${name}: the verdict is not in words: ${hText.slice(0, 300)}`);
+    check(hText.includes("of the container's memory limit") && hText.includes('Round trip from this device: 41 ms'), `${name}: scope or round trip missing`);
+    const charts = await hs.locator('[role=img]').evaluateAll((els) => els.map((e) => [e.getAttribute('aria-label'), e.getBoundingClientRect().width, e.getBoundingClientRect().height, e.querySelectorAll('path').length, e.querySelectorAll('line[stroke-dasharray]').length]));
+    check(charts.length === 3 && charts.every(([l, w, h, p, d]) => /^(CPU|RAM|Disk) over the last hours: now \d+%, highest \d+% at /.test(l) && w > 150 && h > 40 && p === 1 && d === 1), `${name}: health charts: ${JSON.stringify(charts)}`);
+    check((await hs.locator('svg[aria-hidden=true]').count()) === 3, `${name}: a drawn chart is exposed to a screen reader twice`);
+    check((await overflow(page)) <= 0, `${name}: health overflows sideways by ${await overflow(page)} px`);
+    check((await small(page)).length === 0 && (await tiny(page)).length === 0, `${name}: health targets/text too small: ${await small(page)} ${await tiny(page)}`);
+    const beforeAsk = await page.evaluate(() => window.__activity.healthAsks.length);
+    for (let i = 0; i < 3; i++) await page.evaluate(() => window.__activity.rebuild());
+    await page.waitForTimeout(150);
+    check((await page.evaluate(() => window.__activity.healthAsks.length)) === beforeAsk, `${name}: a new servers array re-asked for health`);
+    console.log(`ok  ${name}: health section says unhealthy in words (RAM, held 30 s), 3 charts with spoken summary and dashed level, round trip 41 ms; no sideways scroll; targets >= 44 px; text >= 12 px`);
+    for (const [q, state, text] of [['?healthy', 'ready', 'Healthy: nothing has stayed at its level'], ['?fresh', 'empty', 'has just started']]) {
+      const v = await open(ctx, q);
+      await v.waitForSelector('[data-activity=ready]');
+      const t = await v.locator('[data-activity-health]').innerText();
+      check((await v.locator('[data-health-server]').getAttribute('data-health-state')) === state && t.includes(text), `${name} ${q}: ${t.slice(0, 200)}`);
+      check((await overflow(v)) <= 0, `${name} ${q}: overflows sideways`);
+      await v.close();
+    }
+    console.log(`ok  ${name}: a healthy server and a server with no sample yet each say so in words`);
+
     // Dense bars: no two labels of a chart may run into each other (a busy morning, long wait labels).
     const dense = await open(ctx, '?dense');
     await dense.waitForSelector('[data-activity=ready]');
@@ -127,6 +153,17 @@ try {
   await page.waitForSelector('[data-activity=unavailable]');
   check((await page.innerText('[data-activity]')).includes('alpha did not answer'), 'the unavailable state does not name the server');
   console.log('ok  a server that never answers is reported after 8 s, not left loading');
+  // A server that predates health answers the history but not health_history: its health says so while the history shows.
+  const old = await open(ctx, '?noHealth');
+  await old.waitForSelector('[data-activity=ready]');
+  check((await old.locator('[data-health-server]').getAttribute('data-health-state')) === 'loading', 'health is not loading at first');
+  await old.clock.fastForward(9000);
+  await old.evaluate(() => window.__activity.tick());
+  await old.waitForSelector('[data-health-state=unavailable]');
+  const oldText = await old.locator('[data-activity-health]').innerText();
+  check(oldText.includes('alpha did not report its health') && oldText.includes('update it'), `old server health state: ${oldText.slice(0, 200)}`);
+  check((await old.locator('[data-digest]').count()) === 3, 'the history disappeared with the missing health');
+  console.log('ok  a server that predates health says so after 8 s while its history still shows');
   await ctx.close();
 } finally {
   await browser.close();

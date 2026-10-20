@@ -129,3 +129,20 @@ describe('the settle rule', () => {
     expect(s.view(['b'], 9000)).toEqual(['b']);
   });
 });
+
+describe('server health on rows (U14)', () => {
+  it('flags the rows of servers whose own verdict is unhealthy, and no others', () => {
+    const ss = [sess('a', 's1'), sess('b', 's2')];
+    const agents: AgentMap = { 's1/a': withAtt('failed', 1), 's2/b': withAtt('failed', 2) };
+    const q = queueOf(ss, agents, new Set(['s2']));
+    expect(q.map((r) => [r.name, r.unhealthy])).toEqual([['a', undefined], ['b', true]]);
+    expect(sessionGroups(ss, agents, new Set(['s1'])).flatMap((g) => g.rows).map((r) => [r.name, r.unhealthy])).toEqual([['a', true], ['b', undefined]]);
+  });
+  it('works for callers that know nothing of health', () => {
+    const ss = [sess('a')];
+    const agents: AgentMap = { 's1/a': withAtt('failed', 1) };
+    expect(queueOf(ss, agents)[0].unhealthy).toBeUndefined();
+    expect(sessionGroups(ss, agents)[0].rows[0].unhealthy).toBeUndefined();
+    expect(rowOf(ss[0], agents['s1/a']).unhealthy).toBeUndefined();
+  });
+});
