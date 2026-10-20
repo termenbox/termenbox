@@ -13,9 +13,11 @@
 #   host        directly on this machine as root, as a systemd service
 # The host modes give the owner's browser a shell on the machine itself and need no Docker.
 #
-# It starts the server and hands it the claim secret. In host-me the server chooses its own UDP port from the
-# reserved range (DECISION-0118); the other modes still pick one. It asks nothing and needs nothing afterwards: the
-# server appears in Termenbox by itself. Safe to run again: a new secret re-claims the server (root on this host
+# It starts the server and hands it the claim secret. The UDP port is picked once, from the reserved range 4443-4542
+# (DECISION-0118), and then stays: the server uses that port or stops with a message, it never moves to another. To
+# choose the port yourself, set TERMENBOX_UDP_PORT=<port> in front of `sh` (needed when the range has no free port;
+# an interactive run asks then). The installer says which port it is and how to open it. It asks nothing otherwise and
+# needs nothing afterwards: the server appears in Termenbox by itself. Safe to run again: a new secret re-claims the server (root on this host
 # already allows that).
 #
 # Host modes: every change is recorded in /var/lib/termenbox-root before it is made and can be undone with
@@ -84,7 +86,7 @@ else
     command -v sudo >/dev/null 2>&1 || die "run this as root (or install sudo)"
     exec sudo env TERMENBOX_IMAGE="$IMAGE" TERMENBOX_CONTAINER="$NAME" TERMENBOX_DATA="$ROOT" \
       TERMENBOX_SKIP_FIREWALL="${TERMENBOX_SKIP_FIREWALL:-}" TERMENBOX_DRY_RUN="${TERMENBOX_DRY_RUN:-}" \
-      TERMENBOX_FORCE="${TERMENBOX_FORCE:-}" TERMENBOX_RELEASE_URL="${TERMENBOX_RELEASE_URL:-}" TERMENBOX_RELEASE_KEYS="${TERMENBOX_RELEASE_KEYS:-}" \
+      TERMENBOX_FORCE="${TERMENBOX_FORCE:-}" TERMENBOX_UDP_PORT="${TERMENBOX_UDP_PORT:-}" TERMENBOX_RELEASE_URL="${TERMENBOX_RELEASE_URL:-}" TERMENBOX_RELEASE_KEYS="${TERMENBOX_RELEASE_KEYS:-}" \
       sh -c "$(curl -fsSL "$ORIGIN/install.sh")" termenbox-install "$SECRET" "$ORIGIN" "$MODE"
   fi
 fi
@@ -124,6 +126,123 @@ pick_port() {
   echo "$_p"
 }
 
+UDP_FIRST=4443
+UDP_LAST=4542
+
+valid_port() { case "$1" in ""|*[!0-9]*) return 1 ;; esac; [ "$1" -ge 1024 ] && [ "$1" -le 65535 ]; }
+
+# The first free UDP port of the reserved range, nothing when there is none.
+free_udp_in_range() {
+  _p=$UDP_FIRST
+  while [ "$_p" -le "$UDP_LAST" ]; do
+    udp_in_use "$_p" || { echo "$_p"; return; }
+    _p=$((_p + 1))
+  done
+}
+
+# No free port in the range: ask on the terminal when there is one, otherwise stop and say how to choose.
+ask_udp_port() {
+  {
+    echo "termenbox: no UDP port is free in $UDP_FIRST-$UDP_LAST."
+    echo "Free one, or choose a port yourself (it must then be opened in the firewall)."
+  } >&2
+  if ( : </dev/tty ) 2>/dev/null; then
+    printf 'UDP port to use: ' >/dev/tty
+    read -r _a </dev/tty || _a=""
+    valid_port "$_a" || die "not a port number (1024-65535)"
+    echo "$_a"
+    return
+  fi
+  die "run this command again with TERMENBOX_UDP_PORT=<port> in front of sh"
+}
+
+# choose_udp_port <file holding the earlier choice>: the owner's TERMENBOX_UDP_PORT, else the earlier choice (kept as it
+# is: the firewall rule and the server's record are for that port), else the first free port of the range.
+choose_udp_port() {
+  if [ -n "${TERMENBOX_UDP_PORT:-}" ]; then
+    valid_port "$TERMENBOX_UDP_PORT" || die "TERMENBOX_UDP_PORT must be a port number from 1024 to 65535"
+    echo "$TERMENBOX_UDP_PORT"
+    return
+  fi
+  if [ -s "$1" ]; then cat "$1"; return; fi
+  _free="$(free_udp_in_range)"
+  if [ -n "$_free" ]; then echo "$_free"; return; fi
+  ask_udp_port
+}
+
+# Which cloud this is, from the metadata address that clouds answer on (link-local, no outside service). Best effort:
+# a host without one prints nothing.
+detect_provider() {
+  _m=http://169.254.169.254
+  if curl -fs -m 1 -H "Metadata-Flavor: Google" "$_m/computeMetadata/v1/instance/id" >/dev/null 2>&1; then echo gcp
+  elif curl -fs -m 1 -H "Metadata: true" "$_m/metadata/instance?api-version=2021-02-01" >/dev/null 2>&1; then echo azure
+  elif curl -fs -m 1 "$_m/metadata/v1/id" >/dev/null 2>&1; then echo digitalocean
+  elif curl -fs -m 1 "$_m/hetzner/v1/metadata" >/dev/null 2>&1; then echo hetzner
+  elif curl -fs -m 1 -H "Authorization: Bearer Oracle" "$_m/opc/v2/instance/" >/dev/null 2>&1; then echo oracle
+  elif curl -fs -m 1 "$_m/v1.json" >/dev/null 2>&1; then echo vultr
+  elif curl -fs -m 1 "$_m/latest/meta-data/instance-id" >/dev/null 2>&1 \
+    || curl -fs -m 1 -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 60" "$_m/latest/api/token" >/dev/null 2>&1; then echo aws
+  fi
+}
+
+# What the owner must do outside the installer for UDP port <port> to be reachable. $1 = port, $2 = whether this run
+# already opened the host firewall (root modes). Best effort: the real test is the app's reachability check.
+port_report() {
+  _port="$1"
+  say ""
+  say "Termenbox listens on UDP port $_port."
+  if [ -z "${2:-}" ]; then
+    _fw=""
+    if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then _fw=ufw
+    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then _fw=firewalld; fi
+    case "$_fw" in
+      ufw) say "This machine's firewall (ufw) is active. If port $_port is not open yet, as root:  ufw allow $_port/udp" ;;
+      firewalld) say "This machine's firewall (firewalld) is active. If port $_port is not open yet, as root:  firewall-cmd --permanent --add-port=$_port/udp && firewall-cmd --reload" ;;
+      *) say "No active ufw or firewalld was detected here. With another firewall, allow inbound UDP $_port yourself." ;;
+    esac
+  fi
+  case "$(detect_provider)" in
+    aws) say "Your host looks like AWS EC2: also allow inbound UDP $_port in the instance's security group." ;;
+    gcp) say "Your host looks like Google Cloud: also allow ingress udp:$_port with a VPC firewall rule (gcloud compute firewall-rules create termenbox-udp --allow=udp:$_port)." ;;
+    azure) say "Your host looks like Azure: also add an inbound port rule for UDP $_port to the VM's network security group." ;;
+    digitalocean) say "Your host looks like DigitalOcean: if a Cloud Firewall is attached to the droplet, add an inbound UDP $_port rule." ;;
+    hetzner) say "Your host looks like Hetzner: if a Cloud Firewall is attached to the server, add an inbound UDP $_port rule." ;;
+    oracle) say "Your host looks like Oracle Cloud: also add an ingress rule for UDP $_port to the subnet's security list or network security group." ;;
+    vultr) say "Your host looks like Vultr: if a firewall group is attached, add an inbound UDP $_port rule." ;;
+    *) say "If your hosting provider has a network firewall or security group, allow inbound UDP $_port there too." ;;
+  esac
+  say "Add Server tests the connection from your browser and shows what is blocking it."
+}
+
+# Said when the unit pins a port by hand (an older installer, or TERMENBOX_UDP_PORT): the owner's, kept as it is.
+pinned_port_note() { # <unit file> <port>
+  _pin="$(sed -n 's/^Environment=TERMENBOX_UDP_PORT=//p' "$1" 2>/dev/null)"
+  [ -n "$_pin" ] || return 0
+  if [ "$_pin" -ge "$UDP_FIRST" ] && [ "$_pin" -le "$UDP_LAST" ]; then
+    say "(The port is pinned in $1.)"
+  else
+    say "Note: $1 pins port $_pin, outside $UDP_FIRST-$UDP_LAST, so the range rule does not cover it. Open $_pin, or remove that line and restart the service to move into the range."
+  fi
+}
+
+# The service must be up before a claim link is shown for it. On failure the server's own message is printed.
+# service_up <user|system> <unit file>
+service_up() {
+  _flag=""; [ "$1" = user ] && _flag="--user"
+  _hp="$(sed -n 's/^Environment=TERMENBOX_PORT=//p' "$2" 2>/dev/null | head -n 1)"
+  _i=0
+  while [ "$_i" -lt 20 ]; do
+    if [ -n "$_hp" ]; then curl -fs "http://127.0.0.1:$_hp/health" >/dev/null 2>&1 && return 0
+    else systemctl $_flag is-active --quiet termenbox.service && return 0; fi
+    _i=$((_i + 1))
+    sleep 1
+  done
+  say "The Termenbox service is not running:" >&2
+  # shellcheck disable=SC2086
+  journalctl $_flag -u termenbox.service -n 8 --no-pager 2>/dev/null | cut -c1-300 >&2 || true
+  die "the server did not start. If the log above says a UDP port is taken, free it or choose another with TERMENBOX_UDP_PORT=<port> in front of sh. Full log: journalctl $_flag -u termenbox"
+}
+
 open_firewall() {
   [ -z "${TERMENBOX_SKIP_FIREWALL:-}" ] || return 0
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
@@ -146,7 +265,7 @@ install_container() {
   docker info >/dev/null 2>&1 || die "Docker is installed but not running"
 
   mkdir -p "$ROOT/home"
-  PORT="$(pick_port udp_in_use 4443 "$ROOT/udp_port")"
+  PORT="$(choose_udp_port "$ROOT/udp_port")"
   [ -n "$PORT" ] || die "could not find a free UDP port"
   echo "$PORT" > "$ROOT/udp_port"
   open_firewall "$PORT"
@@ -182,6 +301,8 @@ install_container() {
     docker exec "$NAME" termenbox-server --claim "$SECRET" >/dev/null
     say "Termenbox server started. It will appear in the app within a minute."
   fi
+  _opened=1; [ -z "${TERMENBOX_SKIP_FIREWALL:-}" ] || _opened=""
+  port_report "$PORT" "$_opened"
 }
 
 # ---------------------------------------------------------------------------------------------------------
@@ -212,6 +333,11 @@ native_claim() {
     # shellcheck disable=SC2086
     $_run "$BIN" --claim "$SECRET" >/dev/null
     say "Termenbox server started. It will appear in the app within a minute."
+  fi
+  # CLAIM_UNIT and CLAIM_OPENED say which unit this is and whether this run opened the host firewall (root modes).
+  if [ -r "$STATE/udp_port" ]; then
+    port_report "$(cat "$STATE/udp_port")" "${CLAIM_OPENED:-}"
+    pinned_port_note "$CLAIM_UNIT"
   fi
 }
 
@@ -403,7 +529,10 @@ install_native() {
     [ "$MODE" != host-me ] || [ "$RUN_USER" = "${SUDO_USER:-}" ] \
       || say "Note: sessions already run as $RUN_USER and stay that way. To change that, remove Termenbox first (curl -fsSL <client>/uninstall.sh | sudo sh -s -- --yes) and install again."
     JBIN="$BIN"
+    service_up system "$UNIT"
     install_helper_units # installs from before the updater existed get it here
+    CLAIM_UNIT="$UNIT"
+    CLAIM_OPENED=""
     native_claim
     return
   fi
@@ -412,7 +541,7 @@ install_native() {
   need_system_tmux root
 
   # 2. What will change. Everything below is recorded in the journal first.
-  PORT="$(pick_port udp_in_use 4443 "$JOURNAL/udp_port")"
+  PORT="$(choose_udp_port "$JOURNAL/udp_port")"
   HTTP_PORT="$(pick_port tcp_in_use 8080 "$JOURNAL/http_port")"
   [ -n "$PORT" ] && [ -n "$HTTP_PORT" ] || die "could not find free ports"
   say ""
@@ -517,14 +646,11 @@ install_native() {
   systemctl daemon-reload
   systemctl enable --now "$UNIT_NAME" >/dev/null 2>&1 || die "could not start the service; see: journalctl -u $UNIT_NAME"
 
-  i=0
-  until curl -fs "http://127.0.0.1:$HTTP_PORT/health" >/dev/null 2>&1; do
-    i=$((i + 1))
-    [ "$i" -lt 30 ] || die "the server did not start; see: journalctl -u $UNIT_NAME"
-    sleep 1
-  done
+  service_up system "$UNIT"
 
   install_helper_units
+  CLAIM_UNIT="$UNIT"
+  CLAIM_OPENED=""; [ -n "${TERMENBOX_SKIP_FIREWALL:-}" ] || CLAIM_OPENED=1
   native_claim
 }
 
@@ -565,7 +691,10 @@ install_user() {
     say "Termenbox is already installed for $ME."
     systemctl --user is-active --quiet "$SERVICE" || systemctl --user start "$SERVICE"
     JBIN="$BIN"
+    service_up user "$UNIT_DIR/$SERVICE"
     install_user_helper_units
+    CLAIM_UNIT="$UNIT_DIR/$SERVICE"
+    CLAIM_OPENED=""
     native_claim
     return
   fi
@@ -607,13 +736,21 @@ install_user() {
   need_system_tmux user
   HTTP_PORT="$(pick_port tcp_in_use 8080 "$JOURNAL/http_port")"
   [ -n "$HTTP_PORT" ] || die "could not find a free port"
+  # The server picks its port from the range on its first start. The owner's own choice, or no free port in the range
+  # (asked for here, before anything changes), is written into the unit instead.
+  UDP_PIN=""
+  if [ -n "${TERMENBOX_UDP_PORT:-}" ]; then
+    UDP_PIN="$(choose_udp_port /nonexistent)"
+  elif [ ! -s "$STATE/udp_port" ] && [ -z "$(free_udp_in_range)" ]; then
+    UDP_PIN="$(ask_udp_port)"
+  fi
   say ""
   say "Termenbox $VERSION will be installed for $ME, with no root (sessions run as $ME):"
   say "  - the server  $BIN"
   [ -z "$TMUX_SHA" ] || say "  - tmux        $(dirname "$BIN")/termenbox-tmux (a pinned static build, used before any tmux on PATH)"
   say "  - state       $STATE"
   say "  - a user service $SERVICE, and a daily update check (signed releases only), in $UNIT_DIR"
-  say "  - UDP port    the server picks a free one from 4443-4542 and remembers it"
+  if [ -n "$UDP_PIN" ]; then say "  - UDP port    $UDP_PIN (your choice)"; else say "  - UDP port    the server picks a free one from 4443-4542 on its first start and keeps it"; fi
   say "Every change is recorded in $JOURNAL; undo them with: termenbox-server --journal-dir $JOURNAL --revert --dry-run, then --revert"
   say ""
   [ -z "${TERMENBOX_DRY_RUN:-}" ] || { say "(dry run: nothing was changed)"; return; }
@@ -674,15 +811,11 @@ KillMode=process
 [Install]
 WantedBy=default.target
 UNIT
+  [ -z "$UDP_PIN" ] || sed -i "s|^Environment=TERMENBOX_PORT=.*|&\nEnvironment=TERMENBOX_UDP_PORT=$UDP_PIN|" "$UNIT_DIR/$SERVICE"
   systemctl --user daemon-reload
   systemctl --user enable --now "$SERVICE" >/dev/null 2>&1 || die "could not start the service; see: journalctl --user -u termenbox"
 
-  i=0
-  until curl -fs "http://127.0.0.1:$HTTP_PORT/health" >/dev/null 2>&1; do
-    i=$((i + 1))
-    [ "$i" -lt 30 ] || die "the server did not start; see: journalctl --user -u termenbox"
-    sleep 1
-  done
+  service_up user "$UNIT_DIR/$SERVICE"
 
   # Starting at boot, not only at login, needs lingering (announced in the summary above). Last, so a failed install
   # leaves it alone. The user may switch it on for themselves; it is journaled before it is switched on, so uninstall
@@ -694,6 +827,8 @@ UNIT
   fi
 
   install_user_helper_units
+  CLAIM_UNIT="$UNIT_DIR/$SERVICE"
+  CLAIM_OPENED=""
   native_claim
 }
 

@@ -90,6 +90,8 @@ grep -q "What needs root" /tmp/install.txt || fail "the installer did not say fi
 ! grep -q '^Environment=TERMENBOX_UDP_PORT' "$UNITS/termenbox.service" || fail "the unit pins a UDP port; the server picks its own"
 alice_port="$(cat "$STATE/udp_port")"
 { [ "$alice_port" -ge 4443 ] && [ "$alice_port" -le 4542 ]; } || fail "the server's UDP port $alice_port is outside 4443-4542"
+grep -q "Termenbox listens on UDP port $alice_port" /tmp/install.txt || { cat /tmp/install.txt; fail "the installer did not say which UDP port the server uses"; }
+grep -q "Add Server tests the connection" /tmp/install.txt || fail "the installer did not point to the app's reachability check"
 
 echo "== installing again changes nothing"
 entries="$(as_alice "$BIN" --journal-dir "$JOURNAL" --journal-list | wc -l)"
