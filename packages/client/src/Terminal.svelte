@@ -12,7 +12,7 @@
   import { beep, bellEnabled, installAudioUnlock, setBellEnabled, unlockAudio } from './lib/bell';
   import { copyText, lastCopiedText, pasteText } from './lib/clipboard';
   import { attachInputLogger } from './lib/inputlog';
-  import { attachInputMirror, attachSwipeSupport } from './lib/swipe';
+  import { attachInputMirror, attachSwipeSupport, type InputMirror } from './lib/swipe';
   import { DEBUG_KEY, debugEnabled } from './lib/viewport';
   import { KeyboardMode } from './lib/terminal/keyboardMode';
   import { crumb } from './lib/breadcrumbs';
@@ -62,6 +62,8 @@
   let term: XTermTerminal | null = null;
   let fitAddon: FitAddon | null = null;
   let webgl: WebglAddon | null = null;
+  /** Keeps the hidden input equal to the word being typed, but only after xterm has read the bytes (see swipe.ts). */
+  let inputMirror: InputMirror | null = null;
   let disposed = false;
   /** Everything to undo on teardown, in the order it was set up. */
   const cleanups: (() => void)[] = [];
@@ -134,6 +136,9 @@
   function sendInput(data: string) {
     if (offline) return refuseInput();
     batch.add(data);
+    // Every send path mirrors after it has fed `words`. The mirror defers to a task, so a `beforeinput` default
+    // action still sees the original selection (the swipe replacement path).
+    inputMirror?.sync();
   }
 
   /** The sticky Prefix key: the next key goes out behind tmux's prefix, once. */
@@ -282,7 +287,7 @@
     else pasteDraft = lastCopiedText();
   }
   function sendPaste(text: string) {
-    term?.paste(text);
+    term?.paste(text); // typed() feeds the paste and mirrors through sendInput()
     words.clearInsert(); // a pasted word is not a swiped one
   }
 
@@ -478,7 +483,9 @@
     if (term.textarea) {
       cleanups.push(attachInputLogger(term.textarea));
       cleanups.push(attachSwipeSupport(term.textarea, sendInput, words)); // fact 0027
-      cleanups.push(attachInputMirror(term.textarea, words)); // the field always shows the word being typed
+      // The field always shows the word being typed once the send path has fed `words` (iOS suggestions, issue #250).
+      inputMirror = attachInputMirror(term.textarea, words);
+      cleanups.push(() => inputMirror?.dispose());
       setEnterKeyHint(term.textarea);
       // Hiding the keyboard (OK, or its own hide key) must not leave the terminal inactive.
       const onBlur = (e: FocusEvent) => !disposed && keyboard.onBlur({ to: e.relatedTarget });

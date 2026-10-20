@@ -83,28 +83,55 @@ export function syncTextarea(field: MirrorTarget, word: string): boolean {
   return true;
 }
 
+/** The hidden input mirror: shows the phrase the send path has fed to the word tracker. */
+export interface InputMirror {
+  /** Shows that phrase; never touches the field during composition. The write is deferred to a task. */
+  sync(): void;
+  /** Removes the composition listeners and cancels a pending write. */
+  dispose(): void;
+}
+
 /**
  * xterm never cleans its hidden input, so after a few words it holds stale text (captured: "утромпа" while typing
  * "па"). iOS builds suggestions from that text and answers differently depending on it: the whole word when the
  * field is empty, only the missing tail when it holds the typed prefix. Keeping the field equal to the word being
  * typed gives the keyboard the true context, so a tapped suggestion arrives as the tail or as a replacement of
- * exactly that word or the last two words, both of which are handled. Runs after xterm's own listeners, never during composition.
+ * exactly that word or the last two words, both of which are handled.
+ *
+ * The caller mirrors once it has fed `words`, so the field never gets ahead of the bytes. The write is deferred to
+ * a task, not a microtask: a microtask queued from a `beforeinput` listener runs before the browser's default
+ * action, and moving the caret there makes `insertReplacementText` apply at the wrong place ("he'llhe'll").
+ * It must not run on `input`/`keyup`/`compositionend` itself: Android's soft keyboard reports keyCode 229 or
+ * composes, and xterm reads the textarea later, in a `setTimeout` (CompositionHelper._finalizeComposition and
+ * _handleAnyTextareaChanges). Writing on those events put the previous phrase back before xterm looked, so every
+ * character was read as empty (issue #250). iOS sends most typing synchronously instead, which is why the same
+ * mirror never hurt there.
  */
-export function attachInputMirror(area: HTMLTextAreaElement, words: WordTracker): () => void {
+export function attachInputMirror(area: HTMLTextAreaElement, words: WordTracker): InputMirror {
   let composing = false;
-  const sync = () => {
-    if (!composing) queueMicrotask(() => !composing && syncTextarea(area, words.phrase));
-  };
+  let disposed = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const onStart = () => (composing = true);
-  const onEnd = () => ((composing = false), sync());
+  const onEnd = () => (composing = false);
+  const write = () => {
+    timer = undefined;
+    if (!disposed && !composing) syncTextarea(area, words.phrase);
+  };
   area.addEventListener('compositionstart', onStart);
   area.addEventListener('compositionend', onEnd);
-  area.addEventListener('input', sync);
-  area.addEventListener('keyup', sync);
-  return () => {
-    area.removeEventListener('compositionstart', onStart);
-    area.removeEventListener('compositionend', onEnd);
-    area.removeEventListener('input', sync);
-    area.removeEventListener('keyup', sync);
+  return {
+    sync: () => {
+      if (disposed || composing || timer !== undefined) return;
+      timer = setTimeout(write, 0);
+    },
+    dispose: () => {
+      disposed = true;
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      area.removeEventListener('compositionstart', onStart);
+      area.removeEventListener('compositionend', onEnd);
+    },
   };
 }
