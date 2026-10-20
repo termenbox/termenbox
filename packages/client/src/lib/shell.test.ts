@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { get } from 'svelte/store';
 import { parseRoute, routeHash, navigate, startRouter, destination, DESTINATIONS } from './router';
 import { navGroups, HeldView, fleetOf } from './navlist';
-import { buildEntries, searchEntries, matchShortcut, loadShortcutsEnabled, saveShortcutsEnabled, type KeyLike } from './palette';
+import { buildEntries, searchEntries, matchShortcut, loadShortcutsEnabled, saveShortcutsEnabled, shortcutAllowed, isTyping, SHORTCUTS, type KeyLike } from './palette';
 import { edgeSwipeBack } from './edgeswipe';
 import type { HubServer, HubSession } from './hub';
 import type { AgentMap, SessionAgent } from './agents';
@@ -82,14 +82,14 @@ describe('session list for the sidebar', () => {
 
 describe('palette search', () => {
   const many = [...Array.from({ length: 10 }, (_, i) => session('alpha', `svc-${i}`)), ...Array.from({ length: 10 }, (_, i) => session('beta', i === 7 ? 'needle' : `job-${i}`))];
-  const entries = buildEntries({ servers: [server('alpha'), server('beta', 'paused')], sessions: many, agents: {}, wide: true, rightOpen: false, canCreate: true });
+  const entries = buildEntries({ servers: [server('alpha'), server('beta', 'paused')], sessions: many, agents: {}, wide: true, sidebarOpen: true, splitOpen: false, canCreate: true });
   it('lists destinations, actions, servers and sessions', () => {
     const ids = entries.map((e) => e.id);
     expect(ids).toContain('dest:home');
     expect(ids).toContain('action:new-session');
     expect(ids).toContain('action:pause:alpha');
     expect(ids).toContain('action:resume:beta');
-    expect(ids).toContain('action:toggle-right');
+    expect(ids).toContain('action:toggle-split');
     expect(ids).toContain('server:alpha');
     expect(ids.filter((i) => i.startsWith('session:'))).toHaveLength(20);
   });
@@ -107,8 +107,8 @@ describe('palette search', () => {
     expect(searchEntries(entries, '').map((e) => e.id)).toEqual(entries.slice(0, 50).map((e) => e.id));
   });
   it('hides what cannot be done', () => {
-    const e = buildEntries({ servers: [], sessions: [], agents: {}, wide: false, rightOpen: false, canCreate: false });
-    expect(e.some((x) => x.id === 'action:new-session' || x.id === 'action:toggle-right')).toBe(false);
+    const e = buildEntries({ servers: [], sessions: [], agents: {}, wide: false, sidebarOpen: true, splitOpen: false, canCreate: false });
+    expect(e.some((x) => x.id === 'action:new-session' || x.id === 'action:toggle-split')).toBe(false);
   });
 });
 
@@ -129,6 +129,49 @@ describe('shortcuts', () => {
     expect(matchShortcut(key({ ctrlKey: true, altKey: true, getModifierState: (k) => k === 'AltGraph' }), false)).toBeNull();
     expect(matchShortcut(key({ ctrlKey: true, shiftKey: true }), false)).toBeNull();
     expect(matchShortcut(key({ ctrlKey: true, altKey: true }), false)).toBeNull();
+  });
+  it('Alt (Option) plus Y, N, J, C or P, in either case, on any platform', () => {
+    const ids = { y: 'approve-decision', n: 'deny-decision', j: 'next-needs-you', c: 'focus-composer', p: 'toggle-panes' } as const;
+    for (const [k, id] of Object.entries(ids)) {
+      for (const mac of [false, true]) {
+        expect(matchShortcut(key({ altKey: true, key: k }), mac)).toBe(id);
+        expect(matchShortcut(key({ altKey: true, key: k.toUpperCase() }), mac)).toBe(id); // Playwright and Caps Lock report the capital
+      }
+    }
+  });
+  it('on a Mac Option+Y types ¥, so the physical key decides', () => {
+    expect(matchShortcut(key({ altKey: true, key: '¥', code: 'KeyY' }), true)).toBe('approve-decision');
+    expect(matchShortcut(key({ altKey: true, key: '˜', code: 'KeyN' }), true)).toBe('deny-decision');
+    expect(matchShortcut(key({ altKey: true, key: '¥', code: 'Digit1' }), true)).toBeNull();
+  });
+  it('leaves what the browser keeps and every other key alone', () => {
+    expect(matchShortcut(key({ altKey: true, shiftKey: true, key: 'y' }), false)).toBeNull();
+    expect(matchShortcut(key({ altKey: true, ctrlKey: true, key: 'y' }), false)).toBeNull();
+    expect(matchShortcut(key({ altKey: true, metaKey: true, key: 'y' }), true)).toBeNull();
+    expect(matchShortcut(key({ ctrlKey: true, shiftKey: true, key: 'N' }), false)).toBeNull();
+    expect(matchShortcut(key({ ctrlKey: true, key: 'n' }), false)).toBeNull();
+    for (const k of ['f', 'e', 'd', 'Home', 'ArrowLeft', '1']) expect(matchShortcut(key({ altKey: true, key: k }), false)).toBeNull();
+    expect(matchShortcut(key({ altKey: true, key: 'y', repeat: true }), false)).toBeNull(); // a held key answers once
+    expect(matchShortcut(key({ key: 'y' }), false)).toBeNull();
+  });
+  it('no registered combo is one a browser takes first', () => {
+    const taken = /Ctrl\+(Shift\+)?[NTWPOAD]\b|Alt\+[FED]$/;
+    for (const s of SHORTCUTS) expect(taken.test(s.other), s.other).toBe(false);
+    expect(new Set(SHORTCUTS.map((s) => s.other)).size).toBe(SHORTCUTS.length);
+  });
+  it('only the palette works while typing; the rest wait for a focus that is not a field, the terminal or a dialog', () => {
+    const el = (match: boolean) => ({ closest: () => (match ? {} : null) }) as unknown as Element;
+    const doc = (dialog: boolean) => ({ querySelector: () => (dialog ? {} : null) });
+    expect(isTyping(el(true))).toBe(true);
+    expect(isTyping(el(false))).toBe(false);
+    expect(isTyping(null)).toBe(false);
+    expect(shortcutAllowed('palette', el(true), doc(true))).toBe(true);
+    for (const id of ['approve-decision', 'deny-decision', 'next-needs-you', 'focus-composer', 'toggle-panes'] as const) {
+      expect(shortcutAllowed(id, el(true), doc(false)), `${id} while typing`).toBe(false);
+      expect(shortcutAllowed(id, el(false), doc(true)), `${id} under a dialog`).toBe(false);
+      expect(shortcutAllowed(id, el(false), doc(false)), id).toBe(true);
+      expect(shortcutAllowed(id, null, doc(false)), id).toBe(true);
+    }
   });
   it('can be turned off and the choice is kept', () => {
     const mem = new Map<string, string>();

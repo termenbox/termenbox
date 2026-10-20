@@ -1,10 +1,17 @@
-// Desktop (1280 px, mouse and keyboard, no touch) scenarios. Each desktop step of the roadmap adds its own scenario here
-// (desktop review, PR #149). U04: the sidebar with the four destinations and every session of two servers, the right pane,
-// the Ctrl/Cmd+K palette, its shortcut list and off switch, and a sidebar that holds still under the pointer.
-// Usage: node e2e/desktop.mjs (after: pnpm run e2e:build)
+// Desktop (mouse and keyboard, no touch) scenarios. Each desktop step of the roadmap adds its own scenario here
+// (desktop review, PR #149).
+//   Part 1 (1280 px, U04): the shell probe: the sidebar with the four destinations and every session of two servers, the
+//   Ctrl/Cmd+K palette, its shortcut list and off switch, and a sidebar that holds still under the pointer. The probe's
+//   terminal is a stand-in textarea, so this part proves what the page does with a key, not what xterm does with it.
+//   Part 2 (U15): the REAL app (real hub, connection, xterm, session view, decision card) against a scripted server:
+//   sidebar toggle/resize/keyboard/reload at 721, 1024, 1440 and 1920 px, crossing 720 px, the live terminal beside the
+//   structured view, the shortcuts, and no key reaching the terminal from the composer. See app-lib.mjs for its limits.
+// Usage: node e2e/desktop.mjs (after: pnpm run e2e:build, and the app's own: pnpm build)
 import { start } from './frame-lib.mjs';
+import { realApp } from './desktop-app.mjs';
 
 const t = await start({ viewport: { width: 1280, height: 800 }, isMobile: false, hasTouch: false });
+const failures = [];
 const { page } = t;
 await t.open();
 
@@ -91,16 +98,6 @@ await page.getByRole('combobox', { name: 'Search' }).waitFor();
 await page.keyboard.press('Escape');
 t.ok('the shortcut list opens from the palette and names the keys; Settings turns shortcuts off and on');
 
-// 6. Right pane: toggled from the sidebar, holds the session list.
-const pane = page.locator('[data-shell=right-pane]');
-t.check((await pane.count()) === 0, 'the right pane is open by default');
-await side.getByRole('button', { name: 'Right pane' }).click();
-await pane.waitFor();
-t.check((await pane.getByText('svc-1').count()) > 0, 'the right pane does not list sessions');
-await side.getByRole('button', { name: 'Right pane' }).click();
-await pane.waitFor({ state: 'detached' });
-t.ok('the right pane toggles');
-
 // 7. The sidebar holds still under the pointer: press on a session, a status update arrives, nothing moves; release, then it re-sorts.
 await t.api('setState', 'alpha', 'svc-9', 'idle');
 await page.waitForTimeout(2300);
@@ -121,4 +118,7 @@ const after = await t.rects(rows);
 t.check(JSON.stringify(after) !== JSON.stringify(before), 'the sidebar did not apply the held update after release');
 t.ok('no control moves when a status update arrives while the pointer is down');
 
-await t.finish();
+if (!(await t.end())) failures.push('shell probe');
+if (!(await realApp())) failures.push('real app');
+if (failures.length) { console.error(`FAIL: ${failures.join(', ')}`); process.exit(1); }
+console.log('PASS');

@@ -145,6 +145,12 @@ export async function start(contextOptions) {
       t.check((await t.api('active')) === 'alpha/svc-3', 'the in-session tab switch no longer works');
       t.ok('the in-session tab strip (TabStrip) still switches sessions');
     },
+    /** Closes the browser and says whether every check passed; for a script that runs more after this one. */
+    async end() {
+      t.check(errors.length === 0, `console/page errors: ${errors.slice(0, 3).join(' | ')}`);
+      await browser.close(); srv.close();
+      return !failed;
+    },
     async finish() {
       t.check(errors.length === 0, `console/page errors: ${errors.slice(0, 3).join(' | ')}`);
       await browser.close(); srv.close();

@@ -1,17 +1,12 @@
 // Client side of the signed directory (DECISION-0056). Records are self-certifying: `server_id` is
 // the server's Ed25519 public key, so whatever the directory returns is checked against it.
-import { canonicalMessage, verifySignature, b64urlEncode, type DirRecord } from '../../functions/api/directory/_lib';
+import { canonicalMessage, claimHash, verifySignature, b64urlEncode, type DirRecord } from '../../functions/api/directory/_lib';
 
 export type { DirRecord };
-export { b64urlEncode };
+export { b64urlEncode, claimHash };
 
 export function randomClaimSecret(): string {
   return b64urlEncode(crypto.getRandomValues(new Uint8Array(32)));
-}
-
-export async function claimHash(secret: string): Promise<string> {
-  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret));
-  return b64urlEncode(new Uint8Array(d));
 }
 
 /** True when the record's proof shows its server knows `secret`, i.e. it is the machine we just set up. */

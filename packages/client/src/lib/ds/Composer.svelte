@@ -35,10 +35,10 @@
   {#if decision}{@render decision()}{/if}
   <form class={cn('flex gap-1 rounded-card bg-raised py-1 pr-1 pl-4', multiline ? 'items-end' : 'items-center')} onsubmit={(e) => { e.preventDefault(); send(); }}>
     {#if multiline}
-      <textarea bind:this={input} bind:value {placeholder} aria-label={label} {disabled} rows="1" autocapitalize="sentences" autocomplete="off" enterkeyhint="send" onkeydown={keydown} oninput={grow} {...fieldProps}
+      <textarea bind:this={input} bind:value {placeholder} aria-label={label} {disabled} rows="1" autocapitalize="sentences" autocomplete="off" enterkeyhint="send" data-composer onkeydown={keydown} oninput={grow} {...fieldProps}
         class={cn(field, 'max-h-[144px] min-h-12 resize-none py-3 leading-6')}></textarea>
     {:else}
-      <input bind:this={input} bind:value {placeholder} aria-label={label} {disabled} autocapitalize="off" autocomplete="off" enterkeyhint="send" {onkeydown} {...fieldProps}
+      <input bind:this={input} bind:value {placeholder} aria-label={label} {disabled} autocapitalize="off" autocomplete="off" enterkeyhint="send" data-composer {onkeydown} {...fieldProps}
         class={cn(field, 'h-12')} />
     {/if}
     {#if onmic}<button type="button" aria-label="Dictate" onclick={onmic} onpointerdown={keep} class="grid size-11 place-items-center rounded-control bg-transparent p-0 text-base text-soft">🎤</button>{/if}

@@ -138,16 +138,20 @@ gh variable set TERMENBOX_D1_DATABASE_ID --body <database_id>
 
 The deploy workflow applies `packages/client/migrations/` for you.
 
+If you deploy by hand, or upgrade an existing directory, apply every migration before deploying the new functions: `wrangler d1 migrations apply termanch-directory --remote`. Migration `0002_owner_servers.sql` (account links for "Delete my data") is required: without it every server announce fails with a database error.
+
 The client's Pages Function exchanges the GitHub login code, so it needs the OAuth app credentials.
 The servers need no secrets.
 
-The deploy workflow syncs these from the GitHub secrets `TERMENBOX_GITHUB_CLIENT_ID`, `TERMENBOX_GITHUB_CLIENT_SECRET` and `TERMENBOX_CERT_SIGNING_KEY`. To set them by hand instead:
+The deploy workflow syncs these from the GitHub secrets `TERMENBOX_GITHUB_CLIENT_ID`, `TERMENBOX_GITHUB_CLIENT_SECRET`, `TERMENBOX_CERT_SIGNING_KEY` and `TERMENBOX_DIRECTORY_SALT`. To set them by hand instead:
 
 ```bash
 wrangler pages secret put GITHUB_CLIENT_ID --project-name <pages project>
 wrangler pages secret put GITHUB_CLIENT_SECRET --project-name <pages project>
 # Ed25519 key that signs device certificates (DECISION-0062); its public half goes in packages/server/cert-keys.txt
 wrangler pages secret put CERT_SIGNING_KEY --project-name <pages project>
+# Random string (for example `openssl rand -base64 32`) that salts the address and account hashes in the directory's logs and rate limits
+wrangler pages secret put DIRECTORY_SALT --project-name <pages project>
 ```
 
 ---
@@ -179,7 +183,7 @@ Run it on the VPS. See the README for what it does, firewall notes and updating/
 - Docker image built for amd64 and arm64 and pushed to `ghcr.io/<owner>/termenbox:latest` (pull requests build it without pushing).
 - Client, Pages Functions (OAuth exchange, directory) and `install.sh` deployed to Cloudflare Pages; D1 migrations applied.
 
-Required repository settings: secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `TERMENBOX_GITHUB_CLIENT_ID`, `TERMENBOX_GITHUB_CLIENT_SECRET`, `TERMENBOX_CERT_SIGNING_KEY` (the last three are synced to the Pages Function on each deploy); variables `TERMENBOX_PAGES_PROJECT_NAME`, `TERMENBOX_D1_DATABASE_ID`. Terraform sets most of them.
+Required repository settings: secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `TERMENBOX_GITHUB_CLIENT_ID`, `TERMENBOX_GITHUB_CLIENT_SECRET`, `TERMENBOX_CERT_SIGNING_KEY`, `TERMENBOX_DIRECTORY_SALT` (the last four are synced to the Pages Function on each deploy); variables `TERMENBOX_PAGES_PROJECT_NAME`, `TERMENBOX_D1_DATABASE_ID`. Terraform sets most of them.
 
 **Manual Terraform:**
 ```bash
