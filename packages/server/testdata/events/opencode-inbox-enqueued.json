@@ -1,0 +1,16 @@
+{
+  "id": "evt_01J00000000000000000000004",
+  "created": 1760950799000,
+  "type": "session.inbox.enqueued",
+  "data": {
+    "sessionID": "ses_01J0000000000000000000000",
+    "inboxID": "msg_01J0000000000000000000000",
+    "item": {
+      "type": "user",
+      "payload": {
+        "text": "Fix the failing test.\nUse the smallest change."
+      },
+      "delivery": "steer"
+    }
+  }
+}

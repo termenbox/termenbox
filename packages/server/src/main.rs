@@ -17,6 +17,7 @@ use tracing::info;
 mod acp;
 mod acp_stream;
 mod adapters;
+mod agent_hooks;
 mod agentwatch;
 mod auth;
 mod backend;
@@ -35,6 +36,7 @@ mod journal;
 mod link;
 mod locale;
 mod netutil;
+mod opencode_hooks;
 mod profile;
 mod pty;
 mod push;
@@ -250,12 +252,25 @@ struct Args {
     #[arg(long, default_value = "false")]
     disconnect_claude: bool,
 
+    /// One-shot, opt-in (decisions 0079 and 0106): write Termenbox's plugin into OpenCode's config directory.
+    /// Shows what it would do; add --yes to apply. `--disconnect-opencode` removes exactly that again.
+    #[arg(long, default_value = "false")]
+    connect_opencode: bool,
+
+    #[arg(long, default_value = "false")]
+    disconnect_opencode: bool,
+
+    /// The OpenCode config directory to change (the plugin goes to `<dir>/plugins/termenbox.js`). Default:
+    /// $OPENCODE_CONFIG_DIR, else $XDG_CONFIG_HOME/opencode, else ~/.config/opencode.
+    #[arg(long)]
+    opencode_dir: Option<PathBuf>,
+
     /// Creates the Web Push key (VAPID) in `connectors.env` in the config directory, mode 0600, and prints the
     /// public key. Restart the server afterwards. Does nothing when a key is already there.
     #[arg(long)]
     setup_push: bool,
 
-    /// With --connect-claude: apply instead of only showing the change.
+    /// With --connect-claude or --connect-opencode: apply instead of only showing the change.
     #[arg(long, default_value = "false")]
     yes: bool,
 
@@ -572,6 +587,34 @@ async fn main() -> anyhow::Result<()> {
         }
         return Ok(());
     }
+    if args.connect_opencode || args.disconnect_opencode {
+        // As for Claude Code, a removal follows the journal: the uninstaller may not have the environment the
+        // connect was run with.
+        let plugin = args
+            .opencode_dir
+            .clone()
+            .map(|d| d.join("plugins").join("termenbox.js"))
+            .or_else(|| {
+                args.disconnect_opencode
+                    .then(|| opencode_hooks::journal_plugin(&args.config_dir))
+                    .flatten()
+            })
+            .unwrap_or_else(opencode_hooks::default_plugin_path);
+        let outcome = if args.connect_opencode {
+            let binary = std::env::current_exe()?.display().to_string();
+            opencode_hooks::connect(&plugin, &binary, &args.config_dir, args.yes)
+        } else {
+            opencode_hooks::disconnect(&plugin, &args.config_dir)
+        };
+        match outcome {
+            Ok(o) => println!("{}", o.0),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
     if run_journal_command(&args)? {
         return Ok(());
     }
@@ -752,6 +795,7 @@ async fn main() -> anyhow::Result<()> {
     // Server health (U14): sampled every 10 s into memory; the data directory is the disk it reports.
     let health = Arc::new(HealthCollector::new());
     health.spawn(args.config_dir.clone());
+    let binary = std::env::current_exe()?.display().to_string();
     let mut state = AppState {
         auth,
         sessions: Arc::new(
@@ -765,14 +809,26 @@ async fn main() -> anyhow::Result<()> {
             .with_push(push.clone())
             .with_events(hub.clone())
             .with_health(health)
-            .with_claude_hooks(claude_hooks::Target {
-                auto: args.claude_settings.is_none(),
-                settings: args
-                    .claude_settings
-                    .clone()
-                    .unwrap_or_else(claude_hooks::default_settings_path),
-                binary: std::env::current_exe()?.display().to_string(),
-                state_dir: args.config_dir.clone(),
+            .with_agent_hooks(agent_hooks::Targets {
+                claude: claude_hooks::Target {
+                    auto: args.claude_settings.is_none(),
+                    settings: args
+                        .claude_settings
+                        .clone()
+                        .unwrap_or_else(claude_hooks::default_settings_path),
+                    binary: binary.clone(),
+                    state_dir: args.config_dir.clone(),
+                },
+                opencode: opencode_hooks::Target {
+                    auto: args.opencode_dir.is_none(),
+                    plugin: args
+                        .opencode_dir
+                        .clone()
+                        .map(|d| d.join("plugins").join("termenbox.js"))
+                        .unwrap_or_else(opencode_hooks::default_plugin_path),
+                    binary,
+                    state_dir: args.config_dir.clone(),
+                },
             })
             .with_uninstall(
                 args.server_name.clone(),

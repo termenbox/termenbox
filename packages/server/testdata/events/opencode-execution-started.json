@@ -1,0 +1,8 @@
+{
+  "id": "evt_01J00000000000000000000001",
+  "created": 1760950800000,
+  "type": "session.execution.started",
+  "data": {
+    "sessionID": "ses_01J0000000000000000000000"
+  }
+}

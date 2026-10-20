@@ -1,0 +1,10 @@
+{
+  "id": "evt_01J00000000000000000000006",
+  "created": 1760950803000,
+  "type": "permission.replied",
+  "data": {
+    "sessionID": "ses_01J0000000000000000000000",
+    "requestID": "per_01J0000000000000000000000",
+    "reply": "once"
+  }
+}

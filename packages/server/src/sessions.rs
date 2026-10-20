@@ -52,8 +52,8 @@ pub struct SessionManager {
     prefix: String,
     /// Bounded readers of the transcripts hooks named (tier 1, decision 0103).
     transcripts: Arc<crate::transcript::Transcripts>,
-    /// Where the owner can enable Claude Code's hooks from the app (U10).
-    hooks: Option<crate::claude_hooks::Target>,
+    /// Where the owner can connect each agent's hook surface from the app (U10).
+    hooks: Option<crate::agent_hooks::Targets>,
     /// Samples of the server's CPU, RAM and disk (U14).
     health: Option<Arc<HealthCollector>>,
 }
@@ -92,8 +92,8 @@ impl SessionManager {
     }
 
     /// Lets the owner enable and remove Claude Code's hooks from the app (U10); without it the state is `unavailable`.
-    pub fn with_claude_hooks(mut self, target: crate::claude_hooks::Target) -> Self {
-        self.hooks = Some(target);
+    pub fn with_agent_hooks(mut self, targets: crate::agent_hooks::Targets) -> Self {
+        self.hooks = Some(targets);
         self
     }
 
@@ -629,7 +629,7 @@ impl SessionManager {
                 let target = self.hooks.clone();
                 let (a, act) = (agent.clone(), action.clone());
                 let reply = tokio::task::spawn_blocking(move || {
-                    crate::claude_hooks::respond(target.as_ref(), &a, &act)
+                    crate::agent_hooks::respond(target.as_ref(), &a, &act)
                 })
                 .await?;
                 // Only the event is logged (who, applied or removed), never the settings file.

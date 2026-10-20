@@ -1,0 +1,13 @@
+{
+  "id": "evt_01J00000000000000000000003",
+  "created": 1760950805000,
+  "type": "session.execution.failed",
+  "data": {
+    "sessionID": "ses_01J0000000000000000000000",
+    "error": {
+      "type": "api",
+      "message": "Provider returned 429: rate limited",
+      "status": 429
+    }
+  }
+}
