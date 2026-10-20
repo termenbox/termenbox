@@ -22,7 +22,7 @@ use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc};
 use tokio::net::UdpSocket;
 use tokio::sync::Notify;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::link::{self, Inbound, LinkEnd};
 use crate::AppState;
