@@ -1,5 +1,43 @@
 import { describe, expect, it } from 'vitest';
-import { isWordKey, replacementData, replacementKeys, syncTextarea } from './swipe';
+import { attachInputMirror, isWordKey, replacementData, replacementKeys, syncTextarea } from './swipe';
+import { WordTracker } from './terminal/wordTracker';
+
+/** The hidden textarea, with just the DOM surface attachInputMirror uses. */
+interface MirrorField {
+  value: string;
+  range: [number, number];
+  setSelectionRange(start: number, end: number): void;
+  addEventListener(type: string, fn: () => void): void;
+  removeEventListener(type: string, fn: () => void): void;
+  emit(type: string): void;
+  count(type: string): number;
+}
+
+function field(value = ''): MirrorField {
+  const listeners = new Map<string, Set<() => void>>();
+  return {
+    value,
+    range: [-1, -1],
+    setSelectionRange(start, end) {
+      this.range = [start, end];
+    },
+    addEventListener(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type)!.add(fn);
+    },
+    removeEventListener(type, fn) {
+      listeners.get(type)?.delete(fn);
+    },
+    emit(type) {
+      for (const fn of listeners.get(type) ?? []) fn();
+    },
+    count(type) {
+      return listeners.get(type)?.size ?? 0;
+    },
+  };
+}
+
+const asArea = (f: MirrorField) => f as unknown as HTMLTextAreaElement;
 
 describe('replacementKeys', () => {
   it('replays the sequence captured on an iPhone: "hello" swiped, "he\'ll" chosen', () => {
@@ -72,5 +110,134 @@ describe('syncTextarea', () => {
     const f = field('паспорт');
     syncTextarea(f, '');
     expect(f.value).toBe('');
+  });
+});
+
+describe('input mirror', () => {
+  it('mirrors the phrase that was already sent, with the caret at its end', async () => {
+    const area = field('stale');
+    const words = new WordTracker();
+    words.feed('hello ');
+    attachInputMirror(asArea(area), words).sync();
+    await Promise.resolve();
+    expect(area.value).toBe('hello ');
+    expect(area.range).toEqual([6, 6]);
+  });
+
+  it('leaves the field alone on input and keyup: only a send may mirror', async () => {
+    const area = field('typed by the keyboard');
+    const words = new WordTracker();
+    const mirror = attachInputMirror(asArea(area), words);
+    area.emit('input');
+    area.emit('keyup');
+    await Promise.resolve();
+    expect(area.value).toBe('typed by the keyboard');
+    mirror.dispose();
+  });
+
+  it('does not touch the field during composition, then mirrors the phrase after it', async () => {
+    const area = field();
+    const words = new WordTracker();
+    words.feed('hello ');
+    const mirror = attachInputMirror(asArea(area), words);
+    area.value = 'hello w';
+    area.emit('compositionstart');
+    mirror.sync();
+    await Promise.resolve();
+    expect(area.value).toBe('hello w');
+    area.emit('compositionend');
+    mirror.sync();
+    await Promise.resolve();
+    expect(area.value).toBe('hello ');
+  });
+
+  it('keeps a composed character until xterm’s deferred Android read (issue #250)', async () => {
+    const area = field();
+    const words = new WordTracker();
+    words.feed('hello ');
+    const mirror = attachInputMirror(asArea(area), words);
+    area.value = words.phrase; // what the field held before this composition
+    area.emit('compositionstart');
+    area.value += 'w'; // the IME commits the character
+    area.emit('input'); // Chrome Android fires input before compositionend
+    let sent = '';
+    // xterm.js 5.3 reads CompositionHelper._finalizeComposition() in a setTimeout; a microtask would beat it.
+    await new Promise<void>((resolve) => {
+      setTimeout(() => {
+        sent = area.value.substring(words.phrase.length);
+        if (sent) words.feed(sent);
+        mirror.sync();
+        resolve();
+      }, 0);
+    });
+    await Promise.resolve();
+    expect(sent).toBe('w');
+    expect(area.value).toBe('hello w');
+  });
+
+  it('keeps a keyCode 229 character until xterm’s deferred diff (issue #250)', async () => {
+    const area = field();
+    const words = new WordTracker();
+    words.feed('hi ');
+    const mirror = attachInputMirror(asArea(area), words);
+    area.value = words.phrase;
+    const before = area.value;
+    area.value += 'a'; // no composition events, only the 229 path's textarea change
+    area.emit('input');
+    area.emit('keyup');
+    let sent = '';
+    await new Promise<void>((resolve) => {
+      setTimeout(() => {
+        sent = area.value.replace(before, '');
+        if (sent) words.feed(sent);
+        mirror.sync();
+        resolve();
+      }, 0);
+    });
+    await Promise.resolve();
+    expect(sent).toBe('a');
+    expect(area.value).toBe('hi a');
+  });
+
+  it('mirrors Cyrillic, emoji and backspace with the caret in UTF-16 units', async () => {
+    const area = field();
+    const words = new WordTracker();
+    const mirror = attachInputMirror(asArea(area), words);
+    words.feed('привет ');
+    mirror.sync();
+    await Promise.resolve();
+    expect(area.value).toBe('привет ');
+    expect(area.range).toEqual([7, 7]);
+    words.feed('😀');
+    mirror.sync();
+    await Promise.resolve();
+    expect(area.value).toBe('привет 😀'); // the last two words, as iOS suggestions see them
+    expect(area.range).toEqual([9, 9]);
+    words.feed('\x7f');
+    mirror.sync();
+    await Promise.resolve();
+    expect(area.value).toBe('привет ');
+    expect(area.range).toEqual([7, 7]);
+  });
+
+  it('empties the field after Enter', async () => {
+    const area = field();
+    const words = new WordTracker();
+    words.feed('done');
+    const mirror = attachInputMirror(asArea(area), words);
+    words.feed('\r');
+    mirror.sync();
+    await Promise.resolve();
+    expect(area.value).toBe('');
+  });
+
+  it('removes both composition listeners on dispose', () => {
+    const area = field();
+    const mirror = attachInputMirror(asArea(area), new WordTracker());
+    expect(area.count('compositionstart')).toBe(1);
+    expect(area.count('compositionend')).toBe(1);
+    mirror.dispose();
+    expect(area.count('compositionstart')).toBe(0);
+    expect(area.count('compositionend')).toBe(0);
   });
 });

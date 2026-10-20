@@ -12,7 +12,7 @@
   import { beep, bellEnabled, installAudioUnlock, setBellEnabled, unlockAudio } from './lib/bell';
   import { copyText, lastCopiedText, pasteText } from './lib/clipboard';
   import { attachInputLogger } from './lib/inputlog';
-  import { attachInputMirror, attachSwipeSupport } from './lib/swipe';
+  import { attachInputMirror, attachSwipeSupport, type InputMirror } from './lib/swipe';
   import { DEBUG_KEY, debugEnabled } from './lib/viewport';
   import { KeyboardMode } from './lib/terminal/keyboardMode';
   import { crumb } from './lib/breadcrumbs';
@@ -62,6 +62,8 @@
   let term: XTermTerminal | null = null;
   let fitAddon: FitAddon | null = null;
   let webgl: WebglAddon | null = null;
+  /** Keeps the hidden input equal to the word being typed, but only after xterm has read the bytes (see swipe.ts). */
+  let inputMirror: InputMirror | null = null;
   let disposed = false;
   /** Everything to undo on teardown, in the order it was set up. */
   const cleanups: (() => void)[] = [];
@@ -224,6 +226,7 @@
     if (used) mods = { ctrl: false, alt: false, shift: false };
     words.feed(out);
     sendInput(withPrefix(out));
+    inputMirror?.sync(); // after the send, so xterm has already consumed the textarea (Android reads it deferred)
   }
 
   // Dictation (plan R53): the browser's own recognizer; final text is typed as if typed, never followed by Enter.
@@ -271,6 +274,7 @@
     }
     words.feed(data);
     sendInput(withPrefix(data));
+    inputMirror?.sync();
   }
 
   /** Text the system clipboard would not give us: the user pastes it into a field of our own, then sends it. */
@@ -284,6 +288,7 @@
   function sendPaste(text: string) {
     term?.paste(text);
     words.clearInsert(); // a pasted word is not a swiped one
+    inputMirror?.sync();
   }
 
   /** Copies the selection, or the visible screen when nothing is selected. */
@@ -478,7 +483,9 @@
     if (term.textarea) {
       cleanups.push(attachInputLogger(term.textarea));
       cleanups.push(attachSwipeSupport(term.textarea, sendInput, words)); // fact 0027
-      cleanups.push(attachInputMirror(term.textarea, words)); // the field always shows the word being typed
+      // The field always shows the word being typed, but only once xterm has sent it (iOS suggestions, issue #250).
+      inputMirror = attachInputMirror(term.textarea, words);
+      cleanups.push(() => inputMirror?.dispose());
       setEnterKeyHint(term.textarea);
       // Hiding the keyboard (OK, or its own hide key) must not leave the terminal inactive.
       const onBlur = (e: FocusEvent) => !disposed && keyboard.onBlur({ to: e.relatedTarget });

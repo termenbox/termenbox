@@ -88,23 +88,34 @@ export function syncTextarea(field: MirrorTarget, word: string): boolean {
  * "па"). iOS builds suggestions from that text and answers differently depending on it: the whole word when the
  * field is empty, only the missing tail when it holds the typed prefix. Keeping the field equal to the word being
  * typed gives the keyboard the true context, so a tapped suggestion arrives as the tail or as a replacement of
- * exactly that word or the last two words, both of which are handled. Runs after xterm's own listeners, never during composition.
+ * exactly that word or the last two words, both of which are handled.
+ *
+ * This runs only after the bytes reached the terminal (the caller mirrors once it has fed `words`). It must not run
+ * on `input`/`keyup`/`compositionend` itself: Android's soft keyboard reports keyCode 229 or composes, and xterm
+ * reads the textarea later, in a `setTimeout` (CompositionHelper._finalizeComposition and _handleAnyTextareaChanges).
+ * Writing on those events put the previous phrase back before xterm looked, so every character was read as empty
+ * (issue #250). iOS sends most typing synchronously instead, which is why the same mirror never hurt there.
  */
-export function attachInputMirror(area: HTMLTextAreaElement, words: WordTracker): () => void {
+export interface InputMirror {
+  /** Shows the phrase that already reached the terminal; never touches the field during composition. */
+  sync(): void;
+  /** Removes the composition listeners. */
+  dispose(): void;
+}
+
+export function attachInputMirror(area: HTMLTextAreaElement, words: WordTracker): InputMirror {
   let composing = false;
-  const sync = () => {
-    if (!composing) queueMicrotask(() => !composing && syncTextarea(area, words.phrase));
-  };
   const onStart = () => (composing = true);
-  const onEnd = () => ((composing = false), sync());
+  const onEnd = () => (composing = false);
   area.addEventListener('compositionstart', onStart);
   area.addEventListener('compositionend', onEnd);
-  area.addEventListener('input', sync);
-  area.addEventListener('keyup', sync);
-  return () => {
-    area.removeEventListener('compositionstart', onStart);
-    area.removeEventListener('compositionend', onEnd);
-    area.removeEventListener('input', sync);
-    area.removeEventListener('keyup', sync);
+  return {
+    sync: () => {
+      if (!composing) queueMicrotask(() => !composing && syncTextarea(area, words.phrase));
+    },
+    dispose: () => {
+      area.removeEventListener('compositionstart', onStart);
+      area.removeEventListener('compositionend', onEnd);
+    },
   };
 }
