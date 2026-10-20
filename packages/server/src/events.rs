@@ -2522,6 +2522,7 @@ mod tests {
         );
         assert_eq!((u.cost_micros, u.rate_limited), (None, 1));
         // The folder is a name, not a path, and no transcript text reached the store.
+        h.history().unwrap().wait_idle();
         let file = std::fs::read_to_string(dir.join("history.jsonl")).unwrap();
         assert!(
             !file.contains("/home/u")

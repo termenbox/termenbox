@@ -1008,6 +1008,7 @@ mod tests {
         h.cost("api", 12_300, "usd");
         h.rate_limited("api");
         h.state("api", None, AgentState::Done, T0 + MIN);
+        idle(&h);
         let text = std::fs::read_to_string(d.join(FILE)).unwrap();
         let v: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
         let mut keys: Vec<_> = v.as_object().unwrap().keys().cloned().collect();
@@ -1077,6 +1078,7 @@ mod tests {
             .unwrap()
             .usage
             .is_none());
+        idle(&h);
         let text = std::fs::read_to_string(d.join(FILE)).unwrap();
         assert!(
             !text.contains("cache_read") && text.lines().count() == 2,
@@ -1205,6 +1207,7 @@ mod tests {
         h.state("a", Some("claude"), AgentState::Working, T0);
         h.project("a", &format!("ghp_{}", "a".repeat(30)));
         h.state("a", None, AgentState::Done, T0 + MIN);
+        idle(&h);
         let text = std::fs::read_to_string(d.join(FILE)).unwrap();
         assert!(!text.contains("ghp_"), "{text}");
     }
