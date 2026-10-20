@@ -578,7 +578,7 @@ pub struct HealthPoint {
     pub disk_percent: Option<u8>,
 }
 
-/// A health level: a metric turns unhealthy at `enter` and healthy again only below `exit`.
+/// A health level: a metric turns unhealthy at `enter` and healthy again at or below `exit`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct HealthLevel {
     pub metric: String,

@@ -30,12 +30,14 @@ use std::time::{Duration, Instant};
 
 use termenbox_core::protocol::{HealthLevel, HealthPoint, ServerMessage};
 use tokio::sync::broadcast;
+use tracing::warn;
 
 /// Seconds between two samples.
 pub const INTERVAL_S: u32 = 10;
 /// Six hours of samples.
 pub const RING_SIZE: usize = 6 * 60 * 60 / INTERVAL_S as usize;
-/// The most points one `health_history` answer carries: one per minute over the full ring.
+/// The points one `health_history` answer carries, give or take the one short group at its start: one per minute over
+/// the full ring.
 pub const REPLY_MAX: usize = 360;
 /// Samples in a row that must cross a level, either way, before the verdict changes.
 pub const CONFIRM: u32 = 3;
@@ -136,6 +138,8 @@ impl Update {
 
 struct Inner {
     ring: VecDeque<HealthPoint>,
+    /// Samples taken since the start: the ring's first sample is number `total - ring.len()`.
+    total: u64,
     cpu: Latch,
     ram: Latch,
     disk: Latch,
@@ -177,6 +181,7 @@ impl HealthCollector {
         Self {
             inner: Mutex::new(Inner {
                 ring: VecDeque::with_capacity(RING_SIZE),
+                total: 0,
                 cpu: Latch::default(),
                 ram: Latch::default(),
                 disk: Latch::default(),
@@ -200,6 +205,7 @@ impl HealthCollector {
                 g.ring.pop_front();
             }
             g.ring.push_back(point.clone());
+            g.total += 1;
             g.container = container;
             let (l, c) = (self.levels, self.confirm);
             g.cpu.step(point.cpu_percent, l.cpu, c);
@@ -227,7 +233,8 @@ impl HealthCollector {
     pub fn history(&self) -> ServerMessage {
         let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let samples: Vec<HealthPoint> = g.ring.iter().cloned().collect();
-        let (samples, group) = downsample(&samples, REPLY_MAX);
+        let first = g.total - samples.len() as u64;
+        let (samples, group) = downsample_from(&samples, REPLY_MAX, first);
         let v = g.verdict();
         let l = self.levels;
         ServerMessage::HealthHistory {
@@ -254,50 +261,82 @@ impl HealthCollector {
     pub fn spawn(self: &Arc<Self>, data_dir: PathBuf) {
         let me = self.clone();
         tokio::spawn(async move {
-            let mut sampler = Sampler::new(data_dir);
+            let mut sampler = Sampler::new(data_dir.clone());
             let mut tick = tokio::time::interval(Duration::from_secs(INTERVAL_S.into()));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tick.tick().await;
-                let Ok((s, reading)) = tokio::task::spawn_blocking(move || {
-                    let r = sampler.sample();
-                    (sampler, r)
-                })
-                .await
-                else {
-                    return; // the sampler panicked: no health beats a spinning loop
-                };
-                sampler = s;
-                me.record(reading.point, reading.container);
+                let (next, reading) = sample_blocking(sampler, &data_dir).await;
+                sampler = next;
+                if let Some(reading) = reading {
+                    me.record(reading.point, reading.container);
+                }
             }
         });
     }
 }
 
+/// One reading on a blocking thread. A sampler that panicked is lost with the thread: log it, start a new one (its first
+/// CPU share is unknown, as after a start) and take no sample this tick. The gap shows in the ring's timestamps, and the
+/// clients show the age of the newest sample.
+async fn sample_blocking(sampler: Sampler, data_dir: &Path) -> (Sampler, Option<Reading>) {
+    let joined = tokio::task::spawn_blocking(move || {
+        let mut sampler = sampler;
+        let reading = sampler.sample();
+        (sampler, reading)
+    })
+    .await;
+    match joined {
+        Ok((sampler, reading)) => (sampler, Some(reading)),
+        Err(e) => {
+            warn!("health sampler failed, starting it over: {e}");
+            (Sampler::new(data_dir.to_path_buf()), None)
+        }
+    }
+}
+
 /// Cuts `samples` to at most `max` points by taking the highest of each group of consecutive samples per metric, so a
 /// spike survives; returns the points and the group size. Each point keeps the time of the newest sample in its group.
+#[cfg(test)]
 pub fn downsample(samples: &[HealthPoint], max: usize) -> (Vec<HealthPoint>, usize) {
-    let group = samples.len().div_ceil(max.max(1)).max(1);
+    downsample_from(samples, max, 0)
+}
+
+/// As [`downsample`], with the groups cut at multiples of their size counted from the first sample ever taken
+/// (`first` is the number of `samples[0]`), so as the ring slides one sample at a time a point keeps its group and a
+/// spike does not wander between neighbours from one reply to the next. The first and last groups may be short, so
+/// an answer can carry one point more than `max`.
+pub fn downsample_from(
+    samples: &[HealthPoint],
+    max: usize,
+    first: u64,
+) -> (Vec<HealthPoint>, usize) {
+    let max = max.max(1);
+    let group = samples.len().div_ceil(max).max(1);
+    let lead = ((group as u64 - first % group as u64) % group as u64) as usize;
+    let (head, rest) = samples.split_at(lead.min(samples.len()));
     let hi = |a: Option<u8>, b: Option<u8>| match (a, b) {
         (Some(a), Some(b)) => Some(a.max(b)),
         (a, b) => a.or(b),
     };
-    let out = samples
-        .chunks(group)
-        .map(|c| {
-            c.iter().fold(
-                HealthPoint {
-                    ts: c.last().map_or(0, |p| p.ts),
-                    ..HealthPoint::default()
-                },
-                |acc, p| HealthPoint {
-                    ts: acc.ts,
-                    cpu_percent: hi(acc.cpu_percent, p.cpu_percent),
-                    ram_percent: hi(acc.ram_percent, p.ram_percent),
-                    disk_percent: hi(acc.disk_percent, p.disk_percent),
-                },
-            )
-        })
+    let fold = |c: &[HealthPoint]| {
+        c.iter().fold(
+            HealthPoint {
+                ts: c.last().map_or(0, |p| p.ts),
+                ..HealthPoint::default()
+            },
+            |acc, p| HealthPoint {
+                ts: acc.ts,
+                cpu_percent: hi(acc.cpu_percent, p.cpu_percent),
+                ram_percent: hi(acc.ram_percent, p.ram_percent),
+                disk_percent: hi(acc.disk_percent, p.disk_percent),
+            },
+        )
+    };
+    let out = std::iter::once(head)
+        .filter(|h| !h.is_empty())
+        .chain(rest.chunks(group))
+        .map(fold)
         .collect();
     (out, group)
 }
@@ -322,8 +361,7 @@ fn cpu_percent(prev: CpuReading, cur: CpuReading) -> Option<u8> {
     }
     let db = cur.basis.checked_sub(prev.basis).filter(|d| *d > 0)? as f64;
     let du = cur.used.checked_sub(prev.used)? as f64;
-    let share = du / (db * cur.cores.unwrap_or(1.0));
-    Some((share * 100.0).round().clamp(0.0, 100.0) as u8)
+    Some(whole(du / (db * cur.cores.unwrap_or(1.0))))
 }
 
 /// What one tick measured.
@@ -339,11 +377,16 @@ pub struct Sampler {
     data_dir: PathBuf,
     start: Instant,
     prev: Option<CpuReading>,
+    /// Tests: the next sample panics.
+    #[cfg(test)]
+    panic_next: bool,
 }
 
 impl Sampler {
     pub fn new(data_dir: PathBuf) -> Self {
-        Self::at("/sys/fs/cgroup".into(), "/proc".into(), data_dir)
+        let proc_dir = PathBuf::from("/proc");
+        let cgroup = own_cgroup(Path::new("/sys/fs/cgroup"), &proc_dir);
+        Self::at(cgroup, proc_dir, data_dir)
     }
 
     fn at(cgroup: PathBuf, proc_dir: PathBuf, data_dir: PathBuf) -> Self {
@@ -353,6 +396,8 @@ impl Sampler {
             data_dir,
             start: Instant::now(),
             prev: None,
+            #[cfg(test)]
+            panic_next: false,
         }
     }
 
@@ -362,6 +407,10 @@ impl Sampler {
     }
 
     fn sample_at(&mut self, now_us: u64) -> Reading {
+        #[cfg(test)]
+        if std::mem::take(&mut self.panic_next) {
+            panic!("a sampler that fails");
+        }
         let cur = self.read_cpu(now_us);
         let cpu = match (self.prev, cur) {
             (Some(p), Some(c)) => cpu_percent(p, c),
@@ -484,10 +533,38 @@ impl Sampler {
     }
 }
 
+/// A share in whole percent, cut down and not rounded: 89.6% is 89 and so under a 90% level, whatever the dot says.
+/// The small addend keeps an exact 90% (0.9 * 100.0 is not exactly 90.0) from falling to 89.
+/// The cgroup this process runs in, under the cgroup v2 mount `base`: `/proc/self/cgroup` names it (`0::/path`). On a
+/// host where the mount shows the root, the root's files describe the whole machine, which is not what a service with its
+/// own limits is measured against. A path that is missing, escapes the mount or holds no accounting leaves `base`.
+fn own_cgroup(base: &Path, proc_dir: &Path) -> PathBuf {
+    let own = std::fs::read_to_string(proc_dir.join("self/cgroup"))
+        .ok()
+        .and_then(|t| {
+            t.lines()
+                .find_map(|l| l.strip_prefix("0::").map(str::to_string))
+        });
+    let Some(rel) = own.as_deref().map(|p| p.trim().trim_start_matches('/')) else {
+        return base.to_path_buf();
+    };
+    if rel.is_empty() || rel.split('/').any(|c| c == ".." || c == ".") {
+        return base.to_path_buf();
+    }
+    let dir = base.join(rel);
+    if dir.join("cpu.stat").is_file() {
+        dir
+    } else {
+        base.to_path_buf()
+    }
+}
+
+fn whole(share: f64) -> u8 {
+    (share * 100.0 + 1e-6).floor().clamp(0.0, 100.0) as u8
+}
+
 fn percent(used: u64, total: u64) -> u8 {
-    ((used as f64 / total as f64) * 100.0)
-        .round()
-        .clamp(0.0, 100.0) as u8
+    whole(used as f64 / total as f64)
 }
 
 fn all_cores() -> f64 {
@@ -564,7 +641,7 @@ mod tests {
             panic!("not a history")
         };
         // The reply is bounded and says what a point covers.
-        assert!(samples.len() <= REPLY_MAX);
+        assert!(samples.len() <= REPLY_MAX + 1);
         assert_eq!(step_s, INTERVAL_S * 6);
         assert_eq!(samples.last().unwrap().ts, RING_SIZE as u64 + 499);
     }
@@ -602,6 +679,25 @@ mod tests {
         );
         assert_eq!(out[1].ts, 3, "and the time of its newest sample");
         assert_eq!(out[0].ram_percent, None, "unknown stays unknown");
+    }
+
+    #[test]
+    fn a_point_keeps_its_group_as_the_ring_slides() {
+        let c = HealthCollector::new();
+        for i in 0..(RING_SIZE as u64 + 7) {
+            c.record(pt(i, Some((i % 100) as u8), None, None), false);
+        }
+        let points = |c: &HealthCollector| match c.history() {
+            ServerMessage::HealthHistory { samples, .. } => samples,
+            _ => panic!("not a history"),
+        };
+        let before = points(&c);
+        c.record(pt(RING_SIZE as u64 + 7, Some(1), None, None), false);
+        let after = points(&c);
+        // All but the first (it may have lost its oldest sample) and the last (it may have gained one) are the same.
+        for p in &before[1..before.len() - 1] {
+            assert!(after.contains(p), "{p:?} moved");
+        }
     }
 
     fn feed(c: &HealthCollector, cpu: u8, n: usize) -> Update {
@@ -703,7 +799,7 @@ mod tests {
             cores: Some(2.0),
             ..r
         };
-        assert_eq!(cpu_percent(two(a), two(b)), Some(3)); // 2.5% rounds up
+        assert_eq!(cpu_percent(two(a), two(b)), Some(2)); // 2.5% is cut down, not rounded
         assert_eq!(cpu_percent(b, b), None, "no time passed");
         let host = CpuReading { cores: None, ..b };
         assert_eq!(
@@ -737,6 +833,54 @@ mod tests {
         (root.join("cg"), root.join("proc"))
     }
 
+    #[test]
+    fn a_share_is_cut_down_so_89_6_is_under_a_90_level() {
+        assert_eq!(whole(0.896), 89);
+        assert_eq!(whole(0.9), 90, "an exact 90% is not lost to float error");
+        assert_eq!(whole(1.4), 100);
+        assert_eq!(percent(896, 1000), 89);
+        let mut l = Latch::default();
+        for _ in 0..CONFIRM {
+            l.step(Some(percent(896, 1000)), LEVELS.disk, CONFIRM);
+        }
+        assert!(!l.unhealthy);
+    }
+
+    #[test]
+    fn the_cgroup_of_the_process_is_found_under_the_mount() {
+        let (cg, pr) = fixture(
+            "own",
+            &[
+                ("cg/cpu.stat", "usage_usec 9\n"),
+                ("cg/system.slice/tb.service/cpu.stat", "usage_usec 1\n"),
+                ("proc/self/cgroup", "0::/system.slice/tb.service\n"),
+            ],
+        );
+        assert_eq!(own_cgroup(&cg, &pr), cg.join("system.slice/tb.service"));
+        // The root, a path that is not there and a path that climbs out all leave the mount itself.
+        for line in [
+            "0::/\n",
+            "0::/gone.service\n",
+            "0::/../../etc\n",
+            "1:cpu:/x\n",
+            "",
+        ] {
+            std::fs::write(pr.join("self/cgroup"), line).unwrap();
+            assert_eq!(own_cgroup(&cg, &pr), cg, "{line:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sampler_that_panics_is_replaced_and_sampling_goes_on() {
+        let data = std::env::temp_dir();
+        let mut bad = Sampler::new(data.clone());
+        bad.panic_next = true;
+        let (next, reading) = sample_blocking(bad, &data).await;
+        assert!(reading.is_none(), "no sample from the tick that failed");
+        let (_, reading) = sample_blocking(next, &data).await;
+        assert!(reading.is_some(), "the next tick samples again");
+    }
+
     const MEMINFO: &str = "MemTotal: 8000000 kB\nMemFree: 100 kB\nMemAvailable: 2000000 kB\n";
 
     #[test]
@@ -758,8 +902,8 @@ mod tests {
             first.point.cpu_percent, None,
             "the first CPU sample is unknown"
         );
-        // (300 MB - 50 MB cache) of 512 MB, not 75% of the 8 GB host.
-        assert_eq!(first.point.ram_percent, Some(49));
+        // (300 MB - 50 MB cache) of 512 MB (48.8%, cut down), not 75% of the 8 GB host.
+        assert_eq!(first.point.ram_percent, Some(48));
         assert!(first.container);
         std::fs::write(cg.join("cpu.stat"), "usage_usec 6000000\n").unwrap();
         let second = s.sample_at(10_000_000);
@@ -820,8 +964,8 @@ mod tests {
         );
         assert!(!first.container);
         std::fs::write(pr.join("stat"), "cpu 200 0 200 800 100 0 0 0 0 0\n").unwrap();
-        // 200 busy of 300 total jiffies since the last tick.
-        assert_eq!(s.sample_at(10_000_000).point.cpu_percent, Some(67));
+        // 200 busy of 300 total jiffies since the last tick: 66.7%, cut down.
+        assert_eq!(s.sample_at(10_000_000).point.cpu_percent, Some(66));
     }
 
     #[test]
