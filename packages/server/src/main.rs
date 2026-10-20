@@ -15,6 +15,7 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 
 mod acp;
+mod acp_stream;
 mod adapters;
 mod agentwatch;
 mod auth;

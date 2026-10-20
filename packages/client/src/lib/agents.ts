@@ -18,7 +18,7 @@ export interface SessionAgent {
   ts: number;
   tool?: { name: string; summary: string; phase: string };
   /** `seq` and `confidence` are the prompt event's: a one-tap answer carries the seq and needs `high`. */
-  prompt?: { id: string; kind: string; choices: string[]; seq: number; confidence: string };
+  prompt?: { id: string; kind: string; choices: string[]; seq: number; confidence: string; /** Where the event came from (`acp` for a T0 session). */ source?: string };
   /** The last tool events, oldest first (capped). */
   timeline?: { name: string; summary: string; phase: string; ts: number }[];
   plan?: { text: string; status: string }[];
@@ -140,7 +140,7 @@ export function applyEvents(map: AgentMap, events: AgentEvent[]): { map: AgentMa
         a.timeline = [...(a.timeline ?? []), { ...a.tool, ts: e.ts }].slice(-TIMELINE_CAP);
         break;
       case 'prompt':
-        a.prompt = { id: String(ev.id ?? ''), kind: String(ev.prompt_kind ?? ''), choices: Array.isArray(ev.choices) ? ev.choices.map(String) : [], seq: e.seq, confidence: e.confidence };
+        a.prompt = { id: String(ev.id ?? ''), kind: String(ev.prompt_kind ?? ''), choices: Array.isArray(ev.choices) ? ev.choices.map(String) : [], seq: e.seq, confidence: e.confidence, source: e.source };
         break;
       case 'plan':
         a.plan = Array.isArray(ev.items) ? ev.items.map((i: { text?: unknown; status?: unknown }) => ({ text: String(i.text ?? ''), status: String(i.status ?? '') })) : [];

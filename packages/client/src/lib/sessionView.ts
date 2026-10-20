@@ -3,7 +3,7 @@ import type { ClientMessage, SessionViewMessage } from './protocol';
 /** The session view (decision 0103): what the client does with a `session_view` message. Everything in it is
  *  untrusted text from a terminal: cleaned again here, capped, and only ever rendered as text. */
 
-export type Tier = 't1' | 't2' | 't3';
+export type Tier = 't0' | 't1' | 't2' | 't3';
 export const TAIL_LINES = 30;
 export const LINE_CHARS = 200;
 export const OPTION_CHARS = 40;
@@ -55,6 +55,7 @@ export function tierOf(value: unknown): Tier {
 }
 
 export const TIER_LABEL: Record<Tier, { name: string; detail: string }> = {
+  t0: { name: 'T0 · ACP', detail: 'The agent asks over its own protocol' },
   t1: { name: 'Structured', detail: 'From the agent’s hooks' },
   t2: { name: 'Profile', detail: 'Parsed from the screen with this agent’s profile' },
   t3: { name: 'Generic', detail: 'Read from the screen; check before you trust an option' },

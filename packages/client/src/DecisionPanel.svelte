@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import { DecisionCard, OptionButton, Composer } from './lib/ds';
   import { ANSWER_WAIT_MS, replyLine, type Decision } from './lib/decision';
   import { TIER_LABEL } from './lib/sessionView';
@@ -7,9 +8,10 @@
   /** The decision card as every surface uses it (Home, the inbox, the session view; decisions 0100, 0103, 0104).
    *  A tap sends exactly the option's keys through `onpick`, and the card stays where it is: it resolves only when
    *  the server clears the Attention item and the parent stops passing the decision. Until then it says it is waiting.
-   *  If the server has not cleared it after a few seconds, the card says so and the options come back. */
-  let { decision, now, composer = true, server, onpick, onreply, onopen, class: className = '' }: {
-    decision: Decision; now: number; composer?: boolean; server?: string;
+   *  If the server has not cleared it after a few seconds, the card says so and the options come back.
+   *  `detail` is what the question is about when the card has more than a line to show (the diff of an ACP edit). */
+  let { decision, now, composer = true, server, detail, onpick, onreply, onopen, class: className = '' }: {
+    decision: Decision; now: number; composer?: boolean; server?: string; detail?: Snippet;
     onpick: (index: number) => void; onreply?: (line: string) => void; onopen?: () => void; class?: string;
   } = $props();
 
@@ -33,6 +35,7 @@
 
 <DecisionCard agent={decision.agent} session={decision.name} task={decision.task} waited={decision.since ? ageText(decision.since, now) : undefined}
   context={server} step={decision.step} tier={TIER_LABEL[decision.tier]} question={decision.question} class={className}>
+  {#if detail}{@render detail()}{/if}
   {#if decision.options.length}
     <div class="flex flex-col gap-2" data-hero-options aria-busy={!!sent}>
       {#each decision.options as c, i (i)}

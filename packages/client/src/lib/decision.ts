@@ -44,7 +44,7 @@ export function stepOf(a: SessionAgent | undefined): Step | undefined {
 }
 
 /** The card for a session that needs you. Options come only from a prompt the agent's own hook confirmed (the
- *  banner's rule), so the tier with options is T1; without one the card has the question and the reply field only. */
+ *  banner's rule), so the tier with options is T1 (T0 when the session is an ACP session); without one the card has the question and the reply field only. */
 export function decisionFor(s: { key: string; name: string; since?: number; question?: string; title?: string }, a: SessionAgent | undefined, now: number): Decision {
   const options = a ? bannerChoices(a, now) : [];
   const structured = options.length > 0 && !!a && !isStale(a, now);
@@ -55,7 +55,7 @@ export function decisionFor(s: { key: string; name: string; since?: number; ques
     task: s.title ? cleanText(s.title, 120) : undefined,
     since: s.since,
     question: cleanText(s.question, 200) || 'Needs your answer',
-    tier: structured ? 't1' : 't3',
+    tier: structured ? (a!.prompt?.source === 'acp' ? 't0' : 't1') : 't3',
     step: structured ? stepOf(a) : undefined,
     options: options.map((o) => cleanText(o, 40)),
     prompt: structured ? a!.prompt : undefined,

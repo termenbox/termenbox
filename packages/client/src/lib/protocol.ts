@@ -33,7 +33,17 @@ export type ClientMessage =
   /** Taps option `option` (0-based) of prompt `prompt_id`; the server sends the keys its profile lists for it, never more. */
   | { type: 'session_answer'; session: string; prompt_id: string; option: number }
   /** U10: the hook state of one agent on this server. `preview` answers with the exact settings file `apply` will write. */
-  | { type: 'agent_hooks'; agent: string; action: 'status' | 'preview' | 'apply' | 'remove' };
+  | { type: 'agent_hooks'; agent: string; action: 'status' | 'preview' | 'apply' | 'remove' }
+  /** T0 (decision 0111): shows this ACP session on this connection; `after` and `epoch` are the revision and stream the client holds. */
+  | { type: 'acp_open'; session: string; after?: number; epoch?: number }
+  | { type: 'acp_close' }
+  /** The owner's next prompt (`session/prompt`); several lines allowed. */
+  | { type: 'acp_prompt'; session: string; text: string }
+  | { type: 'acp_interrupt'; session: string }
+  /** Answers a permission with exactly the option id the agent offered. */
+  | { type: 'acp_answer'; session: string; prompt_id: string; option_id: string }
+  /** Switches to a mode the agent listed. */
+  | { type: 'acp_mode'; session: string; mode: string };
 
 export type ServerMessage =
   | { type: 'challenge'; nonce: string; server_id: string }
@@ -41,7 +51,7 @@ export type ServerMessage =
   /** Answer to `claim_preview`: `mode` is `container` or `host`; `run_user` is empty in a container. */
   | { type: 'claim_preview'; name: string; mode: string; run_user?: string; version: string }
   | { type: 'uninstall_done'; mode: string }
-  | { type: 'auth_ok'; channels?: string[]; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string }
+  | { type: 'auth_ok'; channels?: string[]; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string; acp_agents?: string[] }
   | { type: 'sessions'; sessions: SessionInfo[] }
   | { type: 'session_attached'; session_id: string }
   | { type: 'output'; data: string }
@@ -54,6 +64,7 @@ export type ServerMessage =
   | { type: 'activity'; sessions: SessionActivity[] }
   | { type: 'attention'; items: Attention[] }
   | SessionViewMessage
+  | AcpViewMessage
   | { type: 'push_info'; configured: boolean; public_key: string; devices: number; subscribed: boolean }
   | { type: 'agent_event'; event: AgentEventType; agent: string; session_id: string }
   | { type: 'agent_hooks'; agent: string; action: string; state: 'connected' | 'not_connected' | 'unsupported' | 'unavailable' | string; preview?: string; error?: string }
@@ -74,6 +85,46 @@ export interface SessionViewMessage {
   prompt?: { id: string; question: string; kind: 'choice' | 'yes_no' | string; options: { label: string }[] };
   /** Tier 1 only (decision 0103): the steps read from the agent's transcript. Older servers never send it. */
   timeline?: TimelineMessage;
+}
+
+/** T0: a change to the client's copy of an ACP session. Every text is untrusted agent text, cleaned again on arrival. */
+export interface AcpViewMessage {
+  type: 'acp_view';
+  session: string;
+  epoch: number;
+  rev: number;
+  /** `entries` is everything the server keeps: drop what you hold. */
+  reset: boolean;
+  /** The lowest entry id the server still keeps. */
+  first: number;
+  entries: AcpEntryWire[];
+  /** Present on a reset and when the facts changed. */
+  info?: AcpInfo;
+}
+
+export interface AcpDiff { path: string; old_text?: string; new_text: string; truncated?: boolean }
+export interface AcpLocation { path: string; line?: number }
+export interface AcpOptionWire { id: string; kind: string; name: string }
+export type AcpEntryWire = { id: number; rev: number } & (
+  | { kind: 'user' | 'message' | 'thought'; text: string }
+  | { kind: 'tool'; tool_id: string; title: string; tool_kind: string; status: string; diffs?: AcpDiff[]; locations?: AcpLocation[] }
+  | { kind: 'plan'; items: { text: string; status: string }[] }
+  | { kind: 'permission'; prompt_id: string; tool_id: string; title: string; tool_kind: string; options: AcpOptionWire[]; diffs?: AcpDiff[]; plan?: string; state: 'open' | 'answered' | 'cancelled' | string; chosen?: string }
+  | { kind: 'notice'; level: 'info' | 'error' | string; text: string }
+  | { kind: string }
+);
+
+export interface AcpInfo {
+  agent: string;
+  dir: string;
+  title?: string;
+  status: 'running' | 'ended' | 'failed' | string;
+  status_text?: string;
+  working: boolean;
+  mode?: string;
+  modes?: { id: string; name: string; description?: string }[];
+  commands?: { name: string; description?: string; hint?: string }[];
+  usage?: { used: number; size: number; cost?: string };
 }
 
 export interface TimelineMessage {

@@ -159,6 +159,38 @@ pub enum ClientMessage {
         agent: String,
         action: String,
     },
+    /// T0 (decision 0111): shows this ACP session on this connection. The server answers with `acp_view` (everything
+    /// after `after` when `epoch` is the one the client holds, else everything it keeps) and then pushes `acp_view`
+    /// updates, a few per second at most, until `acp_close` or another `acp_open`.
+    AcpOpen {
+        session: String,
+        #[serde(default)]
+        after: Option<u64>,
+        #[serde(default)]
+        epoch: Option<u64>,
+    },
+    /// Stops the `acp_view` updates of this connection.
+    AcpClose,
+    /// The owner's next prompt (`session/prompt`); several lines are allowed, up to 16 KiB.
+    AcpPrompt {
+        session: String,
+        text: String,
+    },
+    /// Interrupts the turn: open requests are answered `cancelled`, then `session/cancel`.
+    AcpInterrupt {
+        session: String,
+    },
+    /// Answers permission `prompt_id` with exactly the option id the agent offered (only one-time options are shown).
+    AcpAnswer {
+        session: String,
+        prompt_id: String,
+        option_id: String,
+    },
+    /// Switches to a mode the agent listed in `acp_view.info.modes`.
+    AcpMode {
+        session: String,
+        mode: String,
+    },
     /// A message from a newer client; ignored.
     #[serde(other)]
     Unknown,
@@ -214,6 +246,9 @@ pub enum ServerMessage {
         /// tmux's prefix key in its own notation (`C-b`); empty without tmux.
         #[serde(default)]
         prefix: String,
+        /// The agents the owner allows as ACP sessions (decision 0111); empty when the server runs none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        acp_agents: Vec<String>,
     },
     Sessions {
         sessions: Vec<SessionInfo>,
@@ -307,6 +342,8 @@ pub enum ServerMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// T0: the stream of an ACP session (see `AcpOpen`).
+    AcpView(AcpView),
     Error {
         message: String,
     },
@@ -314,6 +351,157 @@ pub enum ServerMessage {
     /// A message from a newer server; ignored.
     #[serde(other)]
     Unknown,
+}
+
+// ---------------------------------------------------------------------------------------------------
+// T0: the ACP session stream (decision 0111). Every text is untrusted agent text; the server has already
+// stripped control characters, scrubbed secrets and capped lengths, and clients render it as text only.
+// Only what the protocol carries is here: raw tool input and tool output are never copied (decision 0095).
+// ---------------------------------------------------------------------------------------------------
+
+/// A change to apply to what the client holds of one ACP session.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AcpView {
+    pub session: String,
+    /// Names this run of the session's stream. A client that holds another epoch starts over.
+    pub epoch: u64,
+    /// The revision this message brings the client to; ask for `after = rev` next time.
+    pub rev: u64,
+    /// True when `entries` is everything the server keeps (the client drops what it held).
+    pub reset: bool,
+    /// The lowest entry id the server still keeps: older ones are dropped by the client too.
+    pub first: u64,
+    /// Entries created or changed since `after`, in id order. A changed entry is sent whole.
+    pub entries: Vec<AcpEntry>,
+    /// The session facts, sent when they changed or on a reset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub info: Option<AcpInfo>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AcpEntry {
+    pub id: u64,
+    pub rev: u64,
+    #[serde(flatten)]
+    pub body: AcpBody,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AcpBody {
+    /// What the owner sent (`session/prompt`).
+    User { text: String },
+    /// The agent's reply, Markdown, grown by `agent_message_chunk`.
+    Message { text: String },
+    /// `agent_thought_chunk`.
+    Thought { text: String },
+    /// A `tool_call` merged with its `tool_call_update`s by `toolCallId`. `tool_kind` is the protocol's `kind`
+    /// (`read`, `edit`, `execute`, `switch_mode`, `other`, ...) and `status` is `pending`, `in_progress`,
+    /// `completed` or `failed`.
+    Tool {
+        tool_id: String,
+        title: String,
+        tool_kind: String,
+        status: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        diffs: Vec<AcpDiff>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        locations: Vec<AcpLocation>,
+    },
+    /// The `plan` update, or the agent's todo list.
+    Plan { items: Vec<crate::events::PlanItem> },
+    /// A `session/request_permission`. `state` is `open`, `answered` (with `chosen`) or `cancelled`. Only
+    /// `allow_once` and `reject_once` options are carried (decision 0104).
+    Permission {
+        prompt_id: String,
+        /// The `toolCallId` the request is about: the view shows the diff once, here, while it is open.
+        tool_id: String,
+        title: String,
+        tool_kind: String,
+        options: Vec<crate::events::DecisionOption>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        diffs: Vec<AcpDiff>,
+        /// The plan of a `switch_mode` request, Markdown.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plan: Option<String>,
+        state: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chosen: Option<String>,
+    },
+    /// Something the view says itself: `level` is `info` or `error` (a turn that ended `cancelled`, a failed prompt,
+    /// a session that ended).
+    Notice { level: String, text: String },
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AcpDiff {
+    pub path: String,
+    /// Absent for a new file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_text: Option<String>,
+    pub new_text: String,
+    /// The texts were cut to the size limit.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AcpLocation {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+}
+
+/// A mode the agent offers (`session/new` `modes.availableModes`, or the `mode` config option).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AcpMode {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// A slash command from `available_commands_update`; `hint` is its `input.hint`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AcpCommand {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AcpUsage {
+    pub used: u64,
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct AcpInfo {
+    pub agent: String,
+    /// The working directory the session was started in (the companion shell opens there).
+    pub dir: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// `running`, `ended` or `failed`.
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_text: Option<String>,
+    /// A `session/prompt` is open.
+    pub working: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modes: Vec<AcpMode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<AcpCommand>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<AcpUsage>,
 }
 
 /// What an agent's transcript says about the session so far (decision 0103, tier 1). Every text is untrusted:
@@ -422,9 +610,11 @@ mod tests {
             control_mode: true,
             tmux_version: "3.6".into(),
             prefix: "C-b".into(),
+            acp_agents: vec![],
         })
         .unwrap();
         assert_eq!(v["type"], "auth_ok");
+        assert!(v.get("acp_agents").is_none());
         let v = serde_json::to_value(ClientMessage::ClaimPreview {
             server_token: "t".into(),
         })
@@ -671,6 +861,97 @@ mod tests {
                 hash: None
             }
         );
+    }
+
+    /// The ACP stream (T0): wire names the client speaks, additive fields, and an unknown entry kind ignored.
+    #[test]
+    fn acp_messages_use_the_wire_names_the_client_reads() {
+        let m: ClientMessage =
+            serde_json::from_str(r#"{"type":"acp_open","session":"s"}"#).unwrap();
+        assert_eq!(
+            m,
+            ClientMessage::AcpOpen {
+                session: "s".into(),
+                after: None,
+                epoch: None
+            }
+        );
+        for (msg, name) in [
+            (ClientMessage::AcpClose, "acp_close"),
+            (
+                ClientMessage::AcpPrompt {
+                    session: "s".into(),
+                    text: "hi".into(),
+                },
+                "acp_prompt",
+            ),
+            (
+                ClientMessage::AcpInterrupt {
+                    session: "s".into(),
+                },
+                "acp_interrupt",
+            ),
+            (
+                ClientMessage::AcpAnswer {
+                    session: "s".into(),
+                    prompt_id: "acp-1".into(),
+                    option_id: "allow-once".into(),
+                },
+                "acp_answer",
+            ),
+            (
+                ClientMessage::AcpMode {
+                    session: "s".into(),
+                    mode: "plan".into(),
+                },
+                "acp_mode",
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(msg).unwrap()["type"], name);
+        }
+        let view = ServerMessage::AcpView(AcpView {
+            session: "s".into(),
+            epoch: 7,
+            rev: 3,
+            reset: true,
+            first: 1,
+            entries: vec![
+                AcpEntry {
+                    id: 1,
+                    rev: 1,
+                    body: AcpBody::Message { text: "hi".into() },
+                },
+                AcpEntry {
+                    id: 2,
+                    rev: 3,
+                    body: AcpBody::Tool {
+                        tool_id: "t".into(),
+                        title: "Write a.txt".into(),
+                        tool_kind: "edit".into(),
+                        status: "in_progress".into(),
+                        diffs: vec![AcpDiff {
+                            path: "a.txt".into(),
+                            old_text: None,
+                            new_text: "hi\n".into(),
+                            truncated: false,
+                        }],
+                        locations: vec![],
+                    },
+                },
+            ],
+            info: None,
+        });
+        let v = serde_json::to_value(&view).unwrap();
+        assert_eq!(v["type"], "acp_view");
+        assert_eq!(v["entries"][0]["kind"], "message");
+        assert_eq!(v["entries"][1]["tool_kind"], "edit");
+        assert!(v["entries"][1]["diffs"][0].get("old_text").is_none());
+        assert!(v.get("info").is_none());
+        assert_eq!(serde_json::from_value::<ServerMessage>(v).unwrap(), view);
+        // An entry kind from a newer server is read as unknown, not fatal.
+        let e: AcpEntry =
+            serde_json::from_str(r#"{"id":4,"rev":4,"kind":"hologram","x":1}"#).unwrap();
+        assert_eq!(e.body, AcpBody::Unknown);
     }
 
     /// The hook messages are additive: an answer without a preview or an error reads fine, and the reply keeps its

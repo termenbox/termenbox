@@ -16,6 +16,22 @@ use crate::pty::Attachment;
 
 /// Clients ping every 5 s, so a minute of silence means the peer is gone.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// A streaming reply changes many times a second; a client that shows it gets one update per this long at most.
+const ACP_BATCH: Duration = Duration::from_millis(120);
+/// The longest prompt a client may send (the backend caps it again).
+const ACP_PROMPT_BYTES: usize = 16 * 1024;
+
+/// The ACP session one connection shows (T0): what it holds, and whether an update is waiting to go out.
+struct AcpSub {
+    session: String,
+    rx: tokio::sync::watch::Receiver<u64>,
+    rev: u64,
+    epoch: u64,
+    info_rev: u64,
+    due: bool,
+    /// The stream's sender is gone: no more updates will come.
+    dead: bool,
+}
 
 /// Serves one authenticated WebSocket: lists/creates tmux sessions and bridges one attached session.
 /// Persistence lives in the session backend (tmux by default); a dropped connection only detaches (see pty.rs).
@@ -80,6 +96,11 @@ impl SessionManager {
     /// The session managers a client may pick from when it creates a session.
     pub fn backends(&self) -> Vec<String> {
         self.backend.kinds()
+    }
+
+    /// The agents the owner allows as ACP sessions (decision 0111); empty when none are configured.
+    pub fn acp_agents(&self) -> Vec<String> {
+        self.backend.acp_agents()
     }
 
     /// Serves the agent event stream (plan v6) to every connection.
@@ -167,6 +188,9 @@ impl SessionManager {
         let mut agent_rx = self.events.as_ref().map(|h| h.subscribe());
         let mut window_rx = self.windows.as_ref().map(|h| h.subscribe());
         let mut status_rx = self.events.as_ref().map(|h| h.subscribe_status());
+        let mut acp: Option<AcpSub> = None;
+        let mut acp_tick = tokio::time::interval(ACP_BATCH);
+        acp_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             tokio::select! {
@@ -189,7 +213,7 @@ impl SessionManager {
                         // Who got a shell on the host and as whom; never what they typed.
                         info!(target: "audit", event = "host_session", provider = %identity.provider, account_id = %identity.id, login = %identity.login, run_as = %self.mode.label(), session = %session_id);
                     }
-                    if let Err(e) = self.handle(conn, client_msg, auth, &identity, &mut attachment, &mut cols, &mut rows, &link.tx).await {
+                    if let Err(e) = self.handle(conn, client_msg, auth, &identity, &mut attachment, &mut cols, &mut rows, &mut acp, &link.tx).await {
                         if !send(&link.tx, &ServerMessage::Error { message: e.to_string() }).await { break; }
                     }
                 }
@@ -244,6 +268,18 @@ impl SessionManager {
                     };
                     if !send(&link.tx, &msg).await { break; }
                 }
+                woke = next_acp_change(&mut acp) => {
+                    if let Some(sub) = acp.as_mut() {
+                        if woke { sub.due = true } else { sub.dead = true }
+                    }
+                }
+                _ = acp_tick.tick(), if acp.as_ref().is_some_and(|a| a.due) => {
+                    let mut gone = false;
+                    for msg in self.acp_update(&mut acp) {
+                        if !send(&link.tx, &msg).await { gone = true; break; }
+                    }
+                    if gone { break; }
+                }
                 _ = &mut idle => {
                     info!("Closing idle connection of {}", identity.login);
                     break;
@@ -253,6 +289,41 @@ impl SessionManager {
 
         info!("Connection closed for {}", identity.login);
         Ok(())
+    }
+
+    /// The `acp_view` messages the connection owes its client, if anything changed since the last update. A view is cut
+    /// into messages the direct transport can carry (`acp_stream::split`).
+    fn acp_update(&self, acp: &mut Option<AcpSub>) -> Vec<ServerMessage> {
+        let Some(sub) = acp.as_mut() else {
+            return Vec::new();
+        };
+        sub.due = false;
+        match self
+            .backend
+            .acp_view(&sub.session, Some(sub.rev), Some(sub.epoch), sub.info_rev)
+        {
+            Ok((mut view, info_rev)) => {
+                if view.reset
+                    || !view.entries.is_empty()
+                    || view.info.is_some()
+                    || view.rev != sub.rev
+                {
+                    view.session = sub.session.clone();
+                    (sub.rev, sub.epoch, sub.info_rev) = (view.rev, view.epoch, info_rev);
+                    crate::acp_stream::split(view)
+                        .into_iter()
+                        .map(ServerMessage::AcpView)
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            }
+            // The session was closed: the client learns it from the session list.
+            Err(_) => {
+                *acp = None;
+                Vec::new()
+            }
+        }
     }
 
     /// Every session's Activity and the open Attention items, for a client that is new or fell behind.
@@ -280,6 +351,7 @@ impl SessionManager {
         attachment: &mut Option<Attachment>,
         cols: &mut u16,
         rows: &mut u16,
+        acp: &mut Option<AcpSub>,
         tx: &LinkTx,
     ) -> Result<()> {
         match msg {
@@ -551,6 +623,61 @@ impl SessionManager {
                 )
                 .await?;
             }
+            ClientMessage::AcpOpen {
+                session,
+                after,
+                epoch,
+            } => {
+                // Subscribe first: a change between the two calls then still wakes the connection.
+                let rx = self.backend.acp_watch(&session)?;
+                let (mut view, info_rev) = self.backend.acp_view(&session, after, epoch, 0)?;
+                view.session = session.clone();
+                let (rev, epoch) = (view.rev, view.epoch);
+                for part in crate::acp_stream::split(view) {
+                    send_r(tx, &ServerMessage::AcpView(part)).await?;
+                }
+                *acp = Some(AcpSub {
+                    session,
+                    rx,
+                    rev,
+                    epoch,
+                    info_rev,
+                    due: false,
+                    dead: false,
+                });
+            }
+            ClientMessage::AcpClose => *acp = None,
+            ClientMessage::AcpPrompt { session, text } => {
+                // Lines and indentation stay; every other control character (an escape sequence) goes.
+                let text: String = text
+                    .chars()
+                    .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+                    .collect();
+                if text.trim().is_empty() || text.len() > ACP_PROMPT_BYTES {
+                    return Err(anyhow::anyhow!("The message is empty or too long"));
+                }
+                self.backend.acp_prompt(&session, &text).await?;
+                // Who sent a prompt to which session, never what it said.
+                info!(target: "audit", event = "acp_prompt_sent", provider = %identity.provider, account_id = %identity.id, session = %session);
+            }
+            ClientMessage::AcpInterrupt { session } => {
+                self.backend.acp_interrupt(&session).await?;
+                info!(target: "audit", event = "acp_interrupt", provider = %identity.provider, account_id = %identity.id, session = %session);
+            }
+            ClientMessage::AcpAnswer {
+                session,
+                prompt_id,
+                option_id,
+            } => {
+                self.backend
+                    .acp_answer(&session, &prompt_id, &option_id)
+                    .await?;
+                info!(target: "audit", event = "acp_answer_sent", provider = %identity.provider, account_id = %identity.id, session = %session);
+            }
+            ClientMessage::AcpMode { session, mode } => {
+                self.backend.acp_mode(&session, &mode).await?;
+                info!(target: "audit", event = "acp_mode_set", provider = %identity.provider, account_id = %identity.id, session = %session);
+            }
             ClientMessage::Unknown => {}
             ClientMessage::ListSessions => {
                 let sessions = self.backend.list().await?;
@@ -627,6 +754,15 @@ async fn next_output(attachment: &mut Option<Attachment>) -> Option<Vec<u8>> {
     match attachment {
         Some(att) => att.rx.recv().await,
         None => std::future::pending().await,
+    }
+}
+
+/// Wakes when the ACP session this connection shows has a new revision. `false` means the stream is gone for
+/// good; it then pends, as do connections that show no ACP session or already owe an update.
+async fn next_acp_change(acp: &mut Option<AcpSub>) -> bool {
+    match acp {
+        Some(sub) if !sub.dead && !sub.due => sub.rx.changed().await.is_ok(),
+        _ => std::future::pending().await,
     }
 }
 
@@ -888,6 +1024,22 @@ pub async fn answer(
     if id != prompt_id || current.seq != seq {
         return Err(anyhow::anyhow!(PROMPT_CHANGED));
     }
+    // A T0 prompt carries the options the agent offered: the tap names one by position and the answer is that
+    // option's id, exactly as the agent sent it (decision 0111). There is no screen to check.
+    if current.source == termenbox_core::events::Source::Acp {
+        let EventKind::Prompt {
+            decision: Some(decision),
+            ..
+        } = &current.kind
+        else {
+            return Err(anyhow::anyhow!(PROMPT_CHANGED));
+        };
+        let option = decision
+            .options
+            .get(choice as usize)
+            .ok_or_else(|| anyhow::anyhow!("No such choice"))?;
+        return backend.acp_answer(session, id, &option.id).await;
+    }
     if current.confidence != Confidence::High {
         return Err(anyhow::anyhow!(
             "This prompt is not confirmed by the agent; open the terminal to answer"
@@ -936,6 +1088,13 @@ mod answer_tests {
             self.sent.lock().unwrap().push(text.to_string());
             Ok(())
         }
+        async fn acp_answer(&self, _: &str, prompt_id: &str, option_id: &str) -> Result<()> {
+            self.sent
+                .lock()
+                .unwrap()
+                .push(format!("acp:{prompt_id}:{option_id}"));
+            Ok(())
+        }
     }
 
     const SCREEN: &str =
@@ -976,6 +1135,51 @@ mod answer_tests {
             id,
             seq,
         )
+    }
+
+    /// A T0 prompt (decision 0111): the tap names an option by position, the agent receives that option's id and no
+    /// screen or key is involved; a stale prompt or a position the agent did not offer is refused.
+    #[tokio::test]
+    async fn a_tap_on_a_t0_prompt_answers_with_the_option_id_the_agent_offered() {
+        use termenbox_core::events::{Decision, DecisionOption};
+        let hub = EventHub::new([3; 32]);
+        let opt = |id: &str, kind: &str, name: &str| DecisionOption {
+            id: id.into(),
+            kind: kind.into(),
+            name: name.into(),
+        };
+        hub.push(
+            "s",
+            Source::Acp,
+            Confidence::High,
+            EventKind::Prompt {
+                id: "acp-4".into(),
+                prompt_kind: "permission".into(),
+                choices: vec!["Yes".into(), "No".into()],
+                decision: Some(Decision {
+                    options: vec![
+                        opt("allow-once", "allow_once", "Yes"),
+                        opt("reject", "reject_once", "No"),
+                    ],
+                    detail: None,
+                }),
+            },
+            2,
+        );
+        let seq = hub.current_prompt("s").unwrap().seq;
+        let b = Fake {
+            screen: Mutex::new(String::new()),
+            sent: Mutex::default(),
+        };
+        answer(&b, &hub, "s", "acp-4", seq, 1).await.unwrap();
+        assert_eq!(*b.sent.lock().unwrap(), ["acp:acp-4:reject"]);
+        for (id, seq, choice) in [("acp-3", seq, 0), ("acp-4", seq + 1, 0), ("acp-4", seq, 2)] {
+            assert!(
+                answer(&b, &hub, "s", id, seq, choice).await.is_err(),
+                "{id} {seq} {choice}"
+            );
+        }
+        assert_eq!(b.sent.lock().unwrap().len(), 1, "nothing else was sent");
     }
 
     fn view_of(
