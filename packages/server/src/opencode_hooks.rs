@@ -31,7 +31,6 @@ const FORWARD = new Set([
   "session.execution.succeeded",
   "session.execution.failed",
   "session.execution.interrupted",
-  "session.idle",
   "permission.asked",
   "permission.replied",
   "form.created",
@@ -194,15 +193,25 @@ pub fn is_connected(plugin: &Path) -> bool {
 /// The whole plugin file as `connect(apply = true)` will write it. Refuses to replace a file someone else
 /// wrote at our path.
 pub fn planned_text(plugin: &Path, binary: &str) -> Result<String> {
-    let existing = std::fs::read_to_string(plugin).ok();
-    if existing
-        .as_deref()
-        .is_some_and(|text| !text.contains(MARKER))
-    {
-        return Err(anyhow!(
-            "{} already exists and was not written by Termenbox; move it first",
-            plugin.display()
-        ));
+    match std::fs::read(plugin) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(text) if text.contains(MARKER) => {}
+            Ok(_) => {
+                return Err(anyhow!(
+                    "{} already exists and was not written by Termenbox; move it first",
+                    plugin.display()
+                ))
+            }
+            // A file we cannot read as text is not a plugin of ours; replacing it would destroy it silently.
+            Err(_) => {
+                return Err(anyhow!(
+                    "{} already exists but is not text; move it first",
+                    plugin.display()
+                ))
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(anyhow!("cannot read {}: {e}", plugin.display())),
     }
     Ok(plugin_source(binary))
 }
@@ -290,9 +299,15 @@ pub fn connect(plugin: &Path, binary: &str, state_dir: &Path, apply: bool) -> Re
     let prior: Option<Value> = std::fs::read_to_string(&jp)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok());
+    // The journal names one file: the one the last connect wrote and a disconnect will undo. When the owner's
+    // config directory changed, carrying the old entry over would make disconnect follow the old path and report
+    // success while leaving the new plugin installed. Start a new entry instead, with that file's own backup.
+    let prior = prior.filter(|j| j["plugin"].as_str().is_some_and(|p| Path::new(p) == plugin));
     if prior.is_none() {
         if let Some(b) = &before {
             std::fs::write(&backup, b)?;
+        } else {
+            let _ = std::fs::remove_file(&backup);
         }
     }
     if let Some(parent) = plugin.parent() {
@@ -398,6 +413,9 @@ mod tests {
         ] {
             assert!(text.contains(e), "{e}");
         }
+        // `session.idle` repeats the turn end that execution.* already carries; forwarding it would let a late
+        // event downgrade Done to Idle after the adapter closed the turn.
+        assert!(!text.contains("session.idle"));
         // A path with a quote cannot break out of the JavaScript string.
         let odd = plugin_source("/tmp/a\"b/termenbox-server");
         assert!(odd.contains("/tmp/a\\\"b/termenbox-server"));
@@ -485,6 +503,41 @@ mod tests {
         connect(&plugin, BIN, &d.join("state"), true).unwrap();
         disconnect(&plugin, &d.join("state")).unwrap();
         assert_eq!(std::fs::read_to_string(&plugin).unwrap(), mine);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_second_connect_at_another_path_is_the_one_disconnect_undoes() {
+        let d = tmpdir("mv");
+        let state = d.join("state");
+        let a = d.join("a/plugins/termenbox.js");
+        let b = d.join("b/plugins/termenbox.js");
+        connect(&a, BIN, &state, true).unwrap();
+        connect(&b, BIN, &state, true).unwrap();
+        // The journal describes one file: the one the latest connect wrote.
+        assert_eq!(journal_plugin(&state), Some(b.clone()));
+        disconnect(&b, &state).unwrap();
+        assert!(!b.exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_file_that_is_not_text_is_never_replaced() {
+        let d = tmpdir("bin");
+        let plugin = d.join("plugins/termenbox.js");
+        std::fs::create_dir_all(plugin.parent().unwrap()).unwrap();
+        let mine = [0xff_u8, 0xfe, 0x00, 0x0a];
+        std::fs::write(&plugin, mine).unwrap();
+        let t = Target {
+            plugin: plugin.clone(),
+            auto: false,
+            binary: BIN.into(),
+            state_dir: d.join("state"),
+        };
+        // It is not our plugin just because it cannot be decoded; both actions must refuse it.
+        assert!(respond(Some(&t), "opencode", "preview").error.is_some());
+        assert!(respond(Some(&t), "opencode", "apply").error.is_some());
+        assert_eq!(std::fs::read(&plugin).unwrap(), mine);
         let _ = std::fs::remove_dir_all(&d);
     }
 

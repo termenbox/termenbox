@@ -60,7 +60,7 @@ OpenCode 2.x has no settings-file hooks, but it loads JavaScript/TypeScript plug
 `<config>/plugins/` (global) and `.opencode/plugins/` (project). A plugin's default export has an `id` and a
 `setup(ctx)`; `ctx.event.subscribe()` yields the same events the TUI sees. Termenbox's opt-in
 `--connect-opencode` writes one plugin to `<config>/plugins/termenbox.js`; it sends only
-`session.inbox.enqueued`, `session.execution.started/succeeded/failed/interrupted`, `session.idle`,
+`session.inbox.enqueued`, `session.execution.started/succeeded/failed/interrupted`,
 `permission.asked/replied`, `form.created/replied/cancelled`, and the `session.tool.called/success/failed`
 events to `termenbox-server --hook opencode` (through the `TERMENBOX_*` variables in a Termenbox session).
 The adapter maps the execution events to turn edges, permissions and forms to obligations, and the prompt's
@@ -77,7 +77,8 @@ The plugin compacts each event to the fields the adapter reads, because tool out
 exceed the 64 KiB one hook line accepts; it also remembers a tool's name from `session.tool.input.started`
 because `session.tool.called/success/failed` do not carry one. `session.status` is not used: `busy` after a
 pending permission would clear the obligation, and `idle` repeats the turn end already carried by
-`session.execution.interrupted`/`succeeded`.
+`session.execution.interrupted`/`succeeded`. The plugin does not forward `session.idle` for that reason: a late
+idle would close a turn that already ended as `Done` (and clear any block).
 
 ## T2 priority
 
