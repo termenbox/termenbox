@@ -8,12 +8,13 @@
 //! and size: when it grows past its limit, or on the hourly check, it is rewritten without the oldest records (to a
 //! temporary file, then renamed), so a crash leaves either the old file or the new one. A torn last line is dropped when
 //! the store opens. Nothing is held in memory but the tasks in flight: a query reads the file line by line.
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -169,13 +170,13 @@ impl Store {
         let keep = |line: &[u8]| parse(line).is_some_and(|run| run.ended_at.unwrap_or(0) >= cutoff);
         for_each_line(file, |line, len| {
             r.before += len;
-            if parse(line).is_none() {
-                r.invalid += 1;
-            } else if !keep(line) {
-                r.aged += 1;
-            } else {
-                // A record is rewritten with its newline, so a missing one is not a reason to rewrite on its own.
-                kept += line.len() as u64 + 1;
+            match parse(line) {
+                None => r.invalid += 1,
+                Some(run) if run.ended_at.unwrap_or(0) < cutoff => r.aged += 1,
+                Some(_) => {
+                    // A record is rewritten with its newline, so a missing one is not a reason to rewrite on its own.
+                    kept += line.len() as u64 + 1;
+                }
             }
             unterminated = len == line.len() as u64;
         })?;
@@ -349,6 +350,9 @@ impl Store {
 // ---------------------------------------------------------------------------------------------------
 
 struct Open {
+    /// The generation of the history when the task began: a deletion starts a new one, and a task of an older one is
+    /// never written.
+    generation: u64,
     started_at: u64,
     /// The last event of this task: how long it has been silent.
     touched: u64,
@@ -359,8 +363,9 @@ struct Open {
 }
 
 impl Open {
-    fn new(ts: u64) -> Self {
+    fn new(ts: u64, generation: u64) -> Self {
         Self {
+            generation,
             started_at: ts,
             touched: ts,
             task: None,
@@ -382,7 +387,10 @@ pub struct History {
     /// Finished tasks the store has not taken yet: the store is busy with a query or a compaction, and the hub that
     /// reports a task end must never wait for a disk. Whoever holds the store flushes this when it lets go.
     backlog: Arc<Mutex<VecDeque<HistoryRun>>>,
-    compacting: Arc<AtomicBool>,
+    /// Wakes the writer thread, which does the disk work so that the hub's push path never does.
+    wake: SyncSender<u64>,
+    /// Bumped by `delete`: a task that began before it is not written after it.
+    generation: AtomicU64,
     limits: Limits,
 }
 
@@ -391,11 +399,15 @@ fn clip(s: &str) -> String {
 }
 
 /// A task title as it is kept: what `sanitize_text` replaces (tokens, secrets after a keyword, IP addresses, host:port),
-/// plus email addresses, URLs and paths under a home directory, which that does not touch; capped at `TITLE_CHARS`.
+/// plus email addresses, URLs and absolute paths, which that does not touch; capped at `TITLE_CHARS`.
 fn scrub_title(title: &str) -> String {
     let text = sanitize_text(title, 4 * TITLE_CHARS);
     let word = |w: &str| {
         let core = w.trim_start_matches(['(', '[', '"', '\'', '`', '<', '=']);
+        // `--dir=/srv/x`: the part after the last `=` is the value.
+        let value = core.rsplit('=').next().unwrap_or(core);
+        // An absolute path has a second slash (`/var/www`); `/review` and `/commit` are commands, not paths.
+        let path = |p: &str| p.starts_with("~/") || (p.starts_with('/') && p[1..].contains('/'));
         if w.contains("://") {
             "[url]"
         } else if w
@@ -403,10 +415,7 @@ fn scrub_title(title: &str) -> String {
             .is_some_and(|(a, b)| !a.is_empty() && !b.is_empty())
         {
             "[email]"
-        } else if ["/home/", "/Users/", "/root/", "~/"]
-            .iter()
-            .any(|p| core.starts_with(p))
-        {
+        } else if path(core) || path(value) {
             "[path]"
         } else {
             ""
@@ -419,29 +428,60 @@ fn scrub_title(title: &str) -> String {
     scrubbed.join(" ").chars().take(TITLE_CHARS).collect()
 }
 
-/// Hands the backlog to the store when nobody else holds it. Returns whether the store is over its size limit.
-fn flush(store: &Mutex<Store>, backlog: &Mutex<VecDeque<HistoryRun>>, now: u64) -> bool {
-    let Ok(mut store) = store.try_lock() else {
-        return false;
-    };
+/// The writer thread's work: everything waiting goes to the file, and the file is compacted while it is over its limit.
+/// It waits for the store, which is fine here: nothing else waits for this thread.
+fn drain(store: &Mutex<Store>, backlog: &Mutex<VecDeque<HistoryRun>>, now: u64) {
+    let mut store = store.lock().unwrap();
     loop {
-        let Some(run) = backlog.lock().unwrap().pop_front() else {
+        loop {
+            let Some(run) = backlog.lock().unwrap().pop_front() else {
+                break;
+            };
+            store.append(&run);
+        }
+        if !store.over_limit(now) {
             break;
-        };
-        store.append(&run);
+        }
+        store.compact(now, "size");
     }
-    store.over_limit(now)
 }
 
 impl History {
     pub fn open(dir: &Path, limits: Limits, now: u64) -> Result<Self> {
+        let store = Arc::new(Mutex::new(Store::open(dir, limits, now)?));
+        let backlog: Arc<Mutex<VecDeque<HistoryRun>>> = Arc::default();
+        let (wake, woken) = std::sync::mpsc::sync_channel::<u64>(1);
+        std::thread::Builder::new()
+            .name("history-writer".into())
+            .spawn({
+                let (store, backlog) = (store.clone(), backlog.clone());
+                move || {
+                    // Ends when the history is dropped and the sender with it.
+                    while let Ok(now) = woken.recv() {
+                        drain(&store, &backlog, now);
+                    }
+                }
+            })
+            .context("starting the history writer")?;
         Ok(Self {
-            store: Arc::new(Mutex::new(Store::open(dir, limits, now)?)),
+            store,
             open: Mutex::default(),
-            backlog: Arc::default(),
-            compacting: Arc::default(),
+            backlog,
+            wake,
+            generation: AtomicU64::new(0),
             limits,
         })
+    }
+
+    /// Waits until the writer thread has taken everything that waited and finished any compaction (tests, which look
+    /// at the file straight after a task).
+    #[cfg(test)]
+    pub fn wait_idle(&self) {
+        while !self.backlog.lock().unwrap().is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // The writer holds the store while it appends and compacts.
+        drop(self.store.lock().unwrap());
     }
 
     pub fn limits(&self) -> Limits {
@@ -473,7 +513,7 @@ impl History {
                     }
                     let run = open
                         .entry(session.to_string())
-                        .or_insert_with(|| Open::new(ts));
+                        .or_insert_with(|| Open::new(ts, self.generation.load(Ordering::Acquire)));
                     run.touched = ts;
                     if let Some(a) = agent {
                         run.agent = Some(clip(a));
@@ -542,6 +582,7 @@ impl History {
     /// Hands a finished task to the store without waiting for it, and starts a compaction (off this thread) when the
     /// file is over its limit.
     fn finish(&self, session: &str, run: Open, outcome: RunOutcome, agent: Option<&str>, ts: u64) {
+        let generation = run.generation;
         let ended_at = ts.max(run.started_at);
         let blocked = run.blocked_ms
             + run
@@ -549,7 +590,8 @@ impl History {
                 .map_or(0, |since| ended_at.saturating_sub(since));
         let record = HistoryRun {
             session: clip(session),
-            agent: agent.map(clip).or(run.agent),
+            // The agent the task ran under; the one named at its end only when the task never learned one.
+            agent: run.agent.or_else(|| agent.map(clip)),
             task: run.task,
             started_at: run.started_at,
             ended_at: Some(ended_at),
@@ -558,64 +600,43 @@ impl History {
         };
         {
             let mut backlog = self.backlog.lock().unwrap();
+            // Checked under the backlog lock that `delete` also takes after bumping the generation: a task that began
+            // before a deletion cannot land after it.
+            if generation != self.generation.load(Ordering::Acquire) {
+                return;
+            }
             if backlog.len() >= MAX_BACKLOG {
                 backlog.pop_front();
                 warn!("history backlog full: the oldest waiting record was dropped");
             }
             backlog.push_back(record);
         }
-        if flush(&self.store, &self.backlog, ts) {
-            self.compact_in_background(ts);
-        }
+        // A full slot means the writer has been woken and has not looked yet: it will see this record too.
+        let _ = self.wake.try_send(ts);
     }
 
-    fn compact_in_background(&self, now: u64) {
-        if self.compacting.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        let (store, backlog, compacting) = (
-            self.store.clone(),
-            self.backlog.clone(),
-            self.compacting.clone(),
-        );
-        let spawned = std::thread::Builder::new()
-            .name("history-compact".into())
-            .spawn({
-                let (store, backlog, compacting) = (store, backlog, compacting.clone());
-                move || {
-                    // Records that arrived meanwhile may have put the file over again.
-                    loop {
-                        store.lock().unwrap().compact(now, "size");
-                        if !flush(&store, &backlog, now) {
-                            break;
-                        }
-                    }
-                    compacting.store(false, Ordering::Release);
-                }
-            });
-        if let Err(e) = spawned {
-            self.compacting.store(false, Ordering::Release);
-            warn!("history compaction not started: {e}");
-        }
-    }
-
-    /// The tasks that ended in `[from, to)`, and those still running that started before `to`.
+    /// The tasks that ended in `[from, to)`, and the running ones that belong to that window: all of them when it
+    /// reaches the present, otherwise those that started inside it.
     pub fn query(&self, from: u64, to: u64, now: u64) -> Answer {
+        // The backlog is read before the file: a record the writer moves to the file meanwhile is then in the file and
+        // in this snapshot (and counted once below), never in neither.
+        let waiting: Vec<HistoryRun> = self
+            .backlog
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.ended_at.is_some_and(|e| e >= from && e < to))
+            .cloned()
+            .collect();
         let (mut runs, truncated) = self.store.lock().unwrap().query(from, to);
-        // Whatever finished while the file was being read.
-        runs.extend(
-            self.backlog
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|r| r.ended_at.is_some_and(|e| e >= from && e < to))
-                .cloned(),
-        );
-        if flush(&self.store, &self.backlog, now) {
-            self.compact_in_background(now);
-        }
+        let key = |r: &HistoryRun| (r.session.clone(), r.started_at, r.ended_at);
+        let known: HashSet<_> = runs.iter().map(key).collect();
+        runs.extend(waiting.into_iter().filter(|r| !known.contains(&key(r))));
         let open = self.open.lock().unwrap();
-        for (session, run) in open.iter().filter(|(_, r)| r.started_at < to) {
+        for (session, run) in open
+            .iter()
+            .filter(|(_, r)| r.started_at < to && (to > now || r.started_at >= from))
+        {
             let blocked = run.blocked_ms
                 + run
                     .blocked_since
@@ -635,6 +656,8 @@ impl History {
 
     /// Forgets everything: the file and the tasks in flight. Returns how many finished tasks it held.
     pub fn delete(&self) -> u64 {
+        // First, so that a task finishing from here on is dropped, not written after the deletion.
+        self.generation.fetch_add(1, Ordering::AcqRel);
         self.open.lock().unwrap().clear();
         let mut store = self.store.lock().unwrap();
         let waiting = std::mem::take(&mut *self.backlog.lock().unwrap()).len() as u64;
@@ -662,7 +685,7 @@ impl History {
             self.finish(&session, run, RunOutcome::Stopped, None, at);
         }
         self.store.lock().unwrap().compact(now, "age");
-        flush(&self.store, &self.backlog, now);
+        let _ = self.wake.try_send(now);
     }
 }
 
@@ -684,16 +707,8 @@ mod tests {
         Limits::new(90, 20)
     }
 
-    /// Waits for a background compaction to finish.
     fn idle(h: &History) {
-        while h.compacting.load(Ordering::Acquire) {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        // A compaction that ended just after a record arrived leaves it in the backlog until the next call.
-        let _ = h.query(0, 0, 0);
-        while h.compacting.load(Ordering::Acquire) {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        h.wait_idle();
     }
 
     fn file_len(d: &Path) -> u64 {
@@ -707,6 +722,7 @@ mod tests {
         h.state(session, Some("claude"), AgentState::Working, start);
         h.task(session, "Fix the flaky login test");
         h.state(session, Some("claude"), end, start + mins * MIN);
+        idle(h);
     }
 
     #[test]
@@ -785,6 +801,7 @@ mod tests {
         );
         h.task("api", &title);
         h.state("api", None, AgentState::Done, T0 + MIN);
+        idle(&h);
         let text = std::fs::read_to_string(d.join(FILE)).unwrap();
         assert!(
             !text.contains("ghp_") && !text.contains("10.1.2.3"),
@@ -1011,10 +1028,12 @@ mod tests {
         let d = dir("backlog");
         let h = History::open(&d, limits(), T0).unwrap();
         let busy = h.store.lock().unwrap(); // a query or a compaction is running
-        task(&h, "a", T0, 1, AgentState::Done); // must return, not block
+        h.state("a", Some("claude"), AgentState::Working, T0);
+        h.state("a", None, AgentState::Done, T0 + MIN); // must return, not block
         assert_eq!(h.backlog.lock().unwrap().len(), 1);
         drop(busy);
         assert_eq!(h.query(0, u64::MAX, T0).runs.len(), 1, "nothing is lost");
+        idle(&h);
         assert!(h.backlog.lock().unwrap().is_empty());
         assert_eq!(h.delete(), 1);
     }
@@ -1090,5 +1109,88 @@ mod tests {
         let runs = h.query(0, u64::MAX, T0 + OPEN_MAX_AGE_MS + 6 * MIN).runs;
         assert!(runs.iter().all(|r| r.ended_at.is_some()));
         assert_eq!(runs.iter().filter(|r| r.session == "b").count(), 1);
+    }
+
+    #[test]
+    fn a_task_that_ends_after_a_deletion_is_not_written() {
+        let d = dir("delete-race");
+        let h = History::open(&d, limits(), T0).unwrap();
+        h.state("a", Some("claude"), AgentState::Working, T0);
+        // The end has taken the task out of the map but not yet handed it over when the user deletes.
+        let run = h.open.lock().unwrap().remove("a").unwrap();
+        assert_eq!(h.delete(), 0);
+        h.finish("a", run, RunOutcome::Finished, None, T0 + MIN);
+        idle(&h);
+        assert_eq!(h.query(0, u64::MAX, T0 + MIN).runs.len(), 0);
+        assert_eq!(file_len(&d), 0);
+        // A task that begins afterwards is recorded as usual.
+        task(&h, "b", T0 + 2 * MIN, 1, AgentState::Done);
+        assert_eq!(h.query(0, u64::MAX, T0 + 9 * MIN).runs.len(), 1);
+    }
+
+    #[test]
+    fn a_record_in_the_file_and_the_backlog_is_answered_once() {
+        let d = dir("both");
+        let h = History::open(&d, limits(), T0).unwrap();
+        task(&h, "a", T0, 1, AgentState::Done);
+        let run = h.query(0, u64::MAX, T0 + 9 * MIN).runs.remove(0);
+        // The moment between the writer's append and its pop, as a reader sees it.
+        h.backlog.lock().unwrap().push_back(run);
+        assert_eq!(h.query(0, u64::MAX, T0 + 9 * MIN).runs.len(), 1);
+        h.backlog.lock().unwrap().clear();
+    }
+
+    #[test]
+    fn any_absolute_path_is_scrubbed_but_a_slash_command_is_not() {
+        for t in [
+            "Fix /var/www/acme-corp/billing/secret.rb",
+            "cd /srv/clients/acme",
+            "run with --dir=/home/bob/work",
+            "open ~/notes/x.md",
+        ] {
+            let got = scrub_title(t);
+            assert!(got.contains("[path]"), "{t} -> {got}");
+            assert!(
+                !got.contains("acme") && !got.contains("bob") && !got.contains("notes"),
+                "{got}"
+            );
+        }
+        assert_eq!(scrub_title("/review the change"), "/review the change");
+    }
+
+    #[test]
+    fn a_task_keeps_the_agent_it_ran_under() {
+        let d = dir("agent");
+        let h = History::open(&d, limits(), T0).unwrap();
+        h.state("s", Some("claude"), AgentState::Working, T0);
+        // A day later another agent's event closes the stale task and opens a new one.
+        h.state("s", Some("codex"), AgentState::Working, T0 + 2 * DAY_MS);
+        h.state("s", Some("codex"), AgentState::Done, T0 + 2 * DAY_MS + MIN);
+        idle(&h);
+        let runs = h.query(0, u64::MAX, T0 + 3 * DAY_MS).runs;
+        let agents: Vec<_> = runs.iter().map(|r| r.agent.as_deref()).collect();
+        assert_eq!(agents, [Some("claude"), Some("codex")]);
+    }
+
+    #[test]
+    fn a_past_window_does_not_list_what_is_running_now() {
+        let d = dir("window");
+        let h = History::open(&d, limits(), T0).unwrap();
+        let hour = 60 * MIN;
+        h.state("old", Some("claude"), AgentState::Working, T0);
+        h.state(
+            "new",
+            Some("claude"),
+            AgentState::Working,
+            T0 + 5 * DAY_MS - hour,
+        );
+        let now = T0 + 6 * DAY_MS;
+        // Yesterday's window [now - 1 day, now) holds neither start.
+        assert!(h.query(now - DAY_MS, now, now).runs.is_empty());
+        // A window that reaches the present lists both.
+        assert_eq!(h.query(now - DAY_MS, now + DAY_MS, now).runs.len(), 2);
+        // A past window lists the one that began inside it.
+        let w = h.query(T0 + 5 * DAY_MS - 2 * hour, T0 + 5 * DAY_MS + 12 * hour, now);
+        assert_eq!(w.runs.len(), 1);
     }
 }

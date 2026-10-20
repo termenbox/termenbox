@@ -687,9 +687,15 @@ impl SessionManager {
                 };
                 let limits = history.limits();
                 let now = crate::events::now_ms();
+                if from > to {
+                    return Err(anyhow::anyhow!("The history range ends before it starts"));
+                }
+                // Nothing older than the server keeps exists, so a longer range only costs a longer scan.
+                let lo =
+                    from.max(to.saturating_sub((u64::from(limits.keep_days) + 1) * 86_400_000));
                 // A scan of the file: off the async threads.
                 let answer =
-                    tokio::task::spawn_blocking(move || history.query(from, to, now)).await?;
+                    tokio::task::spawn_blocking(move || history.query(lo, to, now)).await?;
                 send_r(
                     tx,
                     &ServerMessage::History {

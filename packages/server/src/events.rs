@@ -2252,6 +2252,7 @@ mod tests {
             (runs[0].started_at, runs[0].ended_at),
             (1_000, Some(14_000))
         );
+        h.history().unwrap().wait_idle();
         let file = std::fs::read_to_string(dir.join("history.jsonl")).unwrap();
         assert!(!file.contains("second line") && !file.contains("secret plan"));
     }
@@ -2339,6 +2340,7 @@ mod tests {
         hook(&h, "Stop", quiet(), 3_000);
         let runs = h.history().unwrap().query(0, u64::MAX, 4_000).runs;
         assert_eq!(runs[0].task.as_deref(), Some("Tidy the repo"));
+        h.history().unwrap().wait_idle();
         let file = std::fs::read_to_string(dir.join("history.jsonl")).unwrap();
         assert!(!file.contains("secret-project"));
     }

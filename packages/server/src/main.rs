@@ -646,12 +646,22 @@ async fn main() -> anyhow::Result<()> {
     if mode.is_host() {
         info!(target: "audit", event = "host_mode_enabled", user = %mode.label());
     }
-    let history = Arc::new(history::History::open(
+    // History is optional: a file that cannot be opened or rewritten costs the Activity view, not the server.
+    let history = match history::History::open(
         &args.config_dir,
         history::Limits::new(args.history_days, args.history_max_mb),
         events::now_ms(),
-    )?);
-    let hub = events::EventHub::load_or_create(&args.config_dir)?.with_history(history.clone());
+    ) {
+        Ok(h) => Some(Arc::new(h)),
+        Err(e) => {
+            tracing::warn!("history disabled: {e:#}");
+            None
+        }
+    };
+    let mut hub = events::EventHub::load_or_create(&args.config_dir)?;
+    if let Some(history) = &history {
+        hub = hub.with_history(history.clone());
+    }
     let socket = events::socket_path(&args.config_dir);
     tokio::spawn({
         let (hub, socket) = (hub.clone(), socket.clone());
@@ -674,13 +684,16 @@ async fn main() -> anyhow::Result<()> {
         }
     });
     // Records past their age go once an hour; the size limit is kept as records are written.
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-            let history = history.clone();
-            let _ = tokio::task::spawn_blocking(move || history.maintain(events::now_ms())).await;
-        }
-    });
+    if let Some(history) = history {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                let history = history.clone();
+                let _ =
+                    tokio::task::spawn_blocking(move || history.maintain(events::now_ms())).await;
+            }
+        });
+    }
     let kinds = resolve_backends(&args.backend, &mode).await?;
     // With several managers every session id is `manager:name`; with one it stays the plain name.
     let prefix_of = |k: &str| {
