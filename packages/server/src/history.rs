@@ -625,7 +625,8 @@ impl History {
             return;
         }
         if let Some(run) = self.open.lock().unwrap().get_mut(session) {
-            run.project = Some(name);
+            // Where the task began: a later `cd` does not rename it.
+            run.project.get_or_insert(name);
         }
     }
 
@@ -662,7 +663,12 @@ impl History {
         let step = {
             let mut costs = self.costs.lock().unwrap();
             if !costs.contains_key(session) && costs.len() >= MAX_OPEN {
-                return;
+                // Sessions with no task in flight can be re-read from their next report; make room from them.
+                let open = self.open.lock().unwrap();
+                costs.retain(|k, _| open.contains_key(k));
+                if costs.len() >= MAX_OPEN {
+                    return;
+                }
             }
             let last = costs.insert(session.to_string(), micros).unwrap_or(0);
             if micros >= last {
@@ -703,6 +709,10 @@ impl History {
                 .filter_map(|k| open.remove(&k).map(|r| (k, r)))
                 .collect()
         };
+        self.costs
+            .lock()
+            .unwrap()
+            .retain(|k, _| !k.starts_with(prefix) || live.contains(k));
         for (session, run) in gone {
             self.finish(&session, run, RunOutcome::Stopped, None, now);
         }
@@ -1099,6 +1109,34 @@ mod tests {
             .map(|r| r.usage.as_ref().unwrap().cost_micros.unwrap())
             .collect();
         assert_eq!(costs, [1_000_000, 500_000]);
+    }
+
+    #[test]
+    fn costs_of_ended_sessions_do_not_block_new_ones() {
+        let d = dir("cost-full");
+        let h = History::open(&d, limits(), T0).unwrap();
+        for i in 0..MAX_OPEN {
+            h.cost(&format!("old{i}"), 1_000_000, "USD");
+        }
+        h.state("new", Some("codex"), AgentState::Working, T0);
+        h.cost("new", 2_000_000, "USD");
+        h.state("new", None, AgentState::Done, T0 + MIN);
+        let runs = h.query(T0, T0 + 9 * MIN, T0).runs;
+        assert_eq!(runs[0].usage.as_ref().unwrap().cost_micros, Some(2_000_000));
+    }
+
+    #[test]
+    fn the_project_is_the_folder_the_task_began_in() {
+        let d = dir("project-once");
+        let h = History::open(&d, limits(), T0).unwrap();
+        h.state("s", Some("claude"), AgentState::Working, T0);
+        h.project("s", "termenbox");
+        h.project("s", "src");
+        h.state("s", None, AgentState::Done, T0 + MIN);
+        assert_eq!(
+            h.query(T0, T0 + 9 * MIN, T0).runs[0].project.as_deref(),
+            Some("termenbox")
+        );
     }
 
     #[test]

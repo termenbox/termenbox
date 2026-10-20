@@ -114,7 +114,7 @@
 
         <section aria-labelledby="activity-usage" class="flex flex-col gap-3" data-activity-usage>
           <h2 id="activity-usage" class="text-sm font-semibold text-soft">Usage and cost</h2>
-          <p class="text-sm text-soft">What each agent reported, counted per task. Termenbox works out no prices: a cost appears only when the agent reported one, in its own currency.</p>
+          <p class="text-sm text-soft">What each agent reported, counted per task. Termenbox works out no prices: a cost appears only when the agent reported one, in its own currency. Claude Code counts are a lower bound: subagents, very long messages and anything before this server first saw the session are not counted.</p>
           {#if anyTokens}
             <ChartFrame title={mode === 'day' ? 'Tokens by hour' : 'Tokens by day'} caption={`${exact(tokenTotal)} input and output tokens in all, from the agents that report them.`}>
               <BarChart label={mode === 'day' ? 'Tokens by hour' : 'Tokens by day'} bars={tokenBars(buckets, mode)} />
@@ -129,17 +129,16 @@
                 {#if tokensOf(t) !== undefined}
                   <p class="text-base" data-usage-tokens><span class="font-semibold">{tokenText(tokensOf(t) ?? 0)} tokens</span> <span class="text-soft">({tokenLine(t)})</span><span class="sr-only">: {tokenSpoken(t)}</span></p>
                 {:else}
-                  <p class="text-sm text-soft" data-usage-missing="tokens">Tokens: not available from {a.agent}. {whyMissing(a.agent, 'tokens')}</p>
+                  <p class="text-sm text-soft" data-usage-missing="tokens">Tokens: not available from this agent. {whyMissing(a.agent, 'tokens')}</p>
                 {/if}
                 {#if t.cost}
                   <p class="text-base" data-usage-cost><span class="font-semibold">{costsText(t.cost)}</span> <span class="text-soft">reported by {a.agent}{t.withCost < t.tasks ? ` (for ${t.withCost} of ${t.tasks} tasks)` : ''}</span></p>
                 {:else}
-                  <p class="text-sm text-soft" data-usage-missing="cost">Cost: not available from {a.agent}. {whyMissing(a.agent, 'cost')}</p>
+                  <p class="text-sm text-soft" data-usage-missing="cost">Cost: not available from this agent. {whyMissing(a.agent, 'cost')}</p>
                 {/if}
                 {#if t.rateLimited}
                   <p class="text-sm text-warn" data-usage-limited><span aria-hidden="true">!</span> Rate limited {t.rateLimited === 1 ? 'once' : `${t.rateLimited} times`}</p>
                 {/if}
-                <p class="text-sm text-soft" data-usage-missing="window">Rate-limit window: not available from {a.agent}. {whyMissing(a.agent, 'window')}</p>
               </li>
             {/each}
           </ul>
@@ -159,7 +158,7 @@
               </ul>
             </div>
           {/if}
-          <p class="text-sm text-soft">{WINDOW_NOTE} Hits are counted above where an agent said it was rate limited. The status-line forwarder (roadmap R19) is how Claude Code would give more.</p>
+          <p class="text-sm text-soft">{WINDOW_NOTE} Hits are counted above where an agent said it was rate limited. For Claude Code, the status-line forwarder (roadmap R19, not built yet) would add more.</p>
           {#if caches.length}
             <div class="flex flex-col gap-2" data-usage-caches>
               <h3 class="text-sm font-semibold text-fg">Prompt cache now</h3>

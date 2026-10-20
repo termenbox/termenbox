@@ -378,12 +378,14 @@ impl UsageReader {
         let mut f = std::fs::File::open(&self.path)?;
         let len = f.metadata()?.len();
         if len < self.offset {
-            self.offset = 0; // truncated or replaced
+            // Truncated or replaced: what it holds now was mostly counted or never ours, so start at its end rather
+            // than count it again.
+            self.offset = len;
             self.seen.clear();
         }
         f.seek(SeekFrom::Start(self.offset))?;
         let mut reader = std::io::BufReader::new(f.take((len - self.offset).min(USAGE_PASS_BYTES)));
-        let mut total = Tokens::default();
+        let mut pass: HashMap<String, Tokens> = HashMap::new();
         let mut line = Vec::new();
         loop {
             line.clear();
@@ -413,12 +415,21 @@ impl UsageReader {
                 break; // an unfinished last line
             }
             self.offset += n as u64;
-            self.line(&line, &mut total);
+            self.line(&line, &mut pass);
+        }
+        // A message streamed over several lines may report more output on a later line: the largest of each count wins.
+        let mut total = Tokens::default();
+        for (id, t) in pass {
+            crate::history::add_tokens(&mut total, t);
+            self.seen.push_back(id);
+        }
+        while self.seen.len() > SEEN_IDS {
+            self.seen.pop_front();
         }
         Ok(total)
     }
 
-    fn line(&mut self, raw: &[u8], total: &mut Tokens) {
+    fn line(&mut self, raw: &[u8], pass: &mut HashMap<String, Tokens>) {
         // Most lines carry no usage; do not parse those.
         if !raw.windows(7).any(|w| w == b"\"usage\"") {
             return;
@@ -433,30 +444,37 @@ impl UsageReader {
         let (Some(id), Some(u)) = (m["id"].as_str(), m["usage"].as_object()) else {
             return;
         };
-        if self.seen.iter().any(|s| s == id) {
+        // Ids are kept cut to 80 characters, so they are compared cut too.
+        let id: String = id.chars().take(80).collect();
+        if self.seen.contains(&id) {
             return;
         }
-        self.seen.push_back(id.chars().take(80).collect());
-        while self.seen.len() > SEEN_IDS {
-            self.seen.pop_front();
-        }
         let n = |k: &str| u.get(k).and_then(Value::as_u64);
-        crate::history::add_tokens(
-            total,
-            Tokens {
-                input: n("input_tokens"),
-                output: n("output_tokens"),
-                cache_read: n("cache_read_input_tokens"),
-                cache_write: n("cache_creation_input_tokens"),
-            },
-        );
+        let t = Tokens {
+            input: n("input_tokens"),
+            output: n("output_tokens"),
+            cache_read: n("cache_read_input_tokens"),
+            cache_write: n("cache_creation_input_tokens"),
+        };
+        let max = |a: Option<u64>, b: Option<u64>| match (a, b) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
+        let e = pass.entry(id).or_default();
+        *e = Tokens {
+            input: max(e.input, t.input),
+            output: max(e.output, t.output),
+            cache_read: max(e.cache_read, t.cache_read),
+            cache_write: max(e.cache_write, t.cache_write),
+        };
     }
 }
 
 /// One usage reader per session, for the sessions whose hooks named a transcript.
 #[derive(Default)]
 pub struct UsageTracker {
-    readers: Mutex<HashMap<String, UsageReader>>,
+    readers: Mutex<HashMap<String, (u64, UsageReader)>>,
+    tick: std::sync::atomic::AtomicU64,
 }
 
 impl UsageTracker {
@@ -468,23 +486,31 @@ impl UsageTracker {
         let Ok(mut readers) = self.readers.lock() else {
             return;
         };
-        if readers.get(session).is_some_and(|r| r.path == path) {
-            return;
+        let now = self.tick.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Some((seen_at, r)) = readers.get_mut(session) {
+            if r.path == path {
+                *seen_at = now; // still in use: the last to go
+                return;
+            }
         }
         if !readers.contains_key(session) && readers.len() >= MAX_READERS {
-            let evict = readers.keys().next().cloned();
+            // The session whose hooks were heard longest ago.
+            let evict = readers
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(k, _)| k.clone());
             if let Some(k) = evict {
                 readers.remove(&k);
             }
         }
-        readers.insert(session.to_string(), UsageReader::armed(path));
+        readers.insert(session.to_string(), (now, UsageReader::armed(path)));
     }
 
     /// The counts appended since the last collection, or None when nothing is watched, nothing was appended, or the
     /// file cannot be read. Blocking file work, bounded by `USAGE_PASS_BYTES`.
     pub fn collect(&self, session: &str) -> Option<Tokens> {
         let mut readers = self.readers.lock().ok()?;
-        let t = readers.get_mut(session)?.collect().ok()?;
+        let t = readers.get_mut(session)?.1.collect().ok()?;
         (!t.is_empty()).then_some(t)
     }
 }
@@ -788,6 +814,75 @@ mod tests {
         let huge = format!("{{\"usage\":\"{}\"}}\n", "x".repeat(MAX_LINE * 2));
         std::fs::write(&file, format!("not json \"usage\"\n{huge}{USAGE}")).unwrap();
         assert_eq!(t.collect("claude:a").unwrap().input, Some(5));
+    }
+
+    fn assistant_line(id: &str, output: u64) -> String {
+        format!(
+            "{{\"type\":\"assistant\",\"message\":{{\"id\":\"{id}\",\"usage\":{{\"input_tokens\":2,\"output_tokens\":{output}}}}}}}\n"
+        )
+    }
+
+    #[test]
+    fn a_message_whose_output_grows_across_lines_counts_its_largest() {
+        let (_root, file, t) = watched("usage-max");
+        let long = "m".repeat(120);
+        std::fs::write(
+            &file,
+            format!(
+                "{}{}{}",
+                assistant_line("a", 1),
+                assistant_line("a", 90),
+                assistant_line(&long, 5)
+            ),
+        )
+        .unwrap();
+        let got = t.collect("claude:a").unwrap();
+        assert_eq!((got.input, got.output), (Some(4), Some(95)));
+        // A very long id is remembered cut, and recognised again when compared cut.
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap();
+        f.write_all(assistant_line(&long, 5).as_bytes()).unwrap();
+        assert_eq!(t.collect("claude:a"), None);
+    }
+
+    #[test]
+    fn the_session_armed_longest_ago_is_the_one_evicted() {
+        let root = dir("usage-evict");
+        let t = UsageTracker::default();
+        let mut files = Vec::new();
+        for i in 0..MAX_READERS {
+            let f = root.join(format!("projects/p/{i}.jsonl"));
+            write(&f, "");
+            t.arm(&root, &format!("s{i}"), f.to_str().unwrap());
+            files.push(f);
+        }
+        // s0 is the oldest, but its hook is heard again: s1 is now the one to go.
+        t.arm(&root, "s0", files[0].to_str().unwrap());
+        let extra = root.join("projects/p/new.jsonl");
+        write(&extra, "");
+        t.arm(&root, "new", extra.to_str().unwrap());
+        std::fs::write(&files[0], USAGE).unwrap();
+        assert!(t.collect("s0").is_some());
+        std::fs::write(&files[1], USAGE).unwrap();
+        assert!(t.collect("s1").is_none());
+    }
+
+    #[test]
+    fn a_truncated_transcript_is_not_counted_again() {
+        let (_root, file, t) = watched("usage-truncated");
+        std::fs::write(&file, USAGE).unwrap();
+        assert!(t.collect("claude:a").is_some());
+        let last = USAGE.lines().last().unwrap();
+        std::fs::write(&file, format!("{last}\n")).unwrap();
+        assert_eq!(t.collect("claude:a"), None);
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap();
+        f.write_all(assistant_line("fresh", 7).as_bytes()).unwrap();
+        assert_eq!(t.collect("claude:a").unwrap().output, Some(7));
     }
 
     #[test]

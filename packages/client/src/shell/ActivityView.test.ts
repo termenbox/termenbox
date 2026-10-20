@@ -38,21 +38,23 @@ describe('Usage and cost from a fixture', () => {
 
   it('says plainly what is not available, and what would enable it, instead of zeros', () => {
     const claude = card('claude');
-    expect(claude).toContain('Cost: not available from claude');
+    expect(claude).toContain('Cost: not available from this agent');
     expect(claude).toContain('status-line forwarder (roadmap R19, not built yet)');
-    expect(claude).toContain('Rate-limit window: not available from claude');
+    expect(claude).not.toContain('Rate-limit window');
     const codex = card('codex');
-    expect(codex).toContain('Tokens: not available from codex');
+    expect(codex).toContain('Tokens: not available from this agent');
     expect(codex).toContain('notify hook carries no usage');
-    expect(codex).toContain('Cost: not available from codex');
+    expect(codex).toContain('Cost: not available from this agent');
     expect(codex).not.toMatch(/\b0 tokens|\$0\.00/);
-    expect(card('Unnamed agent')).toContain('Tokens: not available from Unnamed agent');
+    expect(card('Unnamed agent')).toContain('Tokens: not available from this agent');
   });
 
   it('counts rate-limit hits where the agent said so, and says no window is known', () => {
     expect(card('claude')).toContain('Rate limited once');
     expect(card('kilo')).not.toContain('Rate limited');
     expect(out).toContain('Rate-limit windows (when a limit resets) are not available');
+    expect(out.match(/Rate-limit windows/g)).toHaveLength(1);
+    expect(out).toContain('Claude Code counts are a lower bound');
   });
 
   it('ranks projects, and keeps tasks with no folder in their own row', () => {
@@ -82,7 +84,7 @@ describe('Usage and cost from a fixture', () => {
     expect(bare).not.toContain('Tokens by hour');
     expect(bare).not.toContain('data-usage-tokens');
     expect(bare).not.toContain('data-usage-projects');
-    expect(bare).toContain('Tokens: not available from claude');
+    expect(bare).toContain('Tokens: not available from this agent');
   });
 
   it('reads unexpected values defensively: negative, text and bad currencies are dropped', () => {

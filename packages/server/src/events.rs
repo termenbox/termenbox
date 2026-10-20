@@ -473,6 +473,14 @@ impl EventHub {
     /// The folder an agent works in, by its last component (U13).
     pub fn record_project(&self, session: &str, dir: &str) {
         let name = dir.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+        // A session in the home folder would file its task under the user name.
+        let home = std::env::var("HOME").ok();
+        let home = home
+            .as_deref()
+            .map(|h| h.trim_end_matches('/').rsplit('/').next().unwrap_or(""));
+        if home.is_some_and(|h| !h.is_empty() && h == name) {
+            return;
+        }
         if let Some(h) = &self.history {
             h.project(session, name);
         }
@@ -511,7 +519,11 @@ impl EventHub {
             history.rate_limited(session);
             tracing::info!(target: "audit", event = "agent_rate_limited", session = %session);
         }
-        if matches!(event, "Stop" | "StopFailure" | "SessionEnd") {
+        // A prompt collects too: after an interrupted turn no Stop came, and its counts must not wait for the next task.
+        if matches!(
+            event,
+            "Stop" | "StopFailure" | "SessionEnd" | "UserPromptSubmit"
+        ) {
             if let Some(t) = self.usage.collect(session) {
                 // Counts only (audit-logging-no-secrets).
                 tracing::info!(target: "audit", event = "usage_collected", session = %session, input = t.input, output = t.output, cache_read = t.cache_read, cache_write = t.cache_write);
@@ -2507,6 +2519,52 @@ mod tests {
                 && !file.contains("All green")
                 && !file.contains("Running the tests")
         );
+    }
+
+    #[test]
+    fn an_interrupted_turn_does_not_leak_into_the_next_task() {
+        let (h, dir) = hub_with_history();
+        let root = dir.join(".claude");
+        let file = root.join("projects/p/s.jsonl");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "").unwrap();
+        let root = root.canonicalize().unwrap();
+        let path = root.join("projects/p/s.jsonl");
+        let d = |name: &str| serde_json::json!({"hook_event_name": name, "transcript_path": path, "prompt": "x"});
+        let usage = include_str!("../testdata/transcripts/claude-usage.jsonl");
+        let (first, second) = usage.split_at(usage.find("{\"parentUuid\":\"u2\"").unwrap());
+        claude_payload(&h, &root, d("UserPromptSubmit"), 1_000);
+        std::fs::write(&file, first).unwrap();
+        // Esc: the turn stops without a Stop hook, and the task ends as stopped.
+        h.forget_except("", &[]);
+        claude_payload(&h, &root, d("UserPromptSubmit"), 100_000);
+        std::fs::write(&file, format!("{first}{second}")).unwrap();
+        claude_payload(&h, &root, d("Stop"), 110_000);
+        let runs = h.history().unwrap().query(0, u64::MAX, 200_000).runs;
+        let last = runs.iter().max_by_key(|r| r.started_at).unwrap();
+        let u = last.usage.as_ref().unwrap();
+        assert_eq!((u.input_tokens, u.output_tokens), (Some(3), Some(264)));
+    }
+
+    #[test]
+    fn a_session_in_the_home_folder_is_not_filed_under_the_user_name() {
+        let (h, _dir) = hub_with_history();
+        hook(&h, "UserPromptSubmit", quiet(), 1_000);
+        let home = std::env::var("HOME").unwrap();
+        h.record_project("s", &home);
+        h.record_project("s", "/work/termenbox");
+        h.record_project("s", "/work/termenbox/src");
+        h.feed(
+            "s",
+            Source::Hook,
+            Confidence::High,
+            EventKind::State {
+                state: AgentState::Done,
+            },
+            2_000,
+        );
+        let runs = h.history().unwrap().query(0, u64::MAX, 20_000).runs;
+        assert_eq!(runs[0].project.as_deref(), Some("termenbox"));
     }
 
     #[test]

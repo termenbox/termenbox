@@ -193,23 +193,22 @@ export function costText(micros: number, currency: string, locale?: string): str
 export const costsText = (cost: Record<string, number>, locale?: string) => Object.entries(cost).map(([c, m]) => costText(m, c, locale)).join(' + ');
 
 /** What the agent would have to do for a figure to appear. Says only what the recordings and docs of the repo back (fact 0029). */
-export type Missing = 'tokens' | 'cost' | 'window';
+export type Missing = 'tokens' | 'cost';
 export function whyMissing(agent: string, what: Missing): string {
   const a = agent === NO_AGENT ? 'this agent' : agent;
   if (agent === 'claude') {
     if (what === 'tokens') return 'Claude Code reports no token counts in its hooks. Termenbox reads them from Claude Code\'s own transcript when hooks are on (Settings, Agent hooks) and a task runs.';
-    if (what === 'cost') return 'Claude Code gives hooks no cost. The status-line forwarder (roadmap R19, not built yet) would report it.';
-    return 'Claude Code gives its rate-limit windows only to a status line command, not to hooks. The status-line forwarder (roadmap R19, not built yet) would pass them on.';
+    return 'Claude Code gives hooks no cost. The status-line forwarder (roadmap R19, not built yet) would report it.';
   }
   if (agent === 'codex') {
     if (what === 'tokens') return 'Codex\'s notify hook carries no usage. A Codex session started from Termenbox over ACP reports tokens for each turn.';
-    return 'Codex reports no ' + (what === 'cost' ? 'cost' : 'rate-limit window') + ' to Termenbox.';
+    return 'Codex reports no cost to Termenbox.';
   }
   if (what === 'tokens') return `${a} reported no token counts. Only hooks of Claude Code and ACP agents that report usage supply them.`;
-  return `${a} reported no ${what === 'cost' ? 'cost' : 'rate-limit window'} to Termenbox.`;
+  return `${a} reported no cost to Termenbox.`;
 }
 /** The window indicator is a count of rate-limit hits: no agent gives Termenbox a window's length or reset time today. */
-export const WINDOW_NOTE = 'Rate-limit windows (when a limit resets) are not available: no agent passes them to Termenbox yet.';
+export const WINDOW_NOTE = 'Rate-limit windows (when a limit resets) are not available for any agent: none passes them to Termenbox yet.';
 
 export interface Digest { finished: number; failed: number; stopped: number; running: number; blockedMs: number }
 export function digestOf(rows: Row[]): Digest {
