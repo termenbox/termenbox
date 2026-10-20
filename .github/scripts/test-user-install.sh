@@ -250,6 +250,14 @@ systemctl is-active --quiet termenbox || fail "uninstalling alice's server stopp
 [ -f "$B_STATE/server_key" ] && [ -f /var/lib/termenbox/server_key ] || fail "uninstalling alice's server removed another server's state"
 curl -fs "http://127.0.0.1:$bob_port/health" >/dev/null || fail "bob's server stopped answering after alice's uninstall"
 
+echo "== a journal without its binary is refused, and --force removes only the leftovers"
+as_alice mkdir -p "$JOURNAL" "$STATE"
+if as_alice sh /uninstall.sh --yes >/tmp/nobin.txt 2>&1; then fail "the uninstall removed a journal it could not undo"; fi
+grep -q -- "--yes --force" /tmp/nobin.txt || { cat /tmp/nobin.txt; fail "the refusal does not say how to remove the leftovers"; }
+[ -d "$JOURNAL" ] || fail "the refused uninstall removed the journal"
+as_alice sh /uninstall.sh --yes --force >/dev/null
+[ ! -e "$JOURNAL" ] && [ ! -e "$STATE" ] || fail "--force left the journal or the state"
+
 # bob and the system install are still here from the section above.
 
 echo "== a system service that runs as the same user keeps the old route, and says why before asking for sudo"
