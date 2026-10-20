@@ -107,8 +107,8 @@ struct Args {
     #[arg(long, env = "TERMENBOX_RUN_USER", default_value = "termenbox")]
     run_user: String,
 
-    /// UDP port of the WebRTC-direct transport. Without it the server binds the first free port from
-    /// 4443 to 4542 and remembers it, so one firewall rule serves every user install (decision 0118).
+    /// UDP port of the WebRTC-direct transport. Without it, a first start binds the first free port from
+    /// 4443 to 4542 and saves it; every later start uses that port or fails, never another (decision 0118).
     #[arg(long, env = "TERMENBOX_UDP_PORT")]
     udp_port: Option<u16>,
 
@@ -751,7 +751,7 @@ async fn main() -> anyhow::Result<()> {
         };
         let cert = rtc::load_or_create_cert(&args.config_dir)?;
         // The server owns the socket, so it picks the port in one step: no pick-then-bind race
-        // (decision 0118). An explicit port wins; otherwise the saved one, else the first free one.
+        // (decision 0118). An explicit port wins; otherwise the saved one (never swapped for another); a first start scans the range.
         let bind_ip: std::net::IpAddr = std::net::Ipv4Addr::UNSPECIFIED.into();
         let (socket, port) = rtc::bind_transport(
             bind_ip,
@@ -760,7 +760,7 @@ async fn main() -> anyhow::Result<()> {
             saved_udp_port(&args.config_dir),
         )
         .await?;
-        // Remember the bound port so a restart (and the machine's firewall rule) keeps it. The socket
+        // Save the bound port so every later start uses exactly it (the firewall rule is for that port). The socket
         // is already listening, so a config dir we cannot write must not stop the server: warn and go on.
         if let Err(e) = save_udp_port(&args.config_dir, port) {
             tracing::warn!(

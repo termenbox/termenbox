@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { installCommand, scanCommand, claimLink, parseClaim, parseServerLink, serverCode, serverLink, pollDelay, waitForServer, previewClaim, checkReachable, firewallCommand, ClaimTimeout, CLAIM_WINDOW_MS, type WaitDeps } from './onboard';
+import { installCommand, scanCommand, claimLink, parseClaim, parseServerLink, serverCode, serverLink, pollDelay, waitForServer, previewClaim, checkReachable, firewallCommands, ClaimTimeout, CLAIM_WINDOW_MS, type WaitDeps } from './onboard';
 import type { DirRecord } from './directory';
 import { Unreachable, type Transport } from './transport';
 
@@ -238,7 +238,11 @@ describe('checkReachable (decision 0118)', () => {
     expect(await checkReachable({}, { open: async () => { throw new Error('unused'); } })).toEqual({ state: 'unknown' });
   });
 
-  it('names the range command the admin runs', () => {
-    expect(firewallCommand).toBe('ufw allow 4443:4542/udp');
+  it('names the commands that open the server\'s own port, or the range when the port is unknown', () => {
+    expect(firewallCommands(31863).map((c) => c.command)).toEqual([
+      'ufw allow 31863/udp',
+      'firewall-cmd --permanent --add-port=31863/udp && firewall-cmd --reload',
+    ]);
+    expect(firewallCommands(null)[0].command).toBe('ufw allow 4443:4542/udp');
   });
 });

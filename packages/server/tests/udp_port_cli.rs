@@ -1,5 +1,5 @@
 //! The reserved UDP range (DECISION-0118), as the real binary and installer see it: with no
-//! TERMENBOX_UDP_PORT the server binds the first free port from 4443 to 4542 and remembers it, so two
+//! TERMENBOX_UDP_PORT the server binds the first free port from 4443 to 4542 and saves it, so two
 //! servers with separate config dirs take different ports and a restart keeps its port.
 //!
 //! Each server gets its own config dir and an ephemeral HTTP port, and is asked over the dev-only
@@ -168,5 +168,46 @@ fn an_explicit_port_is_used_as_given_and_remembered() {
     );
 
     drop(child);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_taken_saved_port_stops_the_server_with_a_clear_message() {
+    let _serial = serial();
+    let dir = config_dir("taken");
+    let held = UdpSocket::bind(("0.0.0.0", 0)).unwrap();
+    let port = held.local_addr().unwrap().port();
+    std::fs::write(dir.join("udp_port"), port.to_string()).unwrap();
+
+    let mut server = start(&dir, free_tcp_port(), None);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = server.child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the server kept running on a taken port"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(!status.success());
+    let mut log = String::new();
+    File::open(dir.join("server.err"))
+        .unwrap()
+        .read_to_string(&mut log)
+        .unwrap();
+    assert!(
+        log.contains(&port.to_string()) && log.contains("TERMENBOX_UDP_PORT"),
+        "{log}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("udp_port"))
+            .unwrap()
+            .trim(),
+        port.to_string()
+    );
+
+    drop(held);
     let _ = std::fs::remove_dir_all(&dir);
 }

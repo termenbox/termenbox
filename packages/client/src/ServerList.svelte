@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ServerListItem } from './lib/protocol';
   import { serverKey, type HubServer } from './lib/hub';
+  import PortHelp from './PortHelp.svelte';
 
   export let servers: ServerListItem[] = [];
   export let states: HubServer[] = [];
@@ -45,6 +46,13 @@
               <p style="font-size: 0.75rem; color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{server.server_url || (server.record ? `${server.record.ip}:${server.record.udp_port}` : '')}</p>
               <p class="state">{status?.state ?? 'connecting'}</p>
               {#if status?.reason}<p class="reason">{status.reason}</p>{/if}
+              {#if status?.state === 'unreachable'}
+                <details class="help">
+                  <summary>Why can't I connect?</summary>
+                  <p class="note">The server may be stopped, or its UDP port may be blocked. On the machine, <code>systemctl status termenbox</code> (or <code>systemctl --user status termenbox</code> for a user install) says whether it runs; a server whose port is taken stops with a message in <code>journalctl</code>.</p>
+                  {#if server.record?.udp_port}<PortHelp port={server.record.udp_port} />{/if}
+                </details>
+              {/if}
             </div>
             <div style="display: flex; gap: 8px;">
               <button class="secondary" aria-pressed={status?.state === 'paused'} on:click={() => status?.state === 'paused' ? onresume(serverKey(server)) : onpause(serverKey(server))}>{status?.state === 'paused' ? 'Resume' : 'Pause'}</button>
@@ -69,6 +77,9 @@
   .server-list { overflow-y: auto; }
   .server-card { flex-wrap: wrap; }
   .state { font-size: 0.8rem; text-transform: capitalize; }
+  .help { font-size: 0.85rem; margin-top: 6px; }
+  .help summary { cursor: pointer; color: var(--fg-muted); }
+  .help .note { color: var(--fg-muted); margin: 8px 0; }
   .reason { font-size: 0.8rem; color: var(--fg-muted); overflow-wrap: anywhere; }
   button { min-height: 44px; min-width: 44px; }
 </style>

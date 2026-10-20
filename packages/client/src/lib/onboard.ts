@@ -188,9 +188,18 @@ export function previewClaim(
   });
 }
 
-/** The reserved range a server binds from (decision 0118), and the one command an admin runs to open it. */
+/** The reserved range a server picks its port from on a first start (decision 0118). */
 export const UDP_RANGE = '4443:4542';
-export const firewallCommand = `ufw allow ${UDP_RANGE}/udp`;
+
+/** The host-firewall commands an admin runs to open the server's UDP port; the range when the port is not known. */
+export function firewallCommands(port: number | null): { tool: string; command: string }[] {
+  const ufw = port ? `${port}/udp` : `${UDP_RANGE}/udp`;
+  const firewalld = port ? `${port}/udp` : `${UDP_RANGE.replace(':', '-')}/udp`;
+  return [
+    { tool: 'ufw', command: `ufw allow ${ufw}` },
+    { tool: 'firewalld', command: `firewall-cmd --permanent --add-port=${firewalld} && firewall-cmd --reload` },
+  ];
+}
 
 /**
  * What the reachability check found: `reachable` (WebRTC opened), `degraded` (WebRTC failed but the WebSocket
