@@ -119,50 +119,33 @@ pub fn fingerprint(cert: &DtlsCert) -> String {
 pub const UDP_PORT_RANGE: RangeInclusive<u16> = 4443..=4542;
 
 /// Binds the socket the transport will use, holding it so nothing can take the port in between
-/// (DECISION-0118). An `explicit` port is used as given and refused clearly when taken; otherwise the
-/// remembered `preferred` port is retried first, then the range is scanned in order. Returns the socket
-/// and the port it bound.
+/// (DECISION-0118). A port the owner chose (`explicit`) or that an earlier start chose (`saved`) is the
+/// port: it is used as given and refused clearly when taken, never swapped for another, because the
+/// firewall rule and the directory record are for that one. Only a first start scans `ports` for a free
+/// one. Returns the socket and the port it bound.
 pub async fn bind_transport(
     ip: IpAddr,
     explicit: Option<u16>,
     ports: RangeInclusive<u16>,
-    preferred: Option<u16>,
+    saved: Option<u16>,
 ) -> Result<(UdpSocket, u16)> {
-    if let Some(port) = explicit {
+    let fixed = explicit
+        .map(|p| (p, "requested (--udp-port/TERMENBOX_UDP_PORT)"))
+        .or(saved.map(|p| (p, "saved by the first start")));
+    if let Some((port, source)) = fixed {
         let socket = UdpSocket::bind(SocketAddr::new(ip, port))
             .await
             .map_err(|e| {
                 anyhow!(
-                    "requested UDP port {port} (--udp-port/TERMENBOX_UDP_PORT) is not available: {e}"
+                    "UDP port {port} ({source}) is not available: {e}. Free it, or choose another \
+                     with TERMENBOX_UDP_PORT (then open that port in the firewall) and restart"
                 )
             })?;
         let bound = socket.local_addr()?.port();
         return Ok((socket, bound));
     }
     let (first, last) = (*ports.start(), *ports.end());
-    // The remembered port is only a hint: if the range no longer covers it, say so and scan the range.
-    let preferred = match preferred {
-        Some(p) if ports.contains(&p) => Some(p),
-        Some(p) => {
-            warn!("remembered UDP port {p} is outside {first}..={last}; picking from the range");
-            None
-        }
-        None => None,
-    };
-    // Retry the remembered port first, so a restart keeps it and the machine's firewall rule stays valid.
-    if let Some(port) = preferred {
-        match UdpSocket::bind(SocketAddr::new(ip, port)).await {
-            Ok(socket) => return Ok((socket, port)),
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                info!("remembered UDP port {port} is taken; picking another in {first}..={last}");
-            }
-            Err(e) => return Err(anyhow!("UDP port {port} could not be bound: {e}")),
-        }
-    }
     for port in ports {
-        if Some(port) == preferred {
-            continue;
-        }
         match UdpSocket::bind(SocketAddr::new(ip, port)).await {
             Ok(socket) => return Ok((socket, port)),
             // Only "someone else has it" means try the next one. Any other error (a permission or
@@ -173,7 +156,8 @@ pub async fn bind_transport(
         }
     }
     Err(anyhow!(
-        "no free UDP port in {first}..={last}; free one or set TERMENBOX_UDP_PORT"
+        "no free UDP port in {first}..={last}; free one, or choose a port with TERMENBOX_UDP_PORT \
+         (and open it in the firewall)"
     ))
 }
 
@@ -664,12 +648,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_restart_keeps_the_port_it_remembered() {
+    async fn a_restart_keeps_the_port_the_first_start_chose() {
         let (first, port) = bind_transport(localhost(), None, RESTART_RANGE, None)
             .await
             .unwrap();
         drop(first);
-        // As after a restart: the saved port is offered as the preference and is reused while free.
         let (_again, again) = bind_transport(localhost(), None, RESTART_RANGE, Some(port))
             .await
             .unwrap();
@@ -677,30 +660,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_taken_remembered_port_moves_to_another_in_the_range() {
-        let (held, remembered) = bind_transport(localhost(), None, REMEMBERED_RANGE, None)
+    async fn a_taken_saved_port_fails_clearly_instead_of_moving() {
+        let (held, saved) = bind_transport(localhost(), None, REMEMBERED_RANGE, None)
             .await
             .unwrap();
-        let (_other, port) = bind_transport(localhost(), None, REMEMBERED_RANGE, Some(remembered))
+        let err = bind_transport(localhost(), None, REMEMBERED_RANGE, Some(saved))
             .await
-            .unwrap();
-        assert!(
-            REMEMBERED_RANGE.contains(&port),
-            "{port} is outside the range"
-        );
-        assert_ne!(
-            port, remembered,
-            "a taken remembered port must not be reused"
-        );
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains(&saved.to_string()), "{msg}");
+        assert!(msg.contains("TERMENBOX_UDP_PORT"), "{msg}");
         drop(held);
     }
 
     #[tokio::test]
-    async fn a_remembered_port_outside_the_range_is_ignored() {
-        let (_socket, port) = bind_transport(localhost(), None, OUTSIDE_RANGE, Some(80))
+    async fn a_saved_port_outside_the_range_is_still_the_port() {
+        let probe = UdpSocket::bind(SocketAddr::new(localhost(), 0))
             .await
             .unwrap();
-        assert!(OUTSIDE_RANGE.contains(&port), "{port} is outside the range");
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let (_socket, got) = bind_transport(localhost(), None, OUTSIDE_RANGE, Some(port))
+            .await
+            .unwrap();
+        assert_eq!(
+            got, port,
+            "the owner's port is not replaced by one from the range"
+        );
     }
 
     #[tokio::test]
