@@ -134,12 +134,10 @@
     refusedTimer = setTimeout(() => (inputRefused = false), 1500);
   }
   function sendInput(data: string) {
-    if (offline) {
-      inputMirror?.sync();
-      return refuseInput();
-    }
+    if (offline) return refuseInput();
     batch.add(data);
-    // Every send path mirrors after it has fed `words`; xterm has already consumed the textarea (Android reads it deferred).
+    // Every send path mirrors after it has fed `words`. The mirror defers to a task, so a `beforeinput` default
+    // action still sees the original selection (the swipe replacement path).
     inputMirror?.sync();
   }
 
@@ -289,9 +287,8 @@
     else pasteDraft = lastCopiedText();
   }
   function sendPaste(text: string) {
-    term?.paste(text);
+    term?.paste(text); // typed() feeds the paste and mirrors through sendInput()
     words.clearInsert(); // a pasted word is not a swiped one
-    inputMirror?.sync();
   }
 
   /** Copies the selection, or the visible screen when nothing is selected. */
@@ -486,7 +483,7 @@
     if (term.textarea) {
       cleanups.push(attachInputLogger(term.textarea));
       cleanups.push(attachSwipeSupport(term.textarea, sendInput, words)); // fact 0027
-      // The field always shows the word being typed, but only once xterm has sent it (iOS suggestions, issue #250).
+      // The field always shows the word being typed once the send path has fed `words` (iOS suggestions, issue #250).
       inputMirror = attachInputMirror(term.textarea, words);
       cleanups.push(() => inputMirror?.dispose());
       setEnterKeyHint(term.textarea);

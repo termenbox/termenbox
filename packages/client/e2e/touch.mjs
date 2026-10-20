@@ -177,12 +177,15 @@ try {
   else console.log('ok  the iOS insertText path still reaches the terminal');
 
   // 4. A tapped suggestion replaces the selected word. The mirror must follow the bytes the swipe path sent,
-  //    not only the paths that go through typed()/sendKey().
+  //    not only the paths that go through typed()/sendKey(). Fact 0027 records beforeinput followed by input.
   await page.evaluate(() => {
     const ta = document.querySelector('.xterm-helper-textarea');
     ta.value = 'hello';
     ta.setSelectionRange(0, 5);
     ta.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertReplacementText', data: "he'll" }));
+    ta.value = "he'll";
+    ta.setSelectionRange(5, 5);
+    ta.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertReplacementText', data: "he'll" }));
   });
   await sleep(150);
   const replaced = await sentNow();

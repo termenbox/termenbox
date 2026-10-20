@@ -38,6 +38,7 @@ function field(value = ''): MirrorField {
 }
 
 const asArea = (f: MirrorField) => f as unknown as HTMLTextAreaElement;
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe('replacementKeys', () => {
   it('replays the sequence captured on an iPhone: "hello" swiped, "he\'ll" chosen', () => {
@@ -119,9 +120,34 @@ describe('input mirror', () => {
     const words = new WordTracker();
     words.feed('hello ');
     attachInputMirror(asArea(area), words).sync();
-    await Promise.resolve();
+    await flush();
     expect(area.value).toBe('hello ');
     expect(area.range).toEqual([6, 6]);
+  });
+
+  it('defers the write to a task so a beforeinput default action runs first', async () => {
+    const area = field('hello');
+    const words = new WordTracker();
+    words.feed("he'll");
+    const mirror = attachInputMirror(asArea(area), words);
+    mirror.sync();
+    await Promise.resolve();
+    expect(area.value).toBe('hello');
+    await flush();
+    expect(area.value).toBe("he'll");
+    expect(area.range).toEqual([5, 5]);
+    mirror.dispose();
+  });
+
+  it('cancels a pending write on dispose', async () => {
+    const area = field('hello');
+    const words = new WordTracker();
+    words.feed("he'll");
+    const mirror = attachInputMirror(asArea(area), words);
+    mirror.sync();
+    mirror.dispose();
+    await flush();
+    expect(area.value).toBe('hello');
   });
 
   it('leaves the field alone on input and keyup: only a send may mirror', async () => {
@@ -130,7 +156,7 @@ describe('input mirror', () => {
     const mirror = attachInputMirror(asArea(area), words);
     area.emit('input');
     area.emit('keyup');
-    await Promise.resolve();
+    await flush();
     expect(area.value).toBe('typed by the keyboard');
     mirror.dispose();
   });
@@ -143,11 +169,11 @@ describe('input mirror', () => {
     area.value = 'hello w';
     area.emit('compositionstart');
     mirror.sync();
-    await Promise.resolve();
+    await flush();
     expect(area.value).toBe('hello w');
     area.emit('compositionend');
     mirror.sync();
-    await Promise.resolve();
+    await flush();
     expect(area.value).toBe('hello ');
   });
 
@@ -159,10 +185,10 @@ describe('input mirror', () => {
     area.emit('compositionstart');
     area.value = 'hello wo';
     area.emit('compositionend');
-    await Promise.resolve();
+    await flush();
     expect(area.value).toBe('hello wo');
     mirror.sync();
-    await Promise.resolve();
+    await flush();
     expect(area.value).toBe('hello ');
   });
 
@@ -185,7 +211,7 @@ describe('input mirror', () => {
         resolve();
       }, 0);
     });
-    await Promise.resolve();
+    await flush();
     expect(sent).toBe('w');
     expect(area.value).toBe('hello w');
   });
@@ -209,7 +235,7 @@ describe('input mirror', () => {
         resolve();
       }, 0);
     });
-    await Promise.resolve();
+    await flush();
     expect(sent).toBe('a');
     expect(area.value).toBe('hi a');
   });
@@ -220,17 +246,17 @@ describe('input mirror', () => {
     const mirror = attachInputMirror(asArea(area), words);
     words.feed('привет ');
     mirror.sync();
-    await Promise.resolve();
+    await flush();
     expect(area.value).toBe('привет ');
     expect(area.range).toEqual([7, 7]);
     words.feed('😀');
     mirror.sync();
-    await Promise.resolve();
+    await flush();
     expect(area.value).toBe('привет 😀'); // the last two words, as iOS suggestions see them
     expect(area.range).toEqual([9, 9]);
     words.feed('\x7f');
     mirror.sync();
-    await Promise.resolve();
+    await flush();
     expect(area.value).toBe('привет ');
     expect(area.range).toEqual([7, 7]);
   });
@@ -242,7 +268,7 @@ describe('input mirror', () => {
     const mirror = attachInputMirror(asArea(area), words);
     words.feed('\r');
     mirror.sync();
-    await Promise.resolve();
+    await flush();
     expect(area.value).toBe('');
   });
 

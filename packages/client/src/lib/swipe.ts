@@ -83,11 +83,11 @@ export function syncTextarea(field: MirrorTarget, word: string): boolean {
   return true;
 }
 
-/** The hidden input mirror: shows the phrase that already reached the terminal. */
+/** The hidden input mirror: shows the phrase the send path has fed to the word tracker. */
 export interface InputMirror {
-  /** Shows the phrase that already reached the terminal; never touches the field during composition. */
+  /** Shows that phrase; never touches the field during composition. The write is deferred to a task. */
   sync(): void;
-  /** Removes the composition listeners. */
+  /** Removes the composition listeners and cancels a pending write. */
   dispose(): void;
 }
 
@@ -98,23 +98,38 @@ export interface InputMirror {
  * typed gives the keyboard the true context, so a tapped suggestion arrives as the tail or as a replacement of
  * exactly that word or the last two words, both of which are handled.
  *
- * This runs only after the bytes reached the terminal (the caller mirrors once it has fed `words`). It must not run
- * on `input`/`keyup`/`compositionend` itself: Android's soft keyboard reports keyCode 229 or composes, and xterm
- * reads the textarea later, in a `setTimeout` (CompositionHelper._finalizeComposition and _handleAnyTextareaChanges).
- * Writing on those events put the previous phrase back before xterm looked, so every character was read as empty
- * (issue #250). iOS sends most typing synchronously instead, which is why the same mirror never hurt there.
+ * The caller mirrors once it has fed `words`, so the field never gets ahead of the bytes. The write is deferred to
+ * a task, not a microtask: a microtask queued from a `beforeinput` listener runs before the browser's default
+ * action, and moving the caret there makes `insertReplacementText` apply at the wrong place ("he'llhe'll").
+ * It must not run on `input`/`keyup`/`compositionend` itself: Android's soft keyboard reports keyCode 229 or
+ * composes, and xterm reads the textarea later, in a `setTimeout` (CompositionHelper._finalizeComposition and
+ * _handleAnyTextareaChanges). Writing on those events put the previous phrase back before xterm looked, so every
+ * character was read as empty (issue #250). iOS sends most typing synchronously instead, which is why the same
+ * mirror never hurt there.
  */
 export function attachInputMirror(area: HTMLTextAreaElement, words: WordTracker): InputMirror {
   let composing = false;
+  let disposed = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const onStart = () => (composing = true);
   const onEnd = () => (composing = false);
+  const write = () => {
+    timer = undefined;
+    if (!disposed && !composing) syncTextarea(area, words.phrase);
+  };
   area.addEventListener('compositionstart', onStart);
   area.addEventListener('compositionend', onEnd);
   return {
     sync: () => {
-      if (!composing) queueMicrotask(() => !composing && syncTextarea(area, words.phrase));
+      if (disposed || composing || timer !== undefined) return;
+      timer = setTimeout(write, 0);
     },
     dispose: () => {
+      disposed = true;
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
       area.removeEventListener('compositionstart', onStart);
       area.removeEventListener('compositionend', onEnd);
     },
