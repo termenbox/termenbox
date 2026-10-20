@@ -10,6 +10,8 @@ use termenbox_core::events::{AgentState, Confidence, EventKind, Source};
 use crate::adapters;
 use crate::backend::Runner;
 use crate::events::EventHub;
+use crate::profile::Profiles;
+use crate::reducer::Screen;
 
 const SCAN_EVERY: Duration = Duration::from_secs(2);
 /// Never more than one `capture-pane` per this long, whatever the number of sessions.
@@ -46,6 +48,19 @@ impl PromptTracker {
 
     pub fn retain(&mut self, live: &HashSet<String>) {
         self.seen.retain(|k, _| live.contains(k));
+    }
+}
+
+/// What a recognised screen says: a waiting dialog, a working agent, or an idle one. Nothing when it shows none.
+fn screen_state(v: &crate::profile::ScreenView) -> Option<AgentState> {
+    if v.blocked {
+        Some(AgentState::NeedsInput)
+    } else if v.working {
+        Some(AgentState::Working)
+    } else if v.idle {
+        Some(AgentState::Idle)
+    } else {
+        None
     }
 }
 
@@ -151,9 +166,43 @@ pub async fn scan_tmux_once(
                 },
             );
         }
+        // Where the agent has a profile that tells working from idle, the screen decides both what the scan says
+        // (a redraw on attach is output, not inference) and whether the reducer's turn or wait is still on screen.
+        let agent = adapters::agent_name(&p.command);
+        let (profile, _) = Profiles::builtin().for_agent(agent);
+        let view =
+            (profile.has_state_markers() && !screen.is_empty()).then(|| profile.read(&screen));
+        if let Some(v) = &view {
+            // Without hooks the screen is the only witness: a dialog that waits is `needs_input`, as a hint (never
+            // a push), and the screen says so again when it is gone, so the hint cannot outlive the dialog.
+            if let Some(state) = screen_state(v) {
+                hub.report(
+                    &p.session,
+                    Source::Screen,
+                    Confidence::Low,
+                    EventKind::State { state },
+                );
+            }
+            hub.reconcile(
+                &p.session,
+                Screen {
+                    working: v.working,
+                    idle: v.idle,
+                    blocked: v.blocked,
+                },
+            );
+        }
         // While a question is on screen the scan must not flip the state back and forth.
         if !tracker.active(&p.session) {
-            if let Some(state) = adapters::scan_state(p) {
+            // A screen the profile does not recognise (a newer UI, a blank start-up) falls back to the output
+            // heuristic: an agent is still reported, and the reducer's pin guards an open turn against it.
+            let scanned = match &view {
+                Some(v) if v.working => Some(AgentState::Working),
+                Some(v) if v.idle => Some(AgentState::Idle),
+                Some(v) if v.blocked => None,
+                _ => adapters::scan_state(p),
+            };
+            if let Some(state) = scanned {
                 hub.report(
                     &p.session,
                     Source::Scan,
@@ -302,5 +351,25 @@ mod tests {
                 && matches!(k, EventKind::Prompt { .. })),
             "{kinds:?}"
         );
+    }
+
+    #[test]
+    fn a_recorded_claude_screen_maps_to_its_state() {
+        let (p, _) = Profiles::builtin().for_agent(Some("claude"));
+        let read = |n: &str| {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("testdata/screens")
+                .join(format!("{n}.txt"));
+            screen_state(&p.read(&std::fs::read_to_string(path).unwrap()))
+        };
+        for dialog in [
+            "claude-question",
+            "claude-question-freetext",
+            "claude-permission",
+        ] {
+            assert_eq!(read(dialog), Some(AgentState::NeedsInput), "{dialog}");
+        }
+        assert_eq!(read("claude-working"), Some(AgentState::Working));
+        assert_eq!(read("claude-idle"), Some(AgentState::Idle));
     }
 }

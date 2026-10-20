@@ -9,17 +9,20 @@
 #   host-user   directly on this machine as a dedicated unprivileged user `termenbox`, as a systemd service
 #   host-me     directly on this machine as the user who runs this command: sessions open on their behalf, in their
 #               home, with their repositories, keys and agent logins. No user is created. No root is needed: it is a
-#               user systemd service (decision 0113); what would need root is printed at the end, not run.
+#               user systemd service (decision 0113); what would need root is stated up front, not run.
 #   host        directly on this machine as root, as a systemd service
 # The host modes give the owner's browser a shell on the machine itself and need no Docker.
 #
-# It picks a free UDP port, starts the server and hands it the claim secret. It asks nothing and needs nothing
-# afterwards: the server appears in Termenbox by itself. Safe to run again: a new secret re-claims the server
-# (root on this host already allows that).
+# It starts the server and hands it the claim secret. In host-me the server chooses its own UDP port from the
+# reserved range (DECISION-0118); the other modes still pick one. It asks nothing and needs nothing afterwards: the
+# server appears in Termenbox by itself. Safe to run again: a new secret re-claims the server (root on this host
+# already allows that).
 #
 # Host modes: every change is recorded in /var/lib/termenbox-root before it is made and can be undone with
 # `termenbox-server --revert`. The release is checked before anything is installed: its manifest must carry a valid
 # signature by the release key below (checked with ssh-keygen), and the binary must match the signed SHA-256.
+# The host modes also install a pinned, statically linked tmux next to the server (decision 0119), verified the same
+# way, so no tmux has to be installed first and no package manager or root is needed for it. Docker keeps its own.
 set -eu
 
 SECRET="${1:--}"
@@ -86,16 +89,27 @@ else
   fi
 fi
 
-# One UDP port for the WebRTC connection. The client learns it from the server's signed record, so any
-# free port works. Keep the same one across re-runs so firewalls and the directory stay stable.
-udp_in_use() {
-  command -v ss >/dev/null 2>&1 || return 1
-  ss -H -lun 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$1\$"
+# Whether a local port is already taken, so the next listener picks a free one. `ss` (iproute2) is the normal
+# source; on a machine without it (a minimal image) the kernel's own table is read instead, so two installs still
+# get different ports. There the port column is hex, and for TCP only sockets in LISTEN (state 0A) count.
+in_use() { # <tcp|udp> <port>
+  _proto="$1"; _port="$2"
+  if command -v ss >/dev/null 2>&1; then
+    _ssflag="-ltn"; [ "$_proto" = udp ] && _ssflag="-lun"
+    ss -H "$_ssflag" 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$_port\$"
+    return
+  fi
+  for _f in "/proc/net/$_proto" "/proc/net/${_proto}6"; do
+    [ -r "$_f" ] || continue
+    awk -v port="$_port" -v proto="$_proto" \
+      'BEGIN { want = sprintf("%04X", port) }
+       NR > 1 && (proto == "udp" || $4 == "0A") { n = split($2, a, ":"); if (toupper(a[n]) == want) found = 1 }
+       END { exit !found }' "$_f" && return 0
+  done
+  return 1
 }
-tcp_in_use() {
-  command -v ss >/dev/null 2>&1 || return 1
-  ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$1\$"
-}
+tcp_in_use() { in_use tcp "$1"; }
+udp_in_use() { in_use udp "$1"; }
 random_port() { echo $((20000 + $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 40000)); }
 # pick_port <in_use function> <first candidate> <file holding the previous choice>
 pick_port() {
@@ -181,7 +195,7 @@ JOURNAL=/var/lib/termenbox-root
 
 # Hands the claim over (or prints the registration QR) as the user the service runs as.
 native_claim() {
-  _env="TERMENBOX_CONFIG_DIR=$STATE TERMENBOX_CLIENT_URL=$ORIGIN TERMENBOX_UDP_PORT=$1"
+  _env="TERMENBOX_CONFIG_DIR=$STATE TERMENBOX_CLIENT_URL=$ORIGIN"
   # shellcheck disable=SC2086 # _env is a list of NAME=value words
   if [ "$RUN_USER" = root ] || [ "$RUN_USER" = "$(id -un)" ]; then _run="env $_env"; else _run="runuser -u $RUN_USER -- env $_env"; fi
   if [ "$SECRET" = "-" ]; then
@@ -274,10 +288,7 @@ fetch_release() {
     || die "the release signature is not valid, so nothing was installed"
   grep -q '"freeze": *true' "$TMP/manifest.json" && die "new installs are paused by the maintainers (a signed freeze); try again later"
   VERSION="$(sed -n 's/.*"version": *"\([0-9.]*\)".*/\1/p' "$TMP/manifest.json" | head -1)"
-  SHA="$(awk -v arch="$ARCH" '
-    $0 ~ "\"" arch "\": *[{]" { inside = 1; next }
-    inside && /"sha256":/ { gsub(/.*"sha256": *"/, ""); gsub(/".*/, ""); print; exit }
-    inside && /[}]/ { inside = 0 }' "$TMP/manifest.json")"
+  SHA="$(manifest_sha binaries "$ARCH")"
   case "$SHA" in
     *[!0-9a-f]*|"") die "the release has no $ARCH binary" ;;
   esac
@@ -287,6 +298,71 @@ fetch_release() {
   chmod 755 "$TMP/termenbox-server"
   "$TMP/termenbox-server" --help >/dev/null 2>&1 || die "the downloaded server does not run on this machine"
   JBIN="$TMP/termenbox-server"
+  fetch_tmux
+}
+
+# manifest_sha SECTION KEY  prints the SHA-256 of manifest.json[SECTION][KEY] (the manifest is written with one key per line).
+manifest_sha() {
+  awk -v sec="$1" -v key="$2" '
+    function nm(l) { sub(/^[^"]*"/, "", l); sub(/".*/, "", l); return l }
+    /[{][ \t]*$/ { depth++; if (depth == 2) s = nm($0); else if (depth == 3) k = nm($0); next }
+    /^[ \t]*[}]/ { depth--; next }
+    depth == 3 && s == sec && k == key && /"sha256":/ { v = $0; sub(/.*"sha256": *"/, "", v); sub(/".*/, "", v); print v; exit }' "$TMP/manifest.json"
+}
+
+# The bundled tmux and its licence notices (decision 0119), checked against the signed manifest like the server.
+# Sets TMUX_SHA (empty for a release from before tmux was bundled) and TMUX_NOTICES (the notice names downloaded).
+TMUX_NOTICE_NAMES="tmux-COPYING tmux-libevent-LICENSE tmux-ncurses-COPYING"
+fetch_tmux() {
+  TMUX_SHA=""
+  TMUX_NOTICES=""
+  _t="$(manifest_sha tmux "$ARCH")"
+  [ -n "$_t" ] || return 0
+  [ "${#_t}" -eq 64 ] && [ -z "$(printf '%s' "$_t" | tr -d '0-9a-f')" ] || die "the release has no valid $ARCH tmux hash"
+  curl -fsSL --retry 3 -o "$TMP/termenbox-tmux" "$RELEASE_URL/tmux-$ARCH-linux" || die "could not download tmux"
+  echo "$_t  $TMP/termenbox-tmux" | sha256sum -c - >/dev/null 2>&1 || die "the downloaded tmux does not match the signed hash, so nothing was installed"
+  chmod 755 "$TMP/termenbox-tmux"
+  "$TMP/termenbox-tmux" -V 2>/dev/null | grep -q '^tmux ' || die "the downloaded tmux does not run on this machine"
+  for _n in $TMUX_NOTICE_NAMES; do
+    _h="$(manifest_sha tmux_notices "$_n")"
+    [ -n "$_h" ] || continue
+    curl -fsSL --retry 3 -o "$TMP/$_n" "$RELEASE_URL/$_n" || die "could not download $_n"
+    echo "$_h  $TMP/$_n" | sha256sum -c - >/dev/null 2>&1 || die "the downloaded $_n does not match the signed hash, so nothing was installed"
+    TMUX_NOTICES="$TMUX_NOTICES $_n"
+  done
+  TMUX_SHA="$_t"
+}
+
+# put_file SRC DEST MODE  journals the file (as created, or as replaced with a backup), then puts it in place.
+put_file() {
+  _sum="$(sha256sum "$1" | cut -d' ' -f1)"
+  if [ -e "$2" ]; then
+    mkdir -p "$JOURNAL/backups"
+    _backup="$JOURNAL/backups/$(basename "$2").$(date +%s)"
+    cp -p "$2" "$_backup"
+    journal file_replaced "path=$2" "backup=$_backup" "sha256=$_sum"
+  else
+    journal file_created "path=$2" "sha256=$_sum"
+  fi
+  install -m "$3" "$1" "$2"
+}
+
+# The bundled tmux and its notices go beside the server, where the user the sessions run as can reach them. The server
+# looks there first, before tmux on PATH. Nothing to do for a release without one.
+install_tmux() {
+  [ -n "$TMUX_SHA" ] || return 0
+  _dir="$(dirname "$BIN")"
+  put_file "$TMP/termenbox-tmux" "$_dir/termenbox-tmux" 0755
+  for _n in $TMUX_NOTICES; do
+    put_file "$TMP/$_n" "$_dir/termenbox-$_n" 0644
+  done
+}
+
+# A release from before tmux was bundled needs the machine's own. Said before anything is changed.
+need_system_tmux() {
+  [ -z "$TMUX_SHA" ] || return 0
+  command -v tmux >/dev/null 2>&1 && return 0
+  [ "$1" = root ] || die "this release has no bundled tmux and none is installed (sessions are tmux sessions); installing one takes root. Install it, for example: sudo apt-get install -y tmux   (or dnf, pacman, apk), then run this command again. Nothing was changed."
 }
 
 install_native() {
@@ -328,12 +404,12 @@ install_native() {
       || say "Note: sessions already run as $RUN_USER and stay that way. To change that, remove Termenbox first (curl -fsSL <client>/uninstall.sh | sudo sh -s -- --yes) and install again."
     JBIN="$BIN"
     install_helper_units # installs from before the updater existed get it here
-    PORT="$(cat "$JOURNAL/udp_port")"
-    native_claim "$PORT"
+    native_claim
     return
   fi
 
   fetch_release
+  need_system_tmux root
 
   # 2. What will change. Everything below is recorded in the journal first.
   PORT="$(pick_port udp_in_use 4443 "$JOURNAL/udp_port")"
@@ -343,7 +419,11 @@ install_native() {
   say "Termenbox $VERSION will be installed on this machine (sessions run as $RUN_USER):"
   say "  - the server  $BIN"
   [ "$RUN_USER" = root ] || { id "$RUN_USER" >/dev/null 2>&1 || say "  - a new user  $RUN_USER"; }
-  command -v tmux >/dev/null 2>&1 || say "  - the package tmux (sessions are tmux sessions)"
+  if [ -n "$TMUX_SHA" ]; then
+    say "  - tmux        $(dirname "$BIN")/termenbox-tmux (a pinned static build, used before any tmux on PATH)"
+  else
+    command -v tmux >/dev/null 2>&1 || say "  - the package tmux (sessions are tmux sessions)"
+  fi
   say "  - state       $STATE"
   say "  - a service   $UNIT_NAME (starts at boot), and a daily update check (root-owned, signed releases only)"
   say "  - UDP port    $PORT (opened in the firewall if one is active)"
@@ -366,6 +446,7 @@ install_native() {
     journal file_created "path=$BIN" "sha256=$SHA"
   fi
   install -m 0755 "$TMP/termenbox-server" "$BIN"
+  install_tmux
 
   if [ "$RUN_USER" != root ] && ! id "$RUN_USER" >/dev/null 2>&1; then
     journal user_created "name=$RUN_USER" "home=/home/$RUN_USER"
@@ -374,7 +455,7 @@ install_native() {
       || die "could not create the user $RUN_USER"
   fi
 
-  if ! command -v tmux >/dev/null 2>&1; then
+  if [ -z "$TMUX_SHA" ] && ! command -v tmux >/dev/null 2>&1; then
     say "Installing tmux..."
     if command -v apt-get >/dev/null 2>&1; then
       journal package_installed manager=apt name=tmux
@@ -444,14 +525,14 @@ install_native() {
   done
 
   install_helper_units
-  native_claim "$PORT"
+  native_claim
 }
 
 # ---------------------------------------------------------------------------------------------------------
 # This host, as you, without root (decision 0113): a user systemd service
 # ---------------------------------------------------------------------------------------------------------
 # Everything lives in the home of the user who ran the command and is recorded in a journal there. What would need
-# root (lingering when it is denied, a firewall rule) is printed at the end, never run.
+# root (lingering when it is denied, a firewall rule) is stated up front, never run.
 install_user() {
   ME="$(id -un)"
   RUN_USER="$ME"
@@ -464,7 +545,6 @@ install_user() {
   command -v curl >/dev/null 2>&1 || die "curl is needed"
   command -v sha256sum >/dev/null 2>&1 || die "sha256sum is needed"
   command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is needed to check the release signature (install openssh-client) and nothing was changed"
-  command -v tmux >/dev/null 2>&1 || die "tmux is needed (sessions are tmux sessions) and installing it takes root. Install it, for example: sudo apt-get install -y tmux   (or dnf, pacman, apk), then run this command again. Nothing was changed."
   case "$(uname -m)" in
     x86_64|amd64) ARCH=x86_64 ;;
     aarch64|arm64) ARCH=aarch64 ;;
@@ -486,28 +566,60 @@ install_user() {
     systemctl --user is-active --quiet "$SERVICE" || systemctl --user start "$SERVICE"
     JBIN="$BIN"
     install_user_helper_units
-    PORT="$(cat "$JOURNAL/udp_port")"
-    native_claim "$PORT"
+    native_claim
     return
   fi
 
+  # What will need root, said before anything is downloaded or changed (decision 0118, 0113). The firewall is
+  # detected without root (`systemctl is-active`, because reading its rules needs root). Lingering we may switch on
+  # ourselves; it is announced here and switched on below (after the dry-run guard), once a verified binary can
+  # journal it first.
+  FIREWALL=""
+  if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
+    FIREWALL=ufw
+  elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+    FIREWALL=firewalld
+  fi
+  # No answer (no login session for this user, e.g. after su) is not "off": we then do not claim a state we cannot see.
+  LINGER_WAS="$(loginctl show-user "$ME" -p Linger --value 2>/dev/null)" || LINGER_WAS=unknown
+  LINGER=off
+  say ""
+  say "What needs root (this installer never runs sudo):"
+  case "$FIREWALL" in
+    ufw) say "  - the firewall ufw is active. Open the WebRTC range once, as root:  ufw allow 4443:4542/udp" ;;
+    firewalld) say "  - the firewall firewalld is active. Open the WebRTC range once, as root:  firewall-cmd --permanent --add-port=4443-4542/udp && firewall-cmd --reload" ;;
+    *) say "  - no active ufw or firewalld was detected. With another firewall, open 4443-4542/udp yourself" ;;
+  esac
+  if [ -n "${TERMENBOX_SKIP_LINGER:-}" ]; then
+    LINGER=skipped
+    say "  - starting at boot is skipped (TERMENBOX_SKIP_LINGER); later, as root:  loginctl enable-linger $ME"
+  elif [ "$LINGER_WAS" = yes ]; then
+    LINGER=on
+    say "  - sessions start at boot: lingering is on"
+  elif [ "$LINGER_WAS" = unknown ]; then
+    LINGER=unknown
+    say "  - sessions start at boot: lingering could not be read; it will be tried, but not undone on uninstall. If it fails, as root:  loginctl enable-linger $ME"
+  else
+    say "  - sessions start at boot: switching lingering on for $ME (reversible); if that is not allowed, as root:  loginctl enable-linger $ME"
+  fi
+
   fetch_release
-  PORT="$(pick_port udp_in_use 4443 "$JOURNAL/udp_port")"
+  need_system_tmux user
   HTTP_PORT="$(pick_port tcp_in_use 8080 "$JOURNAL/http_port")"
-  [ -n "$PORT" ] && [ -n "$HTTP_PORT" ] || die "could not find free ports"
+  [ -n "$HTTP_PORT" ] || die "could not find a free port"
   say ""
   say "Termenbox $VERSION will be installed for $ME, with no root (sessions run as $ME):"
   say "  - the server  $BIN"
+  [ -z "$TMUX_SHA" ] || say "  - tmux        $(dirname "$BIN")/termenbox-tmux (a pinned static build, used before any tmux on PATH)"
   say "  - state       $STATE"
   say "  - a user service $SERVICE, and a daily update check (signed releases only), in $UNIT_DIR"
-  say "  - UDP port    $PORT"
+  say "  - UDP port    the server picks a free one from 4443-4542 and remembers it"
   say "Every change is recorded in $JOURNAL; undo them with: termenbox-server --journal-dir $JOURNAL --revert --dry-run, then --revert"
   say ""
   [ -z "${TERMENBOX_DRY_RUN:-}" ] || { say "(dry run: nothing was changed)"; return; }
 
   mkdir -p "$JOURNAL" "$UNIT_DIR"
   chmod 700 "$JOURNAL"
-  echo "$PORT" > "$JOURNAL/udp_port"
   echo "$HTTP_PORT" > "$JOURNAL/http_port"
 
   mkdir -p "$(dirname "$BIN")"
@@ -520,6 +632,7 @@ install_user() {
     journal file_created "path=$BIN" "sha256=$SHA"
   fi
   install -m 0755 "$TMP/termenbox-server" "$BIN"
+  install_tmux
 
   if [ ! -d "$STATE" ]; then
     journal dir_created "path=$STATE"
@@ -551,7 +664,6 @@ Environment=TERMENBOX_JOURNAL_DIR=$JOURNAL
 Environment=TERMENBOX_REQUESTS_DIR=$STATE/requests
 Environment=TERMENBOX_HOST=127.0.0.1
 Environment=TERMENBOX_PORT=$HTTP_PORT
-Environment=TERMENBOX_UDP_PORT=$PORT
 Environment=TERMENBOX_CLIENT_URL=$ORIGIN
 ExecStart=$BIN
 Restart=on-failure
@@ -572,32 +684,17 @@ UNIT
     sleep 1
   done
 
-  # Starting at boot, not only at login, needs lingering. systemd lets a user switch it on for themselves.
-  LINGER=yes
-  if [ -n "${TERMENBOX_SKIP_LINGER:-}" ]; then
-    LINGER=skipped
-  elif [ "$(loginctl show-user "$ME" -p Linger --value 2>/dev/null)" != yes ]; then
-    journal linger_enabled "user=$ME"
-    loginctl enable-linger "$ME" >/dev/null 2>&1 || LINGER=no
+  # Starting at boot, not only at login, needs lingering (announced in the summary above). Last, so a failed install
+  # leaves it alone. The user may switch it on for themselves; it is journaled before it is switched on, so uninstall
+  # undoes it, and it is reversible. Not journaled when we could not read the earlier state: it may not be ours.
+  if [ "$LINGER" = off ] || [ "$LINGER" = unknown ]; then
+    [ "$LINGER" = off ] && journal linger_enabled "user=$ME"
+    loginctl enable-linger "$ME" >/dev/null 2>&1 \
+      || say "Lingering could not be switched on: the server starts at login only. As root:  loginctl enable-linger $ME"
   fi
 
   install_user_helper_units
-  native_claim "$PORT"
-
-  # What would have needed root, and was not done. Optional: the server works without it.
-  _opt=""
-  if [ "$LINGER" = no ]; then
-    _opt="$_opt
-  - to start at boot, not only after you log in, run as root:  loginctl enable-linger $ME"
-  fi
-  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-    _opt="$_opt
-  - the firewall ufw is active; to allow connections run as root:  ufw allow $PORT/udp"
-  elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-    _opt="$_opt
-  - the firewall firewalld is active; to allow connections run as root:  firewall-cmd --permanent --add-port=$PORT/udp && firewall-cmd --reload"
-  fi
-  [ -z "$_opt" ] || say "Optional, needs root (not done):$_opt"
+  native_claim
 }
 
 # The updater timer and the request handler as user units (decisions 0076, 0077, 0113). They run the installed binary as

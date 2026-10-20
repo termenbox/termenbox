@@ -117,3 +117,11 @@
 0112-browser-floor-ios-16-4-chrome-111,"The minimum browsers are iOS Safari 16.4 and Chrome Android 111, so Tailwind v4 stays","client, browser-support, design, roadmap",active
 0113-host-me-needs-no-root,"The install for the current user needs no root; anything that does is optional and printed, not run","deployment, security, server",active
 0114-server-builds-and-tests-run-in-a-pinned-container,"The Rust server and the browser end-to-end tests are built and run in a pinned container, not from a host install","build, repo",draft
+0115-several-accounts-on-a-machine-are-one-server-instance-per-os-user,"Several accounts on one machine are served by one server instance per OS user, never by one multi-account server","security, auth, deployment, server",active
+0116-an-account-is-a-provider-and-an-id,"An account is a provider and an id, so a second OAuth provider can be added without confusing two users","security, auth, protocol",active
+0117-a-claim-link-is-previewed-and-consumed-only-on-confirm,"A claim link is previewed first and consumed only when the user confirms, and the name is editable there","security, auth, client, protocol",active
+0118-user-installs-use-a-reserved-udp-range-and-say-what-needs-root-first,"User installs bind a port from a reserved UDP range and say what needs root before changing anything","deployment, network, security, client",active
+0119-native-installs-bundle-a-pinned-static-tmux,"Native installs carry a pinned, statically linked tmux, so no install needs tmux from the distribution","deployment, server, security, build",active
+0120-termenbox-runs-its-own-tmux-server-with-its-own-config,"Termenbox runs its own tmux server on a private socket with a config it owns, apart from the user's tmux","server, sessions, deployment, compatibility",active
+0121-the-tmux-server-is-always-the-private-one-unless-the-owner-opts-out,"Sessions always live on the private tmux server; the default one is used only when the owner opts in","server, sessions, deployment, compatibility",active
+0122-agent-state-comes-from-one-turn-and-obligation-reducer,"Agent state is derived by one reducer from open turns and open obligations, fed alike by hooks and ACP; the screen only closes what it no longer shows","agents, server, hooks, protocol",draft

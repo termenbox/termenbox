@@ -37,10 +37,15 @@ if [ "$(id -u)" -ne 0 ]; then
     "$UBIN" --journal-dir "$UJOURNAL" --revert --dry-run | sed 's/^/  /'
   fi
   [ -n "$KEEP_STATE" ] || say "  - the server's state   $USTATE (keys, owner)"
+  [ ! -x "$UBIN" ] || say "  - Termenbox's hooks in Claude Code's settings, if you connected them"
   if [ -z "$YES" ]; then say ""; say "Nothing was changed. Run again with --yes to remove it."; exit 0; fi
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
   systemctl --user disable --now termenbox-update.timer termenbox-request.path termenbox.service >/dev/null 2>&1 || true
+  # Before the state goes: the journal there says which settings file the hooks are in.
+  if [ -x "$UBIN" ]; then
+    TERMENBOX_CONFIG_DIR="$USTATE" "$UBIN" --disconnect-claude || say "Could not remove Termenbox's hooks from Claude Code's settings; remove the entries that run 'termenbox-server --hook claude' by hand."
+  fi
   if [ -x "$UBIN" ] && [ -d "$UJOURNAL" ]; then
     "$UBIN" --journal-dir "$UJOURNAL" --revert || die "some changes could not be undone; see the lines above. The server's state was kept."
   elif [ -d "$UJOURNAL" ]; then
@@ -49,7 +54,7 @@ if [ "$(id -u)" -ne 0 ]; then
   [ -n "$KEEP_STATE" ] || rm -rf "$USTATE"
   rm -rf "$UJOURNAL"
   systemctl --user daemon-reload >/dev/null 2>&1 || true
-  say "Removed. Sessions already running in tmux were not stopped (list them with: tmux ls)."
+  say "Removed. Sessions already running in tmux were not stopped (list them with: tmux -L termenbox ls, or plain tmux ls if this install kept your default tmux server, decision 0120; the tmux bundled with Termenbox, if it installed one, was removed with it, so that needs a tmux of your own)."
   exit 0
 fi
 
@@ -83,8 +88,12 @@ if [ -x "$BIN" ] || [ -d "$JOURNAL" ]; then
     "$BIN" --journal-dir "$JOURNAL" --revert --dry-run | sed 's/^/  /'
   fi
   [ -n "$KEEP_STATE" ] || say "  - the server's state   $STATE (keys, owner)"
+  [ ! -x "$BIN" ] || say "  - Termenbox's hooks in Claude Code's settings, if you connected them"
   if [ -n "$YES" ]; then
     systemctl disable --now termenbox-update.timer termenbox-request.path "$UNIT_NAME" >/dev/null 2>&1 || true
+    if [ -x "$BIN" ]; then
+      TERMENBOX_CONFIG_DIR="$STATE" "$BIN" --disconnect-claude || say "Could not remove Termenbox's hooks from Claude Code's settings; remove the entries that run 'termenbox-server --hook claude' by hand."
+    fi
     if [ -x "$BIN" ] && [ -d "$JOURNAL" ]; then
       "$BIN" --journal-dir "$JOURNAL" --revert ${DELETE_HOME:+--delete-home} || die "some changes could not be undone; see the lines above. The server's state was kept."
     elif [ -d "$JOURNAL" ]; then
@@ -92,7 +101,7 @@ if [ -x "$BIN" ] || [ -d "$JOURNAL" ]; then
     fi
     [ -n "$KEEP_STATE" ] || rm -rf "$STATE"
     systemctl daemon-reload >/dev/null 2>&1 || true
-    say "Removed. Sessions already running in tmux were not stopped (list them with: tmux ls, as their user)."
+    say "Removed. Sessions already running in tmux were not stopped (list them with: tmux -L termenbox ls, or plain tmux ls if this install kept the default tmux server, as their user, decision 0120; the tmux bundled with Termenbox, if it installed one, was removed with it, so that needs a tmux of your own)."
   fi
 fi
 

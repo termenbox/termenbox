@@ -33,10 +33,10 @@ const PRE_CUT: usize = 4_000;
 /// Sessions with a reader at once.
 const MAX_READERS: usize = 20;
 
-/// The invoking user's Claude config directory: `CLAUDE_CONFIG_DIR` when set (as Claude Code reads it), else
-/// `~/.claude`.
+/// The invoking user's Claude config directory: `CLAUDE_CONFIG_DIR` when set (as Claude Code reads it), else the one
+/// their running `claude` processes use, else `~/.claude`.
 pub fn claude_root() -> Option<PathBuf> {
-    if let Some(d) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
+    if let Some(d) = crate::claude_hooks::config_dir() {
         return Some(PathBuf::from(d));
     }
     std::env::var_os("HOME")

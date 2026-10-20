@@ -6,13 +6,23 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-pub const EVENTS: [&str; 6] = [
+/// Every event the turn-and-obligation reducer reads (`adapters::claude`). `PermissionRequest` is the one that
+/// says a dialog is open (`Notification` follows it by seconds and covers only some of them); the rest end a wait
+/// or a turn. Settings written by an earlier version lack the newer ones: `merge` adds them, nothing else.
+pub const EVENTS: [&str; 13] = [
     "SessionStart",
+    "SessionEnd",
     "UserPromptSubmit",
     "PreToolUse",
     "PostToolUse",
+    "PostToolUseFailure",
+    "PermissionRequest",
+    "PermissionDenied",
+    "Elicitation",
+    "ElicitationResult",
     "Notification",
     "Stop",
+    "StopFailure",
 ];
 /// Marks an entry as ours; `remove` touches nothing else.
 const MARKER: &str = "--hook claude";
@@ -103,10 +113,94 @@ fn sha(bytes: &[u8]) -> String {
 /// Where Claude Code reads its user settings: `CLAUDE_CONFIG_DIR` when set (as Claude Code itself does, and as
 /// the transcript reader does), else `~/.claude`.
 pub fn default_settings_path() -> PathBuf {
-    settings_in(
-        std::env::var_os("CLAUDE_CONFIG_DIR"),
-        std::env::var_os("HOME"),
-    )
+    settings_in(config_dir(), std::env::var_os("HOME"))
+}
+
+/// Claude Code's config directory as the user's Claude Code has it: this process's `CLAUDE_CONFIG_DIR`, else the
+/// one the running `claude` processes of this user agree on. A service started by systemd does not inherit the
+/// variable a login shell sets, so without this the hooks land in `~/.claude` while Claude reads another dir.
+pub fn config_dir() -> Option<std::ffi::OsString> {
+    if let Some(d) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        return Some(d);
+    }
+    detected_config_dir()
+}
+
+/// How long a look at the process table is kept: it is read once per request, never in a loop.
+const DETECT_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn detected_config_dir() -> Option<std::ffi::OsString> {
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<(std::time::Instant, Option<std::ffi::OsString>)>> =
+        Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap();
+    if let Some((at, v)) = cache.as_ref() {
+        if at.elapsed() < DETECT_TTL {
+            return v.clone();
+        }
+    }
+    let v = scan_proc_for_config_dir();
+    *cache = Some((std::time::Instant::now(), v.clone()));
+    v
+}
+
+/// The values of `CLAUDE_CONFIG_DIR` in the environments of this user's `claude` processes (`None` for a process
+/// without it).
+#[cfg(target_os = "linux")]
+fn scan_proc_for_config_dir() -> Option<std::ffi::OsString> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    let me = std::fs::metadata("/proc/self").ok()?.uid();
+    let mut seen = Vec::new();
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        let name = entry.file_name();
+        if !name.as_bytes().iter().all(u8::is_ascii_digit) {
+            continue;
+        }
+        let dir = entry.path();
+        if std::fs::metadata(&dir).map(|m| m.uid()).ok() != Some(me) {
+            continue;
+        }
+        if std::fs::read(dir.join("comm"))
+            .ok()
+            .as_deref()
+            .map(<[u8]>::trim_ascii)
+            != Some(b"claude")
+        {
+            continue;
+        }
+        if let Ok(env) = std::fs::read(dir.join("environ")) {
+            seen.push(config_dir_in_environ(&env));
+            if seen.len() >= 64 {
+                break;
+            }
+        }
+    }
+    agreed_dir(seen)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn scan_proc_for_config_dir() -> Option<std::ffi::OsString> {
+    None
+}
+
+/// `CLAUDE_CONFIG_DIR` from a `/proc/<pid>/environ` blob, when it is a non-empty absolute path.
+fn config_dir_in_environ(environ: &[u8]) -> Option<std::ffi::OsString> {
+    use std::os::unix::ffi::OsStrExt;
+    environ
+        .split(|b| *b == 0)
+        .find_map(|kv| kv.strip_prefix(b"CLAUDE_CONFIG_DIR="))
+        .filter(|v| v.first() == Some(&b'/'))
+        .map(|v| std::ffi::OsStr::from_bytes(v).to_os_string())
+}
+
+/// The directory every process agrees on; no answer when they differ or when some have none, since then
+/// Claude Code is not using one place.
+fn agreed_dir(seen: Vec<Option<std::ffi::OsString>>) -> Option<std::ffi::OsString> {
+    let first = seen.first()?.clone()?;
+    seen.iter()
+        .all(|d| d.as_ref() == Some(&first))
+        .then_some(first)
 }
 
 fn settings_in(
@@ -123,6 +217,14 @@ fn settings_in(
 /// The user-scope journal of this one change: where the backup is and what the file hashed to after.
 fn journal_path(dir: &Path) -> PathBuf {
     dir.join("claude-hooks.json")
+}
+
+/// The settings file the journal says `connect` changed; `None` without a journal. A later `--disconnect-claude`
+/// follows it, so it undoes the change in the file it was made in whatever `CLAUDE_CONFIG_DIR` is then.
+pub fn journal_settings(state_dir: &Path) -> Option<PathBuf> {
+    let journal: Value =
+        serde_json::from_str(&std::fs::read_to_string(journal_path(state_dir)).ok()?).ok()?;
+    journal["settings"].as_str().map(PathBuf::from)
 }
 
 pub struct Outcome(pub String);
@@ -157,6 +259,8 @@ pub fn planned_text(settings: &Path, binary: &str) -> Result<String> {
 #[derive(Clone, Debug)]
 pub struct Target {
     pub settings: PathBuf,
+    /// No file was named by the owner: find Claude Code's settings at each request (`default_settings_path`).
+    pub auto: bool,
     pub binary: String,
     pub state_dir: PathBuf,
 }
@@ -192,8 +296,13 @@ pub fn respond(target: Option<&Target>, agent: &str, action: &str) -> Reply {
             error: None,
         };
     };
-    let state = |t: &Target| {
-        if is_connected(&t.settings) {
+    let settings = if t.auto {
+        default_settings_path()
+    } else {
+        t.settings.clone()
+    };
+    let state = |settings: &Path| {
+        if is_connected(settings) {
             "connected"
         } else {
             "not_connected"
@@ -201,23 +310,32 @@ pub fn respond(target: Option<&Target>, agent: &str, action: &str) -> Reply {
     };
     let (preview, error) = match action {
         "status" => (None, None),
-        "preview" => match planned_text(&t.settings, &t.binary) {
+        "preview" => match planned_text(&settings, &t.binary) {
             Ok(text) => (Some(text), None),
             Err(e) => (None, Some(e.to_string())),
         },
-        "apply" => match connect(&t.settings, &t.binary, &t.state_dir, true) {
+        "apply" => match connect(&settings, &t.binary, &t.state_dir, true) {
             Ok(_) => (None, None),
             Err(e) => (None, Some(e.to_string())),
         },
-        "remove" if !t.settings.exists() => (None, None),
-        "remove" => match disconnect(&t.settings, &t.state_dir) {
-            Ok(_) => (None, None),
-            Err(e) => (None, Some(e.to_string())),
-        },
+        // A removal follows the file the connect changed (the journal says which), wherever the settings are now.
+        "remove" => {
+            let file = journal_settings(&t.state_dir)
+                .filter(|f| f.exists())
+                .unwrap_or_else(|| settings.clone());
+            if !file.exists() {
+                (None, None)
+            } else {
+                match disconnect(&file, &t.state_dir) {
+                    Ok(_) => (None, None),
+                    Err(e) => (None, Some(e.to_string())),
+                }
+            }
+        }
         _ => (None, Some("unknown action".to_string())),
     };
     Reply {
-        state: state(t),
+        state: state(&settings),
         preview,
         error,
     }
@@ -271,12 +389,28 @@ pub fn connect(settings: &Path, binary: &str, state_dir: &Path, apply: bool) -> 
 
 /// Restores the original bytes when only we have changed the file since; otherwise removes just our entries.
 pub fn disconnect(settings: &Path, state_dir: &Path) -> Result<Outcome> {
-    let current =
-        std::fs::read(settings).map_err(|e| anyhow!("cannot read {}: {e}", settings.display()))?;
     let jp = journal_path(state_dir);
     let journal: Option<Value> = std::fs::read_to_string(&jp)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok());
+    let current = match std::fs::read(settings) {
+        Ok(c) => c,
+        // Nothing was connected here, or the file is gone with whatever it held: there is nothing to undo, and
+        // an uninstall must not fail on it.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let _ = std::fs::remove_file(&jp);
+            return Ok(Outcome(format!(
+                "{} does not exist; nothing to disconnect.",
+                settings.display()
+            )));
+        }
+        Err(e) => return Err(anyhow!("cannot read {}: {e}", settings.display())),
+    };
+    // Without a journal (the state was removed first) only entries that are ours can be taken out, and a file that
+    // has none is left byte for byte as it is.
+    if journal.is_none() && !String::from_utf8_lossy(&current).contains(MARKER) {
+        return Ok(Outcome("No Termenbox hooks in the settings file.".into()));
+    }
     let untouched =
         journal.as_ref().and_then(|j| j["after_sha256"].as_str()) == Some(sha(&current).as_str());
     if let (true, Some(j)) = (untouched, &journal) {
@@ -388,12 +522,48 @@ mod tests {
     }
 
     #[test]
+    fn disconnect_without_a_journal_takes_out_ours_and_leaves_a_clean_file_untouched() {
+        let d = tmpdir("nj");
+        let settings = d.join("settings.json");
+        std::fs::write(&settings, MINE).unwrap();
+        connect(&settings, BIN, &d.join("state"), true).unwrap();
+        // The state directory was removed before the hooks were: no journal, no backup.
+        std::fs::remove_dir_all(d.join("state")).unwrap();
+        disconnect(&settings, &d.join("state")).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(v, serde_json::from_str::<Value>(MINE).unwrap());
+        let odd = "{ \"model\":   \"opus\" }";
+        std::fs::write(&settings, odd).unwrap();
+        disconnect(&settings, &d.join("state")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&settings).unwrap(),
+            odd,
+            "no hooks of ours: not rewritten"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn disconnect_of_a_missing_settings_file_is_not_an_error_and_the_journal_names_the_file() {
+        let d = tmpdir("ms");
+        let settings = d.join("elsewhere").join("settings.json");
+        connect(&settings, BIN, &d.join("state"), true).unwrap();
+        assert_eq!(journal_settings(&d.join("state")), Some(settings.clone()));
+        std::fs::remove_file(&settings).unwrap();
+        assert!(disconnect(&settings, &d.join("state")).is_ok());
+        assert_eq!(journal_settings(&d.join("state")), None);
+        assert!(disconnect(&d.join("nope.json"), &d.join("state")).is_ok());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn connect_preview_equals_what_apply_writes_and_remove_restores() {
         let d = tmpdir("p");
         let settings = d.join("settings.json");
         std::fs::write(&settings, MINE).unwrap();
         let t = Target {
             settings: settings.clone(),
+            auto: false,
             binary: BIN.into(),
             state_dir: d.join("state"),
         };
@@ -421,6 +591,7 @@ mod tests {
         let d = tmpdir("q");
         let t = Target {
             settings: d.join("settings.json"),
+            auto: false,
             binary: BIN.into(),
             state_dir: d.join("state"),
         };
@@ -457,6 +628,56 @@ mod tests {
         assert!(settings.exists());
         disconnect(&settings, &d.join("state")).unwrap();
         assert!(!settings.exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn os(p: &str) -> Option<std::ffi::OsString> {
+        Some(std::ffi::OsString::from(p))
+    }
+
+    #[test]
+    fn the_config_dir_is_read_from_a_process_environment_when_it_is_absolute() {
+        let env = b"HOME=/home/u\0CLAUDE_CONFIG_DIR=/data/.claude\0TERM=xterm\0";
+        assert_eq!(config_dir_in_environ(env), os("/data/.claude"));
+        assert_eq!(config_dir_in_environ(b"HOME=/home/u\0"), None);
+        assert_eq!(config_dir_in_environ(b"CLAUDE_CONFIG_DIR=\0"), None);
+        assert_eq!(
+            config_dir_in_environ(b"CLAUDE_CONFIG_DIR=relative/dir\0"),
+            None
+        );
+    }
+
+    #[test]
+    fn processes_must_agree_on_the_config_dir() {
+        let a = os("/data/.claude");
+        assert_eq!(agreed_dir(vec![a.clone(), a.clone()]), a);
+        assert_eq!(
+            agreed_dir(vec![a.clone(), os("/other")]),
+            None,
+            "two places"
+        );
+        assert_eq!(
+            agreed_dir(vec![a.clone(), None]),
+            None,
+            "one uses the default"
+        );
+        assert_eq!(agreed_dir(vec![]), None);
+    }
+
+    #[test]
+    fn a_target_without_a_named_file_finds_the_settings_at_each_request() {
+        let d = std::env::temp_dir().join(format!("tm-auto-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let named = d.join("named.json");
+        let t = Target {
+            settings: named.clone(),
+            auto: false,
+            binary: "/bin/tb".into(),
+            state_dir: d.clone(),
+        };
+        assert_eq!(respond(Some(&t), "claude", "apply").error, None);
+        assert!(named.exists(), "a named file is used as it is");
+        assert_eq!(respond(Some(&t), "claude", "remove").error, None);
         let _ = std::fs::remove_dir_all(&d);
     }
 }

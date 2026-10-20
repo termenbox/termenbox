@@ -117,7 +117,7 @@ import { fleetOf } from './lib/navlist';
     onReady: (id, msg, reconnect) => {
       hub.send(id, { type: 'push_info' });
       for (const q of hookQueries()) hub.send(id, q);
-      if (!reconnect) showToast(`Connected to ${msg.server_name}`); // a reconnect is shown by the status line, not a toast each time
+      if (!reconnect) showToast(`Connected to ${$hubServers.find(s => s.id === id)?.server.server_name || msg.server_name}`); // a reconnect is shown by the status line, not a toast each time
       if (!reconnect || away || id !== activeServerId || !activeKey) return;
       const key = activeKey;
       // Retry and Resume replace the connection: mount its terminal before accepting a repaint.
@@ -792,7 +792,7 @@ import { fleetOf } from './lib/navlist';
   {/if}
 
   {#if showAddServer}
-    <AddServerModal origin={location.origin} prefillSecret={addPrefill} onserver={(id) => { showAddServer = false; void addServerById(id); }} onclose={() => showAddServer = false} onadd={(server) => { addServer(server); showAddServer = false;  }} />
+    <AddServerModal origin={location.origin} prefillSecret={addPrefill} onserver={(id) => { showAddServer = false; void addServerById(id); }} onclose={() => showAddServer = false} onadd={(server) => addServer(server)} />
   {/if}
 
   {#if toast}

@@ -178,6 +178,8 @@ export class Connection {
     } catch (e) {
       this.opening = false;
       if (this.stopped) return;
+      // The banner keeps one line; what each transport said goes to the console for whoever is debugging.
+      if (e instanceof Unreachable) console.warn('[termenbox] connect failed:', e.attempts.join('; ') || e.message);
       this.opts.onState('unreachable', e instanceof Unreachable ? e.message : 'Server unreachable');
       this.scheduleRetry();
       return;

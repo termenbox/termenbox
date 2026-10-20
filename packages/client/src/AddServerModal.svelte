@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import type { ServerListItem } from './lib/protocol';
+  import type { DirRecord } from './lib/directory';
   import { randomClaimSecret } from './lib/directory';
-  import { installCommand, scanCommand as scanCommandFor, parseClaim, parseServerLink, waitForServer, ClaimTimeout, type RunChoice } from './lib/onboard';
+  import { installCommand, scanCommand as scanCommandFor, parseClaim, parseServerLink, waitForServer, previewClaim, checkReachable, firewallCommand, UDP_RANGE, ClaimTimeout, type Reachability, type ClaimPreview, type RunChoice } from './lib/onboard';
   import { decodeQrFile, startCameraScan } from './lib/scan';
   import { wsUrl } from './lib/servers';
   import { Dialog } from './lib/ui';
@@ -39,6 +40,45 @@
   let scanning = false;
   let abort: AbortController | null = null;
 
+  /** The server has announced itself; its preview is fetched and shown, and nothing is claimed until Add is tapped (0117). */
+  let found: DirRecord | null = null;
+  let preview: ClaimPreview | null = null;
+  let previewing = false;
+  let previewName = '';
+
+  async function showPreview(record: DirRecord, s: string) {
+    found = record;
+    previewing = true;
+    error = '';
+    abort?.abort();
+    abort = new AbortController();
+    try {
+      preview = await previewClaim({ record }, s, abort.signal);
+      previewName = name.trim() || preview.name;
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return;
+      error = `Could not read what this server is: ${e instanceof Error ? e.message : 'failed'}`;
+    } finally {
+      previewing = false;
+    }
+  }
+
+  /** The only place a claim leaves the dialog: the client connects with the token on this server's first connection. */
+  /** Set once the server is added and the reachability check is running or done (decision 0118). */
+  let added: DirRecord | null = null;
+  let checking = false;
+  let reach: Reachability | null = null;
+
+  function confirm() {
+    if (!found) return;
+    const record = found;
+    onadd({ server_id: found.server_id, server_name: (preview ? previewName : name).trim(), server_url: '', record: found, registered_at: Date.now(), claim: secret });
+    // The server stays added whatever the check says; it only advises (GUARDRAIL connections-warn-never-drop).
+    added = record;
+    checking = true;
+    void checkReachable({ record }).then((r) => { reach = r; checking = false; });
+  }
+
   async function begin(s: string) {
     abort?.abort();
     abort = new AbortController();
@@ -47,7 +87,8 @@
     error = '';
     try {
       const record = await waitForServer(origin, s, abort.signal);
-      onadd({ server_id: record.server_id, server_name: name.trim(), server_url: '', record, registered_at: Date.now(), claim: s });
+      waiting = false;
+      await showPreview(record, s);
     } catch (e) {
       waiting = false;
       if (e instanceof DOMException && e.name === 'AbortError') return;
@@ -133,6 +174,7 @@
       return;
     }
     onadd({ server_url: manualUrl.trim(), server_name: name.trim(), registered_at: Date.now(), claim: manualClaim.trim() || undefined });
+    onclose();
   }
 
   function choose(t: Tab) {
@@ -152,6 +194,8 @@
 </script>
 
 <Dialog title="Add Server" {onclose}>
+    <!-- Once a server is found the setup steps are done: only its preview or result is shown. -->
+    {#if !found}
     <form class="have-link" on:submit|preventDefault={submitLink} style="margin-bottom: 16px;">
       <label for="have-link" style="display: block; font-size: 0.875rem; margin-bottom: 6px; color: var(--fg-muted);">Already added on another device? Paste its link or code</label>
       <div style="display: flex; gap: 8px;">
@@ -234,7 +278,49 @@
         </label>
       </div>
     {/if}
+    {/if}
 
+    {#if added}
+      <div class="preview" role="status" aria-live="polite">
+        <strong>Server added</strong>
+        {#if checking}
+          <p class="note">Checking that this device can reach it…</p>
+        {:else if reach?.state === 'reachable'}
+          <p class="note">This device can reach it.</p>
+        {:else if reach?.state === 'degraded'}
+          <p class="note">This device reached it only through the WebSocket fallback{reach.port ? `; UDP port ${reach.port} did not work` : ''}. Sessions work but can feel slower. It stays in your list.</p>
+          <p class="note">To use the direct path, an admin opens the range for Termenbox once:</p>
+          <pre class="command">{firewallCommand}</pre>
+        {:else if reach?.state === 'unreachable'}
+          <p class="note">This device could not reach it{reach.port ? ` on UDP port ${reach.port}` : ''}. It stays in your list and keeps retrying.</p>
+          <p class="note">On the server, an admin opens the range for Termenbox once:</p>
+          <pre class="command">{firewallCommand}</pre>
+          <p class="note">Servers use a port from {UDP_RANGE.replace(':', '-')}. Your own network (cafe, work or mobile data) may also block UDP; try another network if the port is open.</p>
+        {:else}
+          <p class="note">Could not tell whether this device can reach it. It stays in your list.</p>
+        {/if}
+        <button on:click={onclose} disabled={checking} style="width: 100%;">Done</button>
+      </div>
+    {:else if preview}
+      <div class="preview" role="group" aria-label="What you are adding">
+        <strong>This server is ready to add</strong>
+        <dl>
+          <dt>Runs sessions</dt>
+          <dd>{preview.mode === 'container' ? 'in an isolated container' : `on the machine itself, as ${preview.run_user || 'its own user'}`}</dd>
+          <dt>Version</dt>
+          <dd>{preview.version}</dd>
+        </dl>
+        <label for="preview-name" style="display: block; font-size: 0.875rem; margin-bottom: 6px; color: var(--fg-muted);">Name</label>
+        <input id="preview-name" bind:value={previewName} maxlength="40" style="width: 100%; margin-bottom: 12px;" />
+        <p style="color: var(--fg-muted); font-size: 0.8rem; margin: 0 0 12px;">Nothing is claimed yet. Tap Add to become this server's owner; closing this leaves the link valid until it expires.</p>
+        <button on:click={confirm} style="width: 100%;">Add</button>
+      </div>
+    {:else if previewing}
+      <p style="color: var(--fg-muted); font-size: 0.875rem;">Your server appeared. Reading what it is…</p>
+    {:else if found && error}
+      <button class="secondary" on:click={() => found && showPreview(found, secret)} style="width: 100%; margin-bottom: 8px;">Try again</button>
+      <button class="secondary" on:click={confirm} style="width: 100%;">Add without a preview</button>
+    {/if}
     {#if waiting}
       <p style="color: var(--fg-muted); font-size: 0.875rem;">Waiting for your server to appear… this can take a minute.</p>
     {/if}
@@ -258,6 +344,11 @@
   .choice small { color: var(--fg-muted); }
   .sub { margin-left: 24px; border-left: 2px solid var(--border); padding-left: 12px; }
   .warning { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--danger); border-radius: 8px; font-size: 0.8rem; background: rgba(248, 81, 73, 0.08); }
+  .preview { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin: 0 0 12px; }
+  .preview dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 8px 0 12px; font-size: 0.875rem; }
+  .preview dt { color: var(--fg-muted); }
+  .preview dd { margin: 0; }
+  .note { color: var(--fg-muted); font-size: 0.85rem; margin: 8px 0; }
   .locked { color: var(--fg-muted); font-size: 0.85rem; margin: 0 0 12px; }
   .command { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-family: monospace; font-size: 0.75rem; white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; cursor: copy; margin: 0 0 8px; }
 </style>

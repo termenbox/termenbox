@@ -128,6 +128,146 @@ pub struct Runner {
     /// `env K=V -u K ...` words put in front of every command; empty normally, used by tests to give a
     /// tool a private home or socket directory without touching this process's environment.
     env: Vec<String>,
+    /// The tmux this runner starts in place of `tmux` on `PATH` (decision 0119); `None` means `tmux` as named.
+    tmux: Option<String>,
+    /// How tmux is kept apart from the user's own (decision 0120); `None` uses the default socket and config.
+    isolation: Option<Isolation>,
+}
+
+/// Where termenbox's own tmux server gets its config from (decision 0120). Every tmux this runner starts is given
+/// `-L termenbox` and `-f <config>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Isolation {
+    /// A config file on this machine's file system (container and native modes).
+    File(String),
+    /// Host mode: the file is written on the host, under tmux's own per-user directory, and named at run time
+    /// because the user's uid is only known there.
+    HostUser,
+}
+
+/// Runs `"$0" <args>` with termenbox's socket and the per-user config in tmux's own directory for that uid.
+const HOST_TMUX: &str = r#"exec "$0" -L termenbox -f "/tmp/tmux-$(id -u)/termenbox.conf" "$@""#;
+
+/// Writes the config for host mode into `/tmp/tmux-<uid>/` as the session user. The directory is tmux's own: it
+/// is created private, and refused when it is a link or someone else's, so another user cannot plant a config.
+const WRITE_HOST_CONF: &str = r#"umask 077; d=/tmp/tmux-$(id -u); mkdir -p "$d" && [ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ] && chmod 700 "$d" && printf '%s' "$1" > "$d/termenbox.conf.$$" && mv "$d/termenbox.conf.$$" "$d/termenbox.conf""#;
+
+static ISOLATION: std::sync::OnceLock<Isolation> = std::sync::OnceLock::new();
+
+/// Decided once at startup (decision 0120); runners made after this keep tmux apart from the user's own.
+pub fn use_private_tmux(isolation: Isolation) {
+    let _ = ISOLATION.set(isolation);
+}
+
+/// The bundled tmux the installer places beside the server binary (decision 0119). Named so that it can never
+/// be mistaken for, or shadow, a distribution `tmux`.
+pub const BUNDLED_TMUX: &str = "termenbox-tmux";
+
+/// What a failed tmux command says, as one line. A tmux client and a running tmux server on the same socket must
+/// share a protocol number (8 in every release from 2.6 to 3.8, pinned for the bundled one in `build-tmux.sh`); when
+/// they do not, tmux's own message does not say what to do.
+fn tmux_stderr(raw: &[u8]) -> String {
+    let text = String::from_utf8_lossy(raw);
+    let text = text.trim();
+    if text.contains("protocol version mismatch") {
+        return format!(
+            "the tmux server already running on this socket is too different from the tmux termenbox runs now to talk to it (tmux says: {text}). Restart that tmux server: `termenbox-server tmux kill-server` ends its sessions"
+        );
+    }
+    text.to_string()
+}
+
+/// The oldest tmux with the control mode the session backend needs.
+const MIN_TMUX: (u32, u32) = (3, 2);
+
+/// `Some(true)` when `tmux -V` output names a version older than 3.2, `Some(false)` when it names a newer one, `None`
+/// for a build without a number (`tmux master`), which is taken as new.
+fn tmux_too_old(version_output: &str) -> Option<bool> {
+    let v = version_output.trim().strip_prefix("tmux")?.trim();
+    let v = v.strip_prefix("next-").unwrap_or(v);
+    let mut parts = v.split('.');
+    let major: u32 = parts.next()?.parse().ok()?;
+    let minor: u32 = parts
+        .next()
+        .map(|m| m.trim_end_matches(|c: char| c.is_ascii_alphabetic()))
+        .and_then(|m| m.parse().ok())
+        .unwrap_or(0);
+    Some((major, minor) < MIN_TMUX)
+}
+
+/// Picks the tmux to run: `explicit` (`TERMENBOX_TMUX`, never overridden, so a bad one is an error), then the
+/// `bundled` copy (skipped, with a reason through `log`, when it does not run or is older than 3.2), then `tmux` on
+/// `PATH`. `version_of` returns `<path> -V` output when that program runs.
+pub fn resolve_tmux(
+    explicit: Option<&str>,
+    bundled: Option<&std::path::Path>,
+    version_of: &dyn Fn(&str) -> Option<String>,
+    log: &mut dyn FnMut(String),
+) -> Result<String, String> {
+    if let Some(path) = explicit.filter(|p| !p.is_empty()) {
+        return match version_of(path).map(|v| tmux_too_old(&v)) {
+            None => Err(format!("TERMENBOX_TMUX={path} cannot be run")),
+            Some(Some(true)) => Err(format!(
+                "TERMENBOX_TMUX={path} is older than tmux 3.2, which the session backend needs"
+            )),
+            Some(_) => Ok(path.to_string()),
+        };
+    }
+    if let Some(path) = bundled.filter(|p| p.is_file()) {
+        let shown = path.display().to_string();
+        match version_of(&shown).map(|v| tmux_too_old(&v)) {
+            None => log(format!(
+                "the bundled tmux {shown} does not run; skipping it"
+            )),
+            Some(Some(true)) => log(format!(
+                "the bundled tmux {shown} is older than 3.2; skipping it"
+            )),
+            Some(_) => return Ok(shown),
+        }
+    }
+    match version_of("tmux").map(|v| tmux_too_old(&v)) {
+        Some(Some(true)) => log(
+            "tmux on PATH is older than 3.2; control mode is off and sessions are scanned instead"
+                .into(),
+        ),
+        Some(_) => {}
+        None => log("no tmux on PATH".into()),
+    }
+    Ok("tmux".to_string())
+}
+
+fn run_version(path: &str) -> Option<String> {
+    let out = std::process::Command::new(path).arg("-V").output().ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The tmux for this process, decided once from `TERMENBOX_TMUX`, the copy beside this binary and `PATH`.
+fn local_tmux() -> &'static Result<String, String> {
+    static CHOICE: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
+    CHOICE.get_or_init(|| {
+        let bundled = std::env::current_exe().ok().and_then(|exe| {
+            // After an update the running file shows as deleted; its directory is still the install directory.
+            let exe = exe
+                .to_string_lossy()
+                .trim_end_matches(" (deleted)")
+                .to_string();
+            std::path::Path::new(&exe)
+                .parent()
+                .map(|d| d.join(BUNDLED_TMUX))
+        });
+        let chosen = resolve_tmux(
+            std::env::var("TERMENBOX_TMUX").ok().as_deref(),
+            bundled.as_deref(),
+            &run_version,
+            &mut |reason| tracing::warn!("{reason}"),
+        );
+        if let Ok(path) = &chosen {
+            tracing::info!("tmux: {path}");
+        }
+        chosen
+    })
 }
 
 /// Runs the rest of the command line in its own transient systemd scope when the host has systemd, so a
@@ -157,6 +297,29 @@ impl Runner {
         self
     }
 
+    /// Host mode: writes the private server's config on the host (decision 0120), as the session user.
+    pub async fn install_host_tmux_conf(&self, content: &str) -> Result<()> {
+        let args = ["-c", WRITE_HOST_CONF, "sh", content].map(String::from);
+        let out = self.run("sh", &args).await?;
+        if !out.status.success() {
+            return Err(anyhow!(
+                "cannot write tmux's config on the host: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Ok(())
+    }
+
+    /// For commands run on this machine as this process: container and native modes. Uses the tmux that
+    /// `local_tmux` chose (a bad `TERMENBOX_TMUX` is reported by the startup self-check, not here).
+    pub fn local() -> Self {
+        Self {
+            tmux: local_tmux().as_ref().ok().cloned(),
+            isolation: ISOLATION.get().cloned(),
+            ..Self::default()
+        }
+    }
+
     /// `user` is `root` or the name of an unprivileged host user.
     pub fn host(user: &str) -> Self {
         let enter = ["nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p"]
@@ -171,6 +334,8 @@ impl Runner {
             enter,
             user,
             env: vec![],
+            tmux: None,
+            isolation: ISOLATION.get().cloned(),
         }
     }
 
@@ -186,7 +351,21 @@ impl Runner {
             argv.push("env".to_string());
             argv.extend(self.env.iter().cloned());
         }
-        argv.push(program.to_string());
+        let program_path = match (&self.tmux, program) {
+            (Some(path), "tmux") => path.clone(),
+            _ => program.to_string(),
+        };
+        match (&self.isolation, program) {
+            (Some(Isolation::File(conf)), "tmux") => {
+                argv.push(program_path);
+                argv.extend(["-L", crate::tmuxconf::SOCKET, "-f", conf].map(String::from));
+            }
+            (Some(Isolation::HostUser), "tmux") => {
+                argv.extend(["sh", "-c", HOST_TMUX].map(String::from));
+                argv.push(program_path);
+            }
+            _ => argv.push(program_path),
+        }
         argv.extend(args.iter().cloned());
         let first = argv.remove(0);
         (first, argv)
@@ -240,9 +419,14 @@ impl Runner {
                 if want_root { "root user" } else { "dedicated user" }
             ));
         }
+        if let Err(why) = local_tmux() {
+            return Err(anyhow!("{why}"));
+        }
         let tmux = self.run("tmux", &["-V".to_string()]).await;
         if !tmux.map(|o| o.status.success()).unwrap_or(false) {
-            return Err(anyhow!("tmux is not installed on this machine"));
+            return Err(anyhow!(
+                "no tmux to run: none beside the server ({BUNDLED_TMUX}), none on PATH, and TERMENBOX_TMUX is not set"
+            ));
         }
         Ok(())
     }
@@ -328,9 +512,8 @@ impl RunMode {
 
     pub fn runner(&self) -> Runner {
         match self {
-            Self::Container => Runner::default(),
+            Self::Container | Self::Native { .. } => Runner::local(),
             Self::Host { user } => Runner::host(user),
-            Self::Native { .. } => Runner::default(),
         }
     }
 
@@ -338,7 +521,7 @@ impl RunMode {
         match self {
             Self::Container => Ok(()),
             Self::Host { user } => self.runner().check_host(user == "root").await,
-            Self::Native { user } => Runner::default().check_native(user == "root").await,
+            Self::Native { user } => self.runner().check_native(user == "root").await,
         }
     }
 }
@@ -382,12 +565,12 @@ impl SessionBackend for TmuxBackend {
         let args = ["list-sessions", "-F", "#{session_name}|#{session_name}"].map(String::from);
         let out = self.runner.run("tmux", &args).await?;
         if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
+            let stderr = tmux_stderr(&out.stderr);
             // No server yet simply means no sessions.
             if stderr.contains("no server running") || stderr.contains("No such file") {
                 return Ok(vec![]);
             }
-            return Err(anyhow!("tmux list-sessions failed: {}", stderr.trim()));
+            return Err(anyhow!("tmux list-sessions failed: {stderr}"));
         }
         Ok(parse_list(&String::from_utf8_lossy(&out.stdout)))
     }
@@ -436,7 +619,7 @@ impl SessionBackend for TmuxBackend {
         if !out.status.success() {
             return Err(anyhow!(
                 "tmux new-session failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
+                tmux_stderr(&out.stderr)
             ));
         }
         if let Some(agent) = template {
@@ -510,7 +693,7 @@ impl SessionBackend for TmuxBackend {
         if !out.status.success() {
             return Err(anyhow!(
                 "tmux kill-session failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
+                tmux_stderr(&out.stderr)
             ));
         }
         Ok(())
@@ -853,6 +1036,17 @@ impl SessionBackend for CommandBackend {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_tmux_protocol_mismatch_says_what_to_do_and_other_errors_pass_through() {
+        let msg = super::tmux_stderr(b"protocol version mismatch (client 8, server 7)\n");
+        assert!(msg.contains("termenbox-server tmux kill-server"), "{msg}");
+        assert!(msg.contains("client 8, server 7"), "{msg}");
+        assert_eq!(
+            super::tmux_stderr(b"no server running on /tmp/x\n"),
+            "no server running on /tmp/x"
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -993,9 +1187,121 @@ mod tests {
             enter: vec!["/nonexistent-nsenter".into()],
             user: vec![],
             env: vec![],
+            tmux: None,
+            isolation: None,
         };
         let err = broken.check_host(false).await.unwrap_err().to_string();
         assert!(err.contains("--pid=host --privileged"), "{err}");
+    }
+
+    #[test]
+    fn tmux_versions_are_compared_against_3_2() {
+        for (out, old) in [
+            ("tmux 3.8\n", Some(false)),
+            ("tmux 3.2\n", Some(false)),
+            ("tmux 3.3a\n", Some(false)),
+            ("tmux next-3.4\n", Some(false)),
+            ("tmux 3.1c\n", Some(true)),
+            ("tmux 2.9a\n", Some(true)),
+            ("tmux 1.8\n", Some(true)),
+            ("tmux 4\n", Some(false)),
+            ("tmux master\n", None),
+            ("screen 4.9\n", None),
+        ] {
+            assert_eq!(tmux_too_old(out), old, "{out:?}");
+        }
+    }
+
+    #[test]
+    fn tmux_resolution_order_is_explicit_then_bundled_then_path() {
+        let dir = std::env::temp_dir().join(format!("termenbox-tmux-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bundled = dir.join(BUNDLED_TMUX);
+        std::fs::write(&bundled, "x").unwrap();
+        let b = bundled.to_str().unwrap();
+        let mut logs = vec![];
+
+        // an explicit path wins over both of the others, even when they are newer
+        let all = |p: &str| match p {
+            "/opt/tmux" => Some("tmux 3.2".to_string()),
+            _ => Some("tmux 3.8".to_string()),
+        };
+        assert_eq!(
+            resolve_tmux(Some("/opt/tmux"), Some(&bundled), &all, &mut |m: String| {
+                logs.push(m)
+            }),
+            Ok("/opt/tmux".to_string())
+        );
+        // no explicit one: the bundled copy wins over PATH
+        assert_eq!(
+            resolve_tmux(None, Some(&bundled), &all, &mut |m: String| logs.push(m)),
+            Ok(b.to_string())
+        );
+        assert_eq!(
+            resolve_tmux(Some(""), Some(&bundled), &all, &mut |m: String| logs
+                .push(m)),
+            Ok(b.to_string()),
+            "an empty variable is not a choice"
+        );
+        // nothing bundled (or the file is missing): PATH
+        assert_eq!(
+            resolve_tmux(None, None, &all, &mut |m: String| logs.push(m)),
+            Ok("tmux".into())
+        );
+        assert_eq!(
+            resolve_tmux(None, Some(&dir.join("absent")), &all, &mut |m: String| logs
+                .push(m)),
+            Ok("tmux".into())
+        );
+        assert!(logs.iter().all(|l| !l.contains("skipping")), "{logs:?}");
+
+        // a bundled copy older than 3.2 or one that does not run is skipped with a reason
+        for v in ["tmux 3.1c", ""] {
+            let mut skipped = vec![];
+            let old = |p: &str| match p {
+                "tmux" => Some("tmux 3.4".to_string()),
+                _ => (!v.is_empty()).then(|| v.to_string()),
+            };
+            assert_eq!(
+                resolve_tmux(None, Some(&bundled), &old, &mut |m| skipped.push(m)),
+                Ok("tmux".into())
+            );
+            assert_eq!(skipped.len(), 1, "{skipped:?}");
+            assert!(skipped[0].contains("skipping"), "{skipped:?}");
+        }
+
+        // an explicit one that is too old or does not run fails loudly, and never falls through
+        let old = |p: &str| match p {
+            "/opt/old" => Some("tmux 3.0a".to_string()),
+            "/opt/gone" => None,
+            _ => Some("tmux 3.8".to_string()),
+        };
+        let err = resolve_tmux(Some("/opt/old"), Some(&bundled), &old, &mut |m: String| {
+            logs.push(m)
+        })
+        .unwrap_err();
+        assert!(err.contains("older than tmux 3.2"), "{err}");
+        let err = resolve_tmux(Some("/opt/gone"), Some(&bundled), &old, &mut |m: String| {
+            logs.push(m)
+        })
+        .unwrap_err();
+        assert!(err.contains("cannot be run"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_resolved_tmux_replaces_only_the_word_tmux() {
+        let r = Runner {
+            tmux: Some("/home/me/.local/bin/termenbox-tmux".into()),
+            ..Runner::default()
+        };
+        let args = ["-V".to_string()];
+        let (prog, argv) = r.wrap(false, "tmux", &args);
+        assert_eq!(prog, "/home/me/.local/bin/termenbox-tmux");
+        assert_eq!(argv, ["-V"]);
+        assert_eq!(r.wrap(false, "id", &args).0, "id");
+        // host mode (the container reaching into the host) keeps the host's own tmux
+        assert_eq!(Runner::host("root").tmux, None);
     }
 
     #[test]
@@ -1138,6 +1444,77 @@ mod tests {
         b.kill("nd").await.unwrap();
         assert!(b.list().await.map(|l| l.is_empty()).unwrap_or(true));
         let _ = runner.run("tmux", &["kill-server".to_string()]).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tmux_is_given_the_private_socket_and_config_and_other_programs_are_left_alone() {
+        let args = ["list-sessions".to_string()];
+        let mut r = Runner::default();
+        assert_eq!(r.wrap(false, "tmux", &args).1, ["list-sessions"]);
+        r.isolation = Some(Isolation::File("/c/tmux.conf".into()));
+        let (prog, argv) = r.wrap(false, "tmux", &args);
+        assert_eq!(
+            format!("{prog} {}", argv.join(" ")),
+            "tmux -L termenbox -f /c/tmux.conf list-sessions"
+        );
+        r.tmux = Some("/b/termenbox-tmux".into());
+        assert_eq!(r.wrap(false, "tmux", &args).0, "/b/termenbox-tmux");
+        assert_eq!(r.wrap(false, "id", &["-u".to_string()]).1, ["-u"]);
+        // Host mode: the config path needs the user's uid, so a shell names it where the user runs.
+        let mut h = Runner::host("termenbox");
+        h.isolation = Some(Isolation::HostUser);
+        let (_, argv) = h.wrap(false, "tmux", &args);
+        let line = argv.join(" ");
+        assert!(line.contains("runuser -u termenbox -- sh -c"), "{line}");
+        assert!(line.ends_with("tmux list-sessions"), "{line}");
+        assert!(line.contains("-L termenbox -f \"/tmp/tmux-$(id -u)/termenbox.conf\""));
+    }
+
+    #[tokio::test]
+    async fn sessions_live_on_a_private_server_that_reads_termenbox_config_and_not_the_users() {
+        if std::process::Command::new("tmux")
+            .arg("-V")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("tm-priv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tmpdir = dir.to_string_lossy().into_owned();
+        // The user's own config, which must not be read, and the config termenbox writes.
+        std::fs::write(
+            dir.join(".tmux.conf"),
+            "set -g default-terminal xterm\nset -g history-limit 77\n",
+        )
+        .unwrap();
+        let conf = crate::tmuxconf::write_config(&dir, "screen-256color").unwrap();
+        let env = [
+            ("TMUX_TMPDIR", Some(tmpdir.as_str())),
+            ("TMUX", None),
+            ("HOME", Some(tmpdir.as_str())),
+        ];
+        let mut private = Runner::default().with_env(&env);
+        private.isolation = Some(Isolation::File(conf.to_string_lossy().into_owned()));
+        let user_own = Runner::default().with_env(&env);
+        let b = TmuxBackend::new(private.clone());
+        b.create_with("p1", None, None, None).await.unwrap();
+        let show = |r: &Runner, opt: &str| {
+            let (r, args) = (r.clone(), ["show-options", "-gv", opt].map(String::from));
+            async move {
+                String::from_utf8_lossy(&r.run("tmux", &args).await.unwrap().stdout)
+                    .trim()
+                    .to_string()
+            }
+        };
+        assert_eq!(show(&private, "default-terminal").await, "screen-256color");
+        assert_ne!(show(&private, "history-limit").await, "77");
+        // The user's tmux does not see it, and the session list of the private one does.
+        let theirs = TmuxBackend::new(user_own.clone());
+        assert!(theirs.list().await.map(|l| l.is_empty()).unwrap_or(true));
+        assert_eq!(b.list().await.unwrap().len(), 1);
+        let _ = private.run("tmux", &["kill-server".to_string()]).await;
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -35,10 +35,13 @@ mod netutil;
 mod profile;
 mod pty;
 mod push;
+mod reducer;
 mod release;
 mod requests;
 mod rtc;
 mod sessions;
+mod terminfo;
+mod tmuxconf;
 mod transcript;
 mod uninstall;
 mod updater;
@@ -107,6 +110,12 @@ struct Args {
     /// 4443 to 4542 and remembers it, so one firewall rule serves every user install (decision 0118).
     #[arg(long, env = "TERMENBOX_UDP_PORT")]
     udp_port: Option<u16>,
+
+    /// Which tmux server holds the sessions: `termenbox` (its own server and config, decisions 0120 and 0121, the
+    /// default) or `default` (the user's own tmux server and config; the tmux termenbox runs must then be the same
+    /// version as that server, or it cannot attach).
+    #[arg(long, env = "TERMENBOX_TMUX_SOCKET")]
+    tmux_socket: Option<String>,
 
     /// Address clients connect to over WebRTC; detected when not set.
     #[arg(long, env = "TERMENBOX_PUBLIC_IP")]
@@ -487,6 +496,11 @@ fn print_registration(args: &Args, auth: &AuthState) -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Before logging starts, so the output is tmux's alone. `termenbox-server tmux <args>`: the same tmux, socket and config the server uses (decision 0120).
+    if std::env::args().nth(1).as_deref() == Some("tmux") {
+        return run_tmux_passthrough();
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -510,9 +524,16 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     if args.connect_claude || args.disconnect_claude {
+        // A disconnect follows the file the connect changed (the journal says which), not the environment of
+        // whoever runs it: the uninstaller does not have the service's CLAUDE_CONFIG_DIR.
         let settings = args
             .claude_settings
             .clone()
+            .or_else(|| {
+                args.disconnect_claude
+                    .then(|| claude_hooks::journal_settings(&args.config_dir))
+                    .flatten()
+            })
             .unwrap_or_else(claude_hooks::default_settings_path);
         let outcome = if args.connect_claude {
             let binary = std::env::current_exe()?.display().to_string();
@@ -601,6 +622,7 @@ async fn main() -> anyhow::Result<()> {
     mode.self_check()
         .await
         .map_err(|e| anyhow::anyhow!("TERMENBOX_RUN={}: {e}", mode.label()))?;
+    choose_tmux_server(&args, &mode).await?;
     if mode.is_host() {
         info!(target: "audit", event = "host_mode_enabled", user = %mode.label());
     }
@@ -692,6 +714,7 @@ async fn main() -> anyhow::Result<()> {
             .with_push(push.clone())
             .with_events(hub.clone())
             .with_claude_hooks(claude_hooks::Target {
+                auto: args.claude_settings.is_none(),
                 settings: args
                     .claude_settings
                     .clone()
@@ -814,6 +837,72 @@ async fn ws_handler(
     headers: HeaderMap,
 ) -> Response {
     ws.on_upgrade(|socket| handle_websocket(socket, State(state), headers))
+}
+
+/// Decides which tmux server the sessions live on and, for termenbox's own, writes its config (decision 0120).
+/// Runs before any tmux command of the server, because runners made earlier would use the default socket.
+async fn choose_tmux_server(args: &Args, mode: &RunMode) -> anyhow::Result<()> {
+    use tmuxconf::Socket;
+    let explicit = match args.tmux_socket.as_deref().filter(|s| !s.is_empty()) {
+        Some(v) => Some(Socket::parse(v).ok_or_else(|| {
+            anyhow::anyhow!("TERMENBOX_TMUX_SOCKET={v} is not `termenbox` or `default`")
+        })?),
+        None => None,
+    };
+    let saved = tmuxconf::saved(&args.config_dir);
+    let choice = tmuxconf::decide(explicit);
+    if saved != Some(choice) {
+        if let Err(e) = tmuxconf::save(&args.config_dir, choice) {
+            tracing::warn!("cannot remember the tmux server choice: {e}");
+        }
+    }
+    if saved == Some(Socket::Default) && choice == Socket::Private {
+        tracing::warn!(
+            "sessions still running on the default tmux server stay there and are no longer listed"
+        );
+    }
+    info!(target: "audit", event = "tmux_server", socket = choice.as_str());
+    if choice == Socket::Default {
+        return Ok(());
+    }
+    if matches!(mode, RunMode::Host { .. }) {
+        // The host's terminfo is not visible from here, so take the entry every host has.
+        let conf = tmuxconf::render("xterm-256color", None);
+        mode.runner().install_host_tmux_conf(&conf).await?;
+        backend::use_private_tmux(backend::Isolation::HostUser);
+    } else {
+        let conf = tmuxconf::write_config(&args.config_dir, terminfo::host_pane_term())?;
+        backend::use_private_tmux(backend::Isolation::File(
+            conf.to_string_lossy().into_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// `termenbox-server tmux <args>`: runs tmux the way the server does, so `termenbox-server tmux attach` reaches the
+/// sessions from a shell. Replaces this process.
+fn run_tmux_passthrough() -> anyhow::Result<()> {
+    use std::os::unix::process::CommandExt;
+    let dir = std::env::var_os("TERMENBOX_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_config_dir);
+    let explicit = std::env::var("TERMENBOX_TMUX_SOCKET")
+        .ok()
+        .and_then(|v| tmuxconf::Socket::parse(&v));
+    // A server that has not started yet has not chosen: the private one, as a new install would.
+    if explicit
+        .or_else(|| tmuxconf::saved(&dir))
+        .unwrap_or(tmuxconf::Socket::Private)
+        == tmuxconf::Socket::Private
+    {
+        backend::use_private_tmux(backend::Isolation::File(
+            dir.join("tmux.conf").to_string_lossy().into_owned(),
+        ));
+    }
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let (program, argv) = backend::Runner::local().wrap(false, "tmux", &args);
+    let err = std::process::Command::new(&program).args(&argv).exec();
+    anyhow::bail!("cannot run {program}: {err}")
 }
 
 /// tmux's prefix key as it writes it (`C-b`); the default when it cannot be read.

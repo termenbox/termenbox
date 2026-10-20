@@ -10,9 +10,11 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use termenbox_core::events::{
     Activity, AgentEvent, AgentState, Attention, AttentionKind, Confidence, EventKind, PlanItem,
-    SessionActivity, SessionAgentState, Source, Task,
+    SessionActivity, SessionAgentState, Source, Task, ToolPhase,
 };
 use tokio::sync::broadcast;
+
+use crate::reducer::{Edge, Reducer, Screen};
 
 pub const RING: usize = 50;
 pub const MAX_SESSIONS: usize = 20;
@@ -250,6 +252,32 @@ struct Ring {
     task: Option<Task>,
 }
 
+/// The reducer edge an event stands for. Tool events count only from hooks: an ACP tool call is not a turn edge.
+fn edge_of(source: Source, kind: &EventKind) -> Option<Edge> {
+    match kind {
+        EventKind::Turn { open: true, .. } => Some(Edge::TurnOpen),
+        EventKind::Turn {
+            open: false,
+            outcome,
+        } => Some(Edge::TurnClose(match outcome {
+            Some(s @ (AgentState::Done | AgentState::Error | AgentState::Idle)) => *s,
+            _ => AgentState::Idle,
+        })),
+        EventKind::Block { key, open: true } => Some(Edge::BlockOpen(key.clone())),
+        EventKind::Block { key, open: false } => Some(Edge::BlockClose(key.clone())),
+        EventKind::Tool {
+            phase: ToolPhase::Started,
+            ..
+        } if source == Source::Hook => Some(Edge::ToolStart),
+        EventKind::Tool {
+            name,
+            phase: ToolPhase::Finished,
+            ..
+        } if source == Source::Hook => Some(Edge::ToolEnd(name.clone())),
+        _ => None,
+    }
+}
+
 /// Hook and Codex report facts; screen and scan only suspect. Lower index wins.
 fn tier(source: Source) -> Option<usize> {
     match source {
@@ -331,6 +359,8 @@ pub struct EventHub {
     next_attention: Arc<std::sync::atomic::AtomicU64>,
     /// The Activity last announced per session, so only a change is sent.
     derived: Arc<Mutex<HashMap<String, SessionActivity>>>,
+    /// The turn-and-obligation reducer of each session whose agent reports turns (hooks, ACP).
+    reducers: Arc<Mutex<HashMap<String, Reducer>>>,
     status_tx: broadcast::Sender<StatusChange>,
 }
 
@@ -345,6 +375,7 @@ impl EventHub {
             attention: Arc::default(),
             next_attention: Arc::default(),
             derived: Arc::default(),
+            reducers: Arc::default(),
             status_tx: broadcast::channel(256).0,
         }
     }
@@ -407,14 +438,89 @@ impl EventHub {
             return Err(anyhow!("token does not match the session"));
         }
         for k in kinds {
-            self.push(session, source, confidence, k, now_ms());
+            self.feed(session, source, confidence, k, now_ms());
         }
         Ok(())
     }
 
     /// An event from the server's own adapters (scan, screen). A repeated state is not an event.
     pub fn report(&self, session: &str, source: Source, confidence: Confidence, kind: EventKind) {
-        self.push(session, source, confidence, kind, now_ms());
+        self.feed(session, source, confidence, kind, now_ms());
+    }
+
+    /// Where an agent's own events enter: a turn or obligation edge goes through the session's reducer, which
+    /// decides the state; everything else is stored as it is.
+    fn feed(
+        &self,
+        session: &str,
+        source: Source,
+        confidence: Confidence,
+        kind: EventKind,
+        now: u64,
+    ) {
+        let kind = sanitize_kind(kind);
+        let edge = if tier(source) == Some(0) {
+            edge_of(source, &kind)
+        } else {
+            None
+        };
+        let Some(edge) = edge else {
+            // `Turn` and `Block` are inputs only; one that maps to no edge is dropped.
+            if !matches!(kind, EventKind::Turn { .. } | EventKind::Block { .. }) {
+                self.push(session, source, confidence, kind, now);
+            }
+            return;
+        };
+        if matches!(kind, EventKind::Tool { .. }) {
+            self.push(session, source, confidence, kind, now);
+        }
+        let next = {
+            let mut reducers = self.reducers.lock().unwrap();
+            if !reducers.contains_key(session) && reducers.len() >= MAX_SESSIONS {
+                return;
+            }
+            reducers
+                .entry(session.to_string())
+                .or_default()
+                .apply(edge, now)
+        };
+        if let Some(state) = next {
+            self.push(session, source, confidence, EventKind::State { state }, now);
+        }
+    }
+
+    /// What the screen of an agent session shows now, against what the reducer believes. Closes an obligation or a
+    /// turn that ended without telling anyone (Esc sends no hook); never opens one.
+    pub fn reconcile(&self, session: &str, screen: Screen) {
+        self.reconcile_at(session, screen, now_ms());
+    }
+
+    fn reconcile_at(&self, session: &str, screen: Screen, now: u64) {
+        let next = {
+            let mut reducers = self.reducers.lock().unwrap();
+            reducers
+                .get_mut(session)
+                .and_then(|r| r.reconcile(screen, now))
+        };
+        if let Some(state) = next {
+            // A reconciliation is a fact about the screen, not a finished turn: it clears a wait but raises nothing.
+            self.push(
+                session,
+                Source::Hook,
+                Confidence::Medium,
+                EventKind::State { state },
+                now,
+            );
+        }
+    }
+
+    /// Whether a fact about this session (an open turn or a wait for the human) must not be overridden by a guess.
+    fn pinned(&self, session: &str, now: u64) -> bool {
+        self.reducers
+            .lock()
+            .unwrap()
+            .get(session)
+            .is_some_and(|r| r.pins_at(now))
     }
 
     pub fn push(
@@ -427,6 +533,14 @@ impl EventHub {
     ) {
         let kind = sanitize_kind(kind);
         if matches!(kind, EventKind::Unknown) {
+            return;
+        }
+        // A guess from the screen or the scan never overrides an open turn or a wait for the human: the state
+        // those describe ends with an event or with the screen reconciliation, not with a clock.
+        if matches!(kind, EventKind::State { .. })
+            && matches!(tier(source), Some(1 | 2))
+            && self.pinned(session, now)
+        {
             return;
         }
         let mut rings = self.rings.lock().unwrap();
@@ -488,7 +602,7 @@ impl EventHub {
                 self.settle(session, source, confidence, &kind, prev_hook, now);
                 return;
             }
-            if confidence == Confidence::Low && source != Source::Screen {
+            if confidence == Confidence::Low && !matches!(source, Source::Screen | Source::Hook) {
                 if let Some(last) = ring
                     .events
                     .iter()
@@ -573,7 +687,8 @@ impl EventHub {
                         AgentState::Error => Some(AttentionKind::Failed),
                         _ => None,
                     };
-                    if let Some(k) = raise {
+                    // A reconciliation clears a wait but is no fact that something finished or failed.
+                    if let Some(k) = raise.filter(|_| confidence == Confidence::High) {
                         self.raise(session, k, source, now);
                     }
                 }
@@ -733,6 +848,10 @@ impl EventHub {
             .unwrap()
             .retain(|k, _| !k.starts_with(prefix) || live.contains(k));
         self.derived
+            .lock()
+            .unwrap()
+            .retain(|k, _| !k.starts_with(prefix) || live.contains(k));
+        self.reducers
             .lock()
             .unwrap()
             .retain(|k, _| !k.starts_with(prefix) || live.contains(k));
@@ -1662,5 +1781,231 @@ mod tests {
             .sum();
         assert!(bytes < 500_000, "rings hold {bytes} bytes");
         eprintln!("24000 events in {took:?}, rings {bytes} bytes");
+    }
+
+    // ---- the turn-and-obligation reducer, end to end: recorded hook payloads -> adapter -> hub ----
+
+    fn hook(h: &EventHub, name: &str, extra: serde_json::Value, now: u64) {
+        let mut d =
+            serde_json::json!({"hook_event_name": name, "tool_name": "Bash", "prompt": "do it"});
+        for (k, v) in extra.as_object().unwrap() {
+            d[k] = v.clone();
+        }
+        let (src, conf, kinds) = crate::adapters::claude(&d).unwrap_or_else(|| panic!("{name}"));
+        for k in kinds {
+            h.feed("s", src, conf, k, now);
+        }
+    }
+
+    fn now_state(h: &EventHub) -> AgentState {
+        h.snapshot_at(u64::MAX / 2)[0].state
+    }
+
+    fn quiet() -> serde_json::Value {
+        serde_json::json!({})
+    }
+
+    fn ask() -> serde_json::Value {
+        serde_json::json!({"tool_name": "AskUserQuestion"})
+    }
+
+    #[test]
+    fn a_question_is_needs_input_from_the_first_event_and_a_late_notification_changes_nothing() {
+        let h = EventHub::new([1; 32]);
+        hook(&h, "UserPromptSubmit", quiet(), 1_000);
+        assert_eq!(now_state(&h), AgentState::Working);
+        hook(&h, "PreToolUse", ask(), 2_000);
+        assert_eq!(
+            now_state(&h),
+            AgentState::NeedsInput,
+            "no waiting for the notification"
+        );
+        assert_eq!(h.attention_items().len(), 1);
+        hook(&h, "PermissionRequest", ask(), 2_050);
+        hook(
+            &h,
+            "Notification",
+            serde_json::json!({"notification_type": "permission_prompt", "message": "Claude needs your permission"}),
+            8_000,
+        );
+        assert_eq!(now_state(&h), AgentState::NeedsInput);
+        assert_eq!(h.attention_items().len(), 1, "one wait, one item");
+        assert_eq!(h.activities_at(9_000)[0].activity, Activity::Blocked);
+    }
+
+    #[test]
+    fn answering_resumes_work_and_the_wait_is_cleared_for_good() {
+        let h = EventHub::new([1; 32]);
+        hook(&h, "UserPromptSubmit", quiet(), 1_000);
+        hook(&h, "PreToolUse", ask(), 2_000);
+        hook(&h, "PostToolUse", ask(), 12_000);
+        assert_eq!(now_state(&h), AgentState::Working);
+        assert!(h.attention_items().is_empty(), "the wait was answered");
+        hook(&h, "Stop", quiet(), 14_000);
+        assert_eq!(now_state(&h), AgentState::Done);
+    }
+
+    #[test]
+    fn a_notification_after_the_dialog_was_answered_does_not_block_again() {
+        let h = EventHub::new([1; 32]);
+        hook(&h, "UserPromptSubmit", quiet(), 1_000);
+        hook(&h, "PreToolUse", quiet(), 1_100);
+        hook(&h, "PermissionRequest", quiet(), 1_200);
+        hook(&h, "PostToolUse", quiet(), 3_000);
+        hook(
+            &h,
+            "Notification",
+            serde_json::json!({"notification_type": "permission_prompt", "message": "m"}),
+            7_000,
+        );
+        assert_eq!(now_state(&h), AgentState::Working);
+    }
+
+    #[test]
+    fn a_guess_from_the_scan_never_overrides_a_wait_however_long_it_lasts() {
+        let h = EventHub::new([1; 32]);
+        hook(&h, "UserPromptSubmit", quiet(), 1_000);
+        hook(&h, "PreToolUse", ask(), 2_000);
+        for t in [10_000, 70_000, 400_000, 900_000] {
+            h.feed(
+                "s",
+                Source::Scan,
+                Confidence::Low,
+                EventKind::State {
+                    state: AgentState::Idle,
+                },
+                t,
+            );
+            assert_eq!(now_state(&h), AgentState::NeedsInput, "at {t}");
+        }
+        assert_eq!(h.activities_at(900_000)[0].activity, Activity::Blocked);
+    }
+
+    #[test]
+    fn a_long_tool_is_still_working_after_the_old_sixty_second_window() {
+        let h = EventHub::new([1; 32]);
+        hook(&h, "UserPromptSubmit", quiet(), 1_000);
+        hook(&h, "PreToolUse", quiet(), 2_000);
+        h.feed(
+            "s",
+            Source::Scan,
+            Confidence::Low,
+            EventKind::State {
+                state: AgentState::Idle,
+            },
+            200_000,
+        );
+        assert_eq!(now_state(&h), AgentState::Working);
+    }
+
+    #[test]
+    fn esc_on_a_dialog_sends_no_hook_and_the_screen_closes_the_wait() {
+        let h = EventHub::new([1; 32]);
+        hook(&h, "UserPromptSubmit", quiet(), 1_000);
+        hook(&h, "PreToolUse", ask(), 2_000);
+        let gone = Screen {
+            working: false,
+            idle: true,
+            blocked: false,
+        };
+        h.reconcile_at("s", gone, 3_000);
+        h.reconcile_at("s", gone, 5_000);
+        assert_eq!(
+            now_state(&h),
+            AgentState::NeedsInput,
+            "inside the grace window"
+        );
+        h.reconcile_at("s", gone, 7_000);
+        h.reconcile_at("s", gone, 9_000);
+        assert_eq!(now_state(&h), AgentState::Idle);
+        assert!(h.attention_items().is_empty());
+        // Nothing "finished": the owner interrupted it.
+        assert!(h
+            .attention_items()
+            .iter()
+            .all(|a| a.kind != AttentionKind::FinishedUnseen));
+    }
+
+    #[test]
+    fn a_dialog_that_is_still_on_screen_is_never_closed_by_the_screen() {
+        let h = EventHub::new([1; 32]);
+        hook(&h, "UserPromptSubmit", quiet(), 1_000);
+        hook(&h, "PermissionRequest", quiet(), 2_000);
+        let shown = Screen {
+            working: false,
+            idle: false,
+            blocked: true,
+        };
+        for t in (10_000..500_000).step_by(2_000) {
+            h.reconcile_at("s", shown, t);
+        }
+        assert_eq!(now_state(&h), AgentState::NeedsInput);
+    }
+
+    #[test]
+    fn idle_prompt_ends_a_turn_that_never_sent_stop_and_raises_nothing() {
+        let h = EventHub::new([1; 32]);
+        hook(&h, "UserPromptSubmit", quiet(), 1_000);
+        hook(
+            &h,
+            "Notification",
+            serde_json::json!({"notification_type": "idle_prompt", "message": "waiting"}),
+            61_000,
+        );
+        assert_eq!(now_state(&h), AgentState::Idle);
+        assert!(h
+            .attention_items()
+            .iter()
+            .all(|a| a.kind != AttentionKind::NeedsInput));
+    }
+
+    #[test]
+    fn a_failed_turn_is_an_error_and_a_new_prompt_starts_clean() {
+        let h = EventHub::new([1; 32]);
+        hook(&h, "UserPromptSubmit", quiet(), 1_000);
+        hook(&h, "PermissionRequest", quiet(), 1_500);
+        hook(
+            &h,
+            "StopFailure",
+            serde_json::json!({"error": "rate_limit"}),
+            2_000,
+        );
+        assert_eq!(now_state(&h), AgentState::Error);
+        hook(&h, "UserPromptSubmit", quiet(), 3_000);
+        assert_eq!(now_state(&h), AgentState::Working);
+    }
+
+    #[test]
+    fn turn_and_block_inputs_are_never_stored_or_sent_on() {
+        let h = EventHub::new([1; 32]);
+        hook(&h, "UserPromptSubmit", quiet(), 1_000);
+        hook(&h, "PermissionRequest", quiet(), 1_500);
+        assert!(h
+            .since("s", 0)
+            .iter()
+            .all(|e| !matches!(e.kind, EventKind::Turn { .. } | EventKind::Block { .. })));
+    }
+
+    #[test]
+    fn two_open_requests_keep_an_acp_session_blocked_until_both_are_answered() {
+        let h = EventHub::new([1; 32]);
+        let ev = |kind: EventKind, now: u64| h.feed("a", Source::Acp, Confidence::High, kind, now);
+        let block = |key: &str, open: bool| EventKind::Block {
+            key: key.into(),
+            open,
+        };
+        ev(
+            EventKind::Turn {
+                open: true,
+                outcome: None,
+            },
+            1_000,
+        );
+        ev(block("acp-1", true), 2_000);
+        ev(block("acp-2", true), 2_100);
+        ev(block("acp-1", false), 3_000);
+        assert_eq!(h.snapshot_at(4_000)[0].state, AgentState::NeedsInput);
+        ev(block("acp-2", false), 3_500);
+        assert_eq!(h.snapshot_at(4_000)[0].state, AgentState::Working);
     }
 }

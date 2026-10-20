@@ -197,3 +197,34 @@ describe('terminal lane', () => {
     shut.c.close();
   });
 });
+
+describe('a connect that fails', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('says why WebRTC failed and logs what each transport reported, then retries', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('document', Object.assign(new EventTarget(), { visibilityState: 'visible' }));
+    vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const states: Array<[string, string | undefined]> = [];
+    const c = new Connection({
+      target: async () => ({ record: { udp_port: 4443 } as never }),
+      openers: { rtc: async () => { throw new Error('ICE failed'); }, ws: async () => { throw new Error('unused'); } },
+      credentials: async () => ({ cert: 'c', sign: async () => 's' }),
+      onState: (s, detail) => states.push([s, detail]),
+      onReady: () => {},
+      onFatal: () => {},
+      onDrop: () => {},
+    });
+    c.start();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(states.at(-1)).toEqual(['unreachable', expect.stringContaining('UDP port 4443 (ICE failed)')]);
+    expect(warn).toHaveBeenCalledWith('[termenbox] connect failed:', 'rtc: ICE failed');
+    expect(c.retry).not.toBeNull();
+    c.close();
+  });
+});

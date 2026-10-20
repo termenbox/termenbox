@@ -33,12 +33,9 @@ UNITS=/home/alice/.config/systemd/user
 usr() { as_alice systemctl --user "$@"; }
 snapshot() { (cd /home/alice && find . -path ./.cache -prune -o -print | sort | md5sum); ls -A /etc/systemd/system /usr/local/bin | sort | md5sum; }
 
-echo "== without tmux it stops and says what to run, having changed nothing"
-before="$(snapshot)"
-if as_alice sh /install.sh "$SECRET" "$ORIGIN" host-me >/tmp/notmux.txt 2>&1; then fail "installed without tmux"; fi
-grep -q "tmux is needed" /tmp/notmux.txt || { cat /tmp/notmux.txt; fail "the refusal does not say why"; }
-[ "$(snapshot)" = "$before" ] || fail "a refused install changed the machine"
-apt-get install -y -qq tmux >/dev/null 2>&1 || fail "could not install tmux for the rest of the test"
+echo "== this machine has no tmux of its own (the install must bring one, decision 0119)"
+if command -v tmux >/dev/null 2>&1; then fail "this test needs a machine with no tmux"; fi
+BUNDLED=/home/alice/.local/bin/termenbox-tmux
 
 echo "== a dry run changes nothing"
 before="$(snapshot)"
@@ -61,15 +58,43 @@ grep -q '^WantedBy=default.target' "$UNITS/termenbox.service" || fail "the unit 
 [ "$(ls -A /etc/systemd/system /usr/local/bin /var/lib | sort | md5sum)" = "$before_system" ] || fail "something outside alice's home was changed"
 as_alice "$BIN" --journal-dir "$JOURNAL" --journal-list | grep -q unit_installed || fail "the journal has no unit entry"
 as_alice "$BIN" --journal-dir "$JOURNAL" --journal-list | grep -q file_created || fail "the journal has no binary entry"
+echo "== the bundled tmux is in place, verified, owned by alice, journaled, and the server runs on it"
+[ -x "$BUNDLED" ] || fail "the bundled tmux is not in alice's ~/.local/bin"
+[ "$(stat -c %U "$BUNDLED")" = alice ] || fail "the bundled tmux does not belong to alice"
+[ "$(sha256sum "$BUNDLED" | cut -d' ' -f1)" = "$(sha256sum /release/tmux-x86_64-linux | cut -d' ' -f1)" ] || fail "the bundled tmux is not the signed one"
+for n in tmux-COPYING tmux-libevent-LICENSE tmux-ncurses-COPYING; do
+  [ -f "/home/alice/.local/bin/termenbox-$n" ] || fail "the notice $n is not beside the tmux"
+done
+as_alice "$BUNDLED" -V | grep -q '^tmux ' || fail "the bundled tmux does not run"
+as_alice "$BIN" --journal-dir "$JOURNAL" --journal-list | grep -q termenbox-tmux || fail "the journal has no tmux entry"
+! command -v tmux >/dev/null 2>&1 || fail "a tmux was installed on the machine; the bundled one is all there should be"
+# The server refuses to start without a tmux (startup self-check), and the machine has none on PATH: it is up, so it found the bundled one.
+usr is-active --quiet termenbox || fail "the server is not running without a tmux on PATH"
+if ! grep -q "stub tmux" "$BUNDLED"; then
+  # A real tmux: a session that runs a command, and control mode, which is what the server speaks.
+  tm() { as_alice env TERM=xterm-256color TMUX_TMPDIR=/tmp/alice-tmux "$BUNDLED" -f /dev/null "$@"; }
+  as_alice mkdir -p /tmp/alice-tmux
+  tm new-session -d -s probe -x 80 -y 24 'echo session-ok; exec sleep 30'
+  sleep 1
+  tm capture-pane -p -t probe | grep -q session-ok || fail "the bundled tmux did not run a session"
+  printf 'list-sessions\n' | tm -C attach -t probe 2>&1 | grep -q '^%begin' || fail "control mode did not answer"
+  tm kill-server
+fi
 # Starting at boot needs lingering: either alice could switch it on for herself, or the installer said what root would have to run.
 if [ "$(loginctl show-user alice -p Linger --value)" = yes ]; then
   as_alice "$BIN" --journal-dir "$JOURNAL" --journal-list | grep -q linger_enabled || fail "lingering was enabled but is not in the journal"
 else
   grep -q "loginctl enable-linger alice" /tmp/install.txt || fail "no lingering and no instruction how to get it"
 fi
+grep -q "What needs root" /tmp/install.txt || fail "the installer did not say first what needs root"
+! grep -q '^Environment=TERMENBOX_UDP_PORT' "$UNITS/termenbox.service" || fail "the unit pins a UDP port; the server picks its own"
+alice_port="$(cat "$STATE/udp_port")"
+{ [ "$alice_port" -ge 4443 ] && [ "$alice_port" -le 4542 ]; } || fail "the server's UDP port $alice_port is outside 4443-4542"
 
 echo "== installing again changes nothing"
 entries="$(as_alice "$BIN" --journal-dir "$JOURNAL" --journal-list | wc -l)"
+# An install from before the server picked its own UDP port left this file behind; it must do no harm.
+as_alice sh -c "echo 4443 > '$JOURNAL/udp_port'"
 as_alice sh /install.sh "$SECRET" "$ORIGIN" host-me
 [ "$(as_alice "$BIN" --journal-dir "$JOURNAL" --journal-list | wc -l)" = "$entries" ] || fail "a second install wrote more journal entries"
 usr is-active --quiet termenbox || fail "the service stopped"
@@ -97,10 +122,13 @@ echo "== a newer release is installed by alice's own updater, the old binary is 
 helper /release2 | grep -q "updated .* -> 9.0.1" || fail "the update did not report success"
 [ "$(sha "$BIN")" = "$(sha /release2/termenbox-server-x86_64-linux)" ] || fail "the new binary is not in place"
 [ -f "$BIN.prev" ] || fail "the previous binary was not kept"
+[ "$(sha "$BUNDLED")" = "$(sha /release2/tmux-x86_64-linux)" ] || fail "the update did not carry the new tmux"
 usr is-active --quiet termenbox || fail "the service is not active after the update"
 
 echo "== a release that does not come up is rolled back"
 good_sha="$(sha "$BIN")"
+good_tmux="$(sha "$BUNDLED")"
+# release3 carries the first tmux again, so a rollback that ignored tmux would leave it swapped.
 set +e
 helper /release3 > /tmp/rollback.txt 2>&1
 code=$?
@@ -108,6 +136,7 @@ set -e
 [ "$code" = 2 ] || { cat /tmp/rollback.txt; fail "a failed update did not exit with 2 (got $code)"; }
 grep -q "rolled back" /tmp/rollback.txt || fail "the rollback was not reported"
 [ "$(sha "$BIN")" = "$good_sha" ] || fail "the old binary was not restored"
+[ "$(sha "$BUNDLED")" = "$good_tmux" ] || fail "the tmux was not put back with the server"
 usr is-active --quiet termenbox || fail "the service is not active after the rollback"
 
 echo "== a request from the server reaches the user helper, and junk does not"
@@ -121,6 +150,81 @@ while [ -n "$(ls -A "$requests")" ] && [ $i -lt 30 ]; do i=$((i + 1)); sleep 1; 
 [ -z "$(ls -A "$requests")" ] || fail "the helper did not consume the requests"
 [ -f /etc/hostname ] || fail "a link in the requests directory damaged its target"
 
+echo "== a second user and a system install on the same machine (decisions 0115, 0118)"
+# bob is not a sudoer, and a sudo that records every call stands in front of the real one: bob's install must never reach it.
+useradd --create-home --shell /bin/bash bob
+! id -nG bob | tr ' ' '\n' | grep -qxE 'sudo|wheel|admin' || fail "bob is a sudoer; the test needs a user without root"
+B_UID="$(id -u bob)"
+systemctl start "user@$B_UID.service"
+i=0; while [ ! -S "/run/user/$B_UID/bus" ] && [ $i -lt 20 ]; do i=$((i + 1)); sleep 1; done
+[ -S "/run/user/$B_UID/bus" ] || fail "bob has no user manager in this machine"
+mkdir -p /tmp/nosudo
+printf '#!/bin/sh\necho "$@" >> /tmp/sudo-called\nexit 1\n' > /tmp/nosudo/sudo
+chmod 755 /tmp/nosudo /tmp/nosudo/sudo
+rm -f /tmp/sudo-called
+as_bob() {
+  runuser -u bob -- env HOME=/home/bob XDG_RUNTIME_DIR="/run/user/$B_UID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$B_UID/bus" \
+    PATH="/tmp/nosudo:$PATH" TERMENBOX_RELEASE_URL=file:///release TERMENBOX_RELEASE_KEYS="$(cat /keys.txt)" "$@"
+}
+bob_sc() { as_bob systemctl --user "$@"; }
+B_STATE=/home/bob/.config/termenbox
+SECRET2="$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)"
+# The system install first (host-user): one per machine, with its own user, state and unit.
+TERMENBOX_RELEASE_URL=file:///release TERMENBOX_RELEASE_KEYS="$(cat /keys.txt)" TERMENBOX_SKIP_FIREWALL=1 sh /install.sh "$SECRET" "$ORIGIN" host-user >/dev/null
+systemctl is-active --quiet termenbox || fail "the system service is not active"
+sys_port="$(sed -n 's/^Environment=TERMENBOX_PORT=//p' /etc/systemd/system/termenbox.service)"
+sys_udp="$(sed -n 's/^Environment=TERMENBOX_UDP_PORT=//p' /etc/systemd/system/termenbox.service)"
+as_bob sh /install.sh "$SECRET2" "$ORIGIN" host-me | tee /tmp/bob.txt
+[ ! -e /tmp/sudo-called ] || fail "bob's install called sudo: $(cat /tmp/sudo-called)"
+grep -q "4443-4542" /tmp/bob.txt || { cat /tmp/bob.txt; fail "bob's install did not print the UDP range note"; }
+! grep -q "Reusing the server" /tmp/bob.txt || fail "bob's fresh install took over someone else's state"
+bob_sc is-active --quiet termenbox || fail "bob's own service is not active next to the others"
+usr is-active --quiet termenbox || fail "bob's install stopped alice's service"
+systemctl is-active --quiet termenbox || fail "bob's install stopped the system service"
+
+echo "== the three servers have their own ports, identities and state"
+bob_port="$(sed -n 's/^Environment=TERMENBOX_PORT=//p' /home/bob/.config/systemd/user/termenbox.service)"
+bob_udp="$(cat "$B_STATE/udp_port")"
+alice_udp="$(cat "$STATE/udp_port")"
+{ [ "$bob_udp" -ge 4443 ] && [ "$bob_udp" -le 4542 ]; } || fail "bob's UDP port $bob_udp is outside 4443-4542"
+{ [ "$alice_udp" -ge 4443 ] && [ "$alice_udp" -le 4542 ]; } || fail "alice's UDP port $alice_udp is outside 4443-4542"
+[ "$alice_udp" != "$bob_udp" ] || fail "alice and bob took the same UDP port $alice_udp"
+[ -z "$sys_udp" ] || { [ "$sys_udp" != "$alice_udp" ] && [ "$sys_udp" != "$bob_udp" ]; } || fail "the system server shares a UDP port with a user server"
+alice_http="$(sed -n 's/^Environment=TERMENBOX_PORT=//p' "$UNITS/termenbox.service")"
+{ [ "$alice_http" != "$bob_port" ] && [ "$alice_http" != "$sys_port" ] && [ "$bob_port" != "$sys_port" ]; } || fail "two servers took the same health port"
+for p in "$sys_port" "$alice_http" "$bob_port"; do curl -fs "http://127.0.0.1:$p/health" >/dev/null || fail "no server answers on port $p"; done
+bob_pid="$(bob_sc show -p MainPID --value termenbox)"
+{ [ "$bob_pid" -gt 0 ] && [ "$(stat -c %U "/proc/$bob_pid")" = bob ]; } || fail "bob's server does not run as bob"
+a_sum="$(sha256sum "$STATE/server_key" | cut -d' ' -f1)"
+b_sum="$(sha256sum "$B_STATE/server_key" | cut -d' ' -f1)"
+s_sum="$(sha256sum /var/lib/termenbox/server_key | cut -d' ' -f1)"
+{ [ "$a_sum" != "$b_sum" ] && [ "$a_sum" != "$s_sum" ] && [ "$b_sum" != "$s_sum" ]; } || fail "two servers share an identity"
+{ [ "$(stat -c %U "$B_STATE")" = bob ] && [ "$(stat -c %U "$STATE")" = alice ]; } || fail "a state directory is not owned by its user"
+if as_bob cat "$STATE/server_key" >/dev/null 2>&1; then fail "bob can read alice's server key"; fi
+if as_alice cat "$B_STATE/server_key" >/dev/null 2>&1; then fail "alice can read bob's server key"; fi
+
+echo "== stopping one leaves the others running"
+usr stop termenbox
+bob_sc is-active --quiet termenbox || fail "stopping alice's server stopped bob's"
+systemctl is-active --quiet termenbox || fail "stopping alice's server stopped the system service"
+curl -fs "http://127.0.0.1:$bob_port/health" >/dev/null || fail "bob's server stopped answering"
+usr start termenbox
+i=0; until curl -fs "http://127.0.0.1:$alice_http/health" >/dev/null 2>&1 || [ $i -ge 20 ]; do i=$((i + 1)); sleep 1; done
+curl -fs "http://127.0.0.1:$alice_http/health" >/dev/null || fail "alice's server did not come back"
+bob_sc stop termenbox
+usr is-active --quiet termenbox || fail "stopping bob's server stopped alice's"
+systemctl is-active --quiet termenbox || fail "stopping bob's server stopped the system service"
+bob_sc start termenbox
+i=0; until curl -fs "http://127.0.0.1:$bob_port/health" >/dev/null 2>&1 || [ $i -ge 20 ]; do i=$((i + 1)); sleep 1; done
+curl -fs "http://127.0.0.1:$bob_port/health" >/dev/null || fail "bob's server did not come back"
+
+echo "== alice connects Claude Code's hooks, which the uninstall must take out again"
+mkdir -p /home/alice/.claude
+printf '{\n  "model": "opus"\n}\n' > /home/alice/.claude/settings.json
+chown -R alice /home/alice/.claude
+as_alice env TERMENBOX_CONFIG_DIR="$STATE" "$BIN" --connect-claude --yes >/dev/null
+grep -q -- '--hook claude' /home/alice/.claude/settings.json || fail "the hooks were not connected"
+
 echo "== uninstall.sh as alice shows the plan first and changes nothing"
 before="$(snapshot)"
 as_alice sh /uninstall.sh | grep -q "Nothing was changed" || fail "the uninstall preview did not say it changed nothing"
@@ -131,37 +235,20 @@ echo "== uninstall.sh --yes, as alice, removes it all"
 as_alice sh /uninstall.sh --yes
 [ ! -e "$UNITS/termenbox.service" ] || fail "the unit is still there"
 [ ! -e "$BIN" ] || fail "the binary is still there"
+[ ! -e "$BUNDLED" ] || fail "the bundled tmux is still there"
+ls /home/alice/.local/bin/termenbox-tmux-* >/dev/null 2>&1 && fail "a tmux notice is still there"
 [ ! -e "$STATE" ] || fail "the state directory is still there"
 [ ! -e "$JOURNAL" ] || fail "the journal is still there"
+if grep -q -- '--hook claude' /home/alice/.claude/settings.json; then fail "the uninstall left Termenbox's hooks in Claude Code's settings"; fi
+grep -q '"model": "opus"' /home/alice/.claude/settings.json || fail "the uninstall changed more of Claude Code's settings than the hooks"
 [ -d /home/alice ] || fail "alice's home was touched"
 [ "$(loginctl show-user alice -p Linger --value)" != yes ] || fail "lingering the installer enabled was left on"
+bob_sc is-active --quiet termenbox || fail "uninstalling alice's server stopped bob's"
+systemctl is-active --quiet termenbox || fail "uninstalling alice's server stopped the system service"
+[ -f "$B_STATE/server_key" ] && [ -f /var/lib/termenbox/server_key ] || fail "uninstalling alice's server removed another server's state"
+curl -fs "http://127.0.0.1:$bob_port/health" >/dev/null || fail "bob's server stopped answering after alice's uninstall"
 
-# ---------------------------------------------------------------------------------------------------------------------
-echo "== a system install and another user's own install live side by side"
-useradd --create-home --shell /bin/bash bob
-B_UID="$(id -u bob)"
-systemctl start "user@$B_UID.service"
-i=0; while [ ! -S "/run/user/$B_UID/bus" ] && [ $i -lt 20 ]; do i=$((i + 1)); sleep 1; done
-[ -S "/run/user/$B_UID/bus" ] || fail "bob has no user manager in this machine"
-as_bob() {
-  runuser -u bob -- env HOME=/home/bob XDG_RUNTIME_DIR="/run/user/$B_UID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$B_UID/bus" \
-    TERMENBOX_RELEASE_URL=file:///release TERMENBOX_RELEASE_KEYS="$(cat /keys.txt)" TERMENBOX_SKIP_FIREWALL=1 "$@"
-}
-SECRET2="$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)"
-TERMENBOX_RELEASE_URL=file:///release TERMENBOX_RELEASE_KEYS="$(cat /keys.txt)" TERMENBOX_SKIP_FIREWALL=1 sh /install.sh "$SECRET" "$ORIGIN" host-user >/dev/null
-systemctl is-active --quiet termenbox || fail "the system service is not active"
-sys_port="$(sed -n 's/^Environment=TERMENBOX_PORT=//p' /etc/systemd/system/termenbox.service)"
-as_bob sh /install.sh "$SECRET2" "$ORIGIN" host-me | tee /tmp/bob.txt
-as_bob systemctl --user is-active --quiet termenbox || fail "bob's own service is not active next to the system one"
-systemctl is-active --quiet termenbox || fail "bob's install stopped the system service"
-bob_port="$(sed -n 's/^Environment=TERMENBOX_PORT=//p' /home/bob/.config/systemd/user/termenbox.service)"
-[ "$bob_port" != "$sys_port" ] || fail "both servers took the same port"
-curl -fs "http://127.0.0.1:$sys_port/health" >/dev/null || fail "the system server does not answer"
-curl -fs "http://127.0.0.1:$bob_port/health" >/dev/null || fail "bob's server does not answer"
-bob_pid="$(as_bob systemctl --user show -p MainPID --value termenbox)"
-[ "$(stat -c %U "/proc/$bob_pid")" = bob ] || fail "bob's server does not run as bob"
-! cmp -s /var/lib/termenbox/server_key /home/bob/.config/termenbox/server_key || fail "the two servers share an identity"
-grep -q "Reusing the server" /tmp/bob.txt && fail "bob's fresh install took over someone else's state"
+# bob and the system install are still here from the section above.
 
 echo "== a system service that runs as the same user keeps the old route, and says why before asking for sudo"
 sed -i 's/^User=.*/User=bob/' /etc/systemd/system/termenbox.service

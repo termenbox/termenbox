@@ -37,8 +37,8 @@ describe('openTransport', () => {
     const o = openers({ rtc: vi.fn(async () => { throw new Error('ICE failed'); }) });
     const err = await openTransport({ record }, o).catch((e) => e);
     expect(err).toBeInstanceOf(Unreachable);
-    expect(err.message).toBe(describeRtcFailure(record));
-    expect(err.message).toContain('UDP port 4443');
+    expect(err.message).toBe(describeRtcFailure(record, 'ICE failed'));
+    expect(err.message).toContain('UDP port 4443 (ICE failed)');
     expect(err.attempts).toEqual(['rtc: ICE failed']);
   });
 
@@ -48,7 +48,7 @@ describe('openTransport', () => {
       ws: vi.fn(async () => { throw new Error('WebSocket failed'); }),
     });
     const err = await openTransport({ record: { ...record, ws_url: 'https://t.example' } }, o).catch((e) => e);
-    expect(err.message).toContain('UDP port 4443');
+    expect(err.message).toContain('UDP port 4443 (timeout)');
     expect(err.attempts).toEqual(['rtc: timeout', 'ws: WebSocket failed']);
   });
 
