@@ -2,15 +2,16 @@
   import DecisionPanel from './DecisionPanel.svelte';
   import AcpMarkdown from './AcpMarkdown.svelte';
   import AcpDiffView from './AcpDiffView.svelte';
-  import { baseName, blocksOf, diffRunCount, entryMarks, permissionOutcome, planProgress, toolStatus, type Entry } from './lib/acpStream';
+  import { baseName, blocksOf, diffRunCount, entryMarks, permissionOutcome, planProgress, toolStatus, TRUNCATED_NOTE, type Entry } from './lib/acpStream';
   import { decorate, type Part } from './lib/markdown';
   import type { Decision } from './lib/decision';
 
   /** One entry of the session stream (U07b). Agent text is drawn as text only. A permission that is open is the same
    *  decision card as on Home, answered with one tap; once answered it is one line of the log. `current` is the search
-   *  hit (0-based, within this entry) that stands out, or -1. */
-  let { entry, query = '', current = -1, asking = false, opened, ontoggle, onanswer, sessionKey, name, agent, now }: {
-    entry: Entry; query?: string; current?: number; asking?: boolean; opened: Set<string>; ontoggle: (key: string) => void;
+   *  hit (0-based, within this entry) that stands out, or -1. `announce`: an error line is read out at once (an alert) only
+   *  when it is new, not when it is history that arrives with the stream. */
+  let { entry, query = '', current = -1, asking = false, announce = false, opened, ontoggle, onanswer, sessionKey, name, agent, now }: {
+    entry: Entry; query?: string; current?: number; asking?: boolean; announce?: boolean; opened: Set<string>; ontoggle: (key: string) => void;
     onanswer: (promptId: string, optionId: string) => void; sessionKey: string; name: string; agent?: string; now: number;
   } = $props();
 
@@ -37,11 +38,15 @@
     <p class="min-w-0 flex-1 text-base break-words whitespace-pre-wrap"><span class="sr-only">You: </span>{@render runs(marks[0], entry.text)}</p>
   </div>
 {:else if entry.kind === 'message'}
-  <div data-kind="message"><AcpMarkdown blocks={decorate(blocksOf(entry.text), query, current)} /></div>
+  <div data-kind="message">
+    <AcpMarkdown blocks={decorate(blocksOf(entry.text), query, current)} />
+    {#if entry.truncated}<p class="pt-1 text-sm text-muted" data-truncated>{TRUNCATED_NOTE}</p>{/if}
+  </div>
 {:else if entry.kind === 'thought'}
   <details class="text-soft" open={current >= 0} data-kind="thought">
     <summary class="flex min-h-11 cursor-pointer items-center text-sm">Thinking</summary>
     <p class="pb-2 text-sm break-words whitespace-pre-wrap">{@render runs(marks[0], entry.text)}</p>
+    {#if entry.truncated}<p class="pb-2 text-sm text-muted" data-truncated>{TRUNCATED_NOTE}</p>{/if}
   </details>
 {:else if entry.kind === 'tool'}
   {@const st = toolStatus(entry.status)}
@@ -94,7 +99,7 @@
     </p>
   {/if}
 {:else}
-  <p class="flex gap-2 text-sm {entry.level === 'error' ? 'text-bad' : 'text-muted'}" data-kind="notice" data-level={entry.level} role={entry.level === 'error' ? 'alert' : undefined}>
+  <p class="flex gap-2 text-sm {entry.level === 'error' ? 'text-bad' : 'text-muted'}" data-kind="notice" data-level={entry.level} role={entry.level === 'error' && announce ? 'alert' : undefined}>
     <span aria-hidden="true">{entry.level === 'error' ? '✕' : '–'}</span>
     <span class="min-w-0 flex-1 break-words">{@render runs(marks[0], entry.text)}</span>
   </p>

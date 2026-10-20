@@ -15,7 +15,7 @@ use termenbox_core::protocol::{
     AcpBody, AcpCommand, AcpDiff, AcpEntry, AcpInfo, AcpLocation, AcpMode, AcpUsage, AcpView,
 };
 
-use crate::events::{sanitize_block, sanitize_text};
+use crate::events::{sanitize_block, sanitize_block_cut, sanitize_text};
 
 pub const MAX_ENTRIES: usize = 400;
 pub const MAX_BYTES: usize = 512 * 1024;
@@ -26,7 +26,7 @@ pub const MAX_ENTRY_BYTES: usize = 24 * 1024;
 /// One reply, thought or prompt.
 const MESSAGE_CHARS: usize = 16_000;
 const MESSAGE_LINES: usize = 600;
-/// What is kept raw while a reply grows; a longer reply stops growing (the entry says so).
+/// What is kept raw while a reply grows; a longer reply stops growing (the entry is then marked `truncated`).
 const RAW_BYTES: usize = 48 * 1024;
 const TITLE_CHARS: usize = 200;
 const PATH_CHARS: usize = 300;
@@ -65,6 +65,8 @@ struct Open {
     id: u64,
     message_id: Option<String>,
     raw: String,
+    /// Text arrived after `raw` was full and was not kept.
+    capped: bool,
     /// Chunks arrived that the entry does not show yet. The text is cleaned when it is read or closed, not per chunk,
     /// so a reply of thousands of chunks costs one pass per update to the client and not one per chunk.
     dirty: bool,
@@ -108,8 +110,8 @@ fn weight(body: &AcpBody) -> usize {
     };
     64 + match body {
         AcpBody::User { text }
-        | AcpBody::Message { text }
-        | AcpBody::Thought { text }
+        | AcpBody::Message { text, .. }
+        | AcpBody::Thought { text, .. }
         | AcpBody::Notice { text, .. } => text.len(),
         AcpBody::Tool {
             title,
@@ -236,8 +238,8 @@ fn texts_mut(body: &mut AcpBody) -> Vec<&mut String> {
     }
     match body {
         AcpBody::User { text }
-        | AcpBody::Message { text }
-        | AcpBody::Thought { text }
+        | AcpBody::Message { text, .. }
+        | AcpBody::Thought { text, .. }
         | AcpBody::Notice { text, .. } => vec![text],
         AcpBody::Tool { diffs: d, .. } => diffs(d),
         AcpBody::Permission { diffs: d, plan, .. } => {
@@ -261,8 +263,14 @@ fn fit(e: &mut AcpEntry) {
                 *t = cut(t, t.chars().count() / 2);
             }
         }
-        if let AcpBody::Tool { diffs, .. } | AcpBody::Permission { diffs, .. } = &mut e.body {
-            diffs.iter_mut().for_each(|d| d.truncated = true);
+        match &mut e.body {
+            AcpBody::Tool { diffs, .. } | AcpBody::Permission { diffs, .. } => {
+                diffs.iter_mut().for_each(|d| d.truncated = true);
+            }
+            AcpBody::Message { truncated, .. } | AcpBody::Thought { truncated, .. } => {
+                *truncated = true;
+            }
+            _ => {}
         }
     }
     e.body = AcpBody::Notice {
@@ -429,16 +437,17 @@ impl Stream {
             return;
         };
         open.dirty = false;
-        let (id, kind, clean) = (
-            open.id,
-            open.kind,
-            sanitize_block(&open.raw, MESSAGE_CHARS, MESSAGE_LINES),
-        );
+        let (id, kind, capped) = (open.id, open.kind, open.capped);
+        let (text, cut) = sanitize_block_cut(&open.raw, MESSAGE_CHARS, MESSAGE_LINES);
+        let truncated = cut || capped;
         let body = match kind {
-            Chunk::Message => AcpBody::Message { text: clean },
-            Chunk::Thought => AcpBody::Thought { text: clean },
+            Chunk::Message => AcpBody::Message { text, truncated },
+            Chunk::Thought => AcpBody::Thought { text, truncated },
         };
-        self.set(id, body);
+        // Past the cut every chunk marks the entry dirty but the shown text no longer changes: it is not sent again.
+        if self.body(id) != Some(&body) {
+            self.set(id, body);
+        }
     }
 
     /// Ends the growing reply or thought: what it holds is final.
@@ -655,9 +664,11 @@ impl Stream {
             let body = match kind {
                 Chunk::Message => AcpBody::Message {
                     text: String::new(),
+                    truncated: false,
                 },
                 Chunk::Thought => AcpBody::Thought {
                     text: String::new(),
+                    truncated: false,
                 },
             };
             let id = self.push(body);
@@ -666,6 +677,7 @@ impl Stream {
                 id,
                 message_id,
                 raw: String::new(),
+                capped: false,
                 dirty: false,
             });
         }
@@ -673,14 +685,17 @@ impl Stream {
             return;
         };
         let room = RAW_BYTES.saturating_sub(open.raw.len());
-        if room == 0 {
-            return;
-        }
         let mut take = text.len().min(room);
         while !text.is_char_boundary(take) {
             take -= 1;
         }
+        let newly_capped = take < text.len() && !open.capped;
+        open.capped |= take < text.len();
         open.raw.push_str(&text[..take]);
+        // Nothing kept and nothing new to say: the revision does not move (a full reply streams on for minutes).
+        if take == 0 && !newly_capped {
+            return;
+        }
         open.dirty = true;
         self.touch();
     }

@@ -110,7 +110,7 @@ fn a_claude_edit_the_owner_refused_reads_as_prompt_tool_permission_and_reply() {
     // The reply is the chunks joined, as one message.
     assert!(b
         .iter()
-        .any(|e| matches!(e, AcpBody::Message { text } if text == "I didn't create `a.txt`:")));
+        .any(|e| matches!(e, AcpBody::Message { text, .. } if text == "I didn't create `a.txt`:")));
     // The owner's prompts are in the stream, and the cancelled turn says so.
     assert!(b
         .iter()
@@ -191,7 +191,7 @@ fn kilo_todos_arrive_as_a_tool_call_and_become_the_plan() {
     assert!(b.iter().any(|e| matches!(e, AcpBody::Thought { .. })));
     assert!(b
         .iter()
-        .any(|e| matches!(e, AcpBody::Message { text } if text.starts_with("bash, edit"))));
+        .any(|e| matches!(e, AcpBody::Message { text, .. } if text.starts_with("bash, edit"))));
     // kilo lists its modes only as a config option; the change goes through set_config_option.
     assert_eq!(st.mode_via(), &ModeVia::Config("mode".into()));
     assert_eq!(st.info.mode.as_deref(), Some("code"));
@@ -244,7 +244,7 @@ fn a_secret_split_over_two_chunks_is_scrubbed_in_the_whole() {
     st.update(&chunk("the key is ghp_abcdefghij"));
     st.update(&chunk("klmnopqrstuvwxyz0123 ok\n\n\n\nnext\x1b[31m line"));
     let b = bodies(&mut st);
-    let AcpBody::Message { text } = &b[0] else {
+    let AcpBody::Message { text, .. } = &b[0] else {
         panic!()
     };
     assert!(text.contains("[token]") && !text.contains("ghp_"), "{text}");
@@ -262,14 +262,14 @@ fn a_reply_keeps_its_markdown_layout_and_stops_growing_at_the_limit() {
     st.update(&chunk(
         "# Title\n\n- one\n    indented code\n```rs\nfn x() {}\n```\n",
     ));
-    let AcpBody::Message { text } = &bodies(&mut st)[0] else {
+    let AcpBody::Message { text, .. } = &bodies(&mut st)[0] else {
         panic!()
     };
     assert!(text.contains("    indented code") && text.contains("```rs\nfn x() {}\n```"));
     for _ in 0..4000 {
         st.update(&chunk(&"word ".repeat(40)));
     }
-    let AcpBody::Message { text } = &bodies(&mut st)[0] else {
+    let AcpBody::Message { text, .. } = &bodies(&mut st)[0] else {
         panic!()
     };
     assert!(text.chars().count() <= 16_000);
@@ -304,11 +304,11 @@ fn a_client_gets_only_what_changed_and_a_reset_when_its_copy_is_not_this_stream(
     let (delta, _) = st.view("s", Some(first.rev), Some(first.epoch), info_rev);
     assert!(!delta.reset && delta.info.is_none());
     assert_eq!(delta.entries.len(), 1);
-    assert!(matches!(&delta.entries[0].body, AcpBody::Message { text } if text == "hi"));
+    assert!(matches!(&delta.entries[0].body, AcpBody::Message { text, .. } if text == "hi"));
     // The reply grows: it is sent whole again, once.
     st.update(&json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": " there"}}));
     let (delta2, _) = st.view("s", Some(delta.rev), Some(first.epoch), info_rev);
-    assert!(matches!(&delta2.entries[0].body, AcpBody::Message { text } if text == "hi there"));
+    assert!(matches!(&delta2.entries[0].body, AcpBody::Message { text, .. } if text == "hi there"));
     // Another epoch (the server restarted), or a revision from the future: everything again.
     assert!(st.view("s", Some(2), Some(7), 0).0.reset);
     assert!(st.view("s", Some(9999), Some(42), 0).0.reset);
@@ -365,7 +365,7 @@ fn thousands_of_chunks_cost_one_cleaning_pass_per_read_not_one_per_chunk() {
     }
     let (view, _) = st.view("s", None, None, 0);
     // 9000 chunks of 5 bytes fit in the raw buffer: the reply is the first 16 000 characters, cleaned once.
-    let AcpBody::Message { text } = &view.entries[0].body else {
+    let AcpBody::Message { text, .. } = &view.entries[0].body else {
         panic!()
     };
     assert_eq!(text.chars().count(), 16_000);
@@ -378,6 +378,79 @@ fn thousands_of_chunks_cost_one_cleaning_pass_per_read_not_one_per_chunk() {
     let rev = st.rev();
     let _ = st.view("s", None, None, 0);
     assert_eq!(st.rev(), rev);
+}
+
+fn msg_chunk(t: &str) -> Value {
+    json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": t}})
+}
+
+fn truncated_of(b: &AcpBody) -> bool {
+    match b {
+        AcpBody::Message { truncated, .. } | AcpBody::Thought { truncated, .. } => *truncated,
+        other => panic!("not a reply: {other:?}"),
+    }
+}
+
+#[test]
+fn a_reply_that_was_cut_says_so_and_a_short_one_does_not() {
+    let mut st = Stream::new("a", "/w", 1);
+    st.update(&msg_chunk("short and whole"));
+    assert!(!truncated_of(&bodies(&mut st)[0]));
+    // Cut by the character limit.
+    st.user("next");
+    st.update(&msg_chunk(&"word ".repeat(4_000)));
+    let b = bodies(&mut st);
+    assert!(
+        truncated_of(&b[2]),
+        "20 000 characters become 16 000 and the entry says so"
+    );
+    // Cut by the line limit.
+    st.user("lines");
+    st.update(&msg_chunk(&"x\n".repeat(MESSAGE_LINES + 10)));
+    assert!(truncated_of(&bodies(&mut st)[4]));
+    // Cut because the raw buffer was full, even though the shown text is short: the tail is a blank run.
+    st.user("raw");
+    st.update(&msg_chunk(&"a".repeat(100)));
+    st.update(&msg_chunk(&" ".repeat(RAW_BYTES)));
+    st.update(&msg_chunk("tail that was never kept"));
+    assert!(truncated_of(&bodies(&mut st)[6]));
+    // A thought is marked the same way.
+    st.user("think");
+    st.update(&json!({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "w ".repeat(10_000)}}));
+    assert!(truncated_of(&bodies(&mut st)[8]));
+}
+
+#[test]
+fn a_reply_past_the_cut_is_not_sent_again_while_it_streams_on() {
+    let mut st = Stream::new("a", "/w", 1);
+    st.update(&msg_chunk(&"word ".repeat(4_000)));
+    let (first, _) = all(&mut st);
+    let seen = first.rev;
+    // 4 000 more chunks: the shown text (the first 16 000 characters) cannot change.
+    for _ in 0..4_000 {
+        st.update(&msg_chunk("more words "));
+    }
+    let (delta, _) = st.view("s", Some(seen), Some(first.epoch), 0);
+    assert!(!delta.reset);
+    assert!(
+        delta.entries.is_empty(),
+        "an identical body was sent again: {}",
+        delta.entries.len()
+    );
+}
+
+#[test]
+fn an_entry_that_had_to_be_halved_to_fit_says_it_was_cut() {
+    let mut e = AcpEntry {
+        id: 1,
+        rev: 1,
+        body: AcpBody::Message {
+            text: "😀\"\n".repeat(7_000),
+            truncated: false,
+        },
+    };
+    fit(&mut e);
+    assert!(truncated_of(&e.body));
 }
 
 /// What the client does with the parts, as `lib/acpStream.ts` does: a reset replaces, a part adds or replaces by id.

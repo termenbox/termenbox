@@ -35,7 +35,7 @@
   import SessionView from './SessionView.svelte';
   import AcpView from './AcpView.svelte';
   import { acpStreams, applyAcp, forgetAcp } from './lib/acpStore';
-  import { openMessage } from './lib/acpStream';
+  import { openMessage, shellName } from './lib/acpStream';
   import { merge as mergeView, requestView, type ViewModel } from './lib/sessionView';
   import { loadPaneModes, withPaneMode, type PaneMode } from './lib/paneMode';
   import { rowOf } from './lib/home';
@@ -271,6 +271,9 @@
     const s = hub.findSession(key);
     if (!s) return;
     if (backendOf(s) === 'acp') {
+      // A terminal still attached on this server would go on streaming to a view that is gone, keep its size and count
+      // as someone looking: let go of it first.
+      hub.send(s.serverId, { type: 'detach' });
       acpServer = s.serverId;
       hub.sendToSession(key, openMessage(key, $acpStreams[key]));
     } else {
@@ -284,10 +287,13 @@
   function openShell(key: string) {
     const s = hub.findSession(key);
     if (!s) return;
-    const wanted = `${s.name.slice(0, 58)}-shell`;
+    const wanted = shellName(s.name);
     const existing = $allSessions.find(x => x.serverId === s.serverId && backendOf(x) === 'tmux' && x.name === wanted);
     if (existing) { void attach(existing.key); return; }
-    createSession({ serverId: s.serverId, backend: 'tmux', dir: $acpStreams[key]?.info?.dir, name: wanted });
+    // Without the directory a new shell would open in the server's default one and look like the session's own.
+    const dir = $acpStreams[key]?.info?.cwd;
+    if (!dir) { showToast('The session’s directory is not known yet. Try again in a moment.', 'error'); return; }
+    createSession({ serverId: s.serverId, backend: 'tmux', dir, name: wanted });
   }
   $: canShell = !!activeSession && ($hubServers.find(h => h.id === activeSession.serverId)?.backends.includes('tmux') ?? false);
   $: tabSessions = openTabs($allSessions, $allAgents, hidden);

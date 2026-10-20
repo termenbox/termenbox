@@ -31,8 +31,13 @@ export function forgetAcp(map: Record<string, StreamState>, serverPrefix: string
 
 // ---- What this device remembers per session
 
-/** Where the reader was: the entry at the top of the screen and how far into it, or at the end (following). */
-export interface Place { entry: number; offset: number; bottom: boolean }
+/** Where the reader was: the entry at the top of the screen and how far into it, or at the end (following). Entry ids
+ *  restart with each epoch (a server restart), so a place belongs to the epoch it was taken in. */
+export interface Place { entry: number; offset: number; bottom: boolean; epoch?: number }
+
+/** The place when it can be used with the stream of `epoch`: the end always can, a place in the text only in its own epoch. */
+export const placeFor = (place: Place | undefined, epoch: number): Place | undefined =>
+  place && (place.bottom || place.epoch === epoch) ? place : undefined;
 export interface Saved { draft?: string; place?: Place; opened?: string[] }
 
 const STORE_KEY = 'termenbox_acp_view';
@@ -56,7 +61,7 @@ export function loadSaved(key: string, storage = store()): Saved {
   const p = s.place;
   return {
     draft: typeof s.draft === 'string' ? s.draft.slice(0, MAX_DRAFT) : undefined,
-    place: p && Number.isInteger(p.entry) && Number.isFinite(p.offset) ? { entry: p.entry, offset: p.offset, bottom: !!p.bottom } : undefined,
+    place: p && Number.isInteger(p.entry) && Number.isFinite(p.offset) ? { entry: p.entry, offset: p.offset, bottom: !!p.bottom, epoch: Number.isFinite(p.epoch) ? p.epoch : undefined } : undefined,
     opened: Array.isArray(s.opened) ? s.opened.filter((x) => typeof x === 'string').slice(0, 100) : undefined,
   };
 }

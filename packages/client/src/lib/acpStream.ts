@@ -11,7 +11,9 @@ const LINE = 300;
 
 export interface Option { id: string; kind: string; name: string }
 export type Entry =
-  | { id: number; rev: number; kind: 'user' | 'message' | 'thought'; text: string }
+  | { id: number; rev: number; kind: 'user'; text: string }
+  /** `truncated`: the reply was longer than the server keeps and the rest is not shown. */
+  | { id: number; rev: number; kind: 'message' | 'thought'; text: string; truncated: boolean }
   | { id: number; rev: number; kind: 'tool'; toolId: string; title: string; toolKind: string; status: string; diffs: Diff[]; locations: AcpLocation[] }
   | { id: number; rev: number; kind: 'plan'; items: { text: string; status: string }[] }
   | { id: number; rev: number; kind: 'permission'; promptId: string; toolId: string; title: string; toolKind: string; options: Option[]; diffs: Diff[]; plan?: string; state: 'open' | 'answered' | 'cancelled'; chosen?: string }
@@ -20,7 +22,8 @@ export type Entry =
 export interface Diff { path: string; oldText?: string; newText: string; truncated: boolean }
 
 export interface Info {
-  agent: string; dir: string; title?: string; status: 'running' | 'ended' | 'failed'; statusText?: string; working: boolean;
+  /** `dir` is for showing (cleaned); `cwd` is the exact directory, to start a shell in, or absent when it cannot be trusted as is. */
+  agent: string; dir: string; cwd?: string; title?: string; status: 'running' | 'ended' | 'failed'; statusText?: string; working: boolean;
   mode?: string; modes: { id: string; name: string; description?: string }[];
   commands: { name: string; description?: string; hint?: string }[];
   usage?: { used: number; size: number; cost?: string };
@@ -62,9 +65,10 @@ export function entryFrom(e: AcpEntryWire): Entry | null {
   const w = e as Record<string, unknown>;
   switch (e.kind) {
     case 'user':
+      return { ...base, kind: 'user', text: cleanBlock(w.text) };
     case 'message':
     case 'thought':
-      return { ...base, kind: e.kind, text: cleanBlock(w.text) };
+      return { ...base, kind: e.kind, text: cleanBlock(w.text), truncated: w.truncated === true };
     case 'tool':
       return { ...base, kind: 'tool', toolId: cleanText(w.tool_id, 120), title: cleanText(w.title, LINE), toolKind: cleanText(w.tool_kind, 20) || 'other', status: cleanText(w.status, 20) || 'pending',
         diffs: (Array.isArray(w.diffs) ? (w.diffs as AcpDiff[]) : []).slice(0, 3).map(cleanDiff),
@@ -87,10 +91,14 @@ export function entryFrom(e: AcpEntryWire): Entry | null {
   }
 }
 
+/** The directory exactly as the server sent it, or undefined when it is not a plain path (cleaning would change it). */
+// eslint-disable-next-line no-control-regex
+const exactDir = (d: unknown): string | undefined => (typeof d === 'string' && d.length > 0 && d.length <= 512 && !/[\u0000-\u001f\u007f-\u009f]/.test(d) ? d : undefined);
+
 export function infoFrom(i: AcpInfo | undefined): Info | undefined {
   if (!i || typeof i !== 'object') return undefined;
   return {
-    agent: cleanText(i.agent, 40), dir: cleanText(i.dir, 512), title: i.title ? cleanText(i.title, 200) : undefined,
+    agent: cleanText(i.agent, 40), dir: cleanText(i.dir, 512), cwd: exactDir(i.dir), title: i.title ? cleanText(i.title, 200) : undefined,
     status: STATUS.has(i.status) ? (i.status as Info['status']) : 'running', statusText: i.status_text ? cleanText(i.status_text, 120) : undefined, working: !!i.working,
     mode: i.mode ? cleanText(i.mode, 80) : undefined,
     modes: (Array.isArray(i.modes) ? i.modes : []).slice(0, 12).map((m) => ({ id: String(m?.id ?? ''), name: cleanText(m?.name, 40), description: m?.description ? cleanText(m.description, 160) : undefined })).filter((m) => m.id),
@@ -113,6 +121,28 @@ export function applyView(state: StreamState, msg: AcpViewMessage): StreamState 
   let entries = [...byId.values()].filter((e) => e.id >= (msg.first || 0)).sort((a, b) => a.id - b.id);
   if (entries.length > MAX_ENTRIES) entries = entries.slice(-MAX_ENTRIES);
   return { session: state.session, epoch: msg.epoch, rev: msg.rev, first: msg.first, entries, info: infoFrom(msg.info) ?? (reset ? undefined : state.info) };
+}
+
+/** How long a session may take to answer `acp_open` before the view says the server may be too old for it. */
+export const OPEN_WAIT_MS = 8000;
+
+/** What the view says before the first answer arrives. A server older than the ACP view ignores `acp_open`. */
+export function openingText(connected: boolean, silent: boolean): string {
+  if (!connected) return 'Waiting for the connection…';
+  return silent ? 'The server has not answered. If it is an older version, update it to see agent sessions.' : 'Opening the session…';
+}
+
+/** An entry the reader has not been given before: newer than the stream when the view had its first full picture
+ *  (`base`, or undefined while that picture is still arriving). Only these are announced to a screen reader. */
+export const isNewEntry = (e: { rev: number }, base: number | undefined): boolean => base !== undefined && e.rev > base;
+
+/** The name of the plain tmux session beside an ACP session (decision 0109). A long name is shortened with a hash of
+ *  the whole, so two long names that share a start do not share a shell. */
+export function shellName(name: string): string {
+  if (name.length <= 58) return `${name}-shell`;
+  let h = 2166136261;
+  for (const c of name) h = Math.imul(h ^ c.codePointAt(0)!, 16777619) >>> 0;
+  return `${name.slice(0, 49)}-${h.toString(36).slice(0, 6)}-shell`;
 }
 
 /** What to send to show a session: the revision held (if any) so only the difference comes back. */
@@ -192,10 +222,14 @@ export function entryMarks(e: Entry, query: string, current: number, asking = fa
 /** How many runs the diff contributes to `entryRuns`: its path, then each shown line. */
 export const diffRunCount = (d: Pick<Diff, 'oldText' | 'newText'>): number => 1 + diffRows(d).filter((r) => r.t !== 'gap').length;
 
+/** What the view says under a reply that was cut, and what Copy appends so the clipboard is not taken for the whole reply. */
+export const TRUNCATED_NOTE = 'The reply is longer; the rest is not shown.';
+
 /** The text a tap on Copy puts on the clipboard for one entry. */
 export function copyText(e: Entry): string {
   switch (e.kind) {
-    case 'user': case 'message': case 'thought': case 'notice': return e.text;
+    case 'message': case 'thought': return e.truncated ? `${e.text}\n[${TRUNCATED_NOTE}]` : e.text;
+    case 'user': case 'notice': return e.text;
     case 'tool': return [e.title, ...e.diffs.map(diffText)].filter(Boolean).join('\n');
     case 'plan': return e.items.map((i) => `${i.status === 'completed' ? '[x]' : '[ ]'} ${i.text}`).join('\n');
     case 'permission': return [e.title, ...e.diffs.map(diffText), e.plan ?? ''].filter(Boolean).join('\n');
@@ -211,9 +245,10 @@ export function transcriptText(entries: Entry[]): string {
 
 export type DiffRow = { t: '+' | '-' | ' '; text: string } | { t: 'gap'; count: number };
 const CONTEXT = 2;
+const DIFF_LINES = 200;
 
 /** A line diff of the two texts (the longest common subsequence of lines), unchanged runs folded to a gap row. A new
- *  file is all additions. Bounded: both sides are at most 200 lines, so the table is at most 40 000 cells. */
+ *  file is all additions. Bounded: both sides are cut to 200 lines (the most the server keeps), so the table is at most 40 000 cells. */
 export function diffRows(d: Pick<Diff, 'oldText' | 'newText'>): DiffRow[] {
   const hit = rowsCache.get(d);
   if (hit) return hit;
@@ -227,7 +262,7 @@ function computeRows(d: Pick<Diff, 'oldText' | 'newText'>): DiffRow[] {
   const a = d.oldText === undefined ? [] : d.oldText.split('\n');
   const b = d.newText.split('\n');
   if (d.oldText === undefined) return b.map((text) => ({ t: '+', text }));
-  const n = Math.min(a.length, 400), m = Math.min(b.length, 400);
+  const n = Math.min(a.length, DIFF_LINES), m = Math.min(b.length, DIFF_LINES);
   const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
   for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
   const rows: { t: '+' | '-' | ' '; text: string }[] = [];

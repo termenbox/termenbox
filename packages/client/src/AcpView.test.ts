@@ -67,6 +67,21 @@ describe('entries are drawn as text', () => {
     expect(line).not.toContain('Decision');
   });
 
+  it('a reply that was cut says so, in the reply and in a thought', () => {
+    const cut = (kind: string, truncated: boolean) => wire({ id: 1, rev: 1, kind, text: 'The first part', truncated });
+    for (const kind of ['message', 'thought']) {
+      expect(html(AcpEntryView, { ...base, entry: cut(kind, true) }), kind).toContain('The reply is longer; the rest is not shown.');
+      expect(html(AcpEntryView, { ...base, entry: cut(kind, false) }), kind).not.toContain('is longer');
+    }
+  });
+
+  it('an error line is an alert only when it is new, not when it is history', () => {
+    const err = wire({ id: 1, rev: 1, kind: 'notice', level: 'error', text: 'It failed' });
+    expect(html(AcpEntryView, { ...base, entry: err })).not.toContain('role="alert"');
+    expect(html(AcpEntryView, { ...base, entry: err, announce: true })).toContain('role="alert"');
+    expect(html(AcpEntryView, { ...base, entry: wire({ id: 2, rev: 2, kind: 'notice', level: 'info', text: 'ok' }), announce: true })).not.toContain('role="alert"');
+  });
+
   it('search marks the hits in the text it draws', () => {
     const e = wire({ id: 1, rev: 1, kind: 'message', text: 'The **parser** and the lexer' });
     const out = html(AcpEntryView, { ...base, entry: e, query: 'er', current: 1 });
@@ -76,6 +91,14 @@ describe('entries are drawn as text', () => {
 });
 
 describe('the session view', () => {
+  it('a history with an old error announces nothing when it is opened', () => {
+    const v = { type: 'acp_view' as const, session: 'acp:work', epoch: 1, rev: 2, reset: true, first: 1, entries: [{ id: 1, rev: 2, kind: 'notice', level: 'error', text: 'Old failure' }] as AcpEntryWire[],
+      info: { agent: 'claude', dir: '/w', status: 'running', working: false } };
+    const out = html(AcpView, { sessionKey: 'srv/acp:work', name: 'work', agent: 'claude', stream: applyView(emptyStream('acp:work'), v), onprompt: () => {}, oninterrupt: () => {}, onanswer: () => {}, onmode: () => {}, onshell: () => {} });
+    expect(out).toContain('Old failure');
+    expect(out).not.toContain('role="alert"');
+  });
+
   const view = (over: Partial<AcpViewMessage> = {}): AcpViewMessage => ({ type: 'acp_view', session: 'acp:work', epoch: 1, rev: 3, reset: true, first: 1, entries: [{ id: 1, rev: 1, kind: 'user', text: 'hello' }, { id: 2, rev: 3, kind: 'message', text: 'Hi **there**' }],
     info: { agent: 'claude', dir: '/w', status: 'running', working: false, mode: 'ask', modes: [{ id: 'ask', name: 'Ask' }, { id: 'plan', name: 'Plan' }], commands: [{ name: 'compact' }], usage: { used: 250, size: 1000 } }, ...over });
   const props = (stream?: StreamState, extra: Record<string, unknown> = {}) => ({ sessionKey: 'srv/acp:work', name: 'work', agent: 'claude', stream, onprompt: () => {}, oninterrupt: () => {}, onanswer: () => {}, onmode: () => {}, onshell: () => {}, ...extra });

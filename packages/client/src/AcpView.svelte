@@ -4,9 +4,9 @@
   import { NativeSelect } from './lib/ui/native-select';
   import AcpEntryView from './AcpEntryView.svelte';
   import AcpPrompt from './AcpPrompt.svelte';
-  import { contextPercent, search, toolsAsking, transcriptText, type StreamState } from './lib/acpStream';
+  import { contextPercent, isNewEntry, OPEN_WAIT_MS, openingText, search, toolsAsking, transcriptText, type StreamState } from './lib/acpStream';
   import { promptsOf } from './lib/acpPrompt';
-  import { loadSaved, save, type Place } from './lib/acpStore';
+  import { loadSaved, placeFor, save, type Place } from './lib/acpStore';
   import { copyText } from './lib/clipboard';
   import { Settle } from './lib/home';
   import { TIER_LABEL } from './lib/sessionView';
@@ -41,6 +41,20 @@
   const blocked = $derived(!connected ? 'Reconnecting. Draft kept.' : info?.status === 'failed' ? 'The agent stopped.' : info?.status === 'ended' ? 'This session has ended.' : '');
   const tier = TIER_LABEL.t0;
 
+  // The first full picture (the facts arrive last): what is in it is history, so an old error is not read out as an
+  // alert; only what arrives after it is. A stream held from before starts out with its picture.
+  let baseRev = $state<number | undefined>(untrack(() => (stream?.info ? stream.rev : undefined)));
+  $effect(() => { if (baseRev === undefined && stream?.info) baseRev = stream.rev; });
+
+  // A server older than this view ignores `acp_open`, so nothing ever comes back: say so after a while.
+  let silent = $state(false);
+  $effect(() => {
+    silent = false;
+    if (stream || !connected) return;
+    const t = setTimeout(() => (silent = true), OPEN_WAIT_MS);
+    return () => clearTimeout(t);
+  });
+
   // ---- Holding still: the stream shown is the latest one unless a finger is down or the reader just scrolled.
   const settle = new Settle<typeof entries>();
   let beat = $state(0);
@@ -64,11 +78,11 @@
   function placeOf(): Place | undefined {
     const el = scroller;
     if (!el) return undefined;
-    if (atEnd(el)) return { entry: 0, offset: 0, bottom: true };
+    if (atEnd(el)) return { entry: 0, offset: 0, bottom: true, epoch: stream?.epoch };
     const box = el.getBoundingClientRect();
     for (const row of el.querySelectorAll<HTMLElement>('[data-entry]')) {
       const r = row.getBoundingClientRect();
-      if (r.bottom > box.top + 1) return { entry: Number(row.dataset.entry), offset: r.top - box.top, bottom: false };
+      if (r.bottom > box.top + 1) return { entry: Number(row.dataset.entry), offset: r.top - box.top, bottom: false, epoch: stream?.epoch };
     }
     return undefined;
   }
@@ -90,9 +104,10 @@
     following = atEnd(el);
     remember();
   }
-  function restore(place: Place | undefined) {
+  function restore(saved: Place | undefined) {
     const el = scroller;
     if (!el) return;
+    const place = placeFor(saved, stream?.epoch ?? 0);
     if (!place || place.bottom) return setTop(el.scrollHeight);
     const row = el.querySelector<HTMLElement>(`[data-entry="${place.entry}"]`);
     if (!row) return setTop(el.scrollHeight); // that part is no longer kept
@@ -249,14 +264,14 @@
       class="h-full overflow-y-auto overscroll-contain px-4 py-4 select-text [-webkit-touch-callout:default] [overflow-anchor:none]">
       <div class="mx-auto flex w-full max-w-3xl flex-col gap-3">
         {#if !stream}
-          <p class="py-8 text-center text-base text-soft" role="status">{connected ? 'Opening the session…' : 'Waiting for the connection…'}</p>
+          <p class="py-8 text-center text-base text-soft" role="status">{openingText(connected, silent)}</p>
         {:else if !shown.length}
           <EmptyState title={ended ? 'Nothing was said' : 'Say what you want done'} body={ended ? 'This session ended before anything was kept.' : 'Write a prompt below. Type / for the commands this agent offers.'} />
         {/if}
         {#each shown as e (e.id)}
           {@const m = cur && cur.entry === e.id ? cur.index : -1}
           <div data-entry={e.id}>
-            <AcpEntryView entry={e} query={searching ? query.trim() : ''} current={m} asking={e.kind === 'tool' && asking.has(e.toolId)} {opened} ontoggle={toggleOpen}
+            <AcpEntryView entry={e} query={searching ? query.trim() : ''} current={m} asking={e.kind === 'tool' && asking.has(e.toolId)} announce={isNewEntry(e, baseRev)} {opened} ontoggle={toggleOpen}
               {onanswer} {sessionKey} {name} agent={info?.agent || agent} {now} />
           </div>
         {/each}

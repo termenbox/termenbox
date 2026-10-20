@@ -112,10 +112,21 @@ pub fn sanitize_text(input: &str, max: usize) -> String {
 /// exactly as in `sanitize_text`, and the result is cut at `max` characters and at most `max_lines` lines. Runs
 /// of blank lines collapse to one.
 pub fn sanitize_block(input: &str, max: usize, max_lines: usize) -> String {
+    sanitize_block_cut(input, max, max_lines).0
+}
+
+/// `sanitize_block`, and whether anything but blank space was left out because of `max` or `max_lines`.
+pub fn sanitize_block_cut(input: &str, max: usize, max_lines: usize) -> (String, bool) {
     let mut out = String::new();
+    // The characters in `out`, kept as lines are added: counting `out` again after every line is quadratic.
+    let mut chars = 0usize;
     let mut blank = false;
     let mut lines = 0;
-    for raw in input.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
+    let mut cut = false;
+    let text = input.replace("\r\n", "\n").replace('\r', "\n");
+    let mut rest = text.split('\n');
+    let has_more = |rest: std::str::Split<'_, char>| rest.into_iter().any(|l| !l.trim().is_empty());
+    while let Some(raw) = rest.next() {
         let flat: String = raw
             .replace('\t', "  ")
             .chars()
@@ -132,19 +143,23 @@ pub fn sanitize_block(input: &str, max: usize, max_lines: usize) -> String {
             blank = false;
         }
         if lines == max_lines {
+            cut = !line.is_empty() || has_more(rest.clone());
             break;
         }
         if lines > 0 {
             out.push('\n');
+            chars += 1;
         }
         out.push_str(&line);
+        chars += line.chars().count();
         lines += 1;
-        if out.chars().count() >= max {
+        if chars >= max {
+            cut = chars > max || has_more(rest.clone());
             break;
         }
     }
     out.truncate(out.trim_end().len());
-    out.chars().take(max).collect()
+    (out.chars().take(max).collect(), cut)
 }
 
 /// Zero-width and bidirectional-override characters: they can reorder or hide text, so they are dropped.
@@ -1195,6 +1210,40 @@ mod tests {
         assert_eq!(sanitize_block("a\nb\nc\nd", 1000, 2), "a\nb");
         assert_eq!(sanitize_block("abcdef", 3, 9), "abc");
         assert_eq!(sanitize_block("", 10, 10), "");
+    }
+
+    #[test]
+    fn a_block_says_whether_it_was_cut() {
+        let cut = |t: &str, max, lines| sanitize_block_cut(t, max, lines).1;
+        assert!(!cut("abc", 3, 5));
+        assert!(
+            !cut("abc\n\n  \n", 3, 5),
+            "trailing blank space is not text"
+        );
+        assert!(cut("abcd", 3, 5));
+        assert!(cut("ab\ncd", 3, 5), "the cap falls inside a later line");
+        assert!(
+            cut("abc\ndef", 3, 5),
+            "the cap falls at a line end with text after it"
+        );
+        assert!(!cut("a\nb", 100, 2));
+        assert!(cut("a\nb\nc", 100, 2));
+        assert!(cut("a\nb\n\nc", 100, 2), "text after a blank line is cut");
+        assert!(!cut("a\nb\n\n", 100, 2));
+    }
+
+    /// A long block costs one pass, not one per line (the character count is kept, not redone).
+    #[test]
+    fn a_block_of_many_short_lines_is_cut_in_linear_time() {
+        let text = "x\n".repeat(150_000);
+        let start = std::time::Instant::now();
+        let (out, cut) = sanitize_block_cut(&text, 10_000_000, 1_000_000);
+        assert!(!cut && out.chars().count() == 299_999);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(3),
+            "{:?}",
+            start.elapsed()
+        );
     }
 
     use super::*;

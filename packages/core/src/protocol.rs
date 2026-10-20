@@ -391,10 +391,19 @@ pub struct AcpEntry {
 pub enum AcpBody {
     /// What the owner sent (`session/prompt`).
     User { text: String },
-    /// The agent's reply, Markdown, grown by `agent_message_chunk`.
-    Message { text: String },
-    /// `agent_thought_chunk`.
-    Thought { text: String },
+    /// The agent's reply, Markdown, grown by `agent_message_chunk`. `truncated`: the reply was longer than the view
+    /// keeps and the rest is not shown.
+    Message {
+        text: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        truncated: bool,
+    },
+    /// `agent_thought_chunk` (`truncated` as for `Message`).
+    Thought {
+        text: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        truncated: bool,
+    },
     /// A `tool_call` merged with its `tool_call_update`s by `toolCallId`. `tool_kind` is the protocol's `kind`
     /// (`read`, `edit`, `execute`, `switch_mode`, `other`, ...) and `status` is `pending`, `in_progress`,
     /// `completed` or `failed`.
@@ -919,7 +928,10 @@ mod tests {
                 AcpEntry {
                     id: 1,
                     rev: 1,
-                    body: AcpBody::Message { text: "hi".into() },
+                    body: AcpBody::Message {
+                        text: "hi".into(),
+                        truncated: false,
+                    },
                 },
                 AcpEntry {
                     id: 2,

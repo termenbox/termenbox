@@ -735,10 +735,10 @@ async fn the_stream_keeps_the_whole_turn_and_wakes_the_watcher_when_it_changes()
     assert!(matches!(&b[0], AcpBody::User { text } if text == "updates"));
     assert!(b
         .iter()
-        .any(|e| matches!(e, AcpBody::Thought { text } if text == "hmm ok")));
+        .any(|e| matches!(e, AcpBody::Thought { text, .. } if text == "hmm ok")));
     assert!(b
         .iter()
-        .any(|e| matches!(e, AcpBody::Message { text } if text == "Hello world")));
+        .any(|e| matches!(e, AcpBody::Message { text, .. } if text == "Hello world")));
     assert!(b.iter().any(
         |e| matches!(e, AcpBody::Tool { title, tool_kind, status, .. }
         if title == "Run ls" && tool_kind == "execute" && status == "completed")
@@ -903,7 +903,8 @@ async fn hostile_text_is_scrubbed_and_capped_in_the_stream_too() {
     })
     .await;
     let b = bodies(&view(&r, "s1"));
-    let Some(AcpBody::Message { text }) = b.iter().find(|b| matches!(b, AcpBody::Message { .. }))
+    let Some(AcpBody::Message { text, .. }) =
+        b.iter().find(|b| matches!(b, AcpBody::Message { .. }))
     else {
         panic!("no message")
     };
@@ -935,7 +936,7 @@ async fn a_restored_session_says_that_its_earlier_output_is_not_shown() {
         .any(|e| matches!(e, AcpBody::Notice { text, .. } if text.contains("Restored"))));
     assert!(!bodies(&v)
         .iter()
-        .any(|e| matches!(e, AcpBody::Message { text } if text.contains("REPLAYED"))));
+        .any(|e| matches!(e, AcpBody::Message { text, .. } if text.contains("REPLAYED"))));
     a.backend.kill("s1").await.unwrap();
     b.backend.kill("s1").await.unwrap();
 }

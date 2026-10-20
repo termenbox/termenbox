@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_ENTRIES, applyView, cleanBlock, contextPercent, copyText, diffRows, diffStat, emptyStream, entryFrom, infoFrom, openMessage, permissionOutcome, planProgress, search, toolStatus, toolsAsking, transcriptText, type Entry, type StreamState } from './acpStream';
+import { MAX_ENTRIES, OPEN_WAIT_MS, TRUNCATED_NOTE, applyView, isNewEntry, openingText, shellName, cleanBlock, contextPercent, copyText, diffRows, diffStat, emptyStream, entryFrom, infoFrom, openMessage, permissionOutcome, planProgress, search, toolStatus, toolsAsking, transcriptText, type Entry, type StreamState } from './acpStream';
 import type { AcpEntryWire, AcpViewMessage } from './protocol';
 
 const view = (over: Partial<AcpViewMessage> = {}): AcpViewMessage => ({ type: 'acp_view', session: 's', epoch: 7, rev: 1, reset: true, first: 1, entries: [], ...over });
@@ -128,5 +128,58 @@ describe('search and copy', () => {
   it('copies one entry or the whole conversation as text', () => {
     expect(copyText(entries[1])).toContain('parser.rs');
     expect(transcriptText(entries).split('\n\n')[0]).toBe('> Fix the parser');
+  });
+});
+
+describe('a reply that was cut', () => {
+  const cutMsg = (truncated: boolean): AcpEntryWire => ({ id: 1, rev: 1, kind: 'message', text: 'The first part', truncated } as AcpEntryWire);
+  it('keeps the server’s flag, and a reply without one is whole', () => {
+    expect((entryFrom(cutMsg(true)) as Extract<Entry, { kind: 'message' }>).truncated).toBe(true);
+    expect((entryFrom({ id: 1, rev: 1, kind: 'thought', text: 'x' } as AcpEntryWire) as Extract<Entry, { kind: 'thought' }>).truncated).toBe(false);
+    expect((entryFrom({ id: 1, rev: 1, kind: 'message', text: 'x', truncated: 'yes' } as unknown as AcpEntryWire) as Extract<Entry, { kind: 'message' }>).truncated).toBe(false);
+  });
+  it('Copy does not hand out the cut text as if it were the whole reply', () => {
+    const cut = entryFrom(cutMsg(true))!;
+    expect(copyText(cut)).toBe(`The first part\n[${TRUNCATED_NOTE}]`);
+    expect(transcriptText([cut])).toContain(TRUNCATED_NOTE);
+    expect(copyText(entryFrom(cutMsg(false))!)).toBe('The first part');
+  });
+});
+
+describe('opening a session on a server that does not answer', () => {
+  it('says what it waits for, and after a while that the server may be too old', () => {
+    expect(OPEN_WAIT_MS).toBeGreaterThan(2000);
+    expect(openingText(true, false)).toBe('Opening the session…');
+    expect(openingText(true, true)).toMatch(/older version, update it/);
+    expect(openingText(false, true)).toBe('Waiting for the connection…');
+  });
+});
+
+describe('what is new to the reader', () => {
+  it('nothing is new until the first full picture, then what is newer than it', () => {
+    expect(isNewEntry({ rev: 5 }, undefined)).toBe(false);
+    expect(isNewEntry({ rev: 5 }, 5)).toBe(false);
+    expect(isNewEntry({ rev: 6 }, 5)).toBe(true);
+  });
+});
+
+describe('the directory and the companion shell', () => {
+  it('hands on the directory exactly, and not at all when cleaning would change it', () => {
+    expect(infoFrom({ agent: 'a', dir: '/home/me/my  project', status: 'running', working: false })?.cwd).toBe('/home/me/my  project');
+    expect(infoFrom({ agent: 'a', dir: '/w\tx', status: 'running', working: false })?.cwd).toBeUndefined();
+    expect(infoFrom({ agent: 'a', dir: '/w'.repeat(300), status: 'running', working: false })?.cwd).toBeUndefined();
+    expect(infoFrom({ agent: 'a', dir: '', status: 'running', working: false })?.cwd).toBeUndefined();
+  });
+  it('names the shell after the session, and keeps long names that share a start apart', () => {
+    expect(shellName('work')).toBe('work-shell');
+    const a = 'a'.repeat(60) + '1', b = 'a'.repeat(60) + '2';
+    expect(shellName(a)).not.toBe(shellName(b));
+    expect(shellName(a)).toBe(shellName(a));
+    expect(shellName(a).length).toBeLessThanOrEqual(64);
+  });
+  it('a diff is cut at the 200 lines the server keeps', () => {
+    const lines = (n: number, p: string) => Array.from({ length: n }, (_, i) => `${p}${i}`).join('\n');
+    const rows = diffRows({ oldText: lines(300, 'a'), newText: lines(300, 'b') });
+    expect(rows.filter((r) => r.t === '-').length).toBe(200);
   });
 });

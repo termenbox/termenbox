@@ -111,7 +111,18 @@ try {
       // Every peer connection, so a test can cut the transport the way a network drop would.
       window.__peers = [];
       const Native = window.RTCPeerConnection;
-      window.RTCPeerConnection = class extends Native { constructor(...a) { super(...a); window.__peers.push(this); } };
+      // What the page receives: the bytes on the terminal channel, and each acp_view (its reset flag and entry ids).
+      window.__termBytes = 0;
+      window.__acp = [];
+      const watch = (ch) => ch.addEventListener('message', (e) => {
+        if (typeof e.data === 'string') {
+          if (e.data.startsWith('{"type":"acp_view"')) { const m = JSON.parse(e.data); window.__acp.push({ reset: m.reset, ids: m.entries.map((x) => x.id), rev: m.rev }); }
+        } else window.__termBytes += e.data.byteLength ?? e.data.size ?? 0;
+      });
+      window.RTCPeerConnection = class extends Native {
+        constructor(...a) { super(...a); window.__peers.push(this); }
+        createDataChannel(...a) { const ch = super.createDataChannel(...a); watch(ch); return ch; }
+      };
     });
     const page = await ctx.newPage();
     const errors = [];
@@ -266,27 +277,45 @@ try {
   await waitFor(async () => (await page.locator('[data-kind=notice]').filter({ hasText: 'Interrupted' }).count()) === 2, 'the second interrupt');
   await idle(page);
   check(logged().filter((m) => m.method === 'session/cancel').length === 2, 'the Stop key did not send session/cancel');
-  ok('interrupt: Esc and the visible Stop key each cancel a running turn (session/cancel), and the stream says "Interrupted"');
+  // Esc with nothing focused (the page body) goes through the window listener, not the field's own key handling.
+  await say(page, 'stream');
+  await stop.waitFor();
+  await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
+  check(await page.evaluate(() => document.activeElement === document.body), 'the focus is not on the page body');
+  await page.keyboard.press('Escape');
+  await waitFor(async () => (await page.locator('[data-kind=notice]').filter({ hasText: 'Interrupted' }).count()) === 3, 'the third interrupt, by Esc on the page body');
+  await idle(page);
+  check(logged().filter((m) => m.method === 'session/cancel').length === 3, 'Esc on the page body did not send exactly one more session/cancel');
+  ok('interrupt: Esc in the field, Esc on the page body (window listener) and the visible Stop key each cancel a running turn (session/cancel), and the stream says "Interrupted"');
 
   // 6. Streaming does not move the reader: scroll up while a turn streams; what is on screen stays put, a Latest key appears.
   await say(page, 'stream');
   await stop.waitFor();
   await page.locator('[data-kind=message]').filter({ hasText: 'token-20' }).last().waitFor();
   const streamBox = page.locator('[data-testid=stream]');
-  const firstTop = () => page.locator('[data-entry]').first().evaluate((e) => Math.round(e.getBoundingClientRect().top));
-  await streamBox.evaluate((e) => { e.scrollTop = 0; });
-  await sleep(600);
-  const before = await firstTop();
-  await sleep(2600); // more than the 2 s hold after a scroll, with the turn still streaming
-  check((await firstTop()) === before, 'the stream moved under the reader while a turn streamed');
+  const lastLen = () => page.locator('[data-kind=message]').last().evaluate((e) => e.textContent.length);
+  // Scrolled to the middle of a long stream (not the top: at the top nothing could ever move the reader).
+  await streamBox.evaluate((e) => { e.scrollTop = Math.round((e.scrollHeight - e.clientHeight) / 2); });
+  await sleep(300);
+  const mid = await streamBox.evaluate((e) => ({ top: e.scrollTop, max: e.scrollHeight - e.clientHeight }));
+  check(mid.top > 100 && mid.top < mid.max - 100, `the reader is not in the middle of the stream: ${JSON.stringify(mid)}`);
+  const visibleEntry = () => page.locator('[data-entry]').evaluateAll((els) => { const box = document.querySelector('[data-testid=stream]').getBoundingClientRect(); const e = els.find((x) => x.getBoundingClientRect().bottom > box.top + 1); return { id: e.dataset.entry, top: Math.round(e.getBoundingClientRect().top - box.top) }; });
+  const before = await visibleEntry();
+  // While the hold lasts (a finger just scrolled) the text on screen does not change, though the turn goes on.
+  const grew0 = await lastLen();
+  await sleep(1000);
+  check((await lastLen()) === grew0, 'the reply grew on screen during the hold after a scroll');
   const latest = page.getByTestId('latest');
+  check((await latest.innerText()).includes('New output'), `the Latest key does not say there is new output: ${await latest.innerText()}`);
+  await sleep(2600); // past the 2 s hold: what arrived is applied, with the reader's place kept
+  check((await lastLen()) > grew0, 'the held output was never applied after the hold');
+  const after6 = await visibleEntry();
+  check(after6.id === before.id && Math.abs(after6.top - before.top) <= 1, `the stream moved under the reader while a turn streamed: ${JSON.stringify(before)} -> ${JSON.stringify(after6)}`);
   await latest.waitFor();
-  const tail = (await page.locator('[data-kind=message]').last().innerText()).length;
   await latest.tap();
   await waitFor(() => streamBox.evaluate((e) => e.scrollHeight - e.scrollTop - e.clientHeight < 60), 'Latest takes the view to the end');
   await stop.tap();
   await idle(page);
-  check(tail > 0, 'nothing streamed');
   ok('streaming: scrolled away from the end, the view holds still while the turn streams; Latest returns to the end');
 
   // 7. Scrollback with search. Many turns first, so the hit is far above the screen.
@@ -324,6 +353,8 @@ try {
   await sleep(300);
   const v0 = await views();
   const t0 = Date.now();
+  // The page's own timer should keep ticking during the burst: the longest stall is the worst gap between two ticks.
+  await page.evaluate(() => { window.__stall = 0; let last = performance.now(); window.__stallTimer = setInterval(() => { const n = performance.now(); window.__stall = Math.max(window.__stall, n - last - 50); last = n; }, 50); });
   // Three of them: the stream is then well over 64 KiB, the most the direct connection carries in one message, so a
   // reload below has to be sent in parts (a message above the limit would drop the connection).
   for (let i = 1; i <= 3; i++) {
@@ -335,8 +366,9 @@ try {
   const burst = await page.locator('[data-kind=message]').last().innerText();
   check(sent <= 60, `3 x 5000 chunks became ${sent} updates, not a batched few`);
   check(burst.length <= 16_100 && burst.includes('w0 '), `the burst reply is ${burst.length} characters`);
-  check((await page.evaluate(() => 1 + 1)) === 2 && Date.now() - t0 < 25000, 'the page was not responsive during the burst');
-  ok(`streaming: 3 x 5000 chunks in ${Date.now() - t0} ms reached the phone as ${sent} updates; each reply is capped at ${burst.length} characters`);
+  const stall = await page.evaluate(() => { clearInterval(window.__stallTimer); return Math.round(window.__stall); });
+  check(stall < 1000 && Date.now() - t0 < 25000, `the page stalled for ${stall} ms during the burst`);
+  ok(`streaming: 3 x 5000 chunks in ${Date.now() - t0} ms reached the phone as ${sent} updates (longest page stall ${stall} ms); each reply is capped at ${burst.length} characters`);
 
   // 8. Plan progress from kilo's recorded todowrite calls.
   await say(page, 'plan');
@@ -385,6 +417,26 @@ try {
   check((await sessions()).filter((s) => s.id === 'tmux:work-shell').length === 1, 'a second tap made a second shell');
   ok('companion shell: one tap opens a plain tmux session in the ACP session\'s directory; the next tap opens the same one');
 
+  // 10b. Leaving a terminal for an ACP session lets the terminal go: its output stops reaching the phone. (Control first:
+  // while the phone shows the shell, what the harness types into it does reach the phone.)
+  await send({ type: 'attach', session_id: 'tmux:work-shell' });
+  await sleep(500);
+  const termBytes = () => page.evaluate(() => window.__termBytes);
+  const t1 = await termBytes();
+  await hp.evaluate(() => { window.__e2e.clear(); window.__e2e.type('echo control-one\r'); });
+  await waitFor(async () => (await termBytes()) > t1, 'the shell\'s output reaches the phone while it shows the shell');
+  await openSession(page, 'work'); // from the shell to the ACP view
+  await sleep(600);
+  const t2 = await termBytes();
+  await hp.evaluate(() => { window.__e2e.clear(); window.__e2e.type('echo after-switch\r'); });
+  await waitFor(() => hp.evaluate(() => window.__e2e.output.includes('after-switch')), 'the shell ran the command');
+  await sleep(800);
+  check((await termBytes()) === t2, `the shell kept streaming to the phone after the ACP view opened (${(await termBytes()) - t2} bytes)`);
+  await send({ type: 'detach' });
+  await page.getByTestId('shell').tap(); // back to the shell, where the next step starts
+  await page.locator('.xterm').waitFor();
+  ok('leaving a terminal for an ACP session detaches it: the shell\'s output reaches the phone before, and stops after');
+
   // 11. Switching sessions keeps the place.
   await createAcp('other');
   await openSession(page, 'work');
@@ -399,6 +451,7 @@ try {
   ok('switching sessions and back keeps the reader\'s place');
 
   // 11b. The connection drops and comes back: the view says so, keeps what it shows, and catches up with only what it missed.
+  const viewsBefore = await page.evaluate(() => window.__acp.length);
   await page.evaluate(() => window.__peers.forEach((p) => p.close()));
   await page.getByTestId('subtitle').filter({ hasText: 'Reconnecting' }).waitFor({ timeout: 15000 });
   check(/^Reconnecting/.test(await prompt(page).getAttribute('placeholder')), 'the prompt line does not say it is waiting for the connection');
@@ -407,6 +460,10 @@ try {
   await page.locator('[data-kind=message]').filter({ hasText: 'You said: said while away' }).waitFor({ timeout: 40000 });
   check((await page.locator('[data-kind=user]').filter({ hasText: 'said while away' }).count()) === 1, 'the catch-up repeated an entry');
   check((await page.locator('[data-kind=user]').filter({ hasText: 'note 3' }).count()) === 1, 'the catch-up repeated older entries');
+  // On the wire too: the server sent only what was missed (a handful of entries), never a reset of the whole stream.
+  const caught = (await page.evaluate(() => window.__acp)).slice(viewsBefore);
+  check(caught.length > 0 && caught.every((m) => !m.reset), `the catch-up was a reset: ${JSON.stringify(caught.map((m) => [m.reset, m.ids.length]))}`);
+  check(caught.reduce((n, m) => n + m.ids.length, 0) <= 6, `the catch-up carried ${caught.reduce((n, m) => n + m.ids.length, 0)} entries, not only what was missed`);
   await sleep(4500); // the "Connected" toast covers the top bar for a moment
   ok('reconnect: the view says it is waiting, keeps what it shows, and catches up with what was said meanwhile, once');
 

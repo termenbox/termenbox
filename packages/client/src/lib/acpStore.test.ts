@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_STREAMS, applyAcp, forgetAcp, loadSaved, save } from './acpStore';
+import { MAX_STREAMS, applyAcp, forgetAcp, loadSaved, placeFor, save } from './acpStore';
 import type { AcpViewMessage } from './protocol';
 
 const view = (over: Partial<AcpViewMessage> = {}): AcpViewMessage => ({ type: 'acp_view', session: 's', epoch: 1, rev: 1, reset: true, first: 1, entries: [{ id: 1, rev: 1, kind: 'user', text: 'hi' }], ...over });
@@ -42,5 +42,22 @@ describe('what the view remembers across a reload', () => {
     for (let i = 0; i < 40; i++) save(`k${i}`, { draft: String(i) }, st);
     expect(loadSaved('k0', st).draft).toBeUndefined();
     expect(loadSaved('k39', st).draft).toBe('39');
+  });
+});
+
+describe('the reader’s place and the epoch', () => {
+  it('a place in the text belongs to the epoch it was taken in; the end is good in any', () => {
+    const mid = { entry: 7, offset: 12, bottom: false, epoch: 3 };
+    expect(placeFor(mid, 3)).toBe(mid);
+    expect(placeFor(mid, 4)).toBeUndefined();
+    expect(placeFor({ entry: 7, offset: 12, bottom: false }, 3)).toBeUndefined();
+    const end = { entry: 0, offset: 0, bottom: true, epoch: 3 };
+    expect(placeFor(end, 4)).toBe(end);
+    expect(placeFor(undefined, 4)).toBeUndefined();
+  });
+  it('is saved with its epoch and read back with it', () => {
+    const m = memory();
+    save('k', { place: { entry: 2, offset: 5, bottom: false, epoch: 99 } }, m);
+    expect(loadSaved('k', m).place).toEqual({ entry: 2, offset: 5, bottom: false, epoch: 99 });
   });
 });

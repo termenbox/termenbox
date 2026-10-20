@@ -628,6 +628,8 @@ impl SessionManager {
                 after,
                 epoch,
             } => {
+                // Who looked at which session's stream, never what it held (as for a peek).
+                audit_acp_open(&identity.provider, &identity.id, &session);
                 // Subscribe first: a change between the two calls then still wakes the connection.
                 let rx = self.backend.acp_watch(&session)?;
                 let (mut view, info_rev) = self.backend.acp_view(&session, after, epoch, 0)?;
@@ -833,6 +835,10 @@ async fn next_window(
         Err(RecvError::Lagged(_)) => None,
         Err(RecvError::Closed) => std::future::pending().await,
     }
+}
+
+fn audit_acp_open(provider: &str, account_id: &str, session: &str) {
+    info!(target: "audit", event = "acp_open", provider, account_id, session = %session);
 }
 
 fn audit_peek(provider: &str, account_id: &str, session: &str) {
@@ -1452,6 +1458,23 @@ mod peek_tests {
         let logged = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
         assert!(
             logged.contains("peek") && !logged.contains(secret),
+            "{logged}"
+        );
+    }
+
+    /// Opening an ACP session's stream is logged with the session's name and nothing the stream holds.
+    #[test]
+    fn the_audit_line_for_opening_an_acp_stream_names_the_session_only() {
+        let buf = Buf::default();
+        let sub = tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_ansi(false)
+            .finish();
+        let _guard = tracing::subscriber::set_default(sub);
+        audit_acp_open("github", "1", "acp:work");
+        let logged = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            logged.contains("acp_open") && logged.contains("acp:work") && logged.contains("audit"),
             "{logged}"
         );
     }

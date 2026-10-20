@@ -106,7 +106,8 @@ export interface AcpDiff { path: string; old_text?: string; new_text: string; tr
 export interface AcpLocation { path: string; line?: number }
 export interface AcpOptionWire { id: string; kind: string; name: string }
 export type AcpEntryWire = { id: number; rev: number } & (
-  | { kind: 'user' | 'message' | 'thought'; text: string }
+  | { kind: 'user'; text: string }
+  | { kind: 'message' | 'thought'; text: string; truncated?: boolean }
   | { kind: 'tool'; tool_id: string; title: string; tool_kind: string; status: string; diffs?: AcpDiff[]; locations?: AcpLocation[] }
   | { kind: 'plan'; items: { text: string; status: string }[] }
   | { kind: 'permission'; prompt_id: string; tool_id: string; title: string; tool_kind: string; options: AcpOptionWire[]; diffs?: AcpDiff[]; plan?: string; state: 'open' | 'answered' | 'cancelled' | string; chosen?: string }
