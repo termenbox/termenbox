@@ -1,7 +1,7 @@
 // Activity (U12, decision 0105): the tasks each server kept, as a timeline per day and a digest. A server answers a range
 // of time; this module asks for it, turns the answers into rows, counts and chart buckets, and tracks deletion. Texts from
 // the server (task titles, session names) are shown as text only.
-import type { HistoryMessage, HistoryRun } from './protocol';
+import type { HistoryMessage, HistoryRun, RunUsage } from './protocol';
 
 /** A server that has not answered by then is older than this feature (it ignores a message it does not know). */
 export const ANSWER_TIMEOUT_MS = 8000;
@@ -90,6 +90,8 @@ export interface Row {
   outcome: Outcome;
   blockedMs: number;
   durationMs: number;
+  project?: string;
+  usage?: Usage;
 }
 export interface Source { serverId: string; serverName: string; runs: HistoryRun[] }
 
@@ -102,6 +104,7 @@ export function rowOf(s: Pick<Source, 'serverId' | 'serverName'>, r: HistoryRun,
     serverId: s.serverId, serverName: s.serverName, session: r.session, agent: r.agent, task: r.task,
     startedAt: r.started_at, endedAt, outcome, blockedMs: nonNegative(r.blocked_ms),
     durationMs: nonNegative((endedAt ?? now) - r.started_at),
+    project: r.project || undefined, usage: usageOfRun(r.usage),
   };
 }
 
@@ -110,6 +113,110 @@ export function rowsOf(sources: Source[], now: number): Row[] {
   const key = (r: Row) => r.endedAt ?? Number.POSITIVE_INFINITY;
   return sources.flatMap((s) => s.runs.map((r) => rowOf(s, r, now))).sort((a, b) => key(b) - key(a) || b.startedAt - a.startedAt);
 }
+
+// ---- Usage and cost (U13). Counts the agents exposed, and nothing worked out from them.
+
+/** What one task exposed. A field that is `undefined` was not reported; it is never shown as zero. */
+export interface Usage { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; costMicros?: number; currency?: string; rateLimited: number }
+const count = (n: unknown) => (typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? n : undefined);
+export function usageOfRun(u: RunUsage | undefined): Usage | undefined {
+  if (!u || typeof u !== 'object') return undefined;
+  const cost = count(u.cost_micros);
+  const currency = typeof u.cost_currency === 'string' && /^[A-Za-z]{1,5}$/.test(u.cost_currency) ? u.cost_currency.toUpperCase() : undefined;
+  const out: Usage = {
+    input: count(u.input_tokens), output: count(u.output_tokens), cacheRead: count(u.cache_read_tokens), cacheWrite: count(u.cache_write_tokens),
+    costMicros: cost !== undefined && currency ? cost : undefined, currency: cost !== undefined ? currency : undefined, rateLimited: count(u.rate_limited) ?? 0,
+  };
+  const any = [out.input, out.output, out.cacheRead, out.cacheWrite, out.costMicros].some((n) => n !== undefined) || out.rateLimited > 0;
+  return any ? out : undefined;
+}
+const plus = (a: number | undefined, b: number | undefined) => (b === undefined ? a : (a ?? 0) + b);
+
+export interface UsageTotals {
+  /** Tasks, and how many of them carried counts. */
+  tasks: number; withCounts: number;
+  input?: number; output?: number; cacheRead?: number; cacheWrite?: number;
+  /** Cost the agents reported, per currency (millionths). Absent when none did. */
+  cost?: Record<string, number>;
+  /** Tasks in which the agent reported tokens / a cost. */
+  withTokens: number; withCost: number;
+  rateLimited: number;
+}
+export const emptyTotals = (): UsageTotals => ({ tasks: 0, withCounts: 0, withTokens: 0, withCost: 0, rateLimited: 0 });
+export function addUsage(t: UsageTotals, u: Usage | undefined): UsageTotals {
+  const n = { ...t, tasks: t.tasks + 1 };
+  if (!u) return n;
+  n.withCounts++;
+  n.input = plus(n.input, u.input); n.output = plus(n.output, u.output);
+  n.cacheRead = plus(n.cacheRead, u.cacheRead); n.cacheWrite = plus(n.cacheWrite, u.cacheWrite);
+  if ([u.input, u.output, u.cacheRead, u.cacheWrite].some((v) => v !== undefined)) n.withTokens++;
+  if (u.costMicros !== undefined && u.currency) { n.cost = { ...n.cost, [u.currency]: (n.cost?.[u.currency] ?? 0) + u.costMicros }; n.withCost++; }
+  n.rateLimited += u.rateLimited;
+  return n;
+}
+/** Input plus output tokens: what a chart and a ranking use. Cache reads and writes are shown apart, but a figure that
+ * only has cache counts is still a reported figure, not a missing one. */
+export const tokensOf = (t: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }) =>
+  [t.input, t.output, t.cacheRead, t.cacheWrite].every((v) => v === undefined) ? undefined : (t.input ?? 0) + (t.output ?? 0);
+
+export interface AgentUsage { agent: string; totals: UsageTotals }
+export interface ProjectUsage { project: string; totals: UsageTotals }
+export const NO_AGENT = 'Unnamed agent';
+export const NO_PROJECT = 'No folder reported';
+
+function groupUsage(rows: Row[], key: (r: Row) => string): [string, UsageTotals][] {
+  const map = new Map<string, UsageTotals>();
+  for (const r of rows) map.set(key(r), addUsage(map.get(key(r)) ?? emptyTotals(), r.usage));
+  return [...map.entries()];
+}
+/** Per agent, the one with the most tokens first (agents that reported none last, by name). */
+export function usageByAgent(rows: Row[]): AgentUsage[] {
+  return groupUsage(rows, (r) => r.agent || NO_AGENT).map(([agent, totals]) => ({ agent, totals }))
+    .sort((a, b) => (tokensOf(b.totals) ?? -1) - (tokensOf(a.totals) ?? -1) || a.agent.localeCompare(b.agent));
+}
+/** Per project (folder name), tokens first. */
+export function usageByProject(rows: Row[]): ProjectUsage[] {
+  return groupUsage(rows, (r) => r.project || NO_PROJECT).map(([project, totals]) => ({ project, totals }))
+    .sort((a, b) => (tokensOf(b.totals) ?? -1) - (tokensOf(a.totals) ?? -1) || a.project.localeCompare(b.project));
+}
+
+/** 1234 becomes `1.2k`, 3400000 `3.4M`. The exact number goes in the accessible text. */
+export function tokenText(n: number): string {
+  if (n < 1000) return String(n);
+  const r = (v: number) => (v >= 10 ? Math.round(v) : Math.round(v * 10) / 10);
+  // 999_999 rounds to 1000k, which is 1M.
+  const k = r(n / 1000);
+  return n < 1_000_000 && k < 1000 ? `${k}k` : `${r(n / 1_000_000)}M`;
+}
+export const exact = (n: number) => n.toLocaleString('en');
+/** An amount the agent reported, in its own currency. */
+export function costText(micros: number, currency: string, locale?: string): string {
+  const v = micros / 1e6;
+  try {
+    // A currency without minor units (JPY, KRW) keeps none.
+    const digits = new Intl.NumberFormat(locale, { style: 'currency', currency }).resolvedOptions().maximumFractionDigits ?? 2;
+    return new Intl.NumberFormat(locale, { style: 'currency', currency, maximumFractionDigits: digits === 0 ? 0 : v < 1 ? 4 : 2, minimumFractionDigits: digits === 0 ? 0 : 2 }).format(v);
+  } catch { return `${v.toFixed(2)} ${currency}`; }
+}
+export const costsText = (cost: Record<string, number>, locale?: string) => Object.entries(cost).map(([c, m]) => costText(m, c, locale)).join(' + ');
+
+/** What the agent would have to do for a figure to appear. Says only what the recordings and docs of the repo back (fact 0029). */
+export type Missing = 'tokens' | 'cost';
+export function whyMissing(agent: string, what: Missing): string {
+  const a = agent === NO_AGENT ? 'this agent' : agent;
+  if (agent === 'claude') {
+    if (what === 'tokens') return 'Claude Code reports no token counts in its hooks. Termenbox reads them from Claude Code\'s own transcript when hooks are on (Settings, Agent hooks) and a task runs.';
+    return 'Claude Code gives hooks no cost. The status-line forwarder (roadmap R19, not built yet) would report it.';
+  }
+  if (agent === 'codex') {
+    if (what === 'tokens') return 'Codex\'s notify hook carries no usage. A Codex session started from Termenbox over ACP reports tokens for each turn.';
+    return 'Codex reports no cost to Termenbox.';
+  }
+  if (what === 'tokens') return `${a} reported no token counts. Only hooks of Claude Code and ACP agents that report usage supply them.`;
+  return `${a} reported no cost to Termenbox.`;
+}
+/** The window indicator is a count of rate-limit hits: no agent gives Termenbox a window's length or reset time today. */
+export const WINDOW_NOTE = 'Rate-limit windows (when a limit resets) are not available for any agent: none passes them to Termenbox yet.';
 
 export interface Digest { finished: number; failed: number; stopped: number; running: number; blockedMs: number }
 export function digestOf(rows: Row[]): Digest {
@@ -136,13 +243,13 @@ export function groupByDay(rows: Row[], r: Range): DayGroup[] {
   return [...groups.entries()].sort((a, b) => b[0] - a[0]).map(([day, rows]) => ({ day, rows }));
 }
 
-export interface Bucket { label: string; finished: number; failed: number; blockedMs: number; /** Start of the hour or day. */ start: number }
+export interface Bucket { label: string; finished: number; failed: number; blockedMs: number; /** Input plus output tokens of tasks that reported them. */ tokens: number; /** Start of the hour or day. */ start: number }
 /** Hours of the day in the day view, days in the week view. */
 export function bucketsOf(rows: Row[], mode: Mode, r: Range, locale?: string): Bucket[] {
   const days = daysOf(r);
   const buckets: Bucket[] = mode === 'day'
-    ? Array.from({ length: 24 }, (_, h) => ({ label: h % 6 === 0 ? String(h).padStart(2, '0') : '', finished: 0, failed: 0, blockedMs: 0, start: hourOf(r.from, h) }))
-    : days.map((d) => ({ label: fmt(d, { weekday: 'short' }, locale), finished: 0, failed: 0, blockedMs: 0, start: d }));
+    ? Array.from({ length: 24 }, (_, h) => ({ label: h % 6 === 0 ? String(h).padStart(2, '0') : '', finished: 0, failed: 0, blockedMs: 0, tokens: 0, start: hourOf(r.from, h) }))
+    : days.map((d) => ({ label: fmt(d, { weekday: 'short' }, locale), finished: 0, failed: 0, blockedMs: 0, tokens: 0, start: d }));
   const at = (t: number): Bucket | undefined =>
     t < r.from || t >= r.to ? undefined : mode === 'day' ? buckets[new Date(t).getHours()] : buckets[days.indexOf(startOfDay(t))];
   for (const row of rows) {
@@ -152,12 +259,13 @@ export function bucketsOf(rows: Row[], mode: Mode, r: Range, locale?: string): B
     if (row.outcome === 'finished') b.finished++;
     else if (row.outcome === 'failed') b.failed++;
     b.blockedMs += row.blockedMs;
+    b.tokens += tokensOf(row.usage ?? {}) ?? 0;
   }
   return buckets;
 }
 
 /** One bar of a chart: its value as text, its parts, and what a screen reader says for it (empty: nothing to say). */
-export interface Bar { label: string; value: string; parts: { n: number; tone: 'ok' | 'bad' | 'warn' }[]; spoken: string }
+export interface Bar { label: string; value: string; parts: { n: number; tone: 'ok' | 'bad' | 'warn' | 'accent' }[]; spoken: string }
 const at = (b: Bucket, mode: Mode, locale?: string) =>
   mode === 'day' ? `${new Date(b.start).toLocaleTimeString(locale, { hour: 'numeric' })}` : fmt(b.start, { weekday: 'long' }, locale);
 
@@ -179,6 +287,13 @@ export function waitBars(buckets: Bucket[], mode: Mode, locale?: string): Bar[] 
   return buckets.map((b) => ({
     label: b.label, value: b.blockedMs ? compact(b.blockedMs) : '', parts: [{ n: b.blockedMs, tone: 'warn' }],
     spoken: b.blockedMs ? `${at(b, mode, locale)} ${duration(b.blockedMs)}` : '',
+  }));
+}
+
+export function tokenBars(buckets: Bucket[], mode: Mode, locale?: string): Bar[] {
+  return buckets.map((b) => ({
+    label: b.label, value: b.tokens ? tokenText(b.tokens) : '', parts: [{ n: b.tokens, tone: 'accent' }],
+    spoken: b.tokens ? `${at(b, mode, locale)} ${exact(b.tokens)} tokens` : '',
   }));
 }
 

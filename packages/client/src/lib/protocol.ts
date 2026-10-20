@@ -88,6 +88,22 @@ export interface HistoryRun {
   outcome?: 'finished' | 'failed' | 'stopped' | string;
   /** How long the agent waited on the user during the task. */
   blocked_ms: number;
+  /** The name of the folder the agent worked in (not the path). */
+  project?: string;
+  /** Counts the agent exposed (U13). A field is absent when the agent does not report it; never zero in its place. */
+  usage?: RunUsage;
+}
+
+/** Counts only. `cost_micros` is millionths of `cost_currency` and is only ever what the agent itself reported. */
+export interface RunUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  cost_micros?: number;
+  cost_currency?: string;
+  /** Times the agent said it was rate limited during the task. */
+  rate_limited?: number;
 }
 
 /** Oldest first. `truncated`: more tasks ended in the range than one answer carries and the oldest were left out. */

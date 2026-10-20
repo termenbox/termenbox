@@ -552,6 +552,39 @@ pub struct HistoryRun {
     pub outcome: Option<RunOutcome>,
     /// How long the agent waited on the user during the task.
     pub blocked_ms: u64,
+    /// The folder name (not the path) the agent worked in, when the agent reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// Counts the agent exposed during the task (U13); absent when it exposed none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<RunUsage>,
+}
+
+/// What an agent exposed about its use during one task: counts only. A field is absent when the agent does not report
+/// it, never zero in its place. Tokens come from the agent's own reports (a Claude Code transcript, an ACP turn
+/// result); the cost is only ever what the agent itself reported, never one worked out here.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
+    /// Cost the agent reported, in millionths of `cost_currency`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_micros: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_currency: Option<String>,
+    /// Times the agent said it was rate limited during the task.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rate_limited: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// How a task ended. `stopped` is an end nobody reported: interrupted, or the session went away.
@@ -692,6 +725,8 @@ mod tests {
                 ended_at: Some(2),
                 outcome: Some(RunOutcome::Stopped),
                 blocked_ms: 0,
+                project: None,
+                usage: None,
             }],
             truncated: false,
             keep_days: 90,

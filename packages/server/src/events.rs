@@ -346,6 +346,14 @@ fn edge_of(source: Source, kind: &EventKind) -> Option<Edge> {
 }
 
 /// Hook and Codex report facts; screen and scan only suspect. Lower index wins.
+/// The hook events after which a turn's counts are read from the transcript.
+fn collects(event: &str) -> bool {
+    matches!(
+        event,
+        "Stop" | "StopFailure" | "SessionEnd" | "UserPromptSubmit"
+    )
+}
+
 fn tier(source: Source) -> Option<usize> {
     match source {
         Source::Hook | Source::Codex | Source::Acp => Some(0),
@@ -431,6 +439,8 @@ pub struct EventHub {
     status_tx: broadcast::Sender<StatusChange>,
     /// The tasks agents worked on, kept on disk (U12); absent in tests that do not need it.
     history: Option<Arc<crate::history::History>>,
+    /// Where each Claude Code session's token counts are read from (U13).
+    usage: Arc<crate::transcript::UsageTracker>,
 }
 
 impl EventHub {
@@ -447,6 +457,7 @@ impl EventHub {
             reducers: Arc::default(),
             status_tx: broadcast::channel(256).0,
             history: None,
+            usage: Arc::default(),
         }
     }
 
@@ -458,6 +469,75 @@ impl EventHub {
 
     pub fn history(&self) -> Option<&Arc<crate::history::History>> {
         self.history.as_ref()
+    }
+
+    /// Counts an ACP agent reported for a turn (U13), kept against the task in flight.
+    pub fn record_tokens(&self, session: &str, t: crate::history::Tokens) {
+        if let Some(h) = &self.history {
+            h.tokens(session, t);
+        }
+    }
+
+    /// The folder an agent works in, by its last component (U13).
+    pub fn record_project(&self, session: &str, dir: &str) {
+        static HOME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        let dir = dir.trim_end_matches('/');
+        // A session in the home folder would file its task under the user name.
+        let home = HOME.get_or_init(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| h.trim_end_matches('/').to_string())
+        });
+        if home.as_deref() == Some(dir) {
+            return;
+        }
+        let name = dir.rsplit('/').next().unwrap_or("");
+        if let Some(h) = &self.history {
+            h.project(session, name);
+        }
+    }
+
+    /// What a Claude Code hook payload says about use (U13), before the event itself is ingested so that a task a `Stop`
+    /// is about to end still takes its counts. Hook payloads carry no token counts, cost or limits (fact 0029): the
+    /// counts come from the transcript the payload names, read from where this server first saw the session; the one
+    /// thing a payload says itself is that a turn failed on a rate limit. The caller has already checked the token.
+    pub fn note_claude_usage(&self, session: &str, data: &serde_json::Value) {
+        self.note_claude_usage_in(crate::transcript::claude_root().as_deref(), session, data);
+    }
+
+    fn note_claude_usage_in(
+        &self,
+        root: Option<&std::path::Path>,
+        session: &str,
+        data: &serde_json::Value,
+    ) {
+        let Some(history) = &self.history else { return };
+        if let (Some(path), Some(root)) =
+            (data.get("transcript_path").and_then(|p| p.as_str()), root)
+        {
+            self.usage.arm(root, session, path);
+        }
+        let event = data
+            .get("hook_event_name")
+            .and_then(|e| e.as_str())
+            .unwrap_or("");
+        if let Some(cwd) = data.get("cwd").and_then(|c| c.as_str()) {
+            self.record_project(session, cwd);
+        }
+        if event == "StopFailure"
+            && data.get("error").and_then(|e| e.as_str()) == Some("rate_limit")
+        {
+            history.rate_limited(session);
+            tracing::info!(target: "audit", event = "agent_rate_limited", session = %session);
+        }
+        // A prompt collects too: after an interrupted turn no Stop came, and its counts must not wait for the next task.
+        if collects(event) {
+            if let Some(t) = self.usage.collect(session) {
+                // Counts only (audit-logging-no-secrets).
+                tracing::info!(target: "audit", event = "usage_collected", session = %session, input = t.input, output = t.output, cache_read = t.cache_read, cache_write = t.cache_write);
+                history.tokens(session, t);
+            }
+        }
     }
 
     /// What a fact from an agent means for the history: a state change opens or ends a task, a title names it (only the
@@ -480,6 +560,14 @@ impl EventHub {
                 history.state(session, agent.as_deref(), *state, ts);
             }
             EventKind::Task { title } => history.task(session, title),
+            // A cost the agent reported itself (ACP); the context figures are not counts of use.
+            EventKind::Usage {
+                cost: Some(cost), ..
+            } => {
+                if let Some((micros, currency)) = crate::history::parse_cost(cost) {
+                    history.cost(session, micros, &currency);
+                }
+            }
             _ => {}
         }
     }
@@ -1163,9 +1251,39 @@ pub async fn serve_socket(hub: EventHub, path: std::path::PathBuf) -> Result<()>
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     }
+    // Connections only read and parse; one worker handles the events in the order they came in, so a tool's hooks keep
+    // their order even when one of them waits on a transcript read.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Hooked>(256);
+    tokio::spawn({
+        let hub = hub.clone();
+        async move {
+            while let Some((w, source, confidence, kinds)) = rx.recv().await {
+                if w.adapter == "claude" && hub.token_matches(&w.session, &w.token) {
+                    // File reads: off the async threads.
+                    let (h, session, data) = (hub.clone(), w.session.clone(), w.data.clone());
+                    let _ =
+                        tokio::task::spawn_blocking(move || h.note_claude_usage(&session, &data))
+                            .await;
+                }
+                if hub
+                    .ingest(&w.session, &w.token, source, confidence, kinds)
+                    .is_ok()
+                    && w.adapter == "claude"
+                {
+                    if let Some(path) = w.data.get("transcript_path").and_then(|p| p.as_str()) {
+                        hub.set_transcript(&w.session, path);
+                    }
+                    // A task this event opened takes its folder now; one it ended took it above.
+                    if let Some(cwd) = w.data.get("cwd").and_then(|c| c.as_str()) {
+                        hub.record_project(&w.session, cwd);
+                    }
+                }
+            }
+        }
+    });
     loop {
         let (stream, _) = listener.accept().await?;
-        let hub = hub.clone();
+        let tx = tx.clone();
         tokio::spawn(async move {
             let mut line = String::new();
             let mut r = BufReader::new(stream.take(MAX_LINE));
@@ -1182,18 +1300,13 @@ pub async fn serve_socket(hub: EventHub, path: std::path::PathBuf) -> Result<()>
             else {
                 return;
             };
-            if hub
-                .ingest(&w.session, &w.token, source, confidence, kinds)
-                .is_ok()
-                && w.adapter == "claude"
-            {
-                if let Some(path) = w.data.get("transcript_path").and_then(|p| p.as_str()) {
-                    hub.set_transcript(&w.session, path);
-                }
-            }
+            let _ = tx.send((w, source, confidence, kinds)).await;
         });
     }
 }
+
+/// One accepted hook line, parsed and adapted, waiting for the worker.
+type Hooked = (Wire, Source, Confidence, Vec<EventKind>);
 
 // ---------------------------------------------------------------------------------------------------
 // The hook command a tool runs: `termenbox-server --hook <adapter>`
@@ -2373,6 +2486,195 @@ mod tests {
         assert_eq!(
             runs[0].outcome,
             Some(termenbox_core::protocol::RunOutcome::Stopped)
+        );
+    }
+
+    // ---- usage (U13): the counts a hook-driven task takes ----
+
+    /// What the socket handler does with one Claude Code hook payload, in its order.
+    fn claude_payload(h: &EventHub, root: &std::path::Path, data: serde_json::Value, now: u64) {
+        h.note_claude_usage_in(Some(root), "s", &data);
+        let (src, conf, kinds) = crate::adapters::claude(&data).unwrap();
+        for k in kinds {
+            h.feed("s", src, conf, k, now);
+        }
+        if let Some(cwd) = data.get("cwd").and_then(|c| c.as_str()) {
+            h.record_project("s", cwd);
+        }
+    }
+
+    #[test]
+    fn a_hooked_task_takes_the_transcript_counts_the_folder_and_a_rate_limit() {
+        let (h, dir) = hub_with_history();
+        let root = dir.join(".claude");
+        let file = root.join("projects/p/s.jsonl");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "").unwrap();
+        let root = root.canonicalize().unwrap();
+        let path = root.join("projects/p/s.jsonl");
+        let common = |name: &str| {
+            serde_json::json!({
+                "hook_event_name": name, "transcript_path": path, "cwd": "/home/u/work/termenbox",
+                "prompt": "Fix the login test", "error": "rate_limit",
+            })
+        };
+        claude_payload(&h, &root, common("UserPromptSubmit"), 1_000);
+        std::fs::write(
+            &file,
+            include_str!("../testdata/transcripts/claude-usage.jsonl"),
+        )
+        .unwrap();
+        claude_payload(&h, &root, common("StopFailure"), 9_000);
+        let runs = h.history().unwrap().query(0, u64::MAX, 20_000).runs;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].project.as_deref(), Some("termenbox"));
+        let u = runs[0].usage.as_ref().unwrap();
+        assert_eq!((u.input_tokens, u.output_tokens), (Some(5), Some(1575)));
+        assert_eq!(
+            (u.cache_read_tokens, u.cache_write_tokens),
+            (Some(67914), Some(15592))
+        );
+        assert_eq!((u.cost_micros, u.rate_limited), (None, 1));
+        // The folder is a name, not a path, and no transcript text reached the store.
+        h.history().unwrap().wait_idle();
+        let file = std::fs::read_to_string(dir.join("history.jsonl")).unwrap();
+        assert!(
+            !file.contains("/home/u")
+                && !file.contains("All green")
+                && !file.contains("Running the tests")
+        );
+    }
+
+    #[test]
+    fn an_interrupted_turn_does_not_leak_into_the_next_task() {
+        let (h, dir) = hub_with_history();
+        let root = dir.join(".claude");
+        let file = root.join("projects/p/s.jsonl");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "").unwrap();
+        let root = root.canonicalize().unwrap();
+        let path = root.join("projects/p/s.jsonl");
+        let d = |name: &str| serde_json::json!({"hook_event_name": name, "transcript_path": path, "prompt": "x"});
+        let usage = include_str!("../testdata/transcripts/claude-usage.jsonl");
+        let (first, second) = usage.split_at(usage.find("{\"parentUuid\":\"u2\"").unwrap());
+        claude_payload(&h, &root, d("UserPromptSubmit"), 1_000);
+        std::fs::write(&file, first).unwrap();
+        // Esc: the turn stops without a Stop hook, and the task ends as stopped.
+        h.forget_except("", &[]);
+        claude_payload(&h, &root, d("UserPromptSubmit"), 100_000);
+        std::fs::write(&file, format!("{first}{second}")).unwrap();
+        claude_payload(&h, &root, d("Stop"), 110_000);
+        let runs = h.history().unwrap().query(0, u64::MAX, 200_000).runs;
+        let last = runs.iter().max_by_key(|r| r.started_at).unwrap();
+        let u = last.usage.as_ref().unwrap();
+        assert_eq!((u.input_tokens, u.output_tokens), (Some(3), Some(264)));
+    }
+
+    #[test]
+    fn a_folder_that_only_shares_the_name_of_the_home_folder_is_recorded() {
+        let (h, _dir) = hub_with_history();
+        hook(&h, "UserPromptSubmit", quiet(), 1_000);
+        let home = std::env::var("HOME").unwrap();
+        let name = home
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap()
+            .to_string();
+        h.record_project("s", &format!("/srv/{name}"));
+        h.feed(
+            "s",
+            Source::Hook,
+            Confidence::High,
+            EventKind::State {
+                state: AgentState::Done,
+            },
+            2_000,
+        );
+        let runs = h.history().unwrap().query(0, u64::MAX, 20_000).runs;
+        assert_eq!(runs[0].project.as_deref(), Some(name.as_str()));
+    }
+
+    #[test]
+    fn a_session_in_the_home_folder_is_not_filed_under_the_user_name() {
+        let (h, _dir) = hub_with_history();
+        hook(&h, "UserPromptSubmit", quiet(), 1_000);
+        let home = std::env::var("HOME").unwrap();
+        h.record_project("s", &home);
+        h.record_project("s", "/work/termenbox");
+        h.record_project("s", "/work/termenbox/src");
+        h.feed(
+            "s",
+            Source::Hook,
+            Confidence::High,
+            EventKind::State {
+                state: AgentState::Done,
+            },
+            2_000,
+        );
+        let runs = h.history().unwrap().query(0, u64::MAX, 20_000).runs;
+        assert_eq!(runs[0].project.as_deref(), Some("termenbox"));
+    }
+
+    #[test]
+    fn a_hook_task_whose_transcript_is_unreadable_has_no_usage_not_zeros() {
+        let (h, dir) = hub_with_history();
+        let root = dir.join(".claude");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let d = |name: &str| serde_json::json!({"hook_event_name": name, "transcript_path": root.join("none.jsonl"), "prompt": "x"});
+        claude_payload(&h, &root, d("UserPromptSubmit"), 1_000);
+        claude_payload(&h, &root, d("Stop"), 3_000);
+        let runs = h.history().unwrap().query(0, u64::MAX, 20_000).runs;
+        assert!(runs[0].usage.is_none());
+    }
+
+    #[test]
+    fn an_acp_agent_cost_and_turn_tokens_are_kept_as_the_agent_said_them() {
+        let (h, _dir) = hub_with_history();
+        let turn = |open: bool, now: u64| {
+            h.feed(
+                "acp",
+                Source::Acp,
+                Confidence::High,
+                EventKind::Turn {
+                    open,
+                    outcome: (!open).then_some(AgentState::Done),
+                },
+                now,
+            )
+        };
+        turn(true, 1_000);
+        h.feed(
+            "acp",
+            Source::Acp,
+            Confidence::High,
+            EventKind::Usage {
+                used: 10,
+                size: 100,
+                cost: Some("0.25 USD".into()),
+            },
+            2_000,
+        );
+        h.record_tokens(
+            "acp",
+            crate::history::Tokens {
+                input: Some(1472),
+                output: Some(35),
+                cache_read: Some(13008),
+                cache_write: None,
+            },
+        );
+        turn(false, 3_000);
+        let runs = h.history().unwrap().query(0, u64::MAX, 20_000).runs;
+        let u = runs[0].usage.as_ref().unwrap();
+        assert_eq!(
+            (u.input_tokens, u.cache_read_tokens, u.cache_write_tokens),
+            (Some(1472), Some(13008), None)
+        );
+        assert_eq!(
+            (u.cost_micros, u.cost_currency.as_deref()),
+            (Some(250_000), Some("USD"))
         );
     }
 }

@@ -7,9 +7,9 @@
 //! leaves this module went through `events::sanitize_text` (control characters out, secrets replaced, capped),
 //! and nothing in here is ever logged (`audit-logging-no-secrets`).
 use std::collections::{HashMap, VecDeque};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
@@ -17,6 +17,7 @@ use termenbox_core::events::PlanItem;
 use termenbox_core::protocol::{Timeline, TimelineEntry};
 
 use crate::events::sanitize_text;
+use crate::history::Tokens;
 
 /// The most bytes one pass reads. Older bytes than this behind the end of the file are skipped.
 pub const PASS_BYTES: usize = 256 * 1024;
@@ -343,6 +344,221 @@ impl Transcripts {
     }
 }
 
+// ---------------------------------------------------------------------------------------------------
+// Token counts (U13)
+// ---------------------------------------------------------------------------------------------------
+
+/// The most bytes one collection reads (several passes of a turn's worth of transcript).
+const USAGE_PASS_BYTES: u64 = 8 * 1024 * 1024;
+/// Message ids remembered per session, to count a message once however many lines Claude Code wrote for it.
+const SEEN_IDS: usize = 256;
+
+/// The token counts Claude Code writes into its own transcript, one `message.usage` per assistant message (verified on a
+/// real transcript, Claude Code 2.1.x). Only the four counts are read, as numbers; no text of any line is kept. A
+/// message is written once per content block with the same id and the same counts, so each id counts once.
+pub struct UsageReader {
+    path: PathBuf,
+    offset: u64,
+    /// Each message id with the largest counts taken from it so far: a message still streaming at one collection may
+    /// report more at the next, and only the growth is new.
+    seen: VecDeque<(String, Tokens)>,
+}
+
+impl UsageReader {
+    /// Starts at the end of the file: what the transcript already holds happened before this server watched.
+    fn armed(path: PathBuf) -> Self {
+        let offset = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        Self {
+            path,
+            offset,
+            seen: VecDeque::new(),
+        }
+    }
+
+    /// The counts of messages appended since the last collection. Whole lines only: a line still being written waits.
+    fn collect(&mut self) -> Result<Tokens> {
+        let mut f = std::fs::File::open(&self.path)?;
+        let len = f.metadata()?.len();
+        if len < self.offset {
+            // Truncated or replaced: what it holds now was mostly counted or never ours, so start at its end rather
+            // than count it again.
+            self.offset = len;
+            self.seen.clear();
+        }
+        f.seek(SeekFrom::Start(self.offset))?;
+        let mut reader = std::io::BufReader::new(f.take((len - self.offset).min(USAGE_PASS_BYTES)));
+        let mut pass: HashMap<String, Tokens> = HashMap::new();
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            let n = (&mut reader)
+                .take(MAX_LINE as u64 + 1)
+                .read_until(b'\n', &mut line)?;
+            if n == 0 {
+                break;
+            }
+            if line.last() != Some(&b'\n') {
+                if line.len() > MAX_LINE {
+                    // Too long to be a message of ours: drop it up to its end.
+                    let mut rest = Vec::new();
+                    loop {
+                        rest.clear();
+                        let m = (&mut reader)
+                            .take(MAX_LINE as u64)
+                            .read_until(b'\n', &mut rest)?;
+                        self.offset += m as u64;
+                        if m == 0 || rest.last() == Some(&b'\n') {
+                            break;
+                        }
+                    }
+                    self.offset += n as u64;
+                    continue;
+                }
+                break; // an unfinished last line
+            }
+            self.offset += n as u64;
+            self.line(&line, &mut pass);
+        }
+        // A message streamed over several lines may report more output on a later line: the largest of each count wins.
+        let mut total = Tokens::default();
+        for (id, t) in pass {
+            match self.seen.iter_mut().find(|(s, _)| *s == id) {
+                Some((_, had)) => {
+                    crate::history::add_tokens(&mut total, growth(*had, t));
+                    *had = most(*had, t);
+                }
+                None => {
+                    crate::history::add_tokens(&mut total, t);
+                    self.seen.push_back((id, t));
+                }
+            }
+        }
+        while self.seen.len() > SEEN_IDS {
+            self.seen.pop_front();
+        }
+        Ok(total)
+    }
+
+    fn line(&mut self, raw: &[u8], pass: &mut HashMap<String, Tokens>) {
+        // Most lines carry no usage; do not parse those.
+        if !raw.windows(7).any(|w| w == b"\"usage\"") {
+            return;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(raw) else {
+            return;
+        };
+        if v["type"].as_str() != Some("assistant") {
+            return;
+        }
+        let m = &v["message"];
+        let (Some(id), Some(u)) = (m["id"].as_str(), m["usage"].as_object()) else {
+            return;
+        };
+        // Ids are kept cut to 80 characters, so they are compared cut too.
+        let id: String = id.chars().take(80).collect();
+        let n = |k: &str| u.get(k).and_then(Value::as_u64);
+        let t = Tokens {
+            input: n("input_tokens"),
+            output: n("output_tokens"),
+            cache_read: n("cache_read_input_tokens"),
+            cache_write: n("cache_creation_input_tokens"),
+        };
+        let e = pass.entry(id).or_default();
+        *e = most(*e, t);
+    }
+}
+
+/// The larger of each count; a count only one side reported is that side's.
+fn most(a: Tokens, b: Tokens) -> Tokens {
+    let max = |a: Option<u64>, b: Option<u64>| match (a, b) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    };
+    Tokens {
+        input: max(a.input, b.input),
+        output: max(a.output, b.output),
+        cache_read: max(a.cache_read, b.cache_read),
+        cache_write: max(a.cache_write, b.cache_write),
+    }
+}
+
+/// What `now` holds beyond `had`, field by field.
+fn growth(had: Tokens, now: Tokens) -> Tokens {
+    let g = |had: Option<u64>, now: Option<u64>| now.map(|n| n.saturating_sub(had.unwrap_or(0)));
+    Tokens {
+        input: g(had.input, now.input),
+        output: g(had.output, now.output),
+        cache_read: g(had.cache_read, now.cache_read),
+        cache_write: g(had.cache_write, now.cache_write),
+    }
+}
+
+/// A session's reader: when its hooks were last heard, the path as the hook named it, and the reader itself behind a
+/// lock of its own, so one session's file read never holds up another's hooks.
+type Watched = (u64, String, Arc<Mutex<UsageReader>>);
+
+/// One usage reader per session, for the sessions whose hooks named a transcript.
+#[derive(Default)]
+pub struct UsageTracker {
+    readers: Mutex<HashMap<String, Watched>>,
+    tick: std::sync::atomic::AtomicU64,
+}
+
+impl UsageTracker {
+    /// Whether `arm` would have to touch the disk: the session is not watched from this path yet.
+    fn needs_arming(&self, session: &str, raw_path: &str) -> bool {
+        let Ok(readers) = self.readers.lock() else {
+            return false;
+        };
+        readers
+            .get(session)
+            .is_none_or(|(_, raw, _)| raw != raw_path)
+    }
+
+    /// Notes that a session's transcript is watched from here on (a no-op when it already is, without a `stat`).
+    pub fn arm(&self, root: &Path, session: &str, raw_path: &str) {
+        let now = self.tick.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if !self.needs_arming(session, raw_path) {
+            if let Ok(mut readers) = self.readers.lock() {
+                if let Some(w) = readers.get_mut(session) {
+                    w.0 = now; // still in use: the last to go
+                }
+            }
+            return;
+        }
+        let Ok(path) = resolve(root, raw_path) else {
+            return;
+        };
+        // Armed before the lock is taken: the `stat` it makes waits for nobody.
+        let reader = UsageReader::armed(path);
+        let Ok(mut readers) = self.readers.lock() else {
+            return;
+        };
+        if !readers.contains_key(session) && readers.len() >= MAX_READERS {
+            // The session whose hooks were heard longest ago.
+            let evict = readers
+                .iter()
+                .min_by_key(|(_, (at, _, _))| *at)
+                .map(|(k, _)| k.clone());
+            if let Some(k) = evict {
+                readers.remove(&k);
+            }
+        }
+        readers.insert(
+            session.to_string(),
+            (now, raw_path.to_string(), Arc::new(Mutex::new(reader))),
+        );
+    }
+
+    /// The counts appended since the last collection, or None when nothing is watched, nothing was appended, or the
+    /// file cannot be read. Blocking file work, bounded by `USAGE_PASS_BYTES`, done under the session's own lock only.
+    pub fn collect(&self, session: &str) -> Option<Tokens> {
+        let reader = self.readers.lock().ok()?.get(session)?.2.clone();
+        let t = reader.lock().ok()?.collect().ok()?;
+        (!t.is_empty()).then_some(t)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,5 +797,168 @@ mod tests {
         let t = Transcripts::default();
         assert!(t.timeline(&home, "s", p.to_str().unwrap()).is_none());
         assert!(t.timeline(&home, "s", "/nope/x.jsonl").is_none());
+    }
+
+    const USAGE: &str = include_str!("../testdata/transcripts/claude-usage.jsonl");
+
+    fn watched(name: &str) -> (PathBuf, PathBuf, UsageTracker) {
+        let root = dir(name);
+        let file = root.join("projects/p/s.jsonl");
+        write(&file, "");
+        let t = UsageTracker::default();
+        t.arm(&root, "claude:a", file.to_str().unwrap());
+        (root, file, t)
+    }
+
+    #[test]
+    fn a_message_written_on_several_lines_is_counted_once() {
+        let (_root, file, t) = watched("usage-once");
+        std::fs::write(&file, USAGE).unwrap();
+        let got = t.collect("claude:a").unwrap();
+        assert_eq!(got.input, Some(5));
+        assert_eq!(got.output, Some(1311 + 264));
+        assert_eq!(got.cache_read, Some(26221 + 41693));
+        assert_eq!(got.cache_write, Some(15472 + 120));
+        // Nothing new: nothing to report, and the same lines are not counted again.
+        assert_eq!(t.collect("claude:a"), None);
+    }
+
+    #[test]
+    fn only_what_was_appended_after_the_session_was_first_seen_counts() {
+        let root = dir("usage-since");
+        let file = root.join("projects/p/s.jsonl");
+        let (old, new) = USAGE.split_at(USAGE.find("{\"parentUuid\":\"u2\"").unwrap());
+        write(&file, old);
+        let t = UsageTracker::default();
+        t.arm(&root, "claude:a", file.to_str().unwrap());
+        assert_eq!(t.collect("claude:a"), None);
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap();
+        f.write_all(new.as_bytes()).unwrap();
+        let got = t.collect("claude:a").unwrap();
+        assert_eq!((got.input, got.output), (Some(3), Some(264)));
+    }
+
+    #[test]
+    fn a_line_still_being_written_waits_for_its_end() {
+        let (_root, file, t) = watched("usage-partial");
+        let last = USAGE.lines().last().unwrap();
+        let (a, b) = last.split_at(last.len() / 2);
+        std::fs::write(&file, a).unwrap();
+        assert_eq!(t.collect("claude:a"), None);
+        std::fs::write(&file, format!("{a}{b}\n")).unwrap();
+        assert_eq!(t.collect("claude:a").unwrap().output, Some(264));
+    }
+
+    #[test]
+    fn an_overlong_line_and_garbage_are_skipped_not_fatal() {
+        let (_root, file, t) = watched("usage-garbage");
+        let huge = format!("{{\"usage\":\"{}\"}}\n", "x".repeat(MAX_LINE * 2));
+        std::fs::write(&file, format!("not json \"usage\"\n{huge}{USAGE}")).unwrap();
+        assert_eq!(t.collect("claude:a").unwrap().input, Some(5));
+    }
+
+    fn assistant_line(id: &str, output: u64) -> String {
+        format!(
+            "{{\"type\":\"assistant\",\"message\":{{\"id\":\"{id}\",\"usage\":{{\"input_tokens\":2,\"output_tokens\":{output}}}}}}}\n"
+        )
+    }
+
+    #[test]
+    fn a_message_whose_output_grows_across_lines_counts_its_largest() {
+        let (_root, file, t) = watched("usage-max");
+        let long = "m".repeat(120);
+        std::fs::write(
+            &file,
+            format!(
+                "{}{}{}",
+                assistant_line("a", 1),
+                assistant_line("a", 90),
+                assistant_line(&long, 5)
+            ),
+        )
+        .unwrap();
+        let got = t.collect("claude:a").unwrap();
+        assert_eq!((got.input, got.output), (Some(4), Some(95)));
+        // A very long id is remembered cut, and recognised again when compared cut.
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap();
+        f.write_all(assistant_line(&long, 5).as_bytes()).unwrap();
+        assert_eq!(t.collect("claude:a"), None);
+    }
+
+    #[test]
+    fn a_message_still_streaming_at_one_collection_adds_only_its_growth_at_the_next() {
+        let (_root, file, t) = watched("usage-growth");
+        std::fs::write(&file, assistant_line("a", 1)).unwrap();
+        let got = t.collect("claude:a").unwrap();
+        assert_eq!((got.input, got.output), (Some(2), Some(1)));
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap();
+        f.write_all(assistant_line("a", 264).as_bytes()).unwrap();
+        let got = t.collect("claude:a").unwrap();
+        assert_eq!((got.input, got.output), (Some(0), Some(263)));
+    }
+
+    #[test]
+    fn the_session_armed_longest_ago_is_the_one_evicted() {
+        let root = dir("usage-evict");
+        let t = UsageTracker::default();
+        let mut files = Vec::new();
+        for i in 0..MAX_READERS {
+            let f = root.join(format!("projects/p/{i}.jsonl"));
+            write(&f, "");
+            t.arm(&root, &format!("s{i}"), f.to_str().unwrap());
+            files.push(f);
+        }
+        // s0 is the oldest, but its hook is heard again: s1 is now the one to go.
+        t.arm(&root, "s0", files[0].to_str().unwrap());
+        let extra = root.join("projects/p/new.jsonl");
+        write(&extra, "");
+        t.arm(&root, "new", extra.to_str().unwrap());
+        std::fs::write(&files[0], USAGE).unwrap();
+        assert!(t.collect("s0").is_some());
+        std::fs::write(&files[1], USAGE).unwrap();
+        assert!(t.collect("s1").is_none());
+    }
+
+    #[test]
+    fn a_truncated_transcript_is_not_counted_again() {
+        let (_root, file, t) = watched("usage-truncated");
+        std::fs::write(&file, USAGE).unwrap();
+        assert!(t.collect("claude:a").is_some());
+        let last = USAGE.lines().last().unwrap();
+        std::fs::write(&file, format!("{last}\n")).unwrap();
+        assert_eq!(t.collect("claude:a"), None);
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap();
+        f.write_all(assistant_line("fresh", 7).as_bytes()).unwrap();
+        assert_eq!(t.collect("claude:a").unwrap().output, Some(7));
+    }
+
+    #[test]
+    fn a_message_without_usage_reports_nothing_rather_than_zero() {
+        let (_root, file, t) = watched("usage-none");
+        std::fs::write(&file, FIXTURE).unwrap();
+        assert_eq!(t.collect("claude:a"), None);
+    }
+
+    #[test]
+    fn a_path_outside_the_claude_directory_is_not_watched() {
+        let root = dir("usage-outside");
+        let other = root.join("elsewhere.jsonl");
+        write(&other, "");
+        let t = UsageTracker::default();
+        t.arm(&root.join(".claude"), "claude:a", other.to_str().unwrap());
+        std::fs::write(&other, USAGE).unwrap();
+        assert_eq!(t.collect("claude:a"), None);
     }
 }

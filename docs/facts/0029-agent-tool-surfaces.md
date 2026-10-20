@@ -30,6 +30,8 @@ Stop        {"stop_hook_active":false,"last_assistant_message":"The command prin
 
 Captured interactively (tmux): `Notification` fires when a permission prompt appears (sample in `packages/server/testdata/events/claude-notification.json`), and the screen at that moment is `testdata/screens/claude-permission.txt`. Not captured: a crash or kill (no `Stop` is delivered, so `done` must also come from the process scan).
 
+Usage is in no hook payload: none carries tokens, cost, cache or rate-limit windows (`StopFailure` names `error: rate_limit`, nothing more). The transcript a hook names does: each assistant line has `message.usage` with `input_tokens`, `output_tokens`, `cache_read_input_tokens` and `cache_creation_input_tokens`, checked on a real transcript (2026-10-20), written once per content block with the same `message.id`, so a count must be taken once per id (the largest, as output grows across lines). Counts from the transcript are a lower bound: lines over 64 KB (a large Write/Edit), subagent transcripts and anything before the server first saw the session are not counted. ACP agents report tokens in the `session/prompt` result (`usage`: `inputTokens`, `outputTokens`, `cachedReadTokens`; fixtures under `testdata/acp/`); no recorded agent sends a `cost`.
+
 `tool_input.command` and `prompt` can hold secrets, and `last_assistant_message` is model text: all of it is untrusted (plan v6 rules).
 
 ## Hook behaviour

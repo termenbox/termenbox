@@ -42,7 +42,7 @@ One roadmap file per step (the old numbering `U.n` equals `Un` with a zero pad: 
 | [U10](roadmap/archive/U10.md) | Hook offer card and enable button | both | U05 | done (PR #178) |
 | [U11](roadmap/U11.md) | Escalation ladder | both | U08 | pending |
 | [U12](roadmap/archive/U12.md) | History store, Activity timeline and daily digest | both | U04 | done (PR #243) |
-| [U13](roadmap/U13.md) | Usage and cost view | both | U12 | pending |
+| [U13](roadmap/archive/U13.md) | Usage and cost view | both | U12 | done (PR #244) |
 | [U14](roadmap/U14.md) | Server health collection and view | both | U04 | pending |
 | [U15](roadmap/archive/U15.md) | Desktop workspace: panes and shortcuts | desktop | U05, U08 | done (PR #198) |
 | [U16](roadmap/U16.md) | Real-device gate and the free gate | mobile | U04, U05, U07, U07a, U07b, U07c, U08, U09, U10, U11, U12, U13, U14, U15, R03, R36 | pending |

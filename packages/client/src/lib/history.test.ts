@@ -2,8 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   addDays, answered, asked, ANSWER_TIMEOUT_MS, bucketsOf, compact, DeleteBook, digestOf, digestSentence, duration, groupByDay, overall, rangeLabel, rangeOf, rowsOf,
   deletionSummary, shownValues, startOfDay, statusOf, step, taskBars, waitBars, type Bar, type Source,
+  costText, costsText, tokenBars, tokenText, tokensOf, usageByAgent, usageByProject, usageOfRun, whyMissing, NO_AGENT, NO_PROJECT,
 } from './history';
-import { answer, at, EARLIER, NOW, RUNS } from './historyFixture';
+import { answer, at, EARLIER, NOW, REPORTED, RUNS } from './historyFixture';
 
 const src = (runs = RUNS): Source[] => [{ serverId: 'alpha', serverName: 'alpha', runs }];
 
@@ -196,5 +197,59 @@ describe('hour bars on a day with a clock change', () => {
     expect(buckets[5].start).toBe(new Date(2026, 2, 8, 5).getTime());
     expect(new Date(buckets[5].start).getHours()).toBe(5);
     expect(new Date(buckets[23].start).getHours()).toBe(23);
+  });
+});
+
+describe('usage and cost (U13)', () => {
+  const rows = rowsOf(src([...RUNS, REPORTED, ...EARLIER]), NOW);
+  const agent = (n: string) => usageByAgent(rows).find((a) => a.agent === n)!.totals;
+
+  it('adds up what agents reported and leaves a figure nobody reported undefined', () => {
+    const c = agent('claude');
+    expect([c.input, c.output, c.cacheRead, c.cacheWrite]).toEqual([15100, 5700, 150000, 25000]);
+    expect(c.tasks).toBe(4);
+    expect(c.rateLimited).toBe(1);
+    expect(c.cost).toBeUndefined();
+    const k = agent('kilo');
+    expect([k.input, k.cacheWrite, k.cost]).toEqual([1472, undefined, { USD: 250_000 }]);
+  });
+  it('an agent that reported nothing has no totals, not zeros', () => {
+    const c = agent('codex');
+    expect([c.tasks, c.withCounts, c.input, c.output, c.cost, tokensOf(c)]).toEqual([1, 0, undefined, undefined, undefined, undefined]);
+    expect(usageByAgent(rows).map((a) => a.agent)).toEqual(['claude', 'kilo', 'codex', NO_AGENT]);
+  });
+  it('groups by project name and ranks by tokens', () => {
+    const p = usageByProject(rows);
+    expect(p.map((x) => x.project)).toEqual(['api', 'web', NO_PROJECT]);
+    expect(tokensOf(p[0].totals)).toBe(20800);
+    expect(tokensOf(p[2].totals)).toBeUndefined();
+  });
+  it('reads a record defensively: only counts, only a real currency, nothing for an empty report', () => {
+    expect(usageOfRun(undefined)).toBeUndefined();
+    expect(usageOfRun({})).toBeUndefined();
+    expect(usageOfRun({ input_tokens: -1, output_tokens: Number.NaN })).toBeUndefined();
+    expect(usageOfRun({ cost_micros: 5, cost_currency: '$$' })).toBeUndefined();
+    expect(usageOfRun({ cost_micros: 5, cost_currency: 'usd' })).toMatchObject({ costMicros: 5, currency: 'USD' });
+    expect(usageOfRun({ rate_limited: 2 })).toMatchObject({ rateLimited: 2 });
+  });
+  it('writes numbers short and amounts in the currency the agent used, without converting', () => {
+    expect([0, 999, 1000, 1234, 18200, 3_400_000].map(tokenText)).toEqual(['0', '999', '1k', '1.2k', '18k', '3.4M']);
+    // just under a unit boundary reads as the next unit, not as 1000k
+    expect([999_499, 999_500, 999_999, 1_000_000].map(tokenText)).toEqual(['999k', '1M', '1M', '1M']);
+    // a currency without minor units keeps none; a fractional count is not a count
+    expect(costText(250_000_000, 'JPY', 'en-US')).toBe('¥250');
+    expect(usageOfRun({ input_tokens: 1.5 } as never)).toBeUndefined();
+    // cache counts alone are a reported figure
+    expect(tokensOf({ cacheRead: 40 })).toBe(0);
+    expect(costText(250_000, 'USD', 'en-US')).toBe('$0.25');
+    expect(costsText({ USD: 250_000, EUR: 1_000_000 }, 'en-US')).toBe('$0.25 + €1.00');
+    expect(costText(1, 'XXXXX', 'en-US')).toContain('XXXXX');
+  });
+  it('charts tokens where tasks ended, and names the missing piece per agent', () => {
+    const b = bucketsOf(rows, 'day', rangeOf('day', startOfDay(NOW)));
+    expect(tokenBars(b, 'day').filter((x) => x.value).map((x) => x.value)).toEqual(['15k', '1.5k', '2.3k', '500']);
+    expect(whyMissing('claude', 'cost')).toContain('R19');
+    expect(whyMissing('codex', 'tokens')).toContain('notify hook carries no usage');
+    expect(whyMissing('aider', 'cost')).toBe('aider reported no cost to Termenbox.');
   });
 });
