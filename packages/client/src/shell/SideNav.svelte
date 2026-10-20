@@ -10,9 +10,9 @@
    * The desktop sidebar: destinations, then every server with its sessions and their state. The list holds still while a
    * pointer is down and for 2 s after it scrolls (ui-never-moves-under-the-finger); a state change shows in place.
    */
-  let { current, onnavigate, groups, activeKey = null, onopen, onserver, onnew, onsearch, searchHint, rightOpen = false, onright, width, class: className = '' }: {
+  let { current, onnavigate, groups, activeKey = null, onopen, onserver, onnew, onsearch, searchHint, splitOpen = false, onsplit, width, id, class: className = '' }: {
     current: Destination; onnavigate: (d: Destination) => void; groups: NavGroup[]; activeKey?: string | null; onopen: (key: string) => void; onserver: (id: string) => void;
-    onnew?: () => void; onsearch: () => void; searchHint: string; rightOpen?: boolean; onright?: () => void; width?: number; class?: string;
+    onnew?: () => void; onsearch: () => void; searchHint: string; splitOpen?: boolean; onsplit?: () => void; width?: number; id?: string; class?: string;
   } = $props();
 
   const held = new HeldView();
@@ -43,7 +43,7 @@
   const needs = $derived(groups.reduce((n, g) => n + g.sessions.filter((s) => s.state === 'needs-you').length, 0));
 </script>
 
-<aside aria-label="Workspace" data-shell="sidebar" style:width={width != null ? `${width}px` : undefined} style:flex={width != null ? `0 0 ${width}px` : undefined} class={cn('flex-col shrink-0 border-r border-line bg-panel', className)}>
+<aside {id} aria-label="Workspace" data-shell="sidebar" style:width={width ? `${width}px` : undefined} class={cn('flex shrink-0 flex-col border-r border-line bg-panel', !width && 'w-64', className)}>
   <nav aria-label="Main" class="flex flex-col gap-2 p-2">
     {#each DESTINATIONS as d (d.id)}
       <button type="button" data-destination={d.id} aria-current={current === d.id ? 'page' : undefined} onclick={() => onnavigate(d.id)}
@@ -82,9 +82,9 @@
     {/each}
   </div>
 
-  {#if onright}
+  {#if onsplit}
     <div class="border-t border-line p-2">
-      <button type="button" aria-pressed={rightOpen} onclick={onright} class={cn('h-11 w-full rounded-control border border-line bg-transparent px-3 text-left text-base text-soft', rightOpen && 'bg-raised text-fg')}>Right pane</button>
+      <button type="button" aria-pressed={splitOpen} onclick={onsplit} class={cn('h-11 w-full rounded-control border border-line bg-transparent px-3 text-left text-base text-soft', splitOpen && 'bg-raised text-fg')}>Terminal beside the decision</button>
     </div>
   {/if}
 </aside>

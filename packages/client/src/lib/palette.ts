@@ -9,18 +9,26 @@ import { STATES, type FleetState } from './ds/states';
 export type EntryKind = 'destination' | 'action' | 'server' | 'session';
 export interface PaletteEntry { id: string; kind: EntryKind; label: string; detail?: string; state?: FleetState; agent?: string }
 
-export interface PaletteInput { servers: HubServer[]; sessions: HubSession[]; agents: AgentMap; wide: boolean; rightOpen: boolean; canCreate: boolean }
+export interface PaletteInput { servers: HubServer[]; sessions: HubSession[]; agents: AgentMap; wide: boolean; sidebarOpen: boolean; splitOpen: boolean; canCreate: boolean }
 
 /** Ids: `dest:<name>`, `action:<name>[:<server>]`, `server:<id>`, `session:<key>`. */
 export function buildEntries(i: PaletteInput): PaletteEntry[] {
   const out: PaletteEntry[] = DESTINATIONS.map((d) => ({ id: `dest:${d.id}`, kind: 'destination', label: d.label, detail: 'Go to' }));
   if (i.canCreate) out.push({ id: 'action:new-session', kind: 'action', label: 'New session', detail: 'Action' });
+  // The same as the Alt keys, for where those keys belong to the terminal or a field (the terminal keeps the focus when a session opens).
+  out.push({ id: 'action:next-needs-you', kind: 'action', label: 'Open the next session that needs you', detail: 'Action' });
+  out.push({ id: 'action:approve-decision', kind: 'action', label: 'Answer Yes to the open decision', detail: 'Action' });
+  out.push({ id: 'action:deny-decision', kind: 'action', label: 'Answer No to the open decision', detail: 'Action' });
+  out.push({ id: 'action:focus-composer', kind: 'action', label: 'Focus the reply composer', detail: 'Action' });
   for (const s of i.servers) {
     const name = s.server.server_name || 'Server';
     if (s.state === 'paused') out.push({ id: `action:resume:${s.id}`, kind: 'action', label: `Resume server ${name}`, detail: 'Action' });
     else out.push({ id: `action:pause:${s.id}`, kind: 'action', label: `Pause server ${name}`, detail: 'Action' });
   }
-  if (i.wide) out.push({ id: 'action:toggle-right', kind: 'action', label: i.rightOpen ? 'Hide the right pane' : 'Show the right pane', detail: 'Action' });
+  if (i.wide) {
+    out.push({ id: 'action:toggle-sidebar', kind: 'action', label: i.sidebarOpen ? 'Hide the sidebar' : 'Show the sidebar', detail: 'Action' });
+    out.push({ id: 'action:toggle-split', kind: 'action', label: i.splitOpen ? 'Hide the terminal beside the decision' : 'Show the terminal beside the decision', detail: 'Action' });
+  }
   out.push({ id: 'action:shortcuts', kind: 'action', label: 'Keyboard shortcuts', detail: 'Action' });
   for (const s of i.servers) out.push({ id: `server:${s.id}`, kind: 'server', label: s.server.server_name || 'Server', detail: `Server, ${s.state}` });
   for (const s of i.sessions) {
@@ -67,38 +75,73 @@ export function searchEntries(entries: PaletteEntry[], query: string, limit = 50
 }
 
 // --- shortcuts ---------------------------------------------------------------------------------------------------
-export interface Shortcut { id: 'palette'; mac: string; other: string; label: string; scope: string }
+export type ShortcutId = 'palette' | 'approve-decision' | 'deny-decision' | 'next-needs-you' | 'focus-composer' | 'toggle-panes';
+export interface Shortcut { id: ShortcutId; mac: string; other: string; label: string; scope: string }
 /**
  * Only registered shortcuts are intercepted; every other key goes to the page and the terminal untouched.
  * Ctrl/Cmd+K: on macOS Cmd is never sent to a terminal, so nothing is lost. On Windows and Linux it takes Ctrl+K
  * (readline "kill to end of line") from the terminal, and the page prevents the browser's own use of it (Chrome and
  * Firefox focus their search box). That is why shortcuts can be turned off (Settings).
+ * The rest are Alt (Option) plus a letter that no browser uses (not Ctrl+Shift+N/P/O/A/D, Ctrl+T/W/N or Alt+F/E/D, which
+ * the browser keeps). They act only when nothing is being typed into: a text field, the composer and the terminal keep
+ * every key, so a reply can never answer a decision by accident and a shell never loses a key.
  */
 export const SHORTCUTS: Shortcut[] = [
   { id: 'palette', mac: '⌘K', other: 'Ctrl+K', label: 'Open or close the command palette', scope: 'Everywhere in the app, including while the terminal has focus' },
-  { id: 'focus-composer', mac: '⌘⇧O', other: 'Ctrl+Shift+O', label: 'Focus the composer', scope: 'In the decision view, when no field is being edited' },
-  { id: 'approve-decision', mac: '⌘⇧A', other: 'Ctrl+Shift+A', label: 'Answer with the first option', scope: 'When a decision card shows options' },
-  { id: 'deny-decision', mac: '⌘⇧D', other: 'Ctrl+Shift+D', label: 'Answer with the second option', scope: 'When a decision card shows two or more options' },
-  { id: 'next-needs-you', mac: '⌘⇧N', other: 'Ctrl+Shift+N', label: 'Open the next session that needs you', scope: 'Everywhere' },
-  { id: 'toggle-panes', mac: '⌘⇧P', other: 'Ctrl+Shift+P', label: 'Show or hide the right pane', scope: 'On the desktop' },
+  { id: 'approve-decision', mac: '⌥Y', other: 'Alt+Y', label: 'Answer Yes to the open decision', scope: 'When the decision is on screen with a plain Yes option. From the terminal or a field: Ctrl+K, then “Answer Yes”' },
+  { id: 'deny-decision', mac: '⌥N', other: 'Alt+N', label: 'Answer No to the open decision', scope: 'When the decision is on screen with a plain No option; never “don’t ask again”. From the terminal or a field: Ctrl+K' },
+  { id: 'next-needs-you', mac: '⌥J', other: 'Alt+J', label: 'Open the next session that needs you', scope: 'When no field or terminal has focus' },
+  { id: 'focus-composer', mac: '⌥C', other: 'Alt+C', label: 'Focus the reply composer', scope: 'When no field or terminal has focus' },
+  { id: 'toggle-panes', mac: '⌥P', other: 'Alt+P', label: 'Show or hide the terminal beside the decision', scope: 'On the desktop, in a session' },
 ];
 export const PALETTE_KEYS: { keys: string; label: string }[] = [
   { keys: '↑ ↓', label: 'Move through the results' },
   { keys: 'Enter', label: 'Open the highlighted result' },
   { keys: 'Esc', label: 'Close and return to where you were' },
 ];
+/** The splitters between panes. */
+export const SPLITTER_KEYS: { keys: string; label: string }[] = [
+  { keys: '← →', label: 'Move the divider (Shift for a larger step)' },
+  { keys: 'Home End', label: 'Smallest or largest width' },
+  { keys: 'Enter', label: 'Reset the width (a double click does too)' },
+];
 
-export interface KeyLike { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean; isComposing?: boolean; keyCode?: number; getModifierState?: (k: string) => boolean }
+export interface KeyLike { key: string; code?: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean; repeat?: boolean; isComposing?: boolean; keyCode?: number; getModifierState?: (k: string) => boolean }
 
 export const isMac = (nav: Pick<Navigator, 'platform' | 'userAgent'> | undefined = typeof navigator === 'undefined' ? undefined : navigator) =>
   /Mac|iPhone|iPad/.test(nav?.platform || nav?.userAgent || '');
 
-export function matchShortcut(e: KeyLike, mac: boolean): Shortcut['id'] | null {
+const ALT_KEYS: Record<string, ShortcutId> = { y: 'approve-decision', n: 'deny-decision', j: 'next-needs-you', c: 'focus-composer', p: 'toggle-panes' };
+
+/** The letter a key stands for, whatever its case. With Option held a Mac types another character (⌥Y is ¥), so the physical key decides then. */
+function letterOf(e: KeyLike): string {
+  if (/^[a-z]$/i.test(e.key)) return e.key.toLowerCase();
+  const m = /^Key([A-Z])$/.exec(e.code ?? '');
+  return m ? m[1].toLowerCase() : '';
+}
+
+export function matchShortcut(e: KeyLike, mac: boolean): ShortcutId | null {
   if (e.isComposing || e.keyCode === 229) return null; // an IME is composing: the key belongs to it
   if (e.getModifierState?.('AltGraph')) return null; // AltGr (Ctrl+Alt on Windows) types characters on many layouts
-  if (e.altKey || e.shiftKey) return null;
-  const mod = mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
-  return mod && e.key.toLowerCase() === 'k' ? 'palette' : null;
+  if (e.shiftKey) return null;
+  const letter = letterOf(e);
+  if (!e.altKey) {
+    const mod = mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+    return mod && letter === 'k' ? 'palette' : null;
+  }
+  if (e.ctrlKey || e.metaKey || e.repeat) return null;
+  return ALT_KEYS[letter] ?? null;
+}
+
+/** Where a key is being typed: a text field, the composer, a menu search or the terminal. */
+const TYPING = 'input, textarea, select, [contenteditable=""], [contenteditable="true"], [role=textbox], [role=combobox], [role=searchbox], .xterm';
+export function isTyping(el: Element | null): boolean {
+  return !!el?.closest?.(TYPING);
+}
+/** The palette works everywhere; the rest only when nothing is being typed into and no dialog is open. */
+export function shortcutAllowed(id: ShortcutId, focus: Element | null, doc: Pick<Document, 'querySelector'> = document): boolean {
+  if (id === 'palette') return true;
+  return !isTyping(focus) && !doc.querySelector('[role=dialog], dialog[open]');
 }
 
 const KEY = 'termenbox_shortcuts';

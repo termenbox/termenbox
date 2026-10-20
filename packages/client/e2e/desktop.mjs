@@ -1,10 +1,17 @@
-// Desktop (1280 px, mouse and keyboard, no touch) scenarios. Each desktop step of the roadmap adds its own scenario here
-// (desktop review, PR #149). U04: the sidebar with the four destinations and every session of two servers, the right pane,
-// the Ctrl/Cmd+K palette, its shortcut list and off switch, and a sidebar that holds still under the pointer.
-// Usage: node e2e/desktop.mjs (after: pnpm run e2e:build)
+// Desktop (mouse and keyboard, no touch) scenarios. Each desktop step of the roadmap adds its own scenario here
+// (desktop review, PR #149).
+//   Part 1 (1280 px, U04): the shell probe: the sidebar with the four destinations and every session of two servers, the
+//   Ctrl/Cmd+K palette, its shortcut list and off switch, and a sidebar that holds still under the pointer. The probe's
+//   terminal is a stand-in textarea, so this part proves what the page does with a key, not what xterm does with it.
+//   Part 2 (U15): the REAL app (real hub, connection, xterm, session view, decision card) against a scripted server:
+//   sidebar toggle/resize/keyboard/reload at 721, 1024, 1440 and 1920 px, crossing 720 px, the live terminal beside the
+//   structured view, the shortcuts, and no key reaching the terminal from the composer. See app-lib.mjs for its limits.
+// Usage: node e2e/desktop.mjs (after: pnpm run e2e:build, and the app's own: pnpm build)
 import { start } from './frame-lib.mjs';
+import { realApp } from './desktop-app.mjs';
 
 const t = await start({ viewport: { width: 1280, height: 800 }, isMobile: false, hasTouch: false });
+const failures = [];
 const { page } = t;
 await t.open();
 
@@ -91,16 +98,6 @@ await page.getByRole('combobox', { name: 'Search' }).waitFor();
 await page.keyboard.press('Escape');
 t.ok('the shortcut list opens from the palette and names the keys; Settings turns shortcuts off and on');
 
-// 6. Right pane: toggled from the sidebar, holds the session list.
-const pane = page.locator('[data-shell=right-pane]');
-t.check((await pane.count()) === 0, 'the right pane is open by default');
-await side.getByRole('button', { name: 'Right pane' }).click();
-await pane.waitFor();
-t.check((await pane.getByText('svc-1').count()) > 0, 'the right pane does not list sessions');
-await side.getByRole('button', { name: 'Right pane' }).click();
-await pane.waitFor({ state: 'detached' });
-t.ok('the right pane toggles');
-
 // 7. The sidebar holds still under the pointer: press on a session, a status update arrives, nothing moves; release, then it re-sorts.
 await t.api('setState', 'alpha', 'svc-9', 'idle');
 await page.waitForTimeout(2300);
@@ -121,58 +118,7 @@ const after = await t.rects(rows);
 t.check(JSON.stringify(after) !== JSON.stringify(before), 'the sidebar did not apply the held update after release');
 t.ok('no control moves when a status update arrives while the pointer is down');
 
-// 8. Sidebar resize: dragging the separator widens it, the width is clamped so the terminal stays usable, causes no
-//    sideways overflow, the keyboard (arrows / Home) resizes it, and the width survives a reload.
-const sidebarEl = page.locator('[data-shell=sidebar]');
-const sep = page.locator('.sidebar-resize');
-await sep.waitFor();
-// Clear localStorage to get consistent default width
-await page.evaluate(() => localStorage.removeItem('termenbox_sidebar_width'));
-await page.reload({ waitUntil: 'domcontentloaded' });
-await sep.waitFor();
-await page.waitForTimeout(200);
-const w0 = (await sidebarEl.boundingBox()).width;
-// Use locator.dragTo which properly dispatches pointer events through the element handlers
-await sep.dragTo(page.locator('[data-shell=main]'), {
-  sourcePosition: { x: 3, y: 5 },
-  targetPosition: { x: 140, y: 5 },
-  steps: 10
-});
-await page.waitForTimeout(200);
-const w1 = (await sidebarEl.boundingBox()).width;
-t.check(w1 > w0 && w1 <= 521, `pointer resize did not widen the sidebar: ${w0} -> ${w1}`);
-// Second drag to test clamp (move far right)
-await sep.dragTo(page.locator('[data-shell=main]'), {
-  sourcePosition: { x: 3, y: 5 },
-  targetPosition: { x: 600, y: 5 },
-  steps: 10
-});
-await page.waitForTimeout(200);
-t.check((await sidebarEl.boundingBox()).width <= 521, 'sidebar exceeded its width clamp');
-t.check((await t.overflow()) <= 0, 'sidebar resize overflows sideways');
-// Keyboard resize
-await sep.focus();
-await page.waitForTimeout(50);
-await page.keyboard.press('Home');
-await page.waitForTimeout(100);
-t.check(Math.abs((await sidebarEl.boundingBox()).width - 260) <= 2, 'Home did not reset the sidebar width');
-await page.keyboard.press('ArrowRight');
-await page.waitForTimeout(100);
-const w3 = (await sidebarEl.boundingBox()).width;
-t.check(w3 > 260 && w3 <= 282, 'arrow keys did not resize the sidebar');
-await page.reload();
-await t.open();
-await t.open();
-t.check(Math.abs((await page.locator('[data-shell=sidebar]').boundingBox()).width - w3) <= 2, 'sidebar width did not survive reload');
-t.ok('sidebar resizes by pointer and keyboard, clamps, does not overflow, and survives reload');
-
-// 9. New shortcuts pass through the terminal (no clash with terminal input).
-const ta = page.locator('textarea[aria-label="Terminal input"]');
-await ta.focus();
-await t.api('clearKeys');
-await page.keyboard.press('Control+Shift+a');
-const k = (await t.api('keys')).find((k) => k.key === 'a' && k.ctrl);
-t.check(k && k.prevented === false, 'Ctrl+Shift+A was not passed through in the terminal');
-t.ok('shortcuts do not leak into the terminal');
-
-await t.finish();
+if (!(await t.end())) failures.push('shell probe');
+if (!(await realApp())) failures.push('real app');
+if (failures.length) { console.error(`FAIL: ${failures.join(', ')}`); process.exit(1); }
+console.log('PASS');

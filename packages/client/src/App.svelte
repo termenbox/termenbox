@@ -35,9 +35,11 @@
   import SessionView from './SessionView.svelte';
   import { merge as mergeView, requestView, type ViewModel } from './lib/sessionView';
   import { loadPaneModes, withPaneMode, type PaneMode } from './lib/paneMode';
-import { rowOf } from './lib/home';
-import { stepOf } from './lib/decision';
-import { fleetOf } from './lib/navlist';
+  import { rowOf } from './lib/home';
+  import { answerIndex, nextNeedsYou, stepOf } from './lib/decision';
+  import { fleetOf } from './lib/navlist';
+  import { canSplit, commitLayout, layout, MIN_HALF, patchLayout, SPLIT, splitWidthFor, toggleSidebar, toggleSplit } from './lib/panes';
+  import Resizer from './shell/Resizer.svelte';
   import Home from './Home.svelte';
   import SessionGroups from './SessionGroups.svelte';
   import { destination, navigate, startRouter, type Destination } from './lib/router';
@@ -96,7 +98,6 @@ import { fleetOf } from './lib/navlist';
   let activeServerId: string | null = null;
   let serversPage = false;
   let wide = false;
-  let rightOpen = false;
   let helpOpen = false;
   /** Off the terminal: another destination, or the servers page (which belongs to Settings). */
   $: away = serversPage || $destination !== 'sessions';
@@ -182,7 +183,7 @@ import { fleetOf } from './lib/navlist';
   function setPaneMode(m: string) { if (activeKey) paneModes = withPaneMode(paneModes, activeKey, m === 'decision' ? 'decision' : 'terminal'); }
   let heldView: ViewModel | null = null;
   $: activeKey, (heldView = null);
-  $: viewPolling = !!activeKey && !away && pageVisible && paneMode === 'decision' && connState === 'connected';
+  $: viewPolling = !!activeKey && !away && pageVisible && (paneMode === 'decision' || split) && connState === 'connected';
   let viewPoll: ReturnType<typeof setInterval> | undefined;
   function requestSessionView() { if (activeKey) hub.sendToSession(activeKey, requestView(activeSessionId ?? '', heldView)); }
   $: { activeKey; if (viewPoll) clearInterval(viewPoll); viewPoll = undefined; if (viewPolling) { requestSessionView(); viewPoll = setInterval(requestSessionView, 2000); } }
@@ -203,6 +204,11 @@ import { fleetOf } from './lib/navlist';
   $: connState = selected?.state ?? 'closed';
   $: serverVersion = selected?.version ?? '';
   let narrow = false;
+  /** Beside the decision, the live terminal (U15): only on the desktop, for a session with a structured view, and wide enough for both halves. */
+  let bodyWidth = 0;
+  $: split = wide && $layout.splitOpen && !!activeSession && !!activeRow && (bodyWidth === 0 || canSplit(bodyWidth));
+  $: splitW = splitWidthFor($layout.splitWidth, bodyWidth || 1200);
+  $: splitMax = Math.max(SPLIT.min, Math.min(SPLIT.max, (bodyWidth || 1200) - MIN_HALF));
   let iosHint = isIosBrowser() && !localStorage.getItem('termenbox_ios_hint');
   let sheetHeight: SheetHeight = 'half';
   let now = Date.now();
@@ -544,19 +550,32 @@ import { fleetOf } from './lib/navlist';
     if (name === 'new-session') newSession();
     else if (name === 'pause' && arg) hub.pause(arg);
     else if (name === 'resume' && arg) hub.resume(arg);
+    else if (['approve-decision', 'deny-decision', 'next-needs-you', 'focus-composer'].includes(name)) setTimeout(() => handleShortcut(name), 0); // after the palette has closed and let go of focus
   }
 
+  /** The reply field to type in: the visible, enabled composer, the open session's first. Others (Home lists several) are not reached from the keyboard here. */
+  function visibleComposer(): HTMLInputElement | null {
+    const shown = Array.from(document.querySelectorAll<HTMLInputElement>('input[data-composer]:not([disabled])'))
+      .filter((el) => el.getClientRects().length > 0 && !el.closest('[inert], [aria-hidden=true], .pane-hidden'));
+    return shown.find((el) => el.closest('[data-testid=session-view]')) ?? shown[0] ?? null;
+  }
+  /** Taps the plain Yes or No of the decision on screen. Nothing is guessed: with no such option the answer stays with the user. */
+  function answerShownDecision(kind: 'yes' | 'no') {
+    const options = Array.from(document.querySelectorAll<HTMLElement>('[data-hero-options]')).find((el) => el.getClientRects().length > 0 && !el.closest('[inert], .pane-hidden'));
+    if (!options) { showToast('No decision is open here. Open a session that needs you.'); return; }
+    const buttons = Array.from(options.querySelectorAll<HTMLButtonElement>('button'));
+    const i = answerIndex(buttons.map((b) => b.querySelector('b')?.textContent ?? ''), kind);
+    if (i === null) { showToast(`This decision has no plain ${kind === 'yes' ? 'Yes' : 'No'} option. Choose one yourself.`); return; }
+    if (!buttons[i].disabled) buttons[i].click();
+  }
+  /** Keyboard shortcuts the frame passes on (palette and pane toggles are the frame's own). */
   function handleShortcut(id: string) {
-    if (id === 'toggle-panes') { rightOpen = !rightOpen; return; }
-    if (id === 'focus-composer') { document.querySelector('input[data-composer]')?.focus(); return; }
-    const hero = document.querySelector('[data-testid=session-view] [data-hero-options]');
-    if (!hero) return;
-    const buttons = Array.from(hero.querySelectorAll('button:not([disabled])'));
-    if (id === 'approve-decision') { buttons[0]?.click(); }
-    else if (id === 'deny-decision') { buttons[1]?.click(); }
+    if (id === 'approve-decision') answerShownDecision('yes');
+    else if (id === 'deny-decision') answerShownDecision('no');
+    else if (id === 'focus-composer') { const c = visibleComposer(); if (c) c.focus(); else showToast('No reply field is open here.'); }
     else if (id === 'next-needs-you') {
-      const next = $allSessions.find(s => fleetOf($allAgents[s.key]) === 'needs-you' && s.key !== activeKey);
-      if (next) attach(next.key);
+      const next = nextNeedsYou($allSessions, (k) => fleetOf($allAgents[k]) === 'needs-you', (k) => $allAgents[k]?.waitingSince ?? $allAgents[k]?.ts ?? 0, activeKey);
+      if (next) void attach(next.key); else showToast('Nothing else needs you.');
     }
   }
 
@@ -690,11 +709,11 @@ import { fleetOf } from './lib/navlist';
     </div>
   {:else}
     <AppFrame current={$destination} onnavigate={go} servers={$hubServers} sessions={$allSessions} agents={$allAgents} {activeKey} chrome={servers.length > 0} inSession={!!activeKey && !away} {keyboardOpen}
-  canCreate={sessionDestinations($hubServers, selected).length > 0} bind:wide bind:rightOpen bind:helpOpen onopen={attach} onserver={openServer} onaction={runAction} onshortcut={handleShortcut}
-  onback={() => { showWorkspace(); sheetHeight = 'half'; }}>
+      canCreate={sessionDestinations($hubServers, selected).length > 0} bind:wide bind:helpOpen onopen={attach} onserver={openServer} onaction={runAction} onshortcut={handleShortcut}
+      onback={() => { showWorkspace(); sheetHeight = 'half'; }}>
     {#if $destination === 'sessions' || servers.length === 0}
     <NavigationBar sessions={tabSessions} agents={$allAgents} servers={$hubServers} windows={$allWindows} {expiring} {link} {activeKey} held={!!actionSession || !!menuSession || cardExpanded || sheetHeld} onopen={attach} onpeek={peek} ontabmenu={openWindowMenu} onactions={(key) => { actionConfirm = false; actionKey = key; }}
-      onlink={() => link && showToast(link.text, link.ok ? 'success' : 'error')} onmenu={() => { titleTapped(); menuOpen = true; }} onsessions={() => { if (wide) { rightOpen = !rightOpen; return; } crumb('sessions sheet toggled'); showWorkspace(); sheetHeight = sheetHeight === 'closed' ? 'half' : 'closed'; }} />
+      onlink={() => link && showToast(link.text, link.ok ? 'success' : 'error')} onmenu={() => { titleTapped(); menuOpen = true; }} expanded={wide ? $layout.sidebarOpen : sheetHeight !== 'closed'} controls={wide && $layout.sidebarOpen ? 'workspace-sidebar' : undefined} onsessions={() => { if (wide) { toggleSidebar(); return; } crumb('sessions sheet toggled'); showWorkspace(); sheetHeight = sheetHeight === 'closed' ? 'half' : 'closed'; }} />
     {/if}
     <NeedsYouBanner {waiting} {now} collapsed={keyboardOpen} onopen={attach} onhome={() => go('home')} ondismiss={(key, id) => sendAttention(key, { type: 'dismiss', attention_id: id })} onanswer={(key, choice, prompt) => sendSession({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })} />
 
@@ -735,13 +754,16 @@ import { fleetOf } from './lib/navlist';
               <SessionGroups sessions={$allSessions} agents={$allAgents} {now} onopen={attach} onnew={newSession} />
             {:else if connection && connState !== 'paused'}
               {#if !(keyboardOpen && paneMode === 'terminal')}
-                <div class="pane-switch"><Segmented label="Session view" value={paneMode} onchange={setPaneMode} options={[{ value: 'decision', label: 'Decision' }, { value: 'terminal', label: 'Terminal' }]} /></div>
-              {/if}
-              <div class="pane-body" data-pane-body>
-                <div class="pane-terminal" class:pane-hidden={paneMode === 'decision'} inert={paneMode === 'decision'} data-pane="terminal">
-                  {#key identityOf(connection)}<Terminal {connection} {activeSessionId} {connState} ontyped={typedByHand} {profile} prefix={selected?.prefix || 'C-b'} {preview} />{/key}
+                <div class="pane-switch">
+                  {#if !split}<Segmented label="Session view" value={paneMode} onchange={setPaneMode} options={[{ value: 'decision', label: 'Decision' }, { value: 'terminal', label: 'Terminal' }]} />{/if}
+                  {#if wide && activeRow}
+                    <button type="button" class="secondary split-toggle" aria-pressed={$layout.splitOpen} on:click={toggleSplit}>Terminal beside the decision</button>
+                    {#if $layout.splitOpen && !split}<span class="split-note" role="status">Too narrow to show both. Hide the sidebar or widen the window.</span>{/if}
+                  {/if}
                 </div>
-                {#if paneMode === 'decision' && activeSession && activeRow}
+              {/if}
+              <div class="pane-body" class:split data-pane-body data-split={split} bind:clientWidth={bodyWidth}>
+                {#if (paneMode === 'decision' || split) && activeSession && activeRow}
                   <div class="pane-decision" data-pane="decision">
                     <SessionView name={activeSession.name} agent={activeRow.agent} fleet={activeRow.state} task={activeRow.title} startedAt={$allAgents[activeSession.key]?.task?.started_at}
                       waitingSince={activeRow.since} step={stepOf($allAgents[activeSession.key])} {now} view={heldView}
@@ -749,6 +771,14 @@ import { fleetOf } from './lib/navlist';
                       onanswer={(m) => hub.sendToSession(activeSession.key, m)} onterminal={() => setPaneMode('terminal')} />
                   </div>
                 {/if}
+                {#if split}
+                  <Resizer label="Terminal width" controls="pane-terminal" value={splitW} min={SPLIT.min} max={splitMax} def={Math.min(SPLIT.def, splitMax)} step={SPLIT.step} grow={-1}
+                    onchange={(w) => patchLayout({ splitWidth: w }, false)} oncommit={commitLayout} />
+                {/if}
+                <!-- One terminal for the session, always here: it is only restyled between full width, hidden and the right half, so crossing 720 px or toggling the split never rebuilds it. -->
+                <div class="pane-terminal" id="pane-terminal" class:pane-hidden={paneMode === 'decision' && !split} inert={paneMode === 'decision' && !split} data-pane="terminal" style:width={split ? `${splitW}px` : undefined}>
+                  {#key identityOf(connection)}<Terminal {connection} {activeSessionId} {connState} ontyped={typedByHand} {profile} prefix={selected?.prefix || 'C-b'} {preview} />{/key}
+                </div>
               </div>
             {:else}
               <div class="card" style="margin: auto;">{activeKey ? 'This server is paused. Resume it in Servers.' : 'Choose a session to open its terminal.'}<button class="secondary" on:click={leaveServer}>Servers</button></div>
@@ -762,13 +792,6 @@ import { fleetOf } from './lib/navlist';
       {/if}
       </svelte:boundary>
     </main>
-    {#snippet right()}
-      {#if activeKey}
-        <Terminal {connection} {activeSessionId} {connState} ontyped={typedByHand} {profile} prefix={selected?.prefix || 'C-b'} />
-      {:else}
-        <div class="p-4 text-soft text-sm">Open a session to show its live terminal here.</div>
-      {/if}
-    {/snippet}
     </AppFrame>
   {/if}
 
@@ -804,12 +827,17 @@ import { fleetOf } from './lib/navlist';
   .workspace { display: flex; flex: 1; min-height: 0; overflow: hidden; position: relative; }
   .workspace.mobile { flex-direction: column; }
   .terminal-pane { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-  .pane-switch { padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--bg); }
+  .pane-switch { padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--bg); display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .split-toggle { min-height: 44px; }
+  .split-note { font-size: 0.85rem; color: var(--fg-muted); }
   .pane-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .pane-terminal { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   /* Hidden, not detached and not resized: xterm keeps its size, its buffer and its connection. */
   .pane-terminal.pane-hidden { visibility: hidden; pointer-events: none; }
   .pane-decision { position: absolute; inset: 0; background: var(--bg); }
+  .pane-body.split { flex-direction: row; }
+  .pane-body.split .pane-decision { position: static; flex: 1 1 0; min-width: 0; }
+  .pane-body.split .pane-terminal { flex: 0 0 auto; min-width: 0; }
   .connection-notice { padding: 8px; font-size: 0.8rem; overflow-wrap: anywhere; }
 
   .auth-screen {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The real app frame (bottom bar / sidebar / right pane / palette), NavigationBar, SessionSheet, SessionStrip and
+  // The real app frame (bottom bar / sidebar / palette), NavigationBar, SessionSheet, SessionStrip and
   // SettingsView around a stand-in terminal, fed by the real ServerHub with two fake servers of ten sessions each.
   import AppShell from '../src/AppShell.svelte';
   import AppFrame from '../src/shell/AppFrame.svelte';
@@ -11,6 +11,7 @@
   import { fleetOf } from '../src/lib/navlist';
   import { openTabs } from '../src/lib/tabs';
   import { onMount } from 'svelte';
+  import { layout, toggleSidebar } from '../src/lib/panes';
   import { ServerHub, type HubConnection } from '../src/lib/hub';
   import type { ConnectionOptions } from '../src/lib/connection';
   import type { ClientMessage, ServerMessage, SessionInfo } from '../src/lib/protocol';
@@ -47,7 +48,6 @@
 
   let activeKey: string | null = $state(null);
   let wide = $state(false);
-  let rightOpen = $state(false);
   let helpOpen = $state(false);
   let keyboardOpen = $state(false);
   let height: SheetHeight = $state('closed');
@@ -86,10 +86,10 @@
 
 <AppShell pinned>
   <AppFrame current={$destination} onnavigate={(d: Destination) => navigate(d)} servers={$servers} sessions={$sessions} agents={$agents} {activeKey} {inSession} {keyboardOpen}
-    bind:wide bind:rightOpen bind:helpOpen onopen={open} onserver={(id) => { const s = $sessions.find((x) => x.serverId === id); if (s) open(s.key); }}
+    bind:wide bind:helpOpen onopen={open} onserver={(id) => { const s = $sessions.find((x) => x.serverId === id); if (s) open(s.key); }}
     onaction={(id) => actions.push(id)} onback={() => (height = 'half')}>
     {#if $destination === 'sessions'}
-      <NavigationBar sessions={tabs} agents={$agents} servers={$servers} windows={$wins} {activeKey} onopen={open} onactions={() => {}} onmenu={() => {}} onsessions={() => { if (wide) rightOpen = !rightOpen; else height = height === 'closed' ? 'half' : 'closed'; }} />
+      <NavigationBar sessions={tabs} agents={$agents} servers={$servers} windows={$wins} {activeKey} onopen={open} onactions={() => {}} onmenu={() => {}} expanded={wide ? $layout.sidebarOpen : height !== 'closed'} onsessions={() => { if (wide) toggleSidebar(); else height = height === 'closed' ? 'half' : 'closed'; }} />
       <main class="flex min-h-0 flex-1 flex-col">
         <p data-testid="active">{activeKey ?? 'none'}</p>
         <SessionStrip items={strip} selected={activeKey ?? undefined} onselect={(id) => { stripOpened.push(id); open(id); }} />
@@ -105,8 +105,5 @@
     {:else}
       <SettingsView user="test" onservers={() => {}} onmenu={() => {}} onshortcuts={() => (helpOpen = true)} onreport={() => {}} onlogout={() => {}} />
     {/if}
-    {#snippet right()}
-      <SessionSheet sessions={$sessions} agents={$agents} servers={$servers} {activeKey} mobile={false} bind:height onopen={open} onnew={() => {}} onrefresh={() => {}} onretry={() => {}} send={() => {}} />
-    {/snippet}
   </AppFrame>
 </AppShell>
