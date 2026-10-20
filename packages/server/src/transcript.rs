@@ -9,7 +9,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
@@ -359,7 +359,9 @@ const SEEN_IDS: usize = 256;
 pub struct UsageReader {
     path: PathBuf,
     offset: u64,
-    seen: VecDeque<String>,
+    /// Each message id with the largest counts taken from it so far: a message still streaming at one collection may
+    /// report more at the next, and only the growth is new.
+    seen: VecDeque<(String, Tokens)>,
 }
 
 impl UsageReader {
@@ -420,8 +422,16 @@ impl UsageReader {
         // A message streamed over several lines may report more output on a later line: the largest of each count wins.
         let mut total = Tokens::default();
         for (id, t) in pass {
-            crate::history::add_tokens(&mut total, t);
-            self.seen.push_back(id);
+            match self.seen.iter_mut().find(|(s, _)| *s == id) {
+                Some((_, had)) => {
+                    crate::history::add_tokens(&mut total, growth(*had, t));
+                    *had = most(*had, t);
+                }
+                None => {
+                    crate::history::add_tokens(&mut total, t);
+                    self.seen.push_back((id, t));
+                }
+            }
         }
         while self.seen.len() > SEEN_IDS {
             self.seen.pop_front();
@@ -446,9 +456,6 @@ impl UsageReader {
         };
         // Ids are kept cut to 80 characters, so they are compared cut too.
         let id: String = id.chars().take(80).collect();
-        if self.seen.contains(&id) {
-            return;
-        }
         let n = |k: &str| u.get(k).and_then(Value::as_u64);
         let t = Tokens {
             input: n("input_tokens"),
@@ -456,61 +463,98 @@ impl UsageReader {
             cache_read: n("cache_read_input_tokens"),
             cache_write: n("cache_creation_input_tokens"),
         };
-        let max = |a: Option<u64>, b: Option<u64>| match (a, b) {
-            (Some(a), Some(b)) => Some(a.max(b)),
-            (a, b) => a.or(b),
-        };
         let e = pass.entry(id).or_default();
-        *e = Tokens {
-            input: max(e.input, t.input),
-            output: max(e.output, t.output),
-            cache_read: max(e.cache_read, t.cache_read),
-            cache_write: max(e.cache_write, t.cache_write),
-        };
+        *e = most(*e, t);
     }
 }
+
+/// The larger of each count; a count only one side reported is that side's.
+fn most(a: Tokens, b: Tokens) -> Tokens {
+    let max = |a: Option<u64>, b: Option<u64>| match (a, b) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    };
+    Tokens {
+        input: max(a.input, b.input),
+        output: max(a.output, b.output),
+        cache_read: max(a.cache_read, b.cache_read),
+        cache_write: max(a.cache_write, b.cache_write),
+    }
+}
+
+/// What `now` holds beyond `had`, field by field.
+fn growth(had: Tokens, now: Tokens) -> Tokens {
+    let g = |had: Option<u64>, now: Option<u64>| now.map(|n| n.saturating_sub(had.unwrap_or(0)));
+    Tokens {
+        input: g(had.input, now.input),
+        output: g(had.output, now.output),
+        cache_read: g(had.cache_read, now.cache_read),
+        cache_write: g(had.cache_write, now.cache_write),
+    }
+}
+
+/// A session's reader: when its hooks were last heard, the path as the hook named it, and the reader itself behind a
+/// lock of its own, so one session's file read never holds up another's hooks.
+type Watched = (u64, String, Arc<Mutex<UsageReader>>);
 
 /// One usage reader per session, for the sessions whose hooks named a transcript.
 #[derive(Default)]
 pub struct UsageTracker {
-    readers: Mutex<HashMap<String, (u64, UsageReader)>>,
+    readers: Mutex<HashMap<String, Watched>>,
     tick: std::sync::atomic::AtomicU64,
 }
 
 impl UsageTracker {
-    /// Notes that a session's transcript is watched from here on (a no-op when it already is). Blocking: one `stat`.
+    /// Whether `arm` would have to touch the disk: the session is not watched from this path yet.
+    fn needs_arming(&self, session: &str, raw_path: &str) -> bool {
+        let Ok(readers) = self.readers.lock() else {
+            return false;
+        };
+        readers
+            .get(session)
+            .is_none_or(|(_, raw, _)| raw != raw_path)
+    }
+
+    /// Notes that a session's transcript is watched from here on (a no-op when it already is, without a `stat`).
     pub fn arm(&self, root: &Path, session: &str, raw_path: &str) {
+        let now = self.tick.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if !self.needs_arming(session, raw_path) {
+            if let Ok(mut readers) = self.readers.lock() {
+                if let Some(w) = readers.get_mut(session) {
+                    w.0 = now; // still in use: the last to go
+                }
+            }
+            return;
+        }
         let Ok(path) = resolve(root, raw_path) else {
             return;
         };
+        // Armed before the lock is taken: the `stat` it makes waits for nobody.
+        let reader = UsageReader::armed(path);
         let Ok(mut readers) = self.readers.lock() else {
             return;
         };
-        let now = self.tick.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if let Some((seen_at, r)) = readers.get_mut(session) {
-            if r.path == path {
-                *seen_at = now; // still in use: the last to go
-                return;
-            }
-        }
         if !readers.contains_key(session) && readers.len() >= MAX_READERS {
             // The session whose hooks were heard longest ago.
             let evict = readers
                 .iter()
-                .min_by_key(|(_, (at, _))| *at)
+                .min_by_key(|(_, (at, _, _))| *at)
                 .map(|(k, _)| k.clone());
             if let Some(k) = evict {
                 readers.remove(&k);
             }
         }
-        readers.insert(session.to_string(), (now, UsageReader::armed(path)));
+        readers.insert(
+            session.to_string(),
+            (now, raw_path.to_string(), Arc::new(Mutex::new(reader))),
+        );
     }
 
     /// The counts appended since the last collection, or None when nothing is watched, nothing was appended, or the
-    /// file cannot be read. Blocking file work, bounded by `USAGE_PASS_BYTES`.
+    /// file cannot be read. Blocking file work, bounded by `USAGE_PASS_BYTES`, done under the session's own lock only.
     pub fn collect(&self, session: &str) -> Option<Tokens> {
-        let mut readers = self.readers.lock().ok()?;
-        let t = readers.get_mut(session)?.1.collect().ok()?;
+        let reader = self.readers.lock().ok()?.get(session)?.2.clone();
+        let t = reader.lock().ok()?.collect().ok()?;
         (!t.is_empty()).then_some(t)
     }
 }
@@ -845,6 +889,21 @@ mod tests {
             .unwrap();
         f.write_all(assistant_line(&long, 5).as_bytes()).unwrap();
         assert_eq!(t.collect("claude:a"), None);
+    }
+
+    #[test]
+    fn a_message_still_streaming_at_one_collection_adds_only_its_growth_at_the_next() {
+        let (_root, file, t) = watched("usage-growth");
+        std::fs::write(&file, assistant_line("a", 1)).unwrap();
+        let got = t.collect("claude:a").unwrap();
+        assert_eq!((got.input, got.output), (Some(2), Some(1)));
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap();
+        f.write_all(assistant_line("a", 264).as_bytes()).unwrap();
+        let got = t.collect("claude:a").unwrap();
+        assert_eq!((got.input, got.output), (Some(0), Some(263)));
     }
 
     #[test]

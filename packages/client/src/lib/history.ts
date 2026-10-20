@@ -118,7 +118,7 @@ export function rowsOf(sources: Source[], now: number): Row[] {
 
 /** What one task exposed. A field that is `undefined` was not reported; it is never shown as zero. */
 export interface Usage { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; costMicros?: number; currency?: string; rateLimited: number }
-const count = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : undefined);
+const count = (n: unknown) => (typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? n : undefined);
 export function usageOfRun(u: RunUsage | undefined): Usage | undefined {
   if (!u || typeof u !== 'object') return undefined;
   const cost = count(u.cost_micros);
@@ -149,13 +149,15 @@ export function addUsage(t: UsageTotals, u: Usage | undefined): UsageTotals {
   n.withCounts++;
   n.input = plus(n.input, u.input); n.output = plus(n.output, u.output);
   n.cacheRead = plus(n.cacheRead, u.cacheRead); n.cacheWrite = plus(n.cacheWrite, u.cacheWrite);
-  if (u.input !== undefined || u.output !== undefined) n.withTokens++;
+  if ([u.input, u.output, u.cacheRead, u.cacheWrite].some((v) => v !== undefined)) n.withTokens++;
   if (u.costMicros !== undefined && u.currency) { n.cost = { ...n.cost, [u.currency]: (n.cost?.[u.currency] ?? 0) + u.costMicros }; n.withCost++; }
   n.rateLimited += u.rateLimited;
   return n;
 }
-/** Input plus output tokens: what a chart and a ranking use. Cache reads and writes are shown apart. */
-export const tokensOf = (t: { input?: number; output?: number }) => (t.input === undefined && t.output === undefined ? undefined : (t.input ?? 0) + (t.output ?? 0));
+/** Input plus output tokens: what a chart and a ranking use. Cache reads and writes are shown apart, but a figure that
+ * only has cache counts is still a reported figure, not a missing one. */
+export const tokensOf = (t: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }) =>
+  [t.input, t.output, t.cacheRead, t.cacheWrite].every((v) => v === undefined) ? undefined : (t.input ?? 0) + (t.output ?? 0);
 
 export interface AgentUsage { agent: string; totals: UsageTotals }
 export interface ProjectUsage { project: string; totals: UsageTotals }
@@ -181,14 +183,20 @@ export function usageByProject(rows: Row[]): ProjectUsage[] {
 /** 1234 becomes `1.2k`, 3400000 `3.4M`. The exact number goes in the accessible text. */
 export function tokenText(n: number): string {
   if (n < 1000) return String(n);
-  const f = (v: number, u: string) => `${v >= 10 ? Math.round(v) : Math.round(v * 10) / 10}${u}`;
-  return n < 1_000_000 ? f(n / 1000, 'k') : f(n / 1_000_000, 'M');
+  const r = (v: number) => (v >= 10 ? Math.round(v) : Math.round(v * 10) / 10);
+  // 999_999 rounds to 1000k, which is 1M.
+  const k = r(n / 1000);
+  return n < 1_000_000 && k < 1000 ? `${k}k` : `${r(n / 1_000_000)}M`;
 }
 export const exact = (n: number) => n.toLocaleString('en');
 /** An amount the agent reported, in its own currency. */
 export function costText(micros: number, currency: string, locale?: string): string {
   const v = micros / 1e6;
-  try { return new Intl.NumberFormat(locale, { style: 'currency', currency, maximumFractionDigits: v < 1 ? 4 : 2, minimumFractionDigits: 2 }).format(v); } catch { return `${v.toFixed(2)} ${currency}`; }
+  try {
+    // A currency without minor units (JPY, KRW) keeps none.
+    const digits = new Intl.NumberFormat(locale, { style: 'currency', currency }).resolvedOptions().maximumFractionDigits ?? 2;
+    return new Intl.NumberFormat(locale, { style: 'currency', currency, maximumFractionDigits: digits === 0 ? 0 : v < 1 ? 4 : 2, minimumFractionDigits: digits === 0 ? 0 : 2 }).format(v);
+  } catch { return `${v.toFixed(2)} ${currency}`; }
 }
 export const costsText = (cost: Record<string, number>, locale?: string) => Object.entries(cost).map(([c, m]) => costText(m, c, locale)).join(' + ');
 

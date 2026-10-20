@@ -346,6 +346,14 @@ fn edge_of(source: Source, kind: &EventKind) -> Option<Edge> {
 }
 
 /// Hook and Codex report facts; screen and scan only suspect. Lower index wins.
+/// The hook events after which a turn's counts are read from the transcript.
+fn collects(event: &str) -> bool {
+    matches!(
+        event,
+        "Stop" | "StopFailure" | "SessionEnd" | "UserPromptSubmit"
+    )
+}
+
 fn tier(source: Source) -> Option<usize> {
     match source {
         Source::Hook | Source::Codex | Source::Acp => Some(0),
@@ -472,15 +480,18 @@ impl EventHub {
 
     /// The folder an agent works in, by its last component (U13).
     pub fn record_project(&self, session: &str, dir: &str) {
-        let name = dir.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+        static HOME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        let dir = dir.trim_end_matches('/');
         // A session in the home folder would file its task under the user name.
-        let home = std::env::var("HOME").ok();
-        let home = home
-            .as_deref()
-            .map(|h| h.trim_end_matches('/').rsplit('/').next().unwrap_or(""));
-        if home.is_some_and(|h| !h.is_empty() && h == name) {
+        let home = HOME.get_or_init(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| h.trim_end_matches('/').to_string())
+        });
+        if home.as_deref() == Some(dir) {
             return;
         }
+        let name = dir.rsplit('/').next().unwrap_or("");
         if let Some(h) = &self.history {
             h.project(session, name);
         }
@@ -520,10 +531,7 @@ impl EventHub {
             tracing::info!(target: "audit", event = "agent_rate_limited", session = %session);
         }
         // A prompt collects too: after an interrupted turn no Stop came, and its counts must not wait for the next task.
-        if matches!(
-            event,
-            "Stop" | "StopFailure" | "SessionEnd" | "UserPromptSubmit"
-        ) {
+        if collects(event) {
             if let Some(t) = self.usage.collect(session) {
                 // Counts only (audit-logging-no-secrets).
                 tracing::info!(target: "audit", event = "usage_collected", session = %session, input = t.input, output = t.output, cache_read = t.cache_read, cache_write = t.cache_write);
@@ -1263,7 +1271,8 @@ pub async fn serve_socket(hub: EventHub, path: std::path::PathBuf) -> Result<()>
                 return;
             };
             if w.adapter == "claude" && hub.token_matches(&w.session, &w.token) {
-                // File reads: off the async threads.
+                // File reads: off the async threads. Every hook goes the same way, so the events of one session keep
+                // their order.
                 let (h, session, data) = (hub.clone(), w.session.clone(), w.data.clone());
                 let _ =
                     tokio::task::spawn_blocking(move || h.note_claude_usage(&session, &data)).await;
@@ -2544,6 +2553,31 @@ mod tests {
         let last = runs.iter().max_by_key(|r| r.started_at).unwrap();
         let u = last.usage.as_ref().unwrap();
         assert_eq!((u.input_tokens, u.output_tokens), (Some(3), Some(264)));
+    }
+
+    #[test]
+    fn a_folder_that_only_shares_the_name_of_the_home_folder_is_recorded() {
+        let (h, _dir) = hub_with_history();
+        hook(&h, "UserPromptSubmit", quiet(), 1_000);
+        let home = std::env::var("HOME").unwrap();
+        let name = home
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap()
+            .to_string();
+        h.record_project("s", &format!("/srv/{name}"));
+        h.feed(
+            "s",
+            Source::Hook,
+            Confidence::High,
+            EventKind::State {
+                state: AgentState::Done,
+            },
+            2_000,
+        );
+        let runs = h.history().unwrap().query(0, u64::MAX, 20_000).runs;
+        assert_eq!(runs[0].project.as_deref(), Some(name.as_str()));
     }
 
     #[test]

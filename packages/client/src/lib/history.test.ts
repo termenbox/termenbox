@@ -234,6 +234,13 @@ describe('usage and cost (U13)', () => {
   });
   it('writes numbers short and amounts in the currency the agent used, without converting', () => {
     expect([0, 999, 1000, 1234, 18200, 3_400_000].map(tokenText)).toEqual(['0', '999', '1k', '1.2k', '18k', '3.4M']);
+    // just under a unit boundary reads as the next unit, not as 1000k
+    expect([999_499, 999_500, 999_999, 1_000_000].map(tokenText)).toEqual(['999k', '1M', '1M', '1M']);
+    // a currency without minor units keeps none; a fractional count is not a count
+    expect(costText(250_000_000, 'JPY', 'en-US')).toBe('¥250');
+    expect(usageOfRun({ input_tokens: 1.5 } as never)).toBeUndefined();
+    // cache counts alone are a reported figure
+    expect(tokensOf({ cacheRead: 40 })).toBe(0);
     expect(costText(250_000, 'USD', 'en-US')).toBe('$0.25');
     expect(costsText({ USD: 250_000, EUR: 1_000_000 }, 'en-US')).toBe('$0.25 + €1.00');
     expect(costText(1, 'XXXXX', 'en-US')).toContain('XXXXX');

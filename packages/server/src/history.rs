@@ -446,8 +446,8 @@ pub struct History {
     /// Bumped by `delete`: a task that began before it is not written after it.
     generation: AtomicU64,
     /// The last cost an agent reported per session. ACP reports the cost of the whole session so far, so a task's share
-    /// is the step from the previous report.
-    costs: Mutex<HashMap<String, u64>>,
+    /// is the step from the previous report, in the currency it was reported in.
+    costs: Mutex<HashMap<String, (String, u64)>>,
     limits: Limits,
 }
 
@@ -660,24 +660,32 @@ impl History {
             return;
         }
         let currency = currency.as_str();
-        let step = {
-            let mut costs = self.costs.lock().unwrap();
-            if !costs.contains_key(session) && costs.len() >= MAX_OPEN {
-                // Sessions with no task in flight can be re-read from their next report; make room from them.
-                let open = self.open.lock().unwrap();
-                costs.retain(|k, _| open.contains_key(k));
-                if costs.len() >= MAX_OPEN {
-                    return;
-                }
+        let mut costs = self.costs.lock().unwrap();
+        let mut open = self.open.lock().unwrap();
+        // With no task in flight the baseline stays where it was: the spend since then lands on the next task's step
+        // rather than on nothing.
+        if !open.contains_key(session) {
+            return;
+        }
+        if !costs.contains_key(session) && costs.len() >= MAX_OPEN {
+            // Sessions with no task in flight can be re-read from their next report; make room from them.
+            costs.retain(|k, _| open.contains_key(k));
+            if costs.len() >= MAX_OPEN {
+                return;
             }
-            let last = costs.insert(session.to_string(), micros).unwrap_or(0);
-            if micros >= last {
-                micros - last
-            } else {
-                micros
-            }
+        }
+        // A baseline in another currency is no baseline for this one.
+        let last = costs
+            .get(session)
+            .filter(|(c, _)| c == currency)
+            .map_or(0, |(_, m)| *m);
+        costs.insert(session.to_string(), (currency.to_string(), micros));
+        let step = if micros >= last {
+            micros - last
+        } else {
+            micros
         };
-        if let Some(run) = self.open.lock().unwrap().get_mut(session) {
+        if let Some(run) = open.get_mut(session) {
             let u = run.usage.get_or_insert_with(RunUsage::default);
             // One currency per task: a second one is not added to the first.
             if u.cost_currency.as_deref().is_none_or(|c| c == currency) {
@@ -1109,6 +1117,40 @@ mod tests {
             .map(|r| r.usage.as_ref().unwrap().cost_micros.unwrap())
             .collect();
         assert_eq!(costs, [1_000_000, 500_000]);
+    }
+
+    #[test]
+    fn spend_reported_between_tasks_lands_on_the_next_one() {
+        let d = dir("cost-between");
+        let h = History::open(&d, limits(), T0).unwrap();
+        h.state("acp", Some("codex"), AgentState::Working, T0);
+        h.cost("acp", 1_000_000, "USD");
+        h.state("acp", None, AgentState::Done, T0 + MIN);
+        h.cost("acp", 1_300_000, "USD"); // no task in flight
+        h.state("acp", Some("codex"), AgentState::Working, T0 + 10 * MIN);
+        h.cost("acp", 1_500_000, "USD");
+        h.state("acp", None, AgentState::Done, T0 + 11 * MIN);
+        let runs = h.query(T0, T0 + 99 * MIN, T0).runs;
+        let costs: Vec<_> = runs
+            .iter()
+            .map(|r| r.usage.as_ref().unwrap().cost_micros.unwrap())
+            .collect();
+        assert_eq!(costs, [1_000_000, 500_000]);
+    }
+
+    #[test]
+    fn a_report_in_another_currency_is_not_a_step_from_the_first() {
+        let d = dir("cost-currency");
+        let h = History::open(&d, limits(), T0).unwrap();
+        h.state("acp", Some("codex"), AgentState::Working, T0);
+        h.cost("acp", 5_000_000, "EUR");
+        h.state("acp", None, AgentState::Done, T0 + MIN);
+        h.state("acp", Some("codex"), AgentState::Working, T0 + 10 * MIN);
+        h.cost("acp", 2_000_000, "USD");
+        h.state("acp", None, AgentState::Done, T0 + 11 * MIN);
+        let runs = h.query(T0, T0 + 99 * MIN, T0).runs;
+        let u = runs[1].usage.as_ref().unwrap();
+        assert_eq!(u.cost_micros, Some(2_000_000));
     }
 
     #[test]
