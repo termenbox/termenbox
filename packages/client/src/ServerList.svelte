@@ -50,7 +50,7 @@
                 <details class="help">
                   <summary>Why can't I connect?</summary>
                   <p class="note">The server may be stopped, or its UDP port may be blocked. On the machine, <code>systemctl status termenbox</code> (or <code>systemctl --user status termenbox</code> for a user install) says whether it runs; a server whose port is taken stops with a message in <code>journalctl</code>.</p>
-                  <PortHelp port={server.record?.udp_port ?? null} />
+                  {#if server.record?.udp_port}<PortHelp port={server.record.udp_port} />{/if}
                 </details>
               {/if}
             </div>

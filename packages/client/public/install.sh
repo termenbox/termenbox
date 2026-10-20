@@ -164,7 +164,12 @@ choose_udp_port() {
     echo "$TERMENBOX_UDP_PORT"
     return
   fi
-  if [ -s "$1" ]; then cat "$1"; return; fi
+  if [ -s "$1" ]; then
+    _saved="$(cat "$1")"
+    valid_port "$_saved" || die "$1 does not hold a port number. Delete it, or set TERMENBOX_UDP_PORT=<port> in front of sh"
+    echo "$_saved"
+    return
+  fi
   _free="$(free_udp_in_range)"
   if [ -n "$_free" ]; then echo "$_free"; return; fi
   ask_udp_port
@@ -217,12 +222,23 @@ port_report() {
 # Said when the unit pins a port by hand (an older installer, or TERMENBOX_UDP_PORT): the owner's, kept as it is.
 pinned_port_note() { # <unit file> <port>
   _pin="$(sed -n 's/^Environment=TERMENBOX_UDP_PORT=//p' "$1" 2>/dev/null)"
-  [ -n "$_pin" ] || return 0
+  valid_port "$_pin" || return 0
   if [ "$_pin" -ge "$UDP_FIRST" ] && [ "$_pin" -le "$UDP_LAST" ]; then
     say "(The port is pinned in $1.)"
   else
     say "Note: $1 pins port $_pin, outside $UDP_FIRST-$UDP_LAST, so the range rule does not cover it. Open $_pin, or remove that line and restart the service to move into the range."
   fi
+}
+
+# Writes the owner's port into a unit as Environment=TERMENBOX_UDP_PORT (replacing any earlier line) and restarts the
+# service, so a re-run of the installer with TERMENBOX_UDP_PORT takes effect. apply_udp_pin <user|system> <unit file> <port>
+apply_udp_pin() {
+  _flag=""; [ "$1" = user ] && _flag="--user"
+  valid_port "$3" || die "TERMENBOX_UDP_PORT must be a port number from 1024 to 65535"
+  awk -v port="$3" '/^Environment=TERMENBOX_UDP_PORT=/ { next } { print } /^\[Service\]/ { print "Environment=TERMENBOX_UDP_PORT=" port }' "$2" > "$2.new" \
+    && cat "$2.new" > "$2" && rm -f "$2.new" || die "could not write the port into $2"
+  # shellcheck disable=SC2086
+  systemctl $_flag daemon-reload && systemctl $_flag restart termenbox.service || die "could not restart the service; see: journalctl $_flag -u termenbox"
 }
 
 # The service must be up before a claim link is shown for it. On failure the server's own message is printed.
@@ -233,7 +249,13 @@ service_up() {
   _i=0
   while [ "$_i" -lt 20 ]; do
     if [ -n "$_hp" ]; then curl -fs "http://127.0.0.1:$_hp/health" >/dev/null 2>&1 && return 0
-    else systemctl $_flag is-active --quiet termenbox.service && return 0; fi
+    else
+      # No port to ask: active must hold for a moment, because a server that dies on a taken port is active for an instant first.
+      if systemctl $_flag is-active --quiet termenbox.service; then
+        sleep 3
+        systemctl $_flag is-active --quiet termenbox.service && return 0
+      fi
+    fi
     _i=$((_i + 1))
     sleep 1
   done
@@ -529,6 +551,10 @@ install_native() {
     [ "$MODE" != host-me ] || [ "$RUN_USER" = "${SUDO_USER:-}" ] \
       || say "Note: sessions already run as $RUN_USER and stay that way. To change that, remove Termenbox first (curl -fsSL <client>/uninstall.sh | sudo sh -s -- --yes) and install again."
     JBIN="$BIN"
+    if [ -n "${TERMENBOX_UDP_PORT:-}" ]; then
+      apply_udp_pin system "$UNIT" "$TERMENBOX_UDP_PORT"
+      echo "$TERMENBOX_UDP_PORT" > "$JOURNAL/udp_port"
+    fi
     service_up system "$UNIT"
     install_helper_units # installs from before the updater existed get it here
     CLAIM_UNIT="$UNIT"
@@ -691,6 +717,7 @@ install_user() {
     say "Termenbox is already installed for $ME."
     systemctl --user is-active --quiet "$SERVICE" || systemctl --user start "$SERVICE"
     JBIN="$BIN"
+    [ -z "${TERMENBOX_UDP_PORT:-}" ] || apply_udp_pin user "$UNIT_DIR/$SERVICE" "$TERMENBOX_UDP_PORT"
     service_up user "$UNIT_DIR/$SERVICE"
     install_user_helper_units
     CLAIM_UNIT="$UNIT_DIR/$SERVICE"
@@ -802,6 +829,7 @@ Environment=TERMENBOX_REQUESTS_DIR=$STATE/requests
 Environment=TERMENBOX_HOST=127.0.0.1
 Environment=TERMENBOX_PORT=$HTTP_PORT
 Environment=TERMENBOX_CLIENT_URL=$ORIGIN
+${UDP_PIN:+Environment=TERMENBOX_UDP_PORT=$UDP_PIN}
 ExecStart=$BIN
 Restart=on-failure
 RestartSec=2
@@ -811,7 +839,6 @@ KillMode=process
 [Install]
 WantedBy=default.target
 UNIT
-  [ -z "$UDP_PIN" ] || sed -i "s|^Environment=TERMENBOX_PORT=.*|&\nEnvironment=TERMENBOX_UDP_PORT=$UDP_PIN|" "$UNIT_DIR/$SERVICE"
   systemctl --user daemon-reload
   systemctl --user enable --now "$SERVICE" >/dev/null 2>&1 || die "could not start the service; see: journalctl --user -u termenbox"
 

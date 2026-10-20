@@ -6,6 +6,7 @@
   import { installCommand, scanCommand as scanCommandFor, parseClaim, parseServerLink, waitForServer, previewClaim, checkReachable, ClaimTimeout, type Reachability, type ClaimPreview, type RunChoice } from './lib/onboard';
   import { decodeQrFile, startCameraScan } from './lib/scan';
   import { wsUrl } from './lib/servers';
+  import { Unreachable } from './lib/transport';
   import { Dialog } from './lib/ui';
   import PortHelp from './PortHelp.svelte';
 
@@ -46,11 +47,14 @@
   let preview: ClaimPreview | null = null;
   let previewing = false;
   let previewName = '';
+  /** The preview failed because the server could not be reached (not because of what it said). */
+  let blocked = false;
 
   async function showPreview(record: DirRecord, s: string) {
     found = record;
     previewing = true;
     error = '';
+    blocked = false;
     abort?.abort();
     abort = new AbortController();
     try {
@@ -58,6 +62,7 @@
       previewName = name.trim() || preview.name;
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') return;
+      blocked = e instanceof Unreachable;
       error = `Could not read what this server is: ${e instanceof Error ? e.message : 'failed'}`;
     } finally {
       previewing = false;
@@ -316,7 +321,7 @@
     {:else if previewing}
       <p style="color: var(--fg-muted); font-size: 0.875rem;">Your server appeared. Reading what it is…</p>
     {:else if found && error}
-      {#if /unreachable/i.test(error)}<PortHelp port={found.udp_port ?? null} />{/if}
+      {#if blocked}<PortHelp port={found.udp_port ?? null} />{/if}
       <button class="secondary" on:click={() => found && showPreview(found, secret)} style="width: 100%; margin-bottom: 8px;">Try again</button>
       <button class="secondary" on:click={confirm} style="width: 100%;">Add without a preview</button>
     {/if}
