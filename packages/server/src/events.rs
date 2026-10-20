@@ -1251,9 +1251,39 @@ pub async fn serve_socket(hub: EventHub, path: std::path::PathBuf) -> Result<()>
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     }
+    // Connections only read and parse; one worker handles the events in the order they came in, so a tool's hooks keep
+    // their order even when one of them waits on a transcript read.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Hooked>(256);
+    tokio::spawn({
+        let hub = hub.clone();
+        async move {
+            while let Some((w, source, confidence, kinds)) = rx.recv().await {
+                if w.adapter == "claude" && hub.token_matches(&w.session, &w.token) {
+                    // File reads: off the async threads.
+                    let (h, session, data) = (hub.clone(), w.session.clone(), w.data.clone());
+                    let _ =
+                        tokio::task::spawn_blocking(move || h.note_claude_usage(&session, &data))
+                            .await;
+                }
+                if hub
+                    .ingest(&w.session, &w.token, source, confidence, kinds)
+                    .is_ok()
+                    && w.adapter == "claude"
+                {
+                    if let Some(path) = w.data.get("transcript_path").and_then(|p| p.as_str()) {
+                        hub.set_transcript(&w.session, path);
+                    }
+                    // A task this event opened takes its folder now; one it ended took it above.
+                    if let Some(cwd) = w.data.get("cwd").and_then(|c| c.as_str()) {
+                        hub.record_project(&w.session, cwd);
+                    }
+                }
+            }
+        }
+    });
     loop {
         let (stream, _) = listener.accept().await?;
-        let hub = hub.clone();
+        let tx = tx.clone();
         tokio::spawn(async move {
             let mut line = String::new();
             let mut r = BufReader::new(stream.take(MAX_LINE));
@@ -1270,29 +1300,13 @@ pub async fn serve_socket(hub: EventHub, path: std::path::PathBuf) -> Result<()>
             else {
                 return;
             };
-            if w.adapter == "claude" && hub.token_matches(&w.session, &w.token) {
-                // File reads: off the async threads. Every hook goes the same way, so the events of one session keep
-                // their order.
-                let (h, session, data) = (hub.clone(), w.session.clone(), w.data.clone());
-                let _ =
-                    tokio::task::spawn_blocking(move || h.note_claude_usage(&session, &data)).await;
-            }
-            if hub
-                .ingest(&w.session, &w.token, source, confidence, kinds)
-                .is_ok()
-                && w.adapter == "claude"
-            {
-                if let Some(path) = w.data.get("transcript_path").and_then(|p| p.as_str()) {
-                    hub.set_transcript(&w.session, path);
-                }
-                // A task this event opened takes its folder now; one it ended took it above.
-                if let Some(cwd) = w.data.get("cwd").and_then(|c| c.as_str()) {
-                    hub.record_project(&w.session, cwd);
-                }
-            }
+            let _ = tx.send((w, source, confidence, kinds)).await;
         });
     }
 }
+
+/// One accepted hook line, parsed and adapted, waiting for the worker.
+type Hooked = (Wire, Source, Confidence, Vec<EventKind>);
 
 // ---------------------------------------------------------------------------------------------------
 // The hook command a tool runs: `termenbox-server --hook <adapter>`
