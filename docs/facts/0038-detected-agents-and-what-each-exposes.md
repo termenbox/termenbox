@@ -1,15 +1,15 @@
 ---
 id: 0038
-title: The client has icons for 11 agents, but only Claude Code has a verified event surface
+title: The client has icons for 11 agents; only Claude Code and OpenCode have a verified event surface
 status: active
 tags: [agents, hooks, client]
 date: 2026-10-16
 kind: environmental
 governed-by: 0103
-last-verified: 2026-10-17
+last-verified: 2026-10-20
 ---
 
-# The client has icons for 11 agents, but only Claude Code has a verified event surface
+# The client has icons for 11 agents; only Claude Code and OpenCode have a verified event surface
 
 Icons read from `packages/client/src/lib/agentIcons.ts` on 2026-10-16: claude, codex, copilot, opencode, kilo, gemini, aider, cursor-agent, amp, goose, qwen. The pane title is not a task source for Claude Code or Codex (fact 0036). Decision 0103 guarantees a T2 or T3 view per agent, so agents with no surface rely on the process scan and the screen.
 
@@ -22,7 +22,7 @@ Method: version from `--version`; hooks, notify and JSON mode from `--help` and 
 | claude | 2.1.301 | yes (fact 0029) | no | transcript file; `--output-format stream-json` | adapter `@agentclientprotocol/claude-agent-acp` 0.93.0 (was `@zed-industries/claude-code-acp` 0.16.2, deprecated) | `loadSession`; fork, list, resume; no `close` |
 | codex | 0.162.1 | `hooks` feature, stable | `notify` program (unverified, R21) | `codex exec --json`; app-server | adapter `@agentclientprotocol/codex-acp` 2.2.2 (was `@zed-industries/codex-acp` 0.16.0, deprecated) | `loadSession`; list, resume, close |
 | copilot | 1.0.98 | not seen in help | not seen | `--output-format json` (JSONL), `--log-dir` | native `copilot --acp` | `loadSession`; list, close; no resume |
-| opencode | 2.0.29 | not seen in help | not seen | `run --format json`; `serve` API | native `opencode acp` | `loadSession`; additionalDirectories, close, delete, fork, list, resume |
+| opencode | 2.0.29 (plugin re-check: 2.0.31) | no settings hooks; plugin events (below) | not seen | `run --format json`; `serve` API | native `opencode acp` | `loadSession`; additionalDirectories, close, delete, fork, list, resume |
 | kilo | 7.6.2 | not seen in help | not seen | `run --format json`; `serve`, `export` | native `kilo acp` | `loadSession`; close, fork, list, resume |
 | gemini | 0.64.0 | `gemini hooks` | not seen | `-o json` or `stream-json` | native `gemini --acp` | `loadSession` only |
 | qwen | 0.25.2 | `qwen hooks` | not seen | telemetry outfile only | native `qwen --acp` | `loadSession`; list, resume |
@@ -53,6 +53,32 @@ T2 is a profile file in `packages/server/profiles/`; the session view reports `t
 | codex | **no** | nothing | not installed on the build host, so no screen was recorded; stays T3 |
 
 Claude Code 2.1.302 no longer shows `esc to interrupt` while working, and `auto mode on` is on every screen, so neither is a reliable marker any more.
+
+## OpenCode plugin (2026-10-20)
+
+OpenCode 2.x has no settings-file hooks, but it loads JavaScript/TypeScript plugins from
+`<config>/plugins/` (global) and `.opencode/plugins/` (project). A plugin's default export has an `id` and a
+`setup(ctx)`; `ctx.event.subscribe()` yields the same events the TUI sees. Termenbox's opt-in
+`--connect-opencode` writes one plugin to `<config>/plugins/termenbox.js`; it sends only
+`session.inbox.enqueued`, `session.execution.started/succeeded/failed/interrupted`,
+`permission.asked/replied`, `form.created/replied/cancelled`, and the `session.tool.called/success/failed`
+events to `termenbox-server --hook opencode` (through the `TERMENBOX_*` variables in a Termenbox session).
+The adapter maps the execution events to turn edges, permissions and forms to obligations, and the prompt's
+first line to the task title.
+
+The event names and `data` fields were read from the generated types of `@opencode/client` 2.0.31 and then
+recorded from a live OpenCode 2.0.31 run on 2026-10-20: a mock OpenAI-compatible provider, a Unix socket in
+place of the event hub, and the generated plugin. The samples in
+`packages/server/testdata/events/opencode-*.json` follow the captured events. Two shapes matter for the
+adapter: a question form is titled `Questions`, with the actual question in the first field's `description`,
+and `permission.asked` carries `action` and `resources` (it may omit `message`).
+
+The plugin compacts each event to the fields the adapter reads, because tool output and provider metadata can
+exceed the 64 KiB one hook line accepts; it also remembers a tool's name from `session.tool.input.started`
+because `session.tool.called/success/failed` do not carry one. `session.status` is not used: `busy` after a
+pending permission would clear the obligation, and `idle` repeats the turn end already carried by
+`session.execution.interrupted`/`succeeded`. The plugin does not forward `session.idle` for that reason: a late
+idle would close a turn that already ended as `Done` (and clear any block).
 
 ## T2 priority
 

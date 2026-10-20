@@ -1,0 +1,15 @@
+{
+  "id": "evt_01J00000000000000000000008",
+  "created": 1760950802000,
+  "type": "session.tool.called",
+  "data": {
+    "sessionID": "ses_01J0000000000000000000000",
+    "assistantMessageID": "msg_01J0000000000000000000001",
+    "id": "call_01J000000000000000000000",
+    "input": {
+      "command": "cargo test -p termenbox-server"
+    },
+    "executed": true,
+    "toolName": "bash"
+  }
+}

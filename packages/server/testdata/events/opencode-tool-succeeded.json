@@ -1,0 +1,15 @@
+{
+  "id": "evt_01J00000000000000000000010",
+  "created": 1760950804000,
+  "type": "session.tool.success",
+  "data": {
+    "sessionID": "ses_01J0000000000000000000000",
+    "assistantMessageID": "msg_01J0000000000000000000001",
+    "id": "call_01J000000000000000000000",
+    "content": [
+      { "type": "text", "text": "test result: ok" }
+    ],
+    "executed": true,
+    "toolName": "bash"
+  }
+}

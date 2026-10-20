@@ -10,6 +10,7 @@ pub fn adapt(adapter: &str, data: &Value) -> Option<Adapted> {
     match adapter {
         "claude" => claude(data),
         "codex" => codex(data),
+        "opencode" => opencode(data),
         _ => None,
     }
 }
@@ -160,6 +161,161 @@ pub fn codex(d: &Value) -> Option<Adapted> {
         }
         _ => None,
     }
+}
+
+/// What an OpenCode tool call is about, without the whole input. OpenCode names its tools in lower case
+/// (`bash`, `read`, `edit`, ...), unlike Claude Code's `Bash`/`Read`/`Edit`.
+fn opencode_tool_summary(name: &str, input: &Value) -> String {
+    let pick = |k: &str| {
+        text(input, k)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+    let first = |keys: &[&str]| keys.iter().map(|k| pick(k)).find(|s| !s.is_empty());
+    let lower = name.to_ascii_lowercase();
+    first(match lower.as_str() {
+        "bash" | "shell" => &["command"],
+        "read" | "edit" | "write" | "patch" => &["filePath", "path"],
+        "grep" | "glob" => &["pattern"],
+        "webfetch" => &["url"],
+        "websearch" => &["query"],
+        _ => &[],
+    })
+    .unwrap_or_default()
+}
+
+/// OpenCode v2 plugin events (fact 0038: shapes recorded from OpenCode 2.0.31 on 2026-10-20). The plugin reports
+/// `session.execution.*` (the precise turn edges), permissions, forms (OpenCode's questions), and tool calls.
+/// `session.status` is not used because `busy` after a pending permission would clear the obligation. `session.idle`
+/// is ignored too: it repeats the end that `session.execution.*` already carries, and a late idle would downgrade
+/// Done to Idle and clear a block. The samples in testdata follow those captured events.
+pub fn opencode(d: &Value) -> Option<Adapted> {
+    let data = d.get("data").unwrap_or(&Value::Null);
+    let block = |key: String, open: bool| EventKind::Block { key, open };
+    let id = |prefix: &str| {
+        let id = text(data, "id");
+        if id.is_empty() {
+            prefix.to_string()
+        } else {
+            format!("{prefix}:{id}")
+        }
+    };
+    let tool_name = || {
+        let name = text(data, "toolName");
+        if !name.is_empty() {
+            name.to_string()
+        } else {
+            let name = text(data, "name");
+            if name.is_empty() {
+                "tool".to_string()
+            } else {
+                name.to_string()
+            }
+        }
+    };
+    let message = |text: &str| {
+        (!text.trim().is_empty()).then(|| EventKind::Message {
+            summary: text.to_string(),
+        })
+    };
+    let kinds = match text(d, "type") {
+        // The prompt was queued: its first line names the task. `execution.started` opens the turn.
+        "session.inbox.enqueued" => {
+            let item = data.get("item").unwrap_or(&Value::Null);
+            if text(item, "type") != "user" {
+                return None;
+            }
+            let prompt = text(item.get("payload").unwrap_or(&Value::Null), "text");
+            let first = prompt.lines().next().unwrap_or("").trim();
+            if first.is_empty() {
+                return None;
+            }
+            vec![EventKind::Task {
+                title: first.to_string(),
+            }]
+        }
+        "session.execution.started" => vec![EventKind::Turn {
+            open: true,
+            outcome: None,
+        }],
+        "session.execution.succeeded" => vec![turn_end(AgentState::Done)],
+        "session.execution.failed" => {
+            let mut k = vec![turn_end(AgentState::Error)];
+            let error = data.get("error").unwrap_or(&Value::Null);
+            k.extend(message(text(error, "message")));
+            k
+        }
+        // Esc, a shutdown or a superseded prompt: the turn is over and nothing waits.
+        "session.execution.interrupted" => vec![turn_end(AgentState::Idle)],
+        "permission.asked" => {
+            let mut k = vec![block(id("permission"), true)];
+            let detail = text(data, "message");
+            if detail.is_empty() {
+                let action = text(data, "action");
+                let resource = data
+                    .get("resources")
+                    .and_then(Value::as_array)
+                    .and_then(|a| a.first())
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                k.extend(message(&[action, resource].join(" ")));
+            } else {
+                k.extend(message(detail));
+            }
+            k
+        }
+        "permission.replied" => vec![block(
+            format!("permission:{}", text(data, "requestID")),
+            false,
+        )],
+        "form.created" => {
+            let form = data.get("form").unwrap_or(&Value::Null);
+            let form_id = text(form, "id");
+            let key = if form_id.is_empty() {
+                "form".to_string()
+            } else {
+                format!("form:{form_id}")
+            };
+            // A form's title can be the generic "Questions"; the first field carries the actual question.
+            let detail = form
+                .get("fields")
+                .and_then(Value::as_array)
+                .and_then(|fields| {
+                    fields.iter().find_map(|f| {
+                        let description = text(f, "description").trim();
+                        if !description.is_empty() {
+                            return Some(description.to_string());
+                        }
+                        let title = text(f, "title").trim();
+                        (!title.is_empty()).then(|| title.to_string())
+                    })
+                })
+                .unwrap_or_else(|| text(form, "title").to_string());
+            let mut k = vec![block(key, true)];
+            k.extend(message(&detail));
+            k
+        }
+        "form.replied" | "form.cancelled" => vec![block(id("form"), false)],
+        "session.tool.called" => {
+            let name = tool_name();
+            let summary = opencode_tool_summary(&name, data.get("input").unwrap_or(&Value::Null));
+            vec![EventKind::Tool {
+                name,
+                summary,
+                phase: ToolPhase::Started,
+            }]
+        }
+        "session.tool.success" | "session.tool.failed" => vec![EventKind::Tool {
+            name: tool_name(),
+            summary: String::new(),
+            phase: ToolPhase::Finished,
+        }],
+        _ => return None,
+    };
+    Some((Source::Hook, Confidence::High, kinds))
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -482,6 +638,128 @@ mod tests {
         assert_eq!(src, Source::Codex);
         assert_eq!(kinds[0], state(AgentState::Done));
         assert!(codex(&json!({"type": "something-else"})).is_none());
+    }
+
+    #[test]
+    fn opencode_execution_events_open_and_close_the_turn_and_name_the_task() {
+        let k = |f: &str| opencode(&sample(f)).unwrap().2;
+        assert_eq!(
+            k("opencode-inbox-enqueued.json"),
+            vec![EventKind::Task {
+                title: "Fix the failing test.".into()
+            }]
+        );
+        assert_eq!(k("opencode-execution-started.json"), vec![open()]);
+        assert_eq!(
+            k("opencode-execution-succeeded.json"),
+            vec![end(AgentState::Done)]
+        );
+        assert_eq!(
+            k("opencode-execution-failed.json"),
+            vec![
+                end(AgentState::Error),
+                EventKind::Message {
+                    summary: "Provider returned 429: rate limited".into()
+                }
+            ]
+        );
+        assert_eq!(
+            opencode(&json!({"type": "session.execution.interrupted", "data": {"reason": "user"}}))
+                .unwrap()
+                .2,
+            vec![end(AgentState::Idle)]
+        );
+        // A late idle must not close (and clear) a turn that execution.succeeded already ended as Done.
+        assert!(opencode(&json!({"type": "session.idle", "data": {"sessionID": "s"}})).is_none());
+        assert!(opencode(
+            &json!({"type": "session.inbox.enqueued", "data": {"item": {"type": "compaction"}}})
+        )
+        .is_none());
+        assert!(
+            opencode(&json!({"type": "session.status", "data": {"status": {"type": "busy"}}}))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn opencode_permissions_forms_and_tools_map_to_blocks_and_tool_steps() {
+        let k = |f: &str| opencode(&sample(f)).unwrap().2;
+        assert_eq!(
+            k("opencode-permission-asked.json"),
+            vec![
+                block("permission:per_01J0000000000000000000000", true),
+                EventKind::Message {
+                    summary: "bash cargo test -p termenbox-server".into()
+                }
+            ]
+        );
+        // A message, when OpenCode supplies one, is friendlier than the action and resource.
+        assert_eq!(
+            opencode(&json!({
+                "type": "permission.asked",
+                "data": {"id": "p1", "action": "bash", "resources": ["rm -rf /"], "message": "Allow this command?"}
+            }))
+            .unwrap()
+            .2,
+            vec![
+                block("permission:p1", true),
+                EventKind::Message {
+                    summary: "Allow this command?".into()
+                }
+            ]
+        );
+        assert_eq!(
+            k("opencode-permission-replied.json"),
+            vec![block("permission:per_01J0000000000000000000000", false)]
+        );
+        assert_eq!(
+            k("opencode-form-created.json"),
+            vec![
+                block("form:form_01J0000000000000000000000", true),
+                EventKind::Message {
+                    summary: "Pick a color".into()
+                }
+            ]
+        );
+        // A form without fields falls back to its title.
+        assert_eq!(
+            opencode(&json!({
+                "type": "form.created",
+                "data": {"form": {"id": "f1", "title": "Which color should the button be?", "fields": []}}
+            }))
+            .unwrap()
+            .2,
+            vec![
+                block("form:f1", true),
+                EventKind::Message {
+                    summary: "Which color should the button be?".into()
+                }
+            ]
+        );
+        assert_eq!(
+            k("opencode-form-replied.json"),
+            vec![block("form:form_01J0000000000000000000000", false)]
+        );
+        assert_eq!(
+            k("opencode-tool-called.json"),
+            vec![tool(
+                "bash",
+                "cargo test -p termenbox-server",
+                ToolPhase::Started
+            )]
+        );
+        assert_eq!(
+            k("opencode-tool-succeeded.json"),
+            vec![tool("bash", "", ToolPhase::Finished)]
+        );
+        // Without the plugin's remembered name the adapter still reports a tool.
+        assert_eq!(
+            opencode(&json!({"type": "session.tool.called", "data": {"id": "c", "input": {"filePath": "src/lib.rs"}}}))
+                .unwrap()
+                .2,
+            vec![tool("tool", "", ToolPhase::Started)]
+        );
+        assert!(opencode(&json!({"type": "something.else"})).is_none());
     }
 
     #[test]

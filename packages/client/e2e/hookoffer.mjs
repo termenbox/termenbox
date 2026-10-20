@@ -231,7 +231,7 @@ try {
   await row.locator('pre').waitFor();
   check(settings() === ORIGINAL, 'the preview in Settings changed the file');
   const again = await row.locator('pre').evaluate((p) => p.textContent);
-  await row.getByRole('button', { name: 'Enable hooks' }).click();
+  await row.getByRole('button', { name: 'Enable', exact: true }).click();
   await waitFor(async () => (await row.getAttribute('data-hook-state')) === 'connected', 'hooks enabled in Settings');
   check(settings() === again, 'Settings wrote something other than its preview');
   console.log('ok  Settings removes the hooks (original bytes back) and enables them again after showing the change');

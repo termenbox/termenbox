@@ -140,6 +140,16 @@ termenbox-server --connect-claude --yes    # applies them (backup kept)
 termenbox-server --disconnect-claude       # removes exactly those again
 ```
 
+For exact OpenCode events, opt in to its plugin the same way:
+
+```
+termenbox-server --connect-opencode          # shows the plugin it would write
+termenbox-server --connect-opencode --yes    # writes <config>/plugins/termenbox.js (backup kept)
+termenbox-server --disconnect-opencode       # removes exactly that again
+```
+
+The OpenCode config directory is `$OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`; `--opencode-dir DIR` names it explicitly. Restart OpenCode after connecting.
+
 Only sessions created by Termenbox carry the variables hooks need. Agent text in events is cleaned (control characters, secrets, addresses) and capped before it is stored or sent. Details: `docs/plans/archive/termenbox-v6-agent-events.md`.
 
 ## Configuration

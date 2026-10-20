@@ -42,7 +42,7 @@
           {:else if confirming === idOf(h)}
             <HookPreview preview={h.info.preview} label={h.label} />
             <div class="grid grid-cols-2 gap-2">
-              <button type="button" class="{btn} bg-accent text-on-accent" disabled={!h.info.preview || !!h.info.busy} onclick={() => { onhook?.('enable', h); confirming = null; }}>Enable hooks</button>
+              <button type="button" class="{btn} bg-accent text-on-accent" disabled={!h.info.preview || !!h.info.busy} onclick={() => { onhook?.('enable', h); confirming = null; }}>Enable</button>
               <button type="button" class="{btn} bg-raised text-fg" onclick={() => (confirming = null)}>Cancel</button>
             </div>
           {:else}
