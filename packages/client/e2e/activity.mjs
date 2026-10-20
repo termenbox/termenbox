@@ -58,8 +58,8 @@ try {
     const claude = await page.locator('[data-usage-agent="claude"]').innerText();
     const codex = await page.locator('[data-usage-agent="codex"]').innerText();
     check(claude.includes('18k tokens') && claude.includes('cache read 150k') && claude.includes('Rate limited once'), `claude usage: ${claude}`);
-    check(claude.includes('Cost: not available from claude') && claude.includes('R19'), `claude cost state: ${claude}`);
-    check(codex.includes('Tokens: not available from codex') && codex.includes('notify hook carries no usage') && !/\b0 tokens|\$0/.test(codex), `codex state: ${codex}`);
+    check(claude.includes('Cost: not available from this agent') && claude.includes('R19'), `claude cost state: ${claude}`);
+    check(codex.includes('Tokens: not available from this agent') && codex.includes('notify hook carries no usage') && !/\b0 tokens|\$0/.test(codex), `codex state: ${codex}`);
     const projects = await page.$$eval('[data-usage-project]', (els) => els.map((e) => e.dataset.usageProject));
     check(projects.join('|') === 'api|No folder reported|web', `projects ranked by tokens, those with no counts by name: ${projects}`);
     check(!usage.includes('Prompt cache now') && !usage.includes('$'), 'a cost or a cache estimate appears with no source for it');
