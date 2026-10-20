@@ -21,4 +21,4 @@ tags: [agents, client, protocol, roadmap]
 
 ## Why
 
-Only Claude Code has a verified hook surface (fact 0038); a single heuristic parser would be wrong often enough to erode trust in a decision-first home, and one native adapter per agent leaves most agents degraded. Tiers with small profiles give a guaranteed floor and let fidelity grow. Extends [[0095-agent-status-is-activity-plus-attention]]; consent stays with [[0079-agent-hooks-are-opt-in]] and [[0106-hook-offer-is-contextual-and-not-a-nag]].
+Only Claude Code and OpenCode have a verified hook surface (fact 0038); a single heuristic parser would be wrong often enough to erode trust in a decision-first home, and one native adapter per agent leaves most agents degraded. Tiers with small profiles give a guaranteed floor and let fidelity grow. Extends [[0095-agent-status-is-activity-plus-attention]]; consent stays with [[0079-agent-hooks-are-opt-in]] and [[0106-hook-offer-is-contextual-and-not-a-nag]].
