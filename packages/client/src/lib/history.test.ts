@@ -142,6 +142,22 @@ describe('deleting history', () => {
     expect(await p).toEqual({ removed: 2, failed: ['b'] });
     book.reply('b', 5); // too late: nothing happens
   });
+  it('answers a second call made while one is waiting with the same result and asks once', async () => {
+    vi.useFakeTimers();
+    const book = new DeleteBook();
+    const sent: string[] = [];
+    const first = book.run(['a'], (id) => sent.push(id), 1000);
+    const second = book.run(['a'], (id) => sent.push(id), 1000);
+    expect(sent).toEqual(['a']);
+    book.reply('a', 3);
+    expect(await first).toEqual({ removed: 3, failed: [] });
+    expect(await second).toEqual({ removed: 3, failed: [] });
+    // and a later call is a new deletion
+    const third = book.run(['a'], (id) => sent.push(id), 1000);
+    expect(sent).toEqual(['a', 'a']);
+    book.reply('a', 0);
+    expect(await third).toEqual({ removed: 0, failed: [] });
+  });
   it('resolves at once when no server is connected', async () => {
     expect(await new DeleteBook().run([], () => {})).toEqual({ removed: 0, failed: [] });
   });

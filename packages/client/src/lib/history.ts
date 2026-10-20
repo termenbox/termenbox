@@ -224,11 +224,14 @@ export function deletionSummary(d: HistoryDeletion): string {
 /** Asks each server to forget its history and waits for every `history_deleted`, up to a limit. */
 export class DeleteBook {
   private waiting = new Map<string, (removed: number) => void>();
+  private inFlight?: Promise<DeleteResult>;
+  /** A second call while one is waiting joins it: the servers are asked once and both callers get the one answer. */
   run(ids: string[], send: (id: string) => void, timeoutMs = DELETE_TIMEOUT_MS): Promise<DeleteResult> {
-    return new Promise((resolve) => {
+    if (this.inFlight) return this.inFlight;
+    const p = new Promise<DeleteResult>((resolve) => {
       let removed = 0;
       const pending = new Set(ids);
-      const finish = () => { clearTimeout(timer); for (const id of ids) this.waiting.delete(id); resolve({ removed, failed: [...pending] }); };
+      const finish = () => { clearTimeout(timer); for (const id of ids) this.waiting.delete(id); this.inFlight = undefined; resolve({ removed, failed: [...pending] }); };
       const timer = setTimeout(finish, timeoutMs);
       if (!ids.length) return finish();
       for (const id of ids) {
@@ -236,6 +239,9 @@ export class DeleteBook {
         send(id);
       }
     });
+    // An empty list finishes before `inFlight` is set below; only a still-waiting call is remembered.
+    if (this.waiting.size) this.inFlight = p;
+    return p;
   }
   reply(serverId: string, removed: number) {
     const done = this.waiting.get(serverId);
