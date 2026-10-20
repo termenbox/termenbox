@@ -7,21 +7,25 @@
 #
 # Options (after --yes): --delete-home  also delete the home of the `termenbox` user, only if the installer created it
 #                        --keep-state   keep the server's keys and owner (re-installing then keeps the same server)
+#                        --force        the server binary is already gone, so the journaled changes cannot be undone: remove
+#                                       only the leftover journal and state (check for a leftover service or unit files yourself)
 # Never touched: your repositories, the home of the user your sessions run as (unless --delete-home and we created it),
 # and tmux sessions already running (the service is built so that stopping it leaves them alive).
 # This removes the server from this machine. To also drop it from your server list, use Remove server in the app.
 set -eu
 
-YES=""; KEEP_STATE=""; DELETE_HOME=""
+YES=""; KEEP_STATE=""; DELETE_HOME=""; FORCE=""
 for a in "$@"; do
   case "$a" in
     --yes) YES=1 ;;
     --keep-state) KEEP_STATE=1 ;;
     --delete-home) DELETE_HOME=1 ;;
+    --force) FORCE=1 ;;
     *) printf 'termenbox: unknown option %s\n' "$a" >&2; exit 1 ;;
   esac
 done
 
+LEFTOVER=" and state"; [ -z "$KEEP_STATE" ] || LEFTOVER=" (the state is kept)"
 say() { printf '%s\n' "$*"; }
 die() { printf 'termenbox: %s\n' "$*" >&2; exit 1; }
 # An install that needed no root (decision 0113) lives in the home of the user who made it and is removed by that user.
@@ -49,7 +53,8 @@ if [ "$(id -u)" -ne 0 ]; then
   if [ -x "$UBIN" ] && [ -d "$UJOURNAL" ]; then
     "$UBIN" --journal-dir "$UJOURNAL" --revert || die "some changes could not be undone; see the lines above. The server's state was kept."
   elif [ -d "$UJOURNAL" ]; then
-    die "$UBIN is missing, so the journaled changes in $UJOURNAL cannot be undone. Nothing was removed."
+    [ -n "$FORCE" ] || die "$UBIN is missing, so the journaled changes in $UJOURNAL cannot be undone. Nothing was removed. If the service and its unit files are already gone, remove the leftovers with: curl -fsSL <client>/uninstall.sh | sh -s -- --yes --force"
+    say "Removing only the leftover journal$LEFTOVER: the binary is gone, so nothing journaled is undone. Check $HOME/.config/systemd/user for termenbox*.service and termenbox-*.timer/path files."
   fi
   [ -n "$KEEP_STATE" ] || rm -rf "$USTATE"
   rm -rf "$UJOURNAL"
@@ -97,7 +102,8 @@ if [ -x "$BIN" ] || [ -d "$JOURNAL" ]; then
     if [ -x "$BIN" ] && [ -d "$JOURNAL" ]; then
       "$BIN" --journal-dir "$JOURNAL" --revert ${DELETE_HOME:+--delete-home} || die "some changes could not be undone; see the lines above. The server's state was kept."
     elif [ -d "$JOURNAL" ]; then
-      die "$BIN is missing, so the journaled changes in $JOURNAL cannot be undone. Nothing was removed."
+      [ -n "$FORCE" ] || die "$BIN is missing, so the journaled changes in $JOURNAL cannot be undone. Nothing was removed. If the service and its unit files are already gone, remove the leftovers (the journal and, unless --keep-state, $STATE) with: curl -fsSL <client>/uninstall.sh | sudo sh -s -- --yes --force"
+      say "Removing only the leftover journal$LEFTOVER: the binary is gone, so nothing journaled is undone. Check /etc/systemd/system for termenbox*.service, termenbox-*.timer and termenbox-*.path files."
     fi
     [ -n "$KEEP_STATE" ] || rm -rf "$STATE"
     systemctl daemon-reload >/dev/null 2>&1 || true
