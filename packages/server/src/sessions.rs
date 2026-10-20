@@ -13,6 +13,7 @@ use crate::control::WindowHub;
 use crate::events::EventHub;
 use crate::link::{Inbound, Link, LinkTx};
 use crate::health::HealthCollector;
+use crate::pty::Attachment;
 
 /// Clients ping every 5 s, so a minute of silence means the peer is gone.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
