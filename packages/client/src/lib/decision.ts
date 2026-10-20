@@ -64,3 +64,28 @@ export function decisionFor(s: { key: string; name: string; since?: number; ques
 
 /** The line a typed reply sends: one line, no control characters, capped. The server types it, then Enter. */
 export const replyLine = (text: string): string => cleanLine(text);
+
+/** An option that grants more than this one question: it must never be what a quick shortcut picks (decision 0104). */
+const STANDING = /don['’]?t ask again|do not ask again|always|for (this|the rest of the) session|every time|from now on|remember|all (future )?(edits|commands|requests)/i;
+const YES = /^(yes|allow|approve|accept|proceed|continue|run|ok|okay|trust)\b/i;
+const NO = /^(no|deny|reject|decline|cancel|don['’]?t (allow|run|do))\b/i;
+
+/**
+ * The option a one-key Yes or No means: the first that reads as a plain yes (or no) and does not also grant a
+ * standing permission. `null` when the agent's own options do not offer one, in which case the shortcut does nothing
+ * rather than guess: Claude Code's second option is often “Yes, and don’t ask again”, so “the second option” is not No.
+ */
+export function answerIndex(options: string[], kind: 'yes' | 'no'): number | null {
+  const re = kind === 'yes' ? YES : NO;
+  const i = options.findIndex((o) => re.test(o.trim()) && !STANDING.test(o));
+  return i < 0 ? null : i;
+}
+
+/** The session to open for “next that needs you”: the one waiting longest after the current one, wrapping round. */
+export function nextNeedsYou<T extends { key: string }>(sessions: T[], isWaiting: (key: string) => boolean, since: (key: string) => number, current: string | null): T | null {
+  const waiting = sessions.filter((s) => isWaiting(s.key)).sort((a, b) => since(a.key) - since(b.key));
+  if (!waiting.length) return null;
+  const at = waiting.findIndex((s) => s.key === current);
+  const next = waiting[(at + 1) % waiting.length];
+  return next.key === current ? null : next;
+}

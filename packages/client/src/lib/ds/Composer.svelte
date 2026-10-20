@@ -12,7 +12,7 @@
 <div class={cn('flex flex-col gap-2 border-t border-line bg-bg px-3 pt-2 pb-[calc(--spacing(3)+env(safe-area-inset-bottom))]', className)}>
   {#if decision}{@render decision()}{/if}
   <form class="flex items-center gap-1 rounded-card bg-raised py-1 pr-1 pl-4" onsubmit={(e) => { e.preventDefault(); send(); }}>
-    <input bind:value {placeholder} aria-label={label} {disabled} autocapitalize="off" autocomplete="off" enterkeyhint="send"
+    <input bind:value {placeholder} aria-label={label} {disabled} autocapitalize="off" autocomplete="off" enterkeyhint="send" data-composer
       class="h-12 min-w-0 flex-1 border-0 bg-transparent p-0 text-input text-fg outline-none placeholder:text-muted" />
     {#if onmic}<button type="button" aria-label="Dictate" onclick={onmic} onpointerdown={keep} class="grid size-11 place-items-center rounded-control bg-transparent p-0 text-base text-soft">🎤</button>{/if}
     <button type="submit" {disabled} aria-label={value ? 'Send' : 'Enter'} onpointerdown={keep} class="grid size-11 place-items-center rounded-control bg-accent p-0 text-base text-on-accent">↵</button>

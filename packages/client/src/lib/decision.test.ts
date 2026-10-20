@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { render } from 'svelte/server';
 import DecisionPanel from '../DecisionPanel.svelte';
-import { decisionFor, replyLine, stepOf, STEP_SUMMARY_CHARS } from './decision';
+import { answerIndex, decisionFor, nextNeedsYou, replyLine, stepOf, STEP_SUMMARY_CHARS } from './decision';
 import type { SessionAgent } from './agents';
 
 const waiting = (extra: Partial<SessionAgent> = {}): SessionAgent => ({
@@ -66,5 +66,39 @@ describe('the decision panel', () => {
   });
   it('leaves the reply field out when the surface has its own composer', () => {
     expect(html(props({ composer: false }))).not.toContain('Write a reply');
+  });
+});
+
+describe('answerIndex (the Yes and No shortcuts)', () => {
+  const claude = ['Yes', 'Yes, and don’t ask again for npm test commands in /repo', 'No, and tell Claude what to do differently'];
+  it('picks the plain Yes and the explicit No, never the standing permission', () => {
+    expect(answerIndex(claude, 'yes')).toBe(0);
+    expect(answerIndex(claude, 'no')).toBe(2);
+  });
+  it('is not fooled by the second option being a grant', () => {
+    expect(answerIndex(['Yes', 'Yes, and don\'t ask again', 'No'], 'no')).toBe(2);
+    expect(answerIndex(['Yes, and don\'t ask again', 'No'], 'yes')).toBeNull();
+    expect(answerIndex(['Allow always', 'Deny'], 'yes')).toBeNull();
+    expect(answerIndex(['Allow for this session', 'Allow once', 'Deny'], 'yes')).toBe(1);
+  });
+  it('does nothing when the options carry no plain answer', () => {
+    expect(answerIndex(['Option A', 'Option B'], 'yes')).toBeNull();
+    expect(answerIndex(['Option A', 'Option B'], 'no')).toBeNull();
+    expect(answerIndex([], 'yes')).toBeNull();
+  });
+});
+
+describe('nextNeedsYou', () => {
+  const list = ['a', 'b', 'c', 'd'].map((key) => ({ key }));
+  const waiting = new Set(['b', 'c', 'd']);
+  const since = (k: string) => ({ b: 30, c: 10, d: 20 } as Record<string, number>)[k] ?? 0;
+  it('goes round the waiting sessions, longest wait first', () => {
+    expect(nextNeedsYou(list, (k) => waiting.has(k), since, null)?.key).toBe('c');
+    expect(nextNeedsYou(list, (k) => waiting.has(k), since, 'c')?.key).toBe('d');
+    expect(nextNeedsYou(list, (k) => waiting.has(k), since, 'b')?.key).toBe('c');
+  });
+  it('stays put when the current session is the only one', () => {
+    expect(nextNeedsYou(list, (k) => k === 'b', since, 'b')).toBeNull();
+    expect(nextNeedsYou(list, () => false, since, null)).toBeNull();
   });
 });

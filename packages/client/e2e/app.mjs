@@ -34,7 +34,7 @@ for (const [name, opts] of [['phone 360', { viewport: { width: 360, height: 740 
  const errors = [];
  page.on('pageerror', (e) => errors.push(String(e)));
  await page.goto(origin);
- const wide = opts.viewport.width >= 1024;
+ const wide = opts.viewport.width > 720;
  const nav = page.getByRole('navigation', { name: 'Main' });
  await nav.waitFor();
  const go = async (id, heading) => {
