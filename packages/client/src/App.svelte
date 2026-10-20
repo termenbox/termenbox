@@ -27,6 +27,7 @@
   import { sendServerLink } from './lib/share';
   import { ServerHub, newSessionTargets, serverKey, sessionDestinations, sessionKey, type HubServer } from './lib/hub';
   import { lookup } from './lib/directory';
+  import { DeleteFailed, deleteMyData, registerServer, SIGN_IN_EXPIRED } from './lib/account';
   import { deviceKey, publicKeyB64, signChallenge, certExpiry, certUserId, avatarUrl } from './lib/device';
   import AppShell from './AppShell.svelte';
   import AppFrame from './shell/AppFrame.svelte';
@@ -337,6 +338,26 @@
     saveServers([...servers.filter((s) => !same(s)), server]);
     hub.add(server);
     showWorkspace();
+  }
+
+  /**
+   * Links a freshly set-up server to this account so "delete my data" can find it, before the first connection:
+   * once the server has an owner it stops announcing the claim secret that proves who set it up. The server is added either way.
+   */
+  async function addAndLink(server: ServerListItem) {
+    if (server.claim && server.record && deviceCert) {
+      try { await registerServer(location.origin, { cert: deviceCert, pair: await deviceKey() }, server.claim); }
+      catch (e) {
+        noteError(`account link: ${e instanceof Error ? e.message : e}`);
+        showToast('Server added, but it could not be linked to your account, so "Delete my data" will not cover it. Its record is removed 30 days after it goes quiet.', 'error');
+      }
+    }
+    addServer(server);
+  }
+
+  async function deleteData(): Promise<number> {
+    if (!deviceCert) throw new DeleteFailed(SIGN_IN_EXPIRED, true);
+    return deleteMyData(location.origin, { cert: deviceCert, pair: await deviceKey() });
   }
 
   async function handleOAuthCallback() {
@@ -746,7 +767,7 @@
       {:else if $destination === 'activity'}
         <EmptyState title="Activity" body="What your agents did, and what it cost, will appear here." />
       {:else if $destination === 'settings'}
-        <SettingsView user={user ?? ''} {serverVersion} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} onmenu={() => { titleTapped(); menuOpen = true; }} onshortcuts={() => (helpOpen = true)} onreport={openReport} onlogout={logout} />
+        <SettingsView user={user ?? ''} {serverVersion} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} onmenu={() => { titleTapped(); menuOpen = true; }} onshortcuts={() => (helpOpen = true)} onreport={openReport} onlogout={logout} ondeletedata={deleteData} />
       {:else}
         <div class="workspace" class:mobile={narrow}>
           <div class="terminal-pane">
@@ -815,7 +836,7 @@
   {/if}
 
   {#if showAddServer}
-    <AddServerModal origin={location.origin} prefillSecret={addPrefill} onserver={(id) => { showAddServer = false; void addServerById(id); }} onclose={() => showAddServer = false} onadd={(server) => addServer(server)} />
+    <AddServerModal origin={location.origin} prefillSecret={addPrefill} onserver={(id) => { showAddServer = false; void addServerById(id); }} onclose={() => showAddServer = false} onadd={(server) => void addAndLink(server)} />
   {/if}
 
   {#if toast}

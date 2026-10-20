@@ -1,28 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
-
-// Vite does not know node:sqlite as a builtin yet, so load it through require.
-const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite');
+import { testDb } from '../_testdb';
 import {
   b64urlEncode, canonicalMessage, handleAnnounce, handleLookup, handlePending, isPublicIp, parseAnnounce, verifySignature,
   MIN_ANNOUNCE_INTERVAL_MS, NEW_IDS_PER_SRC_PER_HOUR, CLAIM_TTL_MS, IDLE_EXPIRY_MS, type D1Like, type DirRecord,
 } from './_lib';
-
-/** A D1-shaped wrapper over node:sqlite, loaded with the real migration. */
-function testDb(): D1Like {
-  const sqlite = new DatabaseSync(':memory:');
-  sqlite.exec(readFileSync(new URL('../../../migrations/0001_directory.sql', import.meta.url), 'utf8'));
-  return {
-    prepare: (sql: string) => ({
-      bind: (...args: unknown[]) => ({
-        first: async <T,>() => ((sqlite.prepare(sql).get(...(args as never[])) as T | undefined) ?? null),
-        run: async () => sqlite.prepare(sql).run(...(args as never[])),
-        all: async <T,>() => ({ results: sqlite.prepare(sql).all(...(args as never[])) as T[] }),
-      }),
-    }),
-  };
-}
 
 const FP = 'sha-256 ' + Array(32).fill('AB').join(':');
 
@@ -133,6 +115,32 @@ describe('announce', () => {
     await handleAnnounce(db, await signed(fresh), 's2', T0 + IDLE_EXPIRY_MS + 10);
     expect((await handleLookup(db, old.id, T0 + IDLE_EXPIRY_MS + 10)).status).toBe(404);
     expect((await handleLookup(db, fresh.id, T0 + IDLE_EXPIRY_MS + 20)).status).toBe(200);
+  });
+});
+
+describe('announce clean-up of owner links', () => {
+  const T0 = 1_800_000_000_000;
+  const link = (db: D1Like, id: string, owner: string) =>
+    db.prepare('INSERT INTO owner_servers (server_id, owner, created_at) VALUES (?, ?, ?)').bind(id, owner, T0).run();
+  const linked = async (db: D1Like) => (await db.prepare('SELECT server_id FROM owner_servers').bind().all<{ server_id: string }>()).results.map((r) => r.server_id).sort();
+
+  it('drops the links of the records it expires and reads nothing else', async () => {
+    const real = testDb();
+    const seen: string[] = [];
+    const db: D1Like = { prepare: (sql) => (seen.push(sql), real.prepare(sql)), batch: (st) => real.batch(st) };
+    const idle = await newServer(), live = await newServer(), trigger = await newServer();
+    await handleAnnounce(db, await signed(idle), 's1', T0);
+    await handleAnnounce(db, await signed(live), 's2', T0 + IDLE_EXPIRY_MS - 1000);
+    await link(db, idle.id, 'github:1');
+    await link(db, live.id, 'github:2');
+    // A link whose record is not in the table is left alone: the clean-up follows expiring records, it does not scan owner_servers.
+    await link(db, 'unrelated', 'github:3');
+    seen.length = 0;
+    await handleAnnounce(db, await signed(trigger), 's3', T0 + IDLE_EXPIRY_MS + 10);
+    const cleanUp = seen.filter((q) => /owner_servers/.test(q));
+    expect(await linked(db)).toEqual([live.id, 'unrelated'].sort());
+    expect((await handleLookup(db, live.id, T0 + IDLE_EXPIRY_MS + 20)).status).toBe(200);
+    expect(cleanUp).toEqual(['DELETE FROM owner_servers WHERE server_id IN (SELECT server_id FROM records WHERE updated_at < ?)']);
   });
 });
 
