@@ -48,5 +48,6 @@
 | 0046 | One machine can already hold a system install and a user install for each user; what coexists and what conflicts | deployment, server | active |
 | 0047 | One server instance idles at about 8.3 MiB RSS (8.7 with three sessions); five instances cost about 41 to 44 MiB | deployment, server, performance | active |
 | 0048 | Claude Code 2.1.302 sends PermissionRequest for AskUserQuestion at once, Notification up to six seconds later, and no hook when a dialog or a turn is cancelled with Esc | agents, hooks, claude | active |
+| 0049 | The U14 health sampler costs about 62 microseconds of CPU per 10 s tick and about 36 KiB of RSS, far under the 1% CPU budget | server, performance, health | active |
 
 <!-- bootstrap-generated: true -->
