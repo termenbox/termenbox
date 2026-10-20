@@ -43,7 +43,11 @@ export type ClientMessage =
   /** Answers a permission with exactly the option id the agent offered. */
   | { type: 'acp_answer'; session: string; prompt_id: string; option_id: string }
   /** Switches to a mode the agent listed. */
-  | { type: 'acp_mode'; session: string; mode: string };
+  | { type: 'acp_mode'; session: string; mode: string }
+  /** U12: the tasks that ended in [from, to) (ms since the epoch) and those still running. Older servers do not answer. */
+  | { type: 'history'; from: number; to: number }
+  /** Forgets the server's whole history. */
+  | { type: 'history_delete' };
 
 export type ServerMessage =
   | { type: 'challenge'; nonce: string; server_id: string }
@@ -68,8 +72,34 @@ export type ServerMessage =
   | { type: 'push_info'; configured: boolean; public_key: string; devices: number; subscribed: boolean }
   | { type: 'agent_event'; event: AgentEventType; agent: string; session_id: string }
   | { type: 'agent_hooks'; agent: string; action: string; state: 'connected' | 'not_connected' | 'unsupported' | 'unavailable' | string; preview?: string; error?: string }
+  | HistoryMessage
+  | { type: 'history_deleted'; removed: number }
   | { type: 'error'; message: string }
   | { type: 'pong' };
+
+/** One task an agent worked on: metadata only. `task` is scrubbed text, shown as text; no `ended_at` while it still runs. */
+export interface HistoryRun {
+  session: string;
+  agent?: string;
+  task?: string;
+  started_at: number;
+  ended_at?: number;
+  /** `stopped` is an end nobody reported: interrupted, or the session went away. Other values are read as `stopped`. */
+  outcome?: 'finished' | 'failed' | 'stopped' | string;
+  /** How long the agent waited on the user during the task. */
+  blocked_ms: number;
+}
+
+/** Oldest first. `truncated`: more tasks ended in the range than one answer carries and the oldest were left out. */
+export interface HistoryMessage {
+  type: 'history';
+  from: number;
+  to: number;
+  runs: HistoryRun[];
+  truncated: boolean;
+  keep_days: number;
+  max_bytes: number;
+}
 
 /** Decision 0103. Unknown tiers and prompt kinds are read as `t3` and `choice`; extra fields are ignored. Options carry no keys. */
 export interface SessionViewMessage {

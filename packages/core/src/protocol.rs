@@ -191,6 +191,14 @@ pub enum ClientMessage {
         session: String,
         mode: String,
     },
+    /// U12 (decision 0105): the tasks that ended in `[from, to)` (ms since the epoch) plus any still running, from the
+    /// server's history; the answer is `history`. The client picks the range, so day boundaries are its own.
+    History {
+        from: u64,
+        to: u64,
+    },
+    /// Forgets the server's whole history; the answer is `history_deleted`.
+    HistoryDelete,
     /// A message from a newer client; ignored.
     #[serde(other)]
     Unknown,
@@ -344,6 +352,20 @@ pub enum ServerMessage {
     },
     /// T0: the stream of an ACP session (see `AcpOpen`).
     AcpView(AcpView),
+    /// Answers `history`, oldest first. `truncated` means more tasks ended in the range than one answer carries and the
+    /// oldest were left out. `keep_days` and `max_bytes` are the limits this server keeps its history within.
+    History {
+        from: u64,
+        to: u64,
+        runs: Vec<HistoryRun>,
+        truncated: bool,
+        keep_days: u32,
+        max_bytes: u64,
+    },
+    /// Answers `history_delete`: how many tasks were forgotten.
+    HistoryDeleted {
+        removed: u64,
+    },
     Error {
         message: String,
     },
@@ -513,6 +535,34 @@ pub struct AcpInfo {
     pub usage: Option<AcpUsage>,
 }
 
+/// One task an agent worked on: metadata only, never a prompt or terminal text (decision 0105).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct HistoryRun {
+    pub session: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// The task's title, scrubbed and capped by the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    pub started_at: u64,
+    /// Absent while the task is still running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<RunOutcome>,
+    /// How long the agent waited on the user during the task.
+    pub blocked_ms: u64,
+}
+
+/// How a task ended. `stopped` is an end nobody reported: interrupted, or the session went away.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunOutcome {
+    Finished,
+    Failed,
+    Stopped,
+}
+
 /// What an agent's transcript says about the session so far (decision 0103, tier 1). Every text is untrusted:
 /// the server has already stripped, capped and scrubbed it, and clients render it as plain text only.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
@@ -624,6 +674,33 @@ mod tests {
         .unwrap();
         assert_eq!(v["type"], "auth_ok");
         assert!(v.get("acp_agents").is_none());
+        let v = serde_json::to_value(ClientMessage::History { from: 1, to: 2 }).unwrap();
+        assert_eq!(v["type"], "history");
+        assert_eq!(v["from"], 1);
+        let v = serde_json::to_value(ClientMessage::HistoryDelete).unwrap();
+        assert_eq!(v["type"], "history_delete");
+        let v = serde_json::to_value(ServerMessage::HistoryDeleted { removed: 3 }).unwrap();
+        assert_eq!(v["type"], "history_deleted");
+        let v = serde_json::to_value(ServerMessage::History {
+            from: 1,
+            to: 2,
+            runs: vec![HistoryRun {
+                session: "api".into(),
+                agent: None,
+                task: None,
+                started_at: 1,
+                ended_at: Some(2),
+                outcome: Some(RunOutcome::Stopped),
+                blocked_ms: 0,
+            }],
+            truncated: false,
+            keep_days: 90,
+            max_bytes: 20_000_000,
+        })
+        .unwrap();
+        assert_eq!(v["type"], "history");
+        assert_eq!(v["runs"][0]["outcome"], "stopped");
+        assert!(v["runs"][0].get("task").is_none());
         let v = serde_json::to_value(ClientMessage::ClaimPreview {
             server_token: "t".into(),
         })

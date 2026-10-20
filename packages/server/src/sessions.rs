@@ -680,6 +680,44 @@ impl SessionManager {
                 self.backend.acp_mode(&session, &mode).await?;
                 info!(target: "audit", event = "acp_mode_set", provider = %identity.provider, account_id = %identity.id, session = %session);
             }
+            ClientMessage::History { from, to } => {
+                let history = self.events.as_ref().and_then(|h| h.history()).cloned();
+                let Some(history) = history else {
+                    return Err(anyhow::anyhow!("History is not available"));
+                };
+                let limits = history.limits();
+                let now = crate::events::now_ms();
+                if from > to {
+                    return Err(anyhow::anyhow!("The history range ends before it starts"));
+                }
+                // Nothing older than the server keeps exists, so a longer range only costs a longer scan.
+                let lo =
+                    from.max(to.saturating_sub((u64::from(limits.keep_days) + 1) * 86_400_000));
+                // A scan of the file: off the async threads.
+                let answer =
+                    tokio::task::spawn_blocking(move || history.query(lo, to, now)).await?;
+                send_r(
+                    tx,
+                    &ServerMessage::History {
+                        from,
+                        to,
+                        runs: answer.runs,
+                        truncated: answer.truncated,
+                        keep_days: limits.keep_days,
+                        max_bytes: limits.max_bytes,
+                    },
+                )
+                .await?;
+            }
+            ClientMessage::HistoryDelete => {
+                let history = self.events.as_ref().and_then(|h| h.history()).cloned();
+                let Some(history) = history else {
+                    return Err(anyhow::anyhow!("History is not available"));
+                };
+                let removed = tokio::task::spawn_blocking(move || history.delete()).await?;
+                info!(target: "audit", event = "history_deleted", provider = %identity.provider, account_id = %identity.id, login = %identity.login, removed);
+                send_r(tx, &ServerMessage::HistoryDeleted { removed }).await?;
+            }
             ClientMessage::Unknown => {}
             ClientMessage::ListSessions => {
                 let sessions = self.backend.list().await?;

@@ -1,7 +1,12 @@
 <script lang="ts">
   /** Settings > Privacy and your data (DECISION-0066): what the hosted service stores, for how long, and a way to delete it. */
   import { DeleteFailed } from '../lib/account';
-  let { ondelete, onback, onlogout }: { ondelete: () => Promise<number>; onback: () => void; onlogout: () => void } = $props();
+  import { deletionSummary, plural, type HistoryDeletion } from '../lib/history';
+  let { ondelete, onback, onlogout, historyServers, ondeletehistory }: {
+    ondelete: () => Promise<number>; onback: () => void; onlogout: () => void;
+    /** Connected servers: the ones whose history a deletion reaches. */
+    historyServers: number; ondeletehistory: () => Promise<HistoryDeletion>;
+  } = $props();
   type Step = { name: 'idle' } | { name: 'confirm' } | { name: 'busy' } | { name: 'done'; servers: number } | { name: 'failed'; message: string; expired: boolean };
   let step = $state<Step>({ name: 'idle' });
   // Swapping a step's buttons would drop the keyboard or screen-reader position, so each step puts focus on its own message.
@@ -10,6 +15,14 @@
   const go = (next: Step) => ((moved = true), (step = next));
   const focus = (el: HTMLElement, active: boolean) => { if (active) el.focus(); };
   const heading = (el: HTMLElement) => el.focus();
+  type HStep = { name: 'idle' } | { name: 'confirm' } | { name: 'busy' } | { name: 'done'; text: string } | { name: 'failed'; text: string };
+  let hstep = $state<HStep>({ name: 'idle' });
+  const hgo = (next: HStep) => ((moved = true), (hstep = next));
+  async function removeHistory() {
+    hgo({ name: 'busy' });
+    const r = await ondeletehistory();
+    hgo({ name: r.failedNames.length ? 'failed' : 'done', text: deletionSummary(r) });
+  }
   const btn = 'min-h-11 rounded-card px-4 text-base font-semibold disabled:opacity-60';
   const card = 'flex flex-col gap-2 rounded-card border border-line bg-panel p-4';
 
@@ -44,6 +57,42 @@
   <section class={card} aria-labelledby="privacy-device">
     <h2 id="privacy-device" class="text-base font-semibold">What never reaches us</h2>
     <p class="text-base text-soft">Terminal content goes directly between this browser and your server. Your server list, settings, usage and device key stay in this browser. If you dictate, your browser's own speech service may process the audio; none of it comes to us. The site is hosted on Cloudflare, which sees requests the way any web host does.</p>
+  </section>
+
+  <section class={card} aria-labelledby="privacy-history">
+    <h2 id="privacy-history" class="text-base font-semibold">What your servers keep</h2>
+    <p class="text-base text-soft">Each server keeps a history of what its agents did, so Activity can show a day or a week. It stays on that server and never comes to us. For each task it holds:</p>
+    <ul class="list-disc space-y-1 pl-5 text-base text-soft">
+      <li>the session name and the agent;</li>
+      <li>a short title: the first line of your prompt (or the title Codex or an ACP agent gives the task), at most 80 characters. Tokens, passwords after a keyword, IP addresses, host names with a port, email addresses, links and paths in your home folder are replaced; other words stay as you wrote them, so keep sensitive details out of that first line;</li>
+      <li>when the task started and ended, how it ended (finished, failed or stopped), and how long the agent waited on you.</li>
+    </ul>
+    <p class="text-base text-soft">Never the rest of a prompt, an agent's reply, a plan or any terminal text. Only tasks an agent reports itself are recorded (Claude Code hooks, Codex, ACP agents), not guesses from the terminal screen. By default a server keeps 90 days and at most 20 MB, oldest first; whoever runs the server can change that.</p>
+  </section>
+
+  <section class={card} aria-labelledby="privacy-history-delete" data-history-step={hstep.name}>
+    <h2 id="privacy-history-delete" class="text-base font-semibold">Delete activity history</h2>
+    {#if hstep.name === 'idle'}
+      <p class="text-base text-soft">{historyServers ? `Removes the history kept by the ${plural(historyServers, 'connected server', 'connected servers')}. A server that is not connected keeps its own until you connect it and delete again.` : 'Connect a server to delete the history it keeps.'}</p>
+      <button type="button" class="{btn} bg-raised text-fg" disabled={!historyServers} use:focus={moved} onclick={() => hgo({ name: 'confirm' })}>Delete activity history…</button>
+    {:else if hstep.name === 'confirm'}
+      <p class="text-base text-fg outline-none" tabindex="-1" use:focus={true}>Delete the activity history of {plural(historyServers, 'server', 'servers')}? This cannot be undone.</p>
+      <p class="text-base text-soft">Your sessions and agents are not touched. Activity starts empty and fills again as tasks run.</p>
+      <div class="flex flex-col gap-2">
+        <button type="button" class="{btn} bg-bad/15 text-bad" onclick={removeHistory}>Delete history</button>
+        <button type="button" class="{btn} bg-raised text-fg" onclick={() => hgo({ name: 'idle' })}>Keep history</button>
+      </div>
+    {:else if hstep.name === 'busy'}
+      <p class="text-base text-soft outline-none" role="status" tabindex="-1" use:focus={true}>Deleting…</p>
+    {:else if hstep.name === 'done'}
+      <p class="text-base text-ok outline-none" role="status" tabindex="-1" use:focus={true}>{hstep.text}</p>
+    {:else}
+      <p class="text-base text-bad outline-none" role="alert" tabindex="-1" use:focus={true}>{hstep.text}</p>
+      <div class="flex flex-col gap-2">
+        <button type="button" class="{btn} bg-raised text-fg" onclick={removeHistory}>Try again</button>
+        <button type="button" class="{btn} bg-raised text-fg" onclick={() => hgo({ name: 'idle' })}>Close</button>
+      </div>
+    {/if}
   </section>
 
   <section class={card} aria-labelledby="privacy-delete" data-delete-step={step.name}>

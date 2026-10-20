@@ -75,6 +75,14 @@ fn now_s() -> u64 {
     crate::events::now_ms() / 1000
 }
 
+/// What tmux prints when no server is running (or its socket is gone): the sessions it held are gone with it.
+fn no_tmux_server(stderr: &str) -> bool {
+    let e = stderr.to_ascii_lowercase();
+    e.contains("no server running")
+        || e.contains("error connecting to")
+        || e.contains("failed to connect to server")
+}
+
 /// One scan cycle over tmux: states from the process scan, then prompts from the screens of agent sessions.
 pub async fn scan_tmux_once(
     hub: &EventHub,
@@ -93,8 +101,12 @@ pub async fn scan_tmux_once(
         return;
     };
     if !out.status.success() {
-        hub.forget_except(prefix, &[]);
-        tracker.retain(&HashSet::new());
+        // Only a tmux that says there is no server means every session is gone. Any other failure is this scan's, and
+        // ending every task in flight on it would cut them all in half.
+        if no_tmux_server(&String::from_utf8_lossy(&out.stderr)) {
+            hub.forget_except(prefix, &[]);
+            tracker.retain(&HashSet::new());
+        }
         return;
     }
     let mut panes = adapters::parse_panes(&String::from_utf8_lossy(&out.stdout), now_s());
@@ -228,6 +240,18 @@ pub fn spawn_tmux_scan(hub: EventHub, runner: Runner, prefix: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_missing_tmux_server_means_the_sessions_are_gone() {
+        assert!(no_tmux_server(
+            "no server running on /tmp/tmux-1000/default\n"
+        ));
+        assert!(no_tmux_server(
+            "error connecting to /tmp/tmux-1000/default (No such file or directory)"
+        ));
+        assert!(!no_tmux_server("server exited unexpectedly"));
+        assert!(!no_tmux_server(""));
+    }
 
     #[test]
     fn a_changed_or_returning_prompt_gets_a_fresh_id_and_a_steady_one_does_not() {

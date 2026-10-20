@@ -122,6 +122,7 @@ jobs:
           node e2e/touch.mjs
           node e2e/cards.mjs
           node e2e/decision.mjs
+          node e2e/activity.mjs
           node e2e/windows.mjs
           node e2e/two-servers.mjs
           node e2e/appshell.mjs
