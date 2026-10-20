@@ -17,7 +17,7 @@
   let { servers, history, now, onask, caches = [], ttlMs = 300_000, health = {}, onhealth = () => {}, rttOf = () => null }: {
     servers: HubServer[]; history: HistoryMap; now: number; onask: (range: Range) => void;
     /** What each server said about its health (U14), the request for it, and this device's round trip to a server. */
-    health?: HealthMap; onhealth?: () => void; rttOf?: (id: string) => number | null;
+    health?: HealthMap; onhealth?: (restart?: boolean) => void; rttOf?: (id: string) => number | null;
     /** Claude Code sessions that are idle with a warm prompt cache right now, with the estimated time left (decision 0083). */
     caches?: { key: string; name: string; server: string; remainingMs: number }[]; ttlMs?: number;
   } = $props();
@@ -48,11 +48,14 @@
   const many = $derived(connected.length > 1);
   const isToday = $derived(anchor >= startOfDay(now));
 
-  const ask = () => untrack(() => { onask(range); onhealth(); });
+  const ask = () => untrack(() => onask(range));
+  // Health is its own feed: it is asked for when the servers change and on its own timer, not whenever the range moves.
+  const askHealth = () => untrack(() => onhealth());
   // Ask again when the range or the set of connected servers changes, and every 30 s while the view is open. What the
   // asker reads is not a dependency: it writes the answers this view shows.
   $effect(() => { range; connectedIds; ask(); });
-  onMount(() => { const t = setInterval(ask, 30_000); return () => clearInterval(t); });
+  $effect(() => { connectedIds; askHealth(); });
+  onMount(() => { const t = setInterval(ask, 30_000); const h = setInterval(askHealth, 30_000); return () => { clearInterval(t); clearInterval(h); }; });
 
   const noun = $derived(mode === 'day' ? 'day' : 'week');
   const FLEET: Record<Outcome, FleetState> = { finished: 'finished', failed: 'failed', stopped: 'idle', running: 'working' };

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ANSWER_TIMEOUT_MS } from './history';
-import { answeredHealth, askedHealth, healthStatus, metricView, rttText, scopeNote, sinceText, unhealthyText, verdictOf } from './health';
+import { ageText, answeredHealth, askedHealth, healthStatus, metricView, rttText, scopeNote, sinceText, unhealthyText, verdictOf } from './health';
 import { healthyHistory, history, live, samples } from './healthFixture';
 import { NOW } from './historyFixture';
 
@@ -17,6 +17,12 @@ describe('asking', () => {
     m = askedHealth(m, 'a', 40_000);
     expect(m.a.sentAt).toBe(1000);
     expect(m.a.answer).toBeDefined();
+  });
+  it('starts the clock over on a retry, so the section says loading again', () => {
+    let m = askedHealth({}, 'a', 1000);
+    expect(healthStatus(m.a, 1000 + ANSWER_TIMEOUT_MS)).toBe('unavailable');
+    m = askedHealth(m, 'a', 1000 + ANSWER_TIMEOUT_MS, true);
+    expect(healthStatus(m.a, 1000 + ANSWER_TIMEOUT_MS)).toBe('loading');
   });
   it('ignores an answer nobody asked for', () => {
     expect(answeredHealth({}, 'a', history())).toEqual({});
@@ -66,6 +72,28 @@ describe('a metric from the fixture', () => {
     expect(ram.segments[0]).toMatch(/^M0\.\d+ /); // the oldest of 360 minutes sits at the left edge
     const short = metricView(history({ samples: samples({ points: 30 }) }), 'ram');
     expect(Number(short.segments[0].match(/^M([\d.]+) /)![1])).toBeGreaterThan(90);
+  });
+  it('does not call an old reading current: the line stops short of the edge and the age is said', () => {
+    const later = NOW + 20 * 60_000;
+    const ram = metricView(h, 'ram', later);
+    expect(ram.stale).toBe(true);
+    expect(ram.ageMs).toBe(20 * 60_000);
+    expect(ram.spoken).toContain('last reading 93% 20 min ago');
+    expect(ram.spoken).not.toContain('now 93%');
+    expect(Number(ram.segments[0].split(' ').at(-2)!.replace(/^L/, ''))).toBeLessThan(95);
+    const fresh = metricView(h, 'ram', NOW + 5_000);
+    expect(fresh.stale).toBe(false);
+    expect(fresh.spoken).toContain('now 93%');
+  });
+  it('shows no current value when the newest sample could not read it, not the one before', () => {
+    const lastUnknown = history({ samples: samples().map((p, i, all) => (i === all.length - 1 ? { ts: p.ts, ram_percent: undefined } : p)) });
+    const ram = metricView(lastUnknown, 'ram');
+    expect(ram.now).toBeUndefined();
+    expect(ram.spoken).toContain('no current reading');
+    expect(metricView(lastUnknown, 'cpu').now).toBeUndefined();
+  });
+  it('says how long ago in minutes, then hours', () => {
+    expect([0, 90_000, 119 * 60_000, 180 * 60_000].map(ageText)).toEqual(['1 min', '2 min', '119 min', '3 h']);
   });
   it('says a metric is not available when the server sent none', () => {
     const none = history({ samples: samples().map((p) => ({ ts: p.ts, ram_percent: p.ram_percent })) });

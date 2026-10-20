@@ -17,10 +17,11 @@ export const SPAN_MS = 6 * HOUR;
 export interface HealthEntry { sentAt: number; answer?: HealthHistoryMessage }
 export type HealthMap = Record<string, HealthEntry>;
 
-/** Notes that a server was asked. An answer already held stays on screen while it refreshes; the clock starts at the first ask. */
-export function askedHealth(map: HealthMap, serverId: string, now: number): HealthMap {
+/** Notes that a server was asked. An answer already held stays on screen while it refreshes (its age is shown); the clock starts at the first ask. */
+export function askedHealth(map: HealthMap, serverId: string, now: number, restart = false): HealthMap {
   const e = map[serverId];
-  return { ...map, [serverId]: { sentAt: e?.sentAt ?? now, answer: e?.answer } };
+  // `restart` is a "Try again": the clock starts over, so the section says loading again until an answer or the timeout.
+  return { ...map, [serverId]: { sentAt: restart ? now : e?.sentAt ?? now, answer: e?.answer } };
 }
 export function answeredHealth(map: HealthMap, serverId: string, msg: HealthHistoryMessage): HealthMap {
   const e = map[serverId];
@@ -60,8 +61,11 @@ export function scopeNote(id: MetricId, scope: string): string {
 export interface MetricView {
   id: MetricId;
   label: string;
-  /** Latest known value, in percent. */
+  /** The newest sample's value, in percent; absent when the newest sample could not read it. */
   now?: number;
+  /** How old the newest sample is, and whether that is too old to call it current. */
+  ageMs: number;
+  stale: boolean;
   peak?: { value: number; ts: number };
   /** About how long the metric was at or above its level in the window. */
   overMs: number;
@@ -79,7 +83,8 @@ export interface MetricView {
 export const CHART_H = 40;
 const yOf = (v: number) => +(CHART_H - (Math.min(100, Math.max(0, v)) / 100) * CHART_H).toFixed(2);
 
-export function metricView(msg: HealthHistoryMessage, id: MetricId, latestTs = msg.samples.at(-1)?.ts ?? 0): MetricView {
+/** `at` is the time the chart's right edge stands for (the present); a server whose samples stopped shows a line that stops short of it. */
+export function metricView(msg: HealthHistoryMessage, id: MetricId, at = msg.samples.at(-1)?.ts ?? 0): MetricView {
   const key = KEY[id];
   const level = msg.levels.find((l) => l.metric === id);
   const enter = level?.enter ?? 90;
@@ -89,7 +94,6 @@ export function metricView(msg: HealthHistoryMessage, id: MetricId, latestTs = m
   let peak: MetricView['peak'];
   let over = 0;
   let known = 0;
-  let nowValue: number | undefined;
   for (const p of msg.samples) {
     const v = p[key];
     if (typeof v !== 'number') {
@@ -98,20 +102,31 @@ export function metricView(msg: HealthHistoryMessage, id: MetricId, latestTs = m
       continue;
     }
     known++;
-    nowValue = v;
     if (!peak || v > peak.value) peak = { value: v, ts: p.ts };
     if (v >= enter) over += msg.step_s * 1000;
-    const x = +(100 - ((latestTs - p.ts) / SPAN_MS) * 100).toFixed(2);
+    const x = +(100 - ((at - p.ts) / SPAN_MS) * 100).toFixed(2);
     run.push(`${run.length ? 'L' : 'M'}${Math.max(0, x)} ${yOf(v)}`);
   }
   if (run.length) segments.push(run.join(' '));
+  const last = msg.samples.at(-1);
+  const nowValue = typeof last?.[key] === 'number' ? last[key] : undefined;
+  const ageMs = last ? Math.max(0, at - last.ts) : 0;
+  // Three missed samples, with a little for the network.
+  const stale = ageMs > 3 * msg.interval_s * 1000 + 5000;
   const label = NAME[id];
   let spoken = `${label}: not available on this server.`;
   if (known) {
     const mins = Math.round(over / 60_000);
-    spoken = `${label} over the last hours: now ${nowValue}%, highest ${peak!.value}% at ${clock(peak!.ts)}, ${over ? `at or above its ${enter}% level for about ${mins < 1 ? 'a minute' : `${mins} min`}` : `never at its ${enter}% level`}.`;
+    const current = nowValue === undefined ? 'no current reading' : stale ? `last reading ${nowValue}% ${ageText(ageMs)} ago` : `now ${nowValue}%`;
+    spoken = `${label} over the last hours: ${current}, highest ${peak!.value}% at ${clock(peak!.ts)}, ${over ? `at or above its ${enter}% level for about ${mins < 1 ? 'a minute' : `${mins} min`}` : `never at its ${enter}% level`}.`;
   }
-  return { id, label, now: nowValue, peak, overMs: over, enter, exit, segments, levelY: yOf(enter), known, spoken };
+  return { id, label, now: nowValue, ageMs, stale, peak, overMs: over, enter, exit, segments, levelY: yOf(enter), known, spoken };
+}
+
+/** "3 min", "2 h": how long ago, for a reading that is no longer current. */
+export function ageText(ms: number): string {
+  const m = Math.max(1, Math.round(ms / 60_000));
+  return m < 120 ? `${m} min` : `${Math.round(m / 60)} h`;
 }
 
 /** The coverage of the answer: how long the server has been sampling, to say "since 14:02" instead of implying six hours. */

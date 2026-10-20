@@ -190,6 +190,19 @@ describe('server health (U14)', () => {
     expect(get(hub.servers)[0].health).toBeUndefined();
     off();
   });
+  it('does not rebuild the session, agent and window lists for a health sample', () => {
+    const { hub, connections } = setup();
+    hub.start([server('a')]);
+    connections[0].ready();
+    let sessions = 0;
+    let agents = 0;
+    const offS = hub.allSessions.subscribe(() => { sessions++; });
+    const offA = hub.agents.subscribe(() => { agents++; });
+    sessions = 0; agents = 0;
+    connections[0].emit({ type: 'server_health', ts: 5, healthy: true, unhealthy: [], scope: 'host', ram_percent: 20 });
+    expect([sessions, agents]).toEqual([0, 0]);
+    offS(); offA();
+  });
   it('shows no health for a server that sends none (an older server)', () => {
     const { hub, connections } = setup();
     hub.start([server('a')]);

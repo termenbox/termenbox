@@ -159,14 +159,15 @@ export class ServerHub {
       },
       onDrop: (reason, upMs) => {
         if (!current()) return;
-        e.reason = reason; this.publish(); this.opts.onDrop?.(e.id, reason, upMs);
+        // A sample from before the drop is not the server's health now.
+        e.reason = reason; e.health = undefined; this.publish(); this.opts.onDrop?.(e.id, reason, upMs);
       },
       onFatal: reason => { if (current()) { e.state = 'closed'; e.reason = reason; this.publish(); this.opts.onFatal?.(e.id, reason); } },
     });
     e.connection = connection;
     e.unsubscribe = connection.subscribe(msg => {
       if (!current()) return;
-      const changed = msg.type === 'sessions' || msg.type === 'agent_snapshot' || msg.type === 'agent_events' || msg.type === 'window_list' || msg.type === 'activity' || msg.type === 'attention' || msg.type === 'server_health';
+      const changed = msg.type === 'sessions' || msg.type === 'agent_snapshot' || msg.type === 'agent_events' || msg.type === 'window_list' || msg.type === 'activity' || msg.type === 'attention';
       if (msg.type === 'sessions') { e.sessions = msg.sessions; e.windows = forgetWindows(e.windows, msg.sessions.map(s => s.id)); }
       if (msg.type === 'window_list') e.windows = applyWindowList(e.windows, msg);
       if (msg.type === 'agent_snapshot') e.agents = applySnapshot(e.agents, msg.states);
@@ -176,15 +177,19 @@ export class ServerHub {
         const result = applyEvents(e.agents, msg.events); e.agents = result.map;
         if (result.gap) connection.send({ type: 'agent_sync', after: syncRequest(e.agents) });
       }
-      if (msg.type === 'server_health') { const { type: _, ...h } = msg; e.health = h; }
+      if (msg.type === 'server_health') { const { type: _, ...h } = msg; e.health = h; this.publishServers(); }
       if (changed) this.publish();
       this.opts.onMessage?.(e.id, msg);
     });
     this.publish(); connection.start();
   }
+  /** The server list alone: a health sample every 10 s per server must not rebuild the session, agent and window stores. */
+  private publishServers(entries = [...this.entries.values()]) {
+    this.servers.set(entries.map(({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix, health }) => ({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix, health })));
+  }
   private publish() {
     const entries = [...this.entries.values()];
-    this.servers.set(entries.map(({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix, health }) => ({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix, health })));
+    this.publishServers(entries);
     this.allSessions.set(entries.filter(e => e.state !== 'paused').flatMap(e => e.sessions.map(s => ({ ...s,
       serverId: e.id, serverName: e.server.server_name || 'Server', key: sessionKey(e.id, s.id) }))));
     this.agents.set(Object.fromEntries(entries.filter(e => e.state !== 'paused').flatMap(e => Object.entries(e.agents).map(([id, a]) => [sessionKey(e.id, id), a]))));

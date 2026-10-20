@@ -161,10 +161,10 @@
   let historyMap: HistoryMap = {};
   // Server health (U14): the in-memory samples of each connected server, asked for with the history.
   let healthMap: HealthMap = {};
-  function askHealth() {
+  function askHealth(restart = false) {
     for (const s of $hubServers) {
       if (s.state !== 'connected') continue;
-      healthMap = askedHealth(healthMap, s.id, Date.now());
+      healthMap = askedHealth(healthMap, s.id, Date.now(), restart);
       hub.send(s.id, { type: 'health_history' });
     }
   }
