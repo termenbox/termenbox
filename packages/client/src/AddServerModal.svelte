@@ -3,10 +3,11 @@
   import type { ServerListItem } from './lib/protocol';
   import type { DirRecord } from './lib/directory';
   import { randomClaimSecret } from './lib/directory';
-  import { installCommand, scanCommand as scanCommandFor, parseClaim, parseServerLink, waitForServer, previewClaim, checkReachable, firewallCommand, UDP_RANGE, ClaimTimeout, type Reachability, type ClaimPreview, type RunChoice } from './lib/onboard';
+  import { installCommand, scanCommand as scanCommandFor, parseClaim, parseServerLink, waitForServer, previewClaim, checkReachable, ClaimTimeout, type Reachability, type ClaimPreview, type RunChoice } from './lib/onboard';
   import { decodeQrFile, startCameraScan } from './lib/scan';
   import { wsUrl } from './lib/servers';
   import { Dialog } from './lib/ui';
+  import PortHelp from './PortHelp.svelte';
 
   export let origin: string;
   /** A secret that arrived by link or earlier scan: start waiting for that server right away. */
@@ -289,13 +290,10 @@
           <p class="note">This device can reach it.</p>
         {:else if reach?.state === 'degraded'}
           <p class="note">This device reached it only through the WebSocket fallback{reach.port ? `; UDP port ${reach.port} did not work` : ''}. Sessions work but can feel slower. It stays in your list.</p>
-          <p class="note">To use the direct path, an admin opens the range for Termenbox once:</p>
-          <pre class="command">{firewallCommand}</pre>
+          <PortHelp port={reach.port} />
         {:else if reach?.state === 'unreachable'}
           <p class="note">This device could not reach it{reach.port ? ` on UDP port ${reach.port}` : ''}. It stays in your list and keeps retrying.</p>
-          <p class="note">On the server, an admin opens the range for Termenbox once:</p>
-          <pre class="command">{firewallCommand}</pre>
-          <p class="note">Servers use a port from {UDP_RANGE.replace(':', '-')}. Your own network (cafe, work or mobile data) may also block UDP; try another network if the port is open.</p>
+          <PortHelp port={reach.port} />
         {:else}
           <p class="note">Could not tell whether this device can reach it. It stays in your list.</p>
         {/if}
@@ -318,6 +316,7 @@
     {:else if previewing}
       <p style="color: var(--fg-muted); font-size: 0.875rem;">Your server appeared. Reading what it is…</p>
     {:else if found && error}
+      {#if /unreachable/i.test(error)}<PortHelp port={found.udp_port ?? null} />{/if}
       <button class="secondary" on:click={() => found && showPreview(found, secret)} style="width: 100%; margin-bottom: 8px;">Try again</button>
       <button class="secondary" on:click={confirm} style="width: 100%;">Add without a preview</button>
     {/if}
