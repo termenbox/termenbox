@@ -45,13 +45,35 @@ try {
     check(JSON.stringify(digest) === JSON.stringify(['2', '1', '14m']), `digest: ${digest}`);
     const timeline = await page.locator('[data-activity-timeline] li').allInnerTexts();
     check(timeline.length === 5 && timeline[0].includes('Review the deploy script') && timeline[0].includes('Running') && timeline[4].includes('Fix the flaky login test') && timeline[4].includes('waited 4 min'), `timeline: ${JSON.stringify(timeline)}`);
-    check((await page.locator('[data-bar-chart]').count()) === 2, 'the two charts are missing');
+    check((await page.locator('[data-bar-chart]').count()) === 3, 'the three charts are missing');
     for (const label of await page.locator('[data-bar-chart]').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))) check(/: .+/.test(label ?? '') && !label.endsWith('nothing yet'), `a chart has no spoken summary: ${label}`);
     check((await overflow(page)) <= 0, `${name}: overflows sideways by ${await overflow(page)} px`);
     check((await small(page)).length === 0, `${name}: targets under 44 px: ${await small(page)}`);
     check((await tiny(page)).length === 0, `${name}: text under 12 px: ${await tiny(page)}`);
     check((await clipped(page)).length === 0, `${name}: a digest value is clipped: ${await clipped(page)}`);
-    console.log(`ok  ${name}: day digest 2 finished, 1 failed, 14m waited; 5 tasks newest first; 2 charts with a spoken summary; no sideways scroll; targets >= 44 px; text >= 12 px`);
+    console.log(`ok  ${name}: day digest 2 finished, 1 failed, 14m waited; 5 tasks newest first; 3 charts with a spoken summary; no sideways scroll; targets >= 44 px; text >= 12 px`);
+
+    // Usage and cost: counts where agents reported them, the honest "not available" where they did not, nothing invented.
+    const usage = await page.locator('[data-activity-usage]').innerText();
+    const claude = await page.locator('[data-usage-agent="claude"]').innerText();
+    const codex = await page.locator('[data-usage-agent="codex"]').innerText();
+    check(claude.includes('18k tokens') && claude.includes('cache read 150k') && claude.includes('Rate limited once'), `claude usage: ${claude}`);
+    check(claude.includes('Cost: not available from claude') && claude.includes('R19'), `claude cost state: ${claude}`);
+    check(codex.includes('Tokens: not available from codex') && codex.includes('notify hook carries no usage') && !/\b0 tokens|\$0/.test(codex), `codex state: ${codex}`);
+    const projects = await page.$$eval('[data-usage-project]', (els) => els.map((e) => e.dataset.usageProject));
+    check(projects.join('|') === 'api|No folder reported|web', `projects ranked by tokens, those with no counts by name: ${projects}`);
+    check(!usage.includes('Prompt cache now') && !usage.includes('$'), 'a cost or a cache estimate appears with no source for it');
+    console.log(`ok  ${name}: usage per agent and project from the fixture; cost and tokens "not available" for codex and the unnamed agent, never zeros`);
+    const rep = await open(ctx, '?reported');
+    await rep.waitForSelector('[data-activity=ready]');
+    const kilo = await rep.locator('[data-usage-agent="kilo"]').innerText();
+    check(kilo.includes('$0.25') && kilo.includes('reported by kilo'), `reported cost: ${kilo}`);
+    check((await rep.locator('[data-cache]').allInnerTexts()).join() === 'about 3 min', 'the warm cache estimate is missing or not marked as about');
+    check((await overflow(rep)) <= 0, `${name}: usage overflows sideways by ${await overflow(rep)} px`);
+    check((await small(rep)).length === 0, `${name}: usage targets under 44 px: ${await small(rep)}`);
+    check((await tiny(rep)).length === 0, `${name}: usage text under 12 px: ${await tiny(rep)}`);
+    console.log(`ok  ${name}: a cost the agent reported shows as its own, with a labelled cache estimate; no sideways scroll; text >= 12 px`);
+    await rep.close();
 
     // The hub publishes a new servers array on every agent event; that must not send a new query to every server.
     const asked = await page.evaluate(() => window.__activity.asks.length);
@@ -74,7 +96,7 @@ try {
 
     // Week: another range is asked for, 7 bars, tasks of two days.
     await page.getByRole('radio', { name: 'Week' }).click();
-    await page.waitForFunction(() => document.querySelectorAll('[data-bar-chart] [data-bar]').length === 14);
+    await page.waitForFunction(() => document.querySelectorAll('[data-bar-chart] [data-bar]').length === 21);
     const asks = await page.evaluate(() => window.__activity.asks);
     check(asks.length >= 2 && asks.at(-1).to - asks.at(-1).from > 6 * 82_800_000, `the week range was not asked for: ${JSON.stringify(asks)}`);
     check((await page.locator('[data-activity-timeline] h3').allInnerTexts()).join('|') === 'Today|Yesterday', 'the week timeline lacks Today and Yesterday');

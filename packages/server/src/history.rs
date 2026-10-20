@@ -2,6 +2,8 @@
 //!
 //! Metadata only. A record holds the session name, the agent, a short scrubbed task title, when the task started and
 //! ended, how it ended and how long the agent waited on the user. No prompt and no terminal text ever reaches it.
+//! Since U13 it also holds the folder name the agent worked in and the counts the agent exposed (tokens, a cost the
+//! agent itself reported, times it was rate limited): numbers and names, nothing readable.
 //!
 //! The store is one append-only file of JSON lines in the state directory. A task is written once, when it ends; a task
 //! still running lives in memory only, so a crash loses the tasks in flight and nothing else. The file is bounded by age
@@ -19,7 +21,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use termenbox_core::events::AgentState;
-use termenbox_core::protocol::{HistoryRun, RunOutcome};
+use termenbox_core::protocol::{HistoryRun, RunOutcome, RunUsage};
 use tracing::{info, warn};
 
 use crate::events::sanitize_text;
@@ -360,6 +362,56 @@ struct Open {
     agent: Option<String>,
     blocked_ms: u64,
     blocked_since: Option<u64>,
+    project: Option<String>,
+    usage: Option<RunUsage>,
+}
+
+/// Tokens an agent reported for some turns. A field the agent did not report stays `None`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Tokens {
+    pub input: Option<u64>,
+    pub output: Option<u64>,
+    pub cache_read: Option<u64>,
+    pub cache_write: Option<u64>,
+}
+
+fn add(slot: &mut Option<u64>, n: Option<u64>) {
+    if let Some(n) = n {
+        *slot = Some(slot.unwrap_or(0).saturating_add(n));
+    }
+}
+
+/// `into += more`, field by field; a field neither side reported stays unreported.
+pub fn add_tokens(into: &mut Tokens, more: Tokens) {
+    add(&mut into.input, more.input);
+    add(&mut into.output, more.output);
+    add(&mut into.cache_read, more.cache_read);
+    add(&mut into.cache_write, more.cache_write);
+}
+
+impl Tokens {
+    /// Reported nothing, or reported only zeros: no information, so nothing to keep.
+    pub fn is_empty(&self) -> bool {
+        [self.input, self.output, self.cache_read, self.cache_write]
+            .iter()
+            .all(|n| n.unwrap_or(0) == 0)
+    }
+}
+
+/// An agent's cost report: `"0.0123 USD"` as the ACP mapper writes it. Millionths of the currency, or None when it does
+/// not read as a non-negative amount and a short currency code.
+pub fn parse_cost(s: &str) -> Option<(u64, String)> {
+    let (amount, currency) = s.trim().split_once(' ')?;
+    let currency = currency.trim().trim_matches('"');
+    if currency.is_empty()
+        || currency.len() > 5
+        || !currency.chars().all(|c| c.is_ascii_alphabetic())
+    {
+        return None;
+    }
+    let amount: f64 = amount.trim_matches('"').parse().ok()?;
+    (amount.is_finite() && (0.0..1e12).contains(&amount))
+        .then(|| ((amount * 1e6).round() as u64, currency.to_ascii_uppercase()))
 }
 
 impl Open {
@@ -372,6 +424,8 @@ impl Open {
             agent: None,
             blocked_ms: 0,
             blocked_since: None,
+            project: None,
+            usage: None,
         }
     }
 }
@@ -391,6 +445,9 @@ pub struct History {
     wake: SyncSender<u64>,
     /// Bumped by `delete`: a task that began before it is not written after it.
     generation: AtomicU64,
+    /// The last cost an agent reported per session. ACP reports the cost of the whole session so far, so a task's share
+    /// is the step from the previous report.
+    costs: Mutex<HashMap<String, u64>>,
     limits: Limits,
 }
 
@@ -469,6 +526,7 @@ impl History {
             backlog,
             wake,
             generation: AtomicU64::new(0),
+            costs: Mutex::default(),
             limits,
         })
     }
@@ -560,6 +618,77 @@ impl History {
         }
     }
 
+    /// The folder the agent works in, by name only. Only a task in flight takes it.
+    pub fn project(&self, session: &str, name: &str) {
+        let name = scrub_title(name);
+        if name.is_empty() {
+            return;
+        }
+        if let Some(run) = self.open.lock().unwrap().get_mut(session) {
+            run.project = Some(name);
+        }
+    }
+
+    /// Tokens the agent reported, added to the task in flight. With no task in flight they belong to nothing and are
+    /// dropped: a count is only kept against a task.
+    pub fn tokens(&self, session: &str, t: Tokens) {
+        if t.is_empty() {
+            return;
+        }
+        if let Some(run) = self.open.lock().unwrap().get_mut(session) {
+            let u = run.usage.get_or_insert_with(RunUsage::default);
+            add(&mut u.input_tokens, t.input);
+            add(&mut u.output_tokens, t.output);
+            add(&mut u.cache_read_tokens, t.cache_read);
+            add(&mut u.cache_write_tokens, t.cache_write);
+        }
+    }
+
+    /// The agent reported `micros` millionths of `currency` spent in this session so far. The step since its previous
+    /// report is the task's cost; the first report counts whole (a session the server started sees its first report in its
+    /// first turn).
+    pub fn cost(&self, session: &str, micros: u64, currency: &str) {
+        // A currency code, as letters only.
+        let currency: String = currency
+            .chars()
+            .filter(char::is_ascii_alphabetic)
+            .take(5)
+            .collect::<String>()
+            .to_ascii_uppercase();
+        if currency.is_empty() {
+            return;
+        }
+        let currency = currency.as_str();
+        let step = {
+            let mut costs = self.costs.lock().unwrap();
+            if !costs.contains_key(session) && costs.len() >= MAX_OPEN {
+                return;
+            }
+            let last = costs.insert(session.to_string(), micros).unwrap_or(0);
+            if micros >= last {
+                micros - last
+            } else {
+                micros
+            }
+        };
+        if let Some(run) = self.open.lock().unwrap().get_mut(session) {
+            let u = run.usage.get_or_insert_with(RunUsage::default);
+            // One currency per task: a second one is not added to the first.
+            if u.cost_currency.as_deref().is_none_or(|c| c == currency) {
+                u.cost_currency = Some(currency.to_string());
+                u.cost_micros = Some(u.cost_micros.unwrap_or(0).saturating_add(step));
+            }
+        }
+    }
+
+    /// The agent said it was rate limited.
+    pub fn rate_limited(&self, session: &str) {
+        if let Some(run) = self.open.lock().unwrap().get_mut(session) {
+            let u = run.usage.get_or_insert_with(RunUsage::default);
+            u.rate_limited = u.rate_limited.saturating_add(1);
+        }
+    }
+
     /// Sessions under `prefix` that are no longer live end their task, as stopped.
     pub fn retain_live(&self, prefix: &str, live: &[String], now: u64) {
         let gone: Vec<(String, Open)> = {
@@ -597,6 +726,8 @@ impl History {
             ended_at: Some(ended_at),
             outcome: Some(outcome),
             blocked_ms: blocked.min(ended_at - run.started_at),
+            project: run.project,
+            usage: run.usage,
         };
         {
             let mut backlog = self.backlog.lock().unwrap();
@@ -649,6 +780,8 @@ impl History {
                 ended_at: None,
                 outcome: None,
                 blocked_ms: blocked,
+                project: run.project.clone(),
+                usage: run.usage.clone(),
             });
         }
         Answer { runs, truncated }
@@ -659,6 +792,7 @@ impl History {
         // First, so that a task finishing from here on is dropped, not written after the deletion.
         self.generation.fetch_add(1, Ordering::AcqRel);
         self.open.lock().unwrap().clear();
+        self.costs.lock().unwrap().clear();
         let mut store = self.store.lock().unwrap();
         let waiting = std::mem::take(&mut *self.backlog.lock().unwrap()).len() as u64;
         let removed = store.delete() + waiting;
@@ -828,6 +962,173 @@ mod tests {
         );
     }
 
+    /// A task with a project and every kind of count the store takes: the record gains exactly `project` and `usage`,
+    /// and `usage` holds numbers and a three-letter currency, nothing that could be text.
+    #[test]
+    fn counts_are_stored_as_numbers_and_a_name_and_nothing_readable() {
+        let d = dir("counts");
+        let h = History::open(&d, limits(), T0).unwrap();
+        h.state("api", Some("claude"), AgentState::Working, T0);
+        h.project("api", "termenbox");
+        h.tokens(
+            "api",
+            Tokens {
+                input: Some(10),
+                output: Some(200),
+                cache_read: Some(3000),
+                cache_write: Some(400),
+            },
+        );
+        h.tokens(
+            "api",
+            Tokens {
+                input: Some(5),
+                output: Some(50),
+                ..Tokens::default()
+            },
+        );
+        h.cost("api", 12_300, "usd");
+        h.rate_limited("api");
+        h.state("api", None, AgentState::Done, T0 + MIN);
+        let text = std::fs::read_to_string(d.join(FILE)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        let mut keys: Vec<_> = v.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "agent",
+                "blocked_ms",
+                "ended_at",
+                "outcome",
+                "project",
+                "session",
+                "started_at",
+                "usage"
+            ]
+        );
+        assert_eq!(v["project"], "termenbox");
+        let u = v["usage"].as_object().unwrap();
+        let mut ukeys: Vec<_> = u.keys().cloned().collect();
+        ukeys.sort();
+        assert_eq!(
+            ukeys,
+            [
+                "cache_read_tokens",
+                "cache_write_tokens",
+                "cost_currency",
+                "cost_micros",
+                "input_tokens",
+                "output_tokens",
+                "rate_limited"
+            ]
+        );
+        assert!(u.values().all(|x| x.is_u64() || x == "USD"), "{u:?}");
+        assert_eq!(u["input_tokens"], 15);
+        assert_eq!(u["output_tokens"], 250);
+        assert_eq!(u["cost_micros"], 12_300);
+        assert_eq!(u["rate_limited"], 1);
+    }
+
+    #[test]
+    fn a_field_the_agent_did_not_report_stays_absent_not_zero() {
+        let d = dir("absent");
+        let h = History::open(&d, limits(), T0).unwrap();
+        h.state("a", Some("kilo"), AgentState::Working, T0);
+        h.tokens(
+            "a",
+            Tokens {
+                input: Some(7),
+                output: Some(1),
+                ..Tokens::default()
+            },
+        );
+        h.state("a", None, AgentState::Done, T0 + MIN);
+        h.state("b", Some("codex"), AgentState::Working, T0);
+        h.state("b", None, AgentState::Done, T0 + MIN);
+        let runs = h.query(T0, T0 + 9 * MIN, T0).runs;
+        let a = runs.iter().find(|r| r.session == "a").unwrap();
+        let u = a.usage.as_ref().unwrap();
+        assert_eq!(
+            (u.input_tokens, u.cache_read_tokens, u.cost_micros),
+            (Some(7), None, None)
+        );
+        assert!(runs
+            .iter()
+            .find(|r| r.session == "b")
+            .unwrap()
+            .usage
+            .is_none());
+        let text = std::fs::read_to_string(d.join(FILE)).unwrap();
+        assert!(
+            !text.contains("cache_read") && text.lines().count() == 2,
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn counts_with_no_task_in_flight_belong_to_nothing() {
+        let d = dir("no-task");
+        let h = History::open(&d, limits(), T0).unwrap();
+        h.tokens(
+            "api",
+            Tokens {
+                input: Some(1),
+                ..Tokens::default()
+            },
+        );
+        h.rate_limited("api");
+        h.state("api", Some("claude"), AgentState::Working, T0);
+        h.state("api", None, AgentState::Done, T0 + MIN);
+        assert!(h.query(T0, T0 + 9 * MIN, T0).runs[0].usage.is_none());
+    }
+
+    #[test]
+    fn a_session_cost_is_shared_out_by_the_steps_between_reports() {
+        let d = dir("cost");
+        let h = History::open(&d, limits(), T0).unwrap();
+        for (i, total) in [1_000_000u64, 1_500_000].into_iter().enumerate() {
+            let t = T0 + i as u64 * 10 * MIN;
+            h.state("acp", Some("codex"), AgentState::Working, t);
+            h.cost("acp", total, "USD");
+            h.state("acp", None, AgentState::Done, t + MIN);
+        }
+        let runs = h.query(T0, T0 + 99 * MIN, T0).runs;
+        let costs: Vec<_> = runs
+            .iter()
+            .map(|r| r.usage.as_ref().unwrap().cost_micros.unwrap())
+            .collect();
+        assert_eq!(costs, [1_000_000, 500_000]);
+    }
+
+    #[test]
+    fn a_cost_report_reads_only_as_an_amount_and_a_currency() {
+        assert_eq!(parse_cost("0.0123 USD"), Some((12_300, "USD".into())));
+        assert_eq!(parse_cost("2 eur"), Some((2_000_000, "EUR".into())));
+        for bad in [
+            "",
+            "USD",
+            "-1 USD",
+            "NaN USD",
+            "1 rm -rf /",
+            "1 $",
+            "1e99 USD",
+        ] {
+            assert_eq!(parse_cost(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_folder_name_is_scrubbed_like_a_title() {
+        let d = dir("project");
+        let h = History::open(&d, limits(), T0).unwrap();
+        h.state("a", Some("claude"), AgentState::Working, T0);
+        h.project("a", &format!("ghp_{}", "a".repeat(30)));
+        h.state("a", None, AgentState::Done, T0 + MIN);
+        let text = std::fs::read_to_string(d.join(FILE)).unwrap();
+        assert!(!text.contains("ghp_"), "{text}");
+    }
+
     #[test]
     fn it_survives_a_restart_and_answers_a_week_query() {
         let d = dir("week");
@@ -910,6 +1211,8 @@ mod tests {
             ended_at: Some(T0),
             outcome: Some(RunOutcome::Finished),
             blocked_ms: 0,
+            project: None,
+            usage: None,
         };
         std::fs::write(d.join(FILE), b"{\"sess").unwrap();
         s.append(&run);
@@ -1055,6 +1358,8 @@ mod tests {
                 ended_at: Some(T0 + MIN),
                 outcome: Some(RunOutcome::Finished),
                 blocked_ms: 0,
+                project: None,
+                usage: None,
             });
         }
         assert!(s.over_limit(T0));

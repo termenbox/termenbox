@@ -10,7 +10,7 @@
   const radius = $derived(width ? Math.max(0, Math.ceil((Math.max(0, ...bars.map((b) => b.value.length)) * 6.6 + 4) / (width / bars.length)) - 1) : 0);
   const shown = $derived(shownValues(bars, radius));
   const summary = $derived(bars.filter((b) => b.spoken).map((b) => b.spoken).join('; '));
-  const FILL = { ok: 'bg-ok', bad: 'bg-bad', warn: 'bg-warn' } as const;
+  const FILL = { ok: 'bg-ok', bad: 'bg-bad', warn: 'bg-warn', accent: 'bg-accent' } as const;
   const HATCH = 'background-image: repeating-linear-gradient(135deg, transparent 0 3px, rgb(0 0 0 / 0.4) 3px 5px)';
 </script>
 

@@ -65,7 +65,9 @@
     <ul class="list-disc space-y-1 pl-5 text-base text-soft">
       <li>the session name and the agent;</li>
       <li>a short title: the first line of your prompt (or the title Codex or an ACP agent gives the task), at most 80 characters. Tokens, passwords after a keyword, IP addresses, host names with a port, email addresses, links and paths in your home folder are replaced; other words stay as you wrote them, so keep sensitive details out of that first line;</li>
-      <li>when the task started and ended, how it ended (finished, failed or stopped), and how long the agent waited on you.</li>
+      <li>when the task started and ended, how it ended (finished, failed or stopped), and how long the agent waited on you;</li>
+      <li>the name of the folder the agent worked in (the name, not the path);</li>
+      <li>counts the agent itself reported, as numbers: tokens in, out and cached, a cost if the agent gave one, and how many times it said it was rate limited. Claude Code's token counts are read from its own transcript file, as numbers only; nothing else from that file is kept. An agent that reports nothing leaves these empty, and Activity says so.</li>
     </ul>
     <p class="text-base text-soft">Never the rest of a prompt, an agent's reply, a plan or any terminal text. Only tasks an agent reports itself are recorded (Claude Code hooks, Codex, ACP agents), not guesses from the terminal screen. By default a server keeps 90 days and at most 20 MB, oldest first; whoever runs the server can change that.</p>
   </section>

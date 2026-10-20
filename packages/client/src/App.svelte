@@ -341,6 +341,8 @@
       sendAttention(activeKey, { type: 'ack', attention_id: id });
     }
   }
+  // Idle Claude Code sessions with a warm prompt cache, for Activity (an estimate from the last answer, decision 0083).
+  $: warmCaches = $allSessions.flatMap(s => { const a = $allAgents[s.key]; const r = a?.agent === 'claude' ? cacheRemaining(a, now, $settings.cacheTtlMs) : null; return r !== null && r > 0 ? [{ key: s.key, name: s.name, server: s.serverName, remainingMs: r }] : []; }).sort((a, b) => a.remainingMs - b.remainingMs);
   $: expiring = new Set($allSessions.filter(s => expiringSoon(cacheRemaining($allAgents[s.key], now, $settings.cacheTtlMs))).map(s => s.key));
   $: activeSession = $allSessions.find(s => s.key === activeKey);
   $: profile = backendOf(activeSession) === 'tmux' ? 'tmux' as const : 'shell' as const;
@@ -833,7 +835,7 @@
           onanswer={(key, choice, prompt) => sendSession({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })}
           onreply={(key, text) => sendSession({ type: 'reply', session: key, text })} />
       {:else if $destination === 'activity'}
-        <ActivityView servers={$hubServers} history={historyMap} {now} onask={askHistory} />
+        <ActivityView servers={$hubServers} history={historyMap} {now} onask={askHistory} caches={warmCaches} ttlMs={$settings.cacheTtlMs} />
       {:else if $destination === 'settings'}
         <SettingsView user={user ?? ''} {serverVersion} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} onmenu={() => { titleTapped(); menuOpen = true; }} onshortcuts={() => (helpOpen = true)} onreport={openReport} onlogout={logout} ondeletedata={deleteData} historyServers={$connectedCount} ondeletehistory={deleteHistory} />
       {:else}

@@ -344,6 +344,8 @@ struct Inner {
 
 struct Live {
     event_name: String,
+    /// The folder the agent runs in (its last component is kept in the history).
+    dir: String,
     hub: Option<EventHub>,
     inner: Mutex<Inner>,
     /// The stream's revision, for the connections that show this session.
@@ -605,6 +607,7 @@ fn spawn_agent(
     let (kill_tx, mut kill_rx) = oneshot::channel::<()>();
     let live = Arc::new(Live {
         event_name,
+        dir: dir.to_string(),
         hub,
         changed: watch::channel(0).0,
         inner: Mutex::new(Inner {
@@ -1122,6 +1125,9 @@ impl SessionBackend for AcpBackend {
             title: first_line(text),
         });
         live.stream(|st| st.user(text));
+        if let Some(hub) = &live.hub {
+            hub.record_project(&live.event_name, &live.dir);
+        }
         let text = text.to_string();
         tokio::spawn(async move {
             let r = live
@@ -1140,6 +1146,22 @@ impl SessionBackend for AcpBackend {
             };
             if let Some(k) = tail {
                 live.emit(k);
+            }
+            // What the agent says this turn used, as it says it. `thoughtTokens` is reported apart from the output
+            // count and is not added to it.
+            if let (Ok(v), Some(hub)) = (&r, &live.hub) {
+                if let Some(u) = v.get("usage").filter(|u| u.is_object()) {
+                    let n = |k: &str| u.get(k).and_then(Value::as_u64);
+                    hub.record_tokens(
+                        &live.event_name,
+                        crate::history::Tokens {
+                            input: n("inputTokens"),
+                            output: n("outputTokens"),
+                            cache_read: n("cachedReadTokens"),
+                            cache_write: n("cachedWriteTokens"),
+                        },
+                    );
+                }
             }
             if live.inner.lock().unwrap().status != SessionStatus::Running {
                 return;

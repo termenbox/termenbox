@@ -34,6 +34,16 @@ describe('the history notice says what is kept', () => {
   });
 });
 
+describe('the notice covers the counts (U13)', () => {
+  const out = html();
+  it('says counts are numbers the agent reported, that the transcript is read for numbers only, and what an empty field means', () => {
+    expect(out).toContain('the name, not the path');
+    expect(out).toContain('counts the agent itself reported, as numbers');
+    expect(out).toContain('as numbers only; nothing else from that file is kept');
+    expect(out).toContain('leaves these empty, and Activity says so');
+  });
+});
+
 describe('settings', () => {
   it('links to the privacy page', () => {
     const out = render(SettingsView, { props: { user: 'octo', onservers() {}, onmenu() {}, onshortcuts() {}, onreport() {}, onlogout() {}, ondeletedata: async () => 0, historyServers: 0, ondeletehistory: async () => ({ servers: 0, removed: 0, failedNames: [] }) } }).body;

@@ -3,7 +3,7 @@ import { render } from 'svelte/server';
 import ActivityView from './ActivityView.svelte';
 import type { HubServer } from '../lib/hub';
 import { ANSWER_TIMEOUT_MS, rangeOf, startOfDay, type HistoryMap } from '../lib/history';
-import { answer, NOW, RUNS } from '../lib/historyFixture';
+import { answer, NOW, REPORTED, RUNS } from '../lib/historyFixture';
 
 const server = (id: string, state = 'connected') => ({ id, state, server: { server_name: id } }) as unknown as HubServer;
 const range = rangeOf('day', startOfDay(NOW));
@@ -12,6 +12,86 @@ const html = (servers: HubServer[], history: HistoryMap, now = NOW) => render(Ac
 
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(NOW); });
 afterEach(() => vi.useRealTimers());
+
+describe('Usage and cost from a fixture', () => {
+  let out = '';
+  beforeEach(() => { out = html([server('alpha')], { alpha: entry(NOW - 1000, answer([...RUNS, REPORTED])) }); });
+  const card = (agent: string) => out.split(`data-usage-agent="${agent}"`)[1].split('</li>')[0];
+
+  it('shows the tokens an agent reported, per agent, with the parts that exist', () => {
+    const claude = card('claude');
+    expect(claude).toContain('18k tokens');
+    expect(claude).toContain('in 13k');
+    expect(claude).toContain('out 5.1k');
+    expect(claude).toContain('cache read 150k');
+    expect(claude).toContain('cache written 25k');
+    expect(claude).toContain('input 13,100 tokens, output 5,100 tokens');
+    expect(claude).toContain('3 tasks');
+  });
+
+  it('shows a cost only where the agent reported one, with whose it is', () => {
+    const kilo = card('kilo');
+    expect(kilo).toContain('$0.25');
+    expect(kilo).toContain('reported by kilo');
+    expect(kilo).not.toContain('cache written');
+  });
+
+  it('says plainly what is not available, and what would enable it, instead of zeros', () => {
+    const claude = card('claude');
+    expect(claude).toContain('Cost: not available from claude');
+    expect(claude).toContain('status-line forwarder (roadmap R19, not built yet)');
+    expect(claude).toContain('Rate-limit window: not available from claude');
+    const codex = card('codex');
+    expect(codex).toContain('Tokens: not available from codex');
+    expect(codex).toContain('notify hook carries no usage');
+    expect(codex).toContain('Cost: not available from codex');
+    expect(codex).not.toMatch(/\b0 tokens|\$0\.00/);
+    expect(card('Unnamed agent')).toContain('Tokens: not available from Unnamed agent');
+  });
+
+  it('counts rate-limit hits where the agent said so, and says no window is known', () => {
+    expect(card('claude')).toContain('Rate limited once');
+    expect(card('kilo')).not.toContain('Rate limited');
+    expect(out).toContain('Rate-limit windows (when a limit resets) are not available');
+  });
+
+  it('ranks projects, and keeps tasks with no folder in their own row', () => {
+    const projects = out.split('data-usage-projects')[1].split('</ul>')[0];
+    expect(projects.indexOf('data-usage-project="api"')).toBeLessThan(projects.indexOf('data-usage-project="web"'));
+    expect(projects).toContain('data-usage-project="No folder reported"');
+    expect(projects).toMatch(/data-usage-project="api"[^]*18k tokens/);
+    expect(projects).toMatch(/data-usage-project="web"[^]*1\.5k tokens[^]*\$0\.25/);
+  });
+
+  it('draws the token chart with a spoken summary, and puts tokens on the timeline rows', () => {
+    expect(out).toContain('Tokens by hour');
+    expect(out).toMatch(/aria-label="Tokens by hour: [^"]*15,400 tokens/);
+    expect(out).toContain('1.5k tokens');
+  });
+
+  it('shows the warm prompt cache as an estimate only when a session has one', () => {
+    expect(out).not.toContain('Prompt cache now');
+    const warm = render(ActivityView, { props: { servers: [server('alpha')], history: { alpha: entry(NOW, answer(RUNS)) }, now: NOW, onask: () => {}, ttlMs: 300_000, caches: [{ key: 'alpha/api', name: 'api', server: 'alpha', remainingMs: 150_000 }] } }).body;
+    expect(warm).toContain('Prompt cache now');
+    expect(warm).toContain('about 3 min');
+    expect(warm).toContain('5-minute cache time');
+  });
+
+  it('shows no usage numbers at all when no agent reported any, only the honest state', () => {
+    const bare = html([server('alpha')], { alpha: entry(NOW, answer(RUNS.map(({ usage: _u, ...r }) => r))) });
+    expect(bare).not.toContain('Tokens by hour');
+    expect(bare).not.toContain('data-usage-tokens');
+    expect(bare).not.toContain('data-usage-projects');
+    expect(bare).toContain('Tokens: not available from claude');
+  });
+
+  it('reads unexpected values defensively: negative, text and bad currencies are dropped', () => {
+    const odd = html([server('alpha')], { alpha: entry(NOW, answer([{ ...RUNS[0], usage: { input_tokens: -5, output_tokens: 'x' as unknown as number, cost_micros: 5, cost_currency: '<b>' } }])) });
+    expect(odd).not.toContain('data-usage-tokens');
+    expect(odd).not.toContain('data-usage-cost');
+    expect(odd).not.toContain('<b>');
+  });
+});
 
 describe('Activity from a fixture', () => {
   let out = '';
