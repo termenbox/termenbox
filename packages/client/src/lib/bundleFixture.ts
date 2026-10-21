@@ -23,5 +23,5 @@ export async function newServerKey(): Promise<{ serverId: string; sign: (b: Omit
 
 /** `seq`, `expires` (unix seconds) and the candidates are what tests vary. */
 export const bundleOf = (seq: number, candidates: Bundle['candidates'], over: Partial<Bundle> = {}): Omit<Bundle, 'server_id'> => ({
-  seq, expires: Math.floor(Date.now() / 1000) + 3600, fingerprint: FINGERPRINT, name: 'box', candidates, ...over,
+  seq, expires: Math.floor(Date.now() / 1000) + 3600, published: false, fingerprint: FINGERPRINT, name: 'box', candidates, ...over,
 });

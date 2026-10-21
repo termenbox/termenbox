@@ -25,6 +25,7 @@ export interface PairPreview {
   fingerprint: string;
   serverId: string;
   seq: number;
+  published: boolean;
   candidates: Candidate[];
   payload: string;
   claim?: string;
@@ -36,7 +37,7 @@ export type PairResult = { ok: true; preview: PairPreview } | { ok: false; reaso
 export async function previewPair(link: PairLink, nowSecs = Math.floor(Date.now() / 1000)): Promise<PairResult> {
   try {
     const b = await verifyBundle(link.payload, { nowSecs });
-    return { ok: true, preview: { name: b.name, fingerprint: b.fingerprint, serverId: b.server_id, seq: b.seq, candidates: b.candidates, payload: link.payload, claim: link.claim } };
+    return { ok: true, preview: { name: b.name, fingerprint: b.fingerprint, serverId: b.server_id, seq: b.seq, published: b.published, candidates: b.candidates, payload: link.payload, claim: link.claim } };
   } catch (e) {
     return { ok: false, reason: e instanceof BundleRejected && e.reason === 'expired' ? 'expired' : 'invalid' };
   }
@@ -44,7 +45,7 @@ export async function previewPair(link: PairLink, nowSecs = Math.floor(Date.now(
 
 /** The saved server for a confirmed preview: pinned by the key in the link, reached over the bundle's candidates. */
 export function pairedServer(p: PairPreview, name = p.name): ServerListItem {
-  return { server_url: '', server_id: p.serverId, server_name: name, registered_at: Date.now(), claim: p.claim, bundle: p.payload, bundle_seq: p.seq };
+  return { server_url: '', server_id: p.serverId, server_name: name, registered_at: Date.now(), claim: p.claim, bundle: p.payload, bundle_seq: p.seq, published: p.published };
 }
 
 /**
@@ -61,16 +62,17 @@ export function mergePaired(existing: ServerListItem | undefined, paired: Server
     claim: paired.claim ?? existing.claim,
     bundle: newer ? paired.bundle : existing.bundle,
     bundle_seq: newer ? paired.bundle_seq : existing.bundle_seq,
+    published: newer ? paired.published : existing.published,
   };
 }
 
 /**
- * Whether to tell the directory this account set the server up: it has a claim and a directory record. A server
- * paired by link has no record, and a LAN-only one must cause no directory request at all
- * (GUARDRAIL-lan-addresses-never-reach-the-directory), so a pairing alone never links.
+ * Whether to tell the directory this account set the server up: it has a claim, and the server is known to be in the
+ * directory: a record from there, or a signed bundle saying it publishes. A LAN-only server's bundle says it does not,
+ * so pairing it makes no directory request (GUARDRAIL-lan-addresses-never-reach-the-directory).
  */
 export function linksToAccount(server: ServerListItem, signedIn: boolean): boolean {
-  return signedIn && !!server.claim && !!server.record;
+  return signedIn && !!server.claim && (!!server.record || server.published === true);
 }
 
 const KIND_WORD: Record<string, string> = { lan: 'LAN', wan4: 'internet (IPv4)', wan6: 'internet (IPv6)', overlay: 'overlay network', tunnel: 'tunnel' };

@@ -1,17 +1,30 @@
 {
   "bundle": {
     "candidates": [
-      { "addr": "192.168.1.20", "kind": "lan", "port": 4443 },
-      { "addr": "2001:db8::20", "kind": "wan6", "port": 4443 },
-      { "addr": "wss://x.example/ws", "kind": "tunnel", "port": 443 }
+      {
+        "addr": "192.168.1.20",
+        "kind": "lan",
+        "port": 4443
+      },
+      {
+        "addr": "2001:db8::20",
+        "kind": "wan6",
+        "port": 4443
+      },
+      {
+        "addr": "wss://x.example/ws",
+        "kind": "tunnel",
+        "port": 443
+      }
     ],
     "expires": 1900000000,
     "fingerprint": "sha-256 AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB",
     "name": "home-box",
+    "published": true,
     "seq": 41,
     "server_id": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw"
   },
   "server_id": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
-  "signed_hex": "7462786231ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c000000000000002900000000713fb300abababababababababababababababababababababababababababababababab08686f6d652d626f780301115b0c3139322e3136382e312e323003115b0c323030313a6462383a3a32300501bb127773733a2f2f782e6578616d706c652f7773",
-  "wire": "dGJ4YjHqSmxj4pxSCr71UHsTLsX5lUd2rr6-e5JCHuppFEbSLAAAAAAAAAApAAAAAHE_swCrq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urqwhob21lLWJveAMBEVsMMTkyLjE2OC4xLjIwAxFbDDIwMDE6ZGI4OjoyMAUBuxJ3c3M6Ly94LmV4YW1wbGUvd3Pan6N21jLtDEUWqArig2NmXrPedg_FoktYRkVFpzPQbi1cdDZsmIavmXk5BUlrLiO4UeVFSliGiheTK-laMmEC"
+  "signed_hex": "7462786232ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c000000000000002900000000713fb30001abababababababababababababababababababababababababababababababab08686f6d652d626f780301115b0c3139322e3136382e312e323003115b0c323030313a6462383a3a32300501bb127773733a2f2f782e6578616d706c652f7773",
+  "wire": "dGJ4YjLqSmxj4pxSCr71UHsTLsX5lUd2rr6-e5JCHuppFEbSLAAAAAAAAAApAAAAAHE_swABq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6sIaG9tZS1ib3gDARFbDDE5Mi4xNjguMS4yMAMRWwwyMDAxOmRiODo6MjAFAbsSd3NzOi8veC5leGFtcGxlL3dz23NglhZUPQlbSKPF7ezR3JrZAOSeLQQPbPa4hg_1jpYz7D0lxsEnXRnLtUmURNx-0lrDPGmXOqTet_qFz39xBA"
 }

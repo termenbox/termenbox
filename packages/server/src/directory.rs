@@ -192,6 +192,12 @@ pub async fn run(
     }
 }
 
+/// Whether a server publishes to the directory: it is allowed to (not LAN-only, has a public address) and has a
+/// directory to publish to. The signed bundle says so, so a client knows whether the directory knows this server.
+pub fn publishes(enabled: bool, origin: &str) -> bool {
+    enabled && !origin.is_empty()
+}
+
 /// Starts the publisher, unless `enabled` is false (LAN-only, no public address, or no directory): then the
 /// directory is never contacted (GUARDRAIL-lan-addresses-never-reach-the-directory). True when it started.
 pub fn spawn_publisher(
@@ -202,7 +208,7 @@ pub fn spawn_publisher(
     auth: Arc<AuthState>,
     http: reqwest::Client,
 ) -> bool {
-    if !enabled || origin.is_empty() {
+    if !publishes(enabled, &origin) {
         return false;
     }
     tokio::spawn(run(key, origin, info, String::new(), auth, http));
@@ -424,6 +430,14 @@ mod tests {
 
     /// GUARDRAIL-lan-addresses-never-reach-the-directory: with LAN-only on, a recording stand-in directory sees no
     /// request at all, while the same call with LAN-only off does reach it (so the stand-in really records).
+    #[test]
+    fn publishing_needs_both_a_reason_to_and_a_directory_to_publish_to() {
+        assert!(publishes(true, "https://app.example"));
+        assert!(!publishes(false, "https://app.example"), "LAN-only");
+        assert!(!publishes(true, ""), "no directory");
+        assert!(!publishes(false, ""));
+    }
+
     #[tokio::test]
     async fn lan_only_makes_no_directory_calls() {
         use std::sync::atomic::{AtomicUsize, Ordering};

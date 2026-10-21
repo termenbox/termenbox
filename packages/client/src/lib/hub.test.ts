@@ -245,6 +245,21 @@ describe('ServerHub candidate bundles (decision 0123)', () => {
     expect(saved).toHaveLength(1); // the same seq again is stale
   });
 
+  it('follows the published flag of the newest verified bundle', async () => {
+    const { newServerKey, bundleOf } = await import('./bundleFixture');
+    const key = await newServerKey();
+    const lan = [{ kind: 'lan' as const, addr: '10.0.0.2', port: 4443 }];
+    const saved: ServerListItem[] = [];
+    const connections: Fake[] = [];
+    const hub = new ServerHub({ credentials: async () => ({ cert: 'c', sign: async () => 's' }), onSaved: s => saved.push(s), factory: opts => { const c = new Fake(opts); connections.push(c); return c; } });
+    hub.start([server(key.serverId)]);
+    const settle = () => new Promise(r => setTimeout(r, 20));
+    connections[0].emit({ type: 'candidates', bundle: await key.sign(bundleOf(1, lan, { published: true })) }); await settle();
+    expect(saved.at(-1)?.published).toBe(true);
+    connections[0].emit({ type: 'candidates', bundle: await key.sign(bundleOf(2, lan, { published: false })) }); await settle();
+    expect(saved.at(-1)?.published).toBe(false);
+  });
+
   it('takes the same bundle again, as on every reconnect, as a quiet no-op, and still warns about a real rejection', async () => {
     const { newServerKey, bundleOf } = await import('./bundleFixture');
     const key = await newServerKey();

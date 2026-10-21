@@ -305,6 +305,8 @@ export interface Bundle {
   seq: number;
   /** Unix seconds. */
   expires: number;
+  /** The server publishes to the directory: only then may a claimed pairing be linked to the account. */
+  published: boolean;
   fingerprint: string;
   name: string;
   candidates: Candidate[];
@@ -324,6 +326,8 @@ export interface ServerListItem {
   /** The newest verified candidate bundle (wire string) and its `seq`; a hint to race, never the server's identity. */
   bundle?: string;
   bundle_seq?: number;
+  /** What that bundle said: this server publishes to the directory. */
+  published?: boolean;
   /** The path that connected last (`lan 192.168.1.20:4443`), tried first next time. */
   winner?: string;
 }

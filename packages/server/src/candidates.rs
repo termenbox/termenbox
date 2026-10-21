@@ -240,6 +240,10 @@ fn candidates_path(dir: &Path) -> PathBuf {
     dir.join("bundle_candidates.json")
 }
 
+fn published_path(dir: &Path) -> PathBuf {
+    dir.join("bundle_published")
+}
+
 /// The name cut to the bundle's limit, which counts bytes: on a character boundary, so a name in Cyrillic, CJK or
 /// with emoji still signs.
 fn truncate_name(name: &str) -> String {
@@ -256,12 +260,14 @@ pub fn sign(
     seq: u64,
     fingerprint: &str,
     name: &str,
+    published: bool,
     list: Vec<Candidate>,
 ) -> Result<(Bundle, String)> {
     let bundle = Bundle {
         server_id: key.server_id(),
         seq,
         expires: now_secs() + LIFETIME_SECS,
+        published,
         fingerprint: fingerprint.to_string(),
         name: truncate_name(name),
         candidates: list,
@@ -300,6 +306,8 @@ pub struct PathHub {
     lan_override: Option<String>,
     public4: Option<Ipv4Addr>,
     v6: Option<Ipv6Addr>,
+    /// This server publishes to the directory (see `directory::publishes`); signed into every bundle.
+    published: bool,
     reach: watch::Receiver<Option<Report>>,
     current: Mutex<Option<Current>>,
 }
@@ -315,6 +323,7 @@ impl PathHub {
         lan_override: Option<String>,
         public4: Option<Ipv4Addr>,
         v6: Option<Ipv6Addr>,
+        published: bool,
         reach: watch::Receiver<Option<Report>>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -326,6 +335,7 @@ impl PathHub {
             lan_override,
             public4,
             v6,
+            published,
             reach,
             current: Mutex::new(None),
         })
@@ -379,7 +389,14 @@ impl PathHub {
             }
         }
         let seq = next_seq(&self.dir)?;
-        let (bundle, wire) = sign(&self.key, seq, &self.fingerprint, &self.name, list.clone())?;
+        let (bundle, wire) = sign(
+            &self.key,
+            seq,
+            &self.fingerprint,
+            &self.name,
+            self.published,
+            list.clone(),
+        )?;
         info!(
             "Candidate bundle seq {seq}: {}",
             list.iter()
@@ -391,6 +408,11 @@ impl PathHub {
         if let Ok(text) = serde_json::to_vec(&list) {
             let _ = crate::auth::write_private(&candidates_path(&self.dir), &text);
         }
+        // ...and whether this server publishes, for the same reason.
+        let _ = crate::auth::write_private(
+            &published_path(&self.dir),
+            if self.published { b"1" } else { b"0" },
+        );
         *cur = Some(Current { bundle, wire });
         Ok(true)
     }
@@ -423,6 +445,7 @@ pub fn pairing_bundle(
     name: &str,
     port: u16,
     lan_override: Option<&str>,
+    lan_only: bool,
 ) -> Result<String> {
     let remembered: Vec<Candidate> = std::fs::read(candidates_path(dir))
         .ok()
@@ -435,8 +458,11 @@ pub fn pairing_bundle(
         }
     }
     list.truncate(MAX_CANDIDATES);
+    // Whether the running server publishes: what it last signed. Not known (never started) or LAN-only here means no.
+    let published =
+        !lan_only && std::fs::read_to_string(published_path(dir)).is_ok_and(|s| s.trim() == "1");
     let seq = next_seq(dir).context("cannot remember the bundle sequence number")?;
-    Ok(sign(key, seq, fingerprint, name, list)?.1)
+    Ok(sign(key, seq, fingerprint, name, published, list)?.1)
 }
 
 /// The link a phone opens or scans: the signed bundle in the fragment, so no host ever sees it. An unclaimed server
@@ -589,7 +615,7 @@ mod tests {
             lan: vec!["192.168.1.20".parse().unwrap()],
             ..Inputs::default()
         });
-        let (_, wire) = sign(&key, 5, &fp, "box", list.clone()).unwrap();
+        let (_, wire) = sign(&key, 5, &fp, "box", false, list.clone()).unwrap();
         let b = Bundle::verify(&wire, now_secs(), Some(&key.server_id()), Some(4)).unwrap();
         assert_eq!((b.seq, b.candidates, b.name), (5, list, "box".to_string()));
         assert_eq!(b.fingerprint, fp);
@@ -614,7 +640,7 @@ mod tests {
             "a".repeat(200),
             "ñ".repeat(33),
         ] {
-            let (b, wire) = sign(&key, 1, &fp, &name, lan_list())
+            let (b, wire) = sign(&key, 1, &fp, &name, false, lan_list())
                 .unwrap_or_else(|e| panic!("{} bytes: {e}", name.len()));
             assert!(b.name.len() <= termenbox_core::bundle::MAX_NAME);
             assert!(name.starts_with(&b.name), "a prefix of the name");
@@ -663,12 +689,14 @@ mod tests {
             Some("192.168.1.20".into()),
             None,
             None,
+            false,
             crate::reach::Handle::idle().0.rx,
         );
         hub.refresh().unwrap();
         let before = hub.current_bundle().unwrap().seq;
         // `termenbox-server --print-pairing`: a separate process bumping the same counter.
-        let pairing = pairing_bundle(&dir, &key, &fp, "box", 4443, Some("192.168.1.20")).unwrap();
+        let pairing =
+            pairing_bundle(&dir, &key, &fp, "box", 4443, Some("192.168.1.20"), false).unwrap();
         let (paired, _) = Bundle::decode(&pairing).unwrap();
         assert!(paired.seq > before);
         // The phone has now stored the pairing seq. What the server pushes next has to beat it.
@@ -681,5 +709,56 @@ mod tests {
             paired.seq
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn hub_in(dir: &Path, key: &Arc<ServerKey>, fp: &str, published: bool) -> Arc<PathHub> {
+        PathHub::new(
+            dir.to_path_buf(),
+            key.clone(),
+            fp.to_string(),
+            "box".into(),
+            4443,
+            Some("192.168.1.20".into()),
+            None,
+            None,
+            published,
+            crate::reach::Handle::idle().0.rx,
+        )
+    }
+
+    #[test]
+    fn a_bundle_says_whether_this_server_publishes_to_the_directory_and_the_pairing_link_agrees() {
+        let key = Arc::new(ServerKey::from_seed([3u8; 32]));
+        let fp = format!("sha-256 {}", vec!["0A"; 32].join(":"));
+        let pairing = |dir: &Path, lan_only: bool| {
+            let wire = pairing_bundle(dir, &key, &fp, "box", 4443, Some("192.168.1.20"), lan_only)
+                .unwrap();
+            Bundle::decode(&wire).unwrap().0.published
+        };
+        let fresh = || {
+            let dir = std::env::temp_dir().join(format!("termenbox-pub-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        };
+
+        // A server that publishes, and the `--print-pairing` run next to it (another process: it reads what the
+        // server last signed).
+        let dir = fresh();
+        let hub = hub_in(&dir, &key, &fp, true);
+        hub.refresh().unwrap();
+        assert!(hub.current_bundle().unwrap().published);
+        assert!(pairing(&dir, false));
+        // The owner's own LAN-only setting wins over whatever the last run said.
+        assert!(!pairing(&dir, true));
+
+        // A LAN-only server never says it publishes.
+        let dir = fresh();
+        let hub = hub_in(&dir, &key, &fp, false);
+        hub.refresh().unwrap();
+        assert!(!hub.current_bundle().unwrap().published);
+        assert!(!pairing(&dir, false));
+
+        // Never started: no claim that anything is published.
+        assert!(!pairing(&fresh(), false));
     }
 }

@@ -22,7 +22,7 @@ describe('the pairing link', () => {
     const payload = await key.sign(bundleOf(1, [{ kind: 'lan', addr: '192.168.1.20', port: 4443 }, { kind: 'wan6', addr: '2001:db8::1', port: 4443 }], { name: 'home-box' }));
     const r = await previewPair({ payload, claim: CLAIM }, NOW);
     if (!r.ok) throw new Error('did not verify');
-    expect(r.preview).toMatchObject({ name: 'home-box', serverId: key.serverId, claim: CLAIM });
+    expect(r.preview).toMatchObject({ name: 'home-box', serverId: key.serverId, claim: CLAIM, published: false });
     expect(r.preview.fingerprint).toMatch(/^sha-256 /);
     expect(describeCandidates(r.preview.candidates)).toBe('LAN, internet (IPv6)');
     // Confirming pins the key from the link and keeps the bundle as the hint to race.
@@ -79,12 +79,27 @@ describe('the pairing link', () => {
     });
   });
 
-  it('links a claimed server to the account only through a directory record: a pairing alone makes no directory request', () => {
+  it('links a claimed server to the account when its signed bundle says it publishes to the directory, or it has a record', () => {
     const base: ServerListItem = { server_url: '', server_name: 'x', registered_at: 0 };
     expect(linksToAccount({ ...base, claim: CLAIM, record: {} as never }, true)).toBe(true);
-    expect(linksToAccount({ ...base, claim: CLAIM, record: {} as never }, false)).toBe(false);
+    expect(linksToAccount({ ...base, claim: CLAIM, published: true }, true)).toBe(true);
+    expect(linksToAccount({ ...base, claim: CLAIM, published: true }, false)).toBe(false);
+    expect(linksToAccount({ ...base, claim: CLAIM, published: false, bundle: 'B' }, true)).toBe(false); // LAN-only: zero directory requests
     expect(linksToAccount({ ...base, claim: CLAIM, bundle: 'B' }, true)).toBe(false);
-    expect(linksToAccount({ ...base, bundle: 'B', record: {} as never }, true)).toBe(false);
-    expect(linksToAccount({ ...base, claim: CLAIM }, true)).toBe(false);
+    expect(linksToAccount({ ...base, published: true }, true)).toBe(false);
+  });
+
+  it('a pairing link of a publishing server is saved as one, and re-pairing never turns that off', async () => {
+    const key = await newServerKey();
+    const lan = [{ kind: 'lan' as const, addr: '10.0.0.2', port: 4443 }];
+    const yes = await previewPair({ payload: await key.sign(bundleOf(2, lan, { published: true })), claim: CLAIM }, NOW);
+    const no = await previewPair({ payload: await key.sign(bundleOf(3, lan, { published: false })) }, NOW);
+    if (!yes.ok || !no.ok) throw new Error('did not verify');
+    const publishing = pairedServer(yes.preview);
+    expect(publishing.published).toBe(true);
+    expect(pairedServer(no.preview).published).toBe(false);
+    // The newer signed bundle decides.
+    expect(mergePaired(publishing, pairedServer(no.preview)).published).toBe(false);
+    expect(mergePaired(pairedServer(no.preview), { ...publishing, bundle_seq: 1 }).published).toBe(false);
   });
 });

@@ -56,7 +56,7 @@ describe('candidate bundle (shared vector with packages/core)', () => {
 
   it('a bundle signed in the browser verifies and carries every candidate kind', async () => {
     const wire = await sign({
-      server_id: '', seq: 3, expires: NOW + 100, fingerprint: vectors.bundle.fingerprint, name: 'häus ✓',
+      server_id: '', seq: 3, expires: NOW + 100, published: false, fingerprint: vectors.bundle.fingerprint, name: 'häus ✓',
       candidates: [
         { kind: 'lan', addr: '192.168.1.2', port: 4443 }, { kind: 'wan4', addr: '8.8.8.8', port: 50000 },
         { kind: 'wan6', addr: '2001:db8::1', port: 4443 }, { kind: 'overlay', addr: '100.64.1.1', port: 4443 },
@@ -71,7 +71,7 @@ describe('candidate bundle (shared vector with packages/core)', () => {
 
 describe('candidate addresses are checked by kind before anything uses them', () => {
   const lan = (addr: string, kind: Bundle['candidates'][number]['kind'] = 'lan') => ({ kind, addr, port: 4443 });
-  const withCandidate = (c: Bundle['candidates'][number]) => sign({ server_id: '', seq: 1, expires: NOW + 100, fingerprint: vectors.bundle.fingerprint, name: 'x', candidates: [c] });
+  const withCandidate = (c: Bundle['candidates'][number]) => sign({ server_id: '', seq: 1, expires: NOW + 100, published: false, fingerprint: vectors.bundle.fingerprint, name: 'x', candidates: [c] });
 
   it('rejects a line break, a hostname or a stray URL where an IP address belongs', async () => {
     for (const c of [
@@ -92,5 +92,36 @@ describe('candidate addresses are checked by kind before anything uses them', ()
     for (const c of [lan('192.168.1.20'), lan('8.8.8.8', 'wan4'), lan('2001:4860::9', 'wan6'), lan('100.64.1.2', 'overlay'), lan('fd7a:115c::1', 'overlay'), lan('wss://t.example/ws', 'tunnel')]) {
       expect(await reason(verifyBundle(await withCandidate(c), { nowSecs: NOW, allowExpired: true })), c.addr).toBe('ok');
     }
+  });
+});
+
+describe('the published flag (tbxb2)', () => {
+  const base = (published: boolean): Bundle => ({ server_id: '', seq: 1, expires: NOW + 100, published, fingerprint: vectors.bundle.fingerprint, name: 'x', candidates: [{ kind: 'lan', addr: '10.0.0.2', port: 4443 }] });
+  const FLAGS_AT = 5 + 32 + 8 + 8; // magic, server_id, seq, expires
+
+  it('is read back as signed: a server that publishes says so, one that does not says so', async () => {
+    for (const published of [true, false]) {
+      const { bundle } = decodeBundle(await sign(base(published)));
+      expect(bundle.published).toBe(published);
+    }
+  });
+
+  it('cannot be switched by anyone but the server: flipping the flag byte breaks the signature', async () => {
+    const wire = await sign(base(false));
+    const bytes = b64urlDecode(wire);
+    expect(bytes[FLAGS_AT]).toBe(0);
+    bytes[FLAGS_AT] = 1;
+    expect(await reason(verifyBundle(b64urlEncode(bytes), { nowSecs: NOW }))).toBe('bad_signature');
+  });
+
+  it('refuses flag bits it does not know, instead of ignoring them', async () => {
+    const bytes = b64urlDecode(await sign(base(false)));
+    bytes[FLAGS_AT] = 0b10;
+    expect(await reason(verifyBundle(b64urlEncode(bytes), { nowSecs: NOW }))).toBe('malformed');
+  });
+
+  it('the shared vector is a publishing server', () => {
+    expect(vectors.bundle.published).toBe(true);
+    expect(decodeBundle(vectors.wire).bundle.published).toBe(true);
   });
 });

@@ -4,7 +4,7 @@ import { bundleOf, newServerKey, FINGERPRINT } from './bundleFixture';
 import type { Bundle } from './protocol';
 
 const bundle: Bundle = {
-  server_id: 'S'.repeat(43), seq: 1, expires: 9e9, fingerprint: FINGERPRINT, name: 'box',
+  server_id: 'S'.repeat(43), seq: 1, expires: 9e9, published: false, fingerprint: FINGERPRINT, name: 'box',
   candidates: [
     { kind: 'wan4', addr: '8.8.8.8', port: 50000 },
     { kind: 'lan', addr: '192.168.1.20', port: 4443 },

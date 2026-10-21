@@ -156,6 +156,7 @@ async fn fixture() -> Fixture {
         Some("192.168.77.7".into()),
         None,
         None,
+        false,
         crate::reach::Handle::idle().0.rx,
     );
     paths.refresh().unwrap();

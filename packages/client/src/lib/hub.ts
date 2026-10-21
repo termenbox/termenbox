@@ -207,7 +207,7 @@ export class ServerHub {
     try {
       const bundle = await verifyBundle(wire, { nowSecs: Math.floor(Date.now() / 1000), pin, storedSeq: e.server.bundle_seq });
       if (!current()) return;
-      e.server = { ...e.server, bundle: wire, bundle_seq: bundle.seq };
+      e.server = { ...e.server, bundle: wire, bundle_seq: bundle.seq, published: bundle.published };
       this.opts.onSaved?.(e.server);
     } catch (err) {
       // The server pushes the same bundle after every authentication: the one already stored is not a problem.

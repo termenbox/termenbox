@@ -5,13 +5,14 @@
 //! never-identity). The signed bytes are an explicit layout, not JSON, so Rust and TypeScript agree byte for byte
 //! (shared vectors in `testdata/bundle-vectors.json`; the TypeScript side is `packages/client/src/lib/bundle.ts`).
 //!
-//! Layout `tbxb1` (all integers big-endian):
+//! Layout `tbxb2` (all integers big-endian):
 //!
 //! ```text
-//! "tbxb1"                 5 bytes  magic and version
+//! "tbxb2"                 5 bytes  magic and version
 //! server_id               32 bytes ed25519 public key
 //! seq                     u64      increases with every bundle the server signs
 //! expires                 u64      unix seconds; a bundle past it is ignored
+//! flags                   u8       bit 0: this server publishes to the directory; other bits must be 0
 //! fingerprint             32 bytes SHA-256 of the server's DTLS certificate
 //! name                    u8 length + UTF-8 (at most 64 bytes)
 //! count                   u8       at most 16
@@ -24,7 +25,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine as _};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
-pub const MAGIC: &[u8; 5] = b"tbxb1";
+pub const MAGIC: &[u8; 5] = b"tbxb2";
 pub const MAX_CANDIDATES: usize = 16;
 pub const MAX_NAME: usize = 64;
 const SIG_LEN: usize = 64;
@@ -82,6 +83,10 @@ pub struct Bundle {
     pub seq: u64,
     /// Unix seconds.
     pub expires: u64,
+    /// This server publishes a record to the directory (it is not LAN-only and has a public address). A client links
+    /// a claimed pairing to the account only when this is set, so a LAN-only server causes no directory request.
+    #[serde(default)]
+    pub published: bool,
     /// `sha-256 AA:BB:...` as the directory record carries it.
     pub fingerprint: String,
     pub name: String,
@@ -135,6 +140,7 @@ impl Bundle {
         out.extend(server_key_bytes(&self.server_id).ok_or(BundleError::Malformed)?);
         out.extend(self.seq.to_be_bytes());
         out.extend(self.expires.to_be_bytes());
+        out.push(self.published as u8);
         out.extend(parse_fingerprint(&self.fingerprint).ok_or(BundleError::Malformed)?);
         out.push(self.name.len() as u8);
         out.extend(self.name.as_bytes());
@@ -174,6 +180,10 @@ impl Bundle {
         let server_id = B64.encode(r.take(32)?);
         let seq = u64::from_be_bytes(r.take(8)?.try_into().unwrap());
         let expires = u64::from_be_bytes(r.take(8)?.try_into().unwrap());
+        let flags = r.take(1)?[0];
+        if flags & !1 != 0 {
+            return Err(BundleError::Malformed);
+        }
         let fingerprint = format_fingerprint(r.take(32)?);
         let name_len = r.take(1)?[0] as usize;
         let name =
@@ -198,6 +208,7 @@ impl Bundle {
             server_id,
             seq,
             expires,
+            published: flags & 1 == 1,
             fingerprint,
             name,
             candidates,
@@ -265,6 +276,7 @@ mod tests {
             server_id: B64.encode(vector_key().verifying_key().to_bytes()),
             seq: 41,
             expires: 1_900_000_000,
+            published: true,
             fingerprint: format_fingerprint(&[0xAB; 32]),
             name: "home-box".into(),
             candidates: vec![
@@ -336,6 +348,34 @@ mod tests {
     }
 
     #[test]
+    fn the_published_flag_is_signed_and_unknown_flag_bits_are_refused() {
+        let flags_at = 5 + 32 + 8 + 8;
+        for published in [true, false] {
+            let mut b = vector_bundle();
+            b.published = published;
+            let wire = signed(&b);
+            assert_eq!(
+                Bundle::verify(&wire, 1, None, None).unwrap().published,
+                published
+            );
+            let mut bytes = B64.decode(&wire).unwrap();
+            assert_eq!(bytes[flags_at], published as u8);
+            bytes[flags_at] ^= 1;
+            assert_eq!(
+                Bundle::verify(&B64.encode(&bytes), 1, None, None),
+                Err(BundleError::BadSignature),
+                "nobody but the server can change it"
+            );
+            bytes[flags_at] = 0b10;
+            assert_eq!(
+                Bundle::decode(&B64.encode(&bytes)),
+                Err(BundleError::Malformed),
+                "unknown flag bits are not ignored"
+            );
+        }
+    }
+
+    #[test]
     fn stale_seq_rejected() {
         let wire = signed(&vector_bundle());
         assert_eq!(
@@ -380,7 +420,7 @@ mod tests {
 
     #[test]
     fn garbage_is_malformed_not_a_panic() {
-        for s in ["", "AAAA", "tbxb1", &B64.encode(b"tbxb1"), &"A".repeat(400)] {
+        for s in ["", "AAAA", "tbxb2", &B64.encode(b"tbxb2"), &"A".repeat(400)] {
             assert!(Bundle::decode(s).is_err(), "{s}");
         }
     }

@@ -5,7 +5,7 @@
 import { b64urlDecode, b64urlEncode } from '../../functions/api/directory/_lib';
 import type { Bundle, Candidate, CandidateKind } from './protocol';
 
-const MAGIC = 'tbxb1';
+const MAGIC = 'tbxb2';
 const KINDS: CandidateKind[] = ['lan', 'wan4', 'wan6', 'overlay', 'tunnel'];
 const SIG_LEN = 64;
 const MAX_CANDIDATES = 16;
@@ -77,6 +77,7 @@ export function signedBytes(b: Bundle): Uint8Array {
   push(id);
   u64(b.seq);
   u64(b.expires);
+  push([b.published ? 1 : 0]);
   push(fingerprintBytes(b.fingerprint));
   push([name.length]);
   push(name);
@@ -117,6 +118,8 @@ export function decodeBundle(wire: string): { bundle: Bundle; signed: Uint8Array
   const server_id = b64urlEncode(take(32));
   const seq = u64();
   const expires = u64();
+  const flags = take(1)[0];
+  if (flags & ~1) throw bad(); // a flag this client does not know is not ignored
   const fingerprint = fingerprintText(take(32));
   const name = text(take(1)[0]);
   const count = take(1)[0];
@@ -131,7 +134,7 @@ export function decodeBundle(wire: string): { bundle: Bundle; signed: Uint8Array
     candidates.push({ kind, port: (p[0] << 8) | p[1], addr });
   }
   if (at !== body.length) throw bad();
-  const bundle: Bundle = { server_id, seq, expires, fingerprint, name, candidates };
+  const bundle: Bundle = { server_id, seq, expires, published: (flags & 1) === 1, fingerprint, name, candidates };
   // The signature is over these exact bytes: anything that does not re-encode to them is not what was signed.
   const signed = signedBytes(bundle);
   if (signed.length !== body.length || signed.some((v, i) => v !== body[i])) throw bad();

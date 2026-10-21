@@ -975,6 +975,11 @@ async fn main() -> anyhow::Result<()> {
                 true,
             )
         };
+        let origin = args
+            .directory_url
+            .clone()
+            .unwrap_or_else(|| args.client_url.clone());
+        let publishes = directory::publishes(!lan_only && public_ip.is_some(), &origin);
         let hub = candidates::PathHub::new(
             args.config_dir.clone(),
             Arc::new(directory::ServerKey::load_or_create(&args.config_dir)?),
@@ -987,6 +992,7 @@ async fn main() -> anyhow::Result<()> {
                 _ => None,
             },
             v6,
+            publishes,
             handle.rx.clone(),
         );
         if let Err(e) = hub.refresh() {
@@ -995,14 +1001,10 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(hub.clone().run());
         let _ = state.paths.set(hub);
         reach = Some(handle);
-        let origin = args
-            .directory_url
-            .clone()
-            .unwrap_or_else(|| args.client_url.clone());
         let key = Arc::new(directory::ServerKey::load_or_create(&args.config_dir)?);
         info!("Server id {}", key.server_id());
         directory::spawn_publisher(
-            !lan_only && public_ip.is_some(),
+            publishes,
             origin,
             key,
             info.clone(),
@@ -1061,6 +1063,7 @@ fn print_pairing(args: &Args, auth: &AuthState) -> anyhow::Result<()> {
         &args.server_name,
         port,
         args.lan_addrs.as_deref(),
+        args.lan_only,
     )?;
     let claim = auth.claim_token()?;
     let link = candidates::pairing_link(&args.client_url, &wire, claim.as_deref());
