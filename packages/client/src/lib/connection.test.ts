@@ -275,7 +275,7 @@ describe('after a network change (decision 0123)', () => {
     };
     c.start();
     await login({ t: await vi.waitFor(() => made[0].t) });
-    return { c, made, win, net, paths, winners, states, login };
+    return { c, made, win, net, doc, paths, winners, states, login };
   }
 
   it('shows the path that carries the session and remembers it as the winner once authenticated', async () => {
@@ -304,11 +304,64 @@ describe('after a network change (decision 0123)', () => {
 
   it('keeps the link when it answers the proof of life after a network change', async () => {
     const { c, made, win } = await setup();
-    win.dispatchEvent(new Event('online'));
-    made[0].t.onmessage!(JSON.stringify({ type: 'pong' }));
+    win.dispatchEvent(new Event('online')); // a foregrounding ping and a proof-of-life ping
+    const pings = made[0].sent.filter((x) => x.includes('"ping"')).length;
+    for (let i = 0; i < pings; i++) made[0].t.onmessage!(JSON.stringify({ type: 'pong' }));
     await vi.advanceTimersByTimeAsync(5000);
     expect(made).toHaveLength(1);
     expect(made[0].closed).toBe(false);
+    c.close();
+  });
+  it('does not take a pong that was already in flight for the proof of life, and drops a dead link within 2 s', async () => {
+    const { c, made, win, doc } = await setup();
+    doc.dispatchEvent(new Event('visibilitychange')); // a ping is on its way...
+    win.dispatchEvent(new Event('online')); // ...when the network changes (and one more ping asks for proof)
+    made[0].t.onmessage!(JSON.stringify({ type: 'pong' })); // the old answer arrives; the new ping is never answered
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(made[0].closed).toBe(true);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(made).toHaveLength(2); // re-raced at once, no backoff
+    c.close();
+  });
+
+  it('keeps the link once every ping sent since the change has been answered', async () => {
+    const { c, made, win, doc } = await setup();
+    doc.dispatchEvent(new Event('visibilitychange'));
+    win.dispatchEvent(new Event('online'));
+    const pings = made[0].sent.filter((x) => x.includes('"ping"')).length;
+    for (let i = 0; i < pings; i++) made[0].t.onmessage!(JSON.stringify({ type: 'pong' }));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(made).toHaveLength(1);
+    expect(made[0].closed).toBe(false);
+    c.close();
+  });
+
+  it('other traffic does not cancel the 2 s deadline of a network change: only the answer to the ping does', async () => {
+    const { c, made, net } = await setup();
+    net.dispatchEvent(new Event('change'));
+    made[0].t.onmessage!(JSON.stringify({ type: 'server_health', health: {} })); // buffered data from the old network
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(made[0].closed).toBe(true);
+    c.close();
+  });
+
+  it('a foregrounding right after a network change does not stretch the 2 s deadline to 3 s', async () => {
+    const { c, made, net, doc } = await setup();
+    net.dispatchEvent(new Event('change'));
+    doc.dispatchEvent(new Event('visibilitychange')); // wake asks for a 3 s answer
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(made[0].closed).toBe(true);
+    c.close();
+  });
+
+  it('a drop with no network change goes through the backoff, whatever happened to an earlier change', async () => {
+    const { c, made, win } = await setup();
+    win.dispatchEvent(new Event('online'));
+    const pings = made[0].sent.filter((x) => x.includes('"ping"')).length;
+    for (let i = 0; i < pings; i++) made[0].t.onmessage!(JSON.stringify({ type: 'pong' }));
+    made[0].t.onclose!(); // an unrelated drop
+    await vi.advanceTimersByTimeAsync(100);
+    expect(made).toHaveLength(1); // waiting out the 1 s backoff
     c.close();
   });
 });

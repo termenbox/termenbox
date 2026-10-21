@@ -204,21 +204,50 @@ fn now_secs() -> u64 {
         .unwrap_or(1)
 }
 
-/// The next `seq`, remembered in `dir` so it keeps rising across restarts and between the running server and the
-/// one-shot `--print-pairing`.
-pub fn next_seq(dir: &Path) -> Result<u64> {
-    let path = dir.join("bundle_seq");
-    let last: u64 = std::fs::read_to_string(&path)
+fn read_seq(dir: &Path) -> u64 {
+    std::fs::read_to_string(dir.join("bundle_seq"))
         .ok()
         .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0);
-    let next = last + 1;
-    crate::auth::write_private(&path, next.to_string().as_bytes())?;
+        .unwrap_or(0)
+}
+
+/// The next `seq`, remembered in `dir` so it keeps rising across restarts and between the running server and the
+/// one-shot `--print-pairing`. The read-modify-write holds a file lock, because those are separate processes.
+pub fn next_seq(dir: &Path) -> Result<u64> {
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("bundle_seq.lock"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        // Blocks until the other holder is done; released when `lock` is dropped.
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    }
+    let next = read_seq(dir) + 1;
+    let path = dir.join("bundle_seq");
+    let tmp = dir.join(format!("bundle_seq.{}.tmp", std::process::id()));
+    crate::auth::write_private(&tmp, next.to_string().as_bytes())?;
+    std::fs::rename(&tmp, &path)?;
+    drop(lock);
     Ok(next)
 }
 
 fn candidates_path(dir: &Path) -> PathBuf {
     dir.join("bundle_candidates.json")
+}
+
+/// The name cut to the bundle's limit, which counts bytes: on a character boundary, so a name in Cyrillic, CJK or
+/// with emoji still signs.
+fn truncate_name(name: &str) -> String {
+    let mut end = name.len().min(termenbox_core::bundle::MAX_NAME);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    name[..end].to_string()
 }
 
 /// Signs a bundle for `list`; the wire string is what clients get.
@@ -234,10 +263,7 @@ pub fn sign(
         seq,
         expires: now_secs() + LIFETIME_SECS,
         fingerprint: fingerprint.to_string(),
-        name: name
-            .chars()
-            .take(termenbox_core::bundle::MAX_NAME)
-            .collect(),
+        name: truncate_name(name),
         candidates: list,
     };
     let signature = key.sign(&bundle.signed_bytes()?);
@@ -310,6 +336,14 @@ impl PathHub {
         self.current.lock().ok()?.as_ref().map(|c| c.wire.clone())
     }
 
+    /// The wire string to push to a client now: re-signed first when another process has taken a higher seq.
+    pub fn current_fresh(&self) -> Option<String> {
+        if let Err(e) = self.refresh() {
+            warn!("cannot sign a candidate bundle: {e:#}");
+        }
+        self.current()
+    }
+
     pub fn current_bundle(&self) -> Option<Bundle> {
         self.current.lock().ok()?.as_ref().map(|c| c.bundle.clone())
     }
@@ -335,7 +369,12 @@ impl PathHub {
             .lock()
             .map_err(|_| anyhow::anyhow!("poisoned"))?;
         if let Some(c) = cur.as_ref() {
-            if c.bundle.candidates == list && c.bundle.expires > now_secs() + RESIGN_BEFORE_SECS {
+            // `--print-pairing` runs in another process and takes its own seq: a phone that paired with it keeps that
+            // seq, and would reject this bundle as stale, so sign again above it.
+            if c.bundle.candidates == list
+                && c.bundle.expires > now_secs() + RESIGN_BEFORE_SECS
+                && read_seq(&self.dir) <= c.bundle.seq
+            {
                 return Ok(false);
             }
         }
@@ -554,5 +593,93 @@ mod tests {
         let b = Bundle::verify(&wire, now_secs(), Some(&key.server_id()), Some(4)).unwrap();
         assert_eq!((b.seq, b.candidates, b.name), (5, list, "box".to_string()));
         assert_eq!(b.fingerprint, fp);
+    }
+
+    fn lan_list() -> Vec<Candidate> {
+        candidates(&Inputs {
+            port: 4443,
+            lan: vec!["192.168.1.20".parse().unwrap()],
+            ..Inputs::default()
+        })
+    }
+
+    #[test]
+    fn a_name_longer_than_the_limit_in_bytes_is_cut_on_a_character_boundary_and_still_signs() {
+        let key = ServerKey::from_seed([3u8; 32]);
+        let fp = format!("sha-256 {}", vec!["0A"; 32].join(":"));
+        // 40 Cyrillic letters are 80 bytes but only 40 characters; 20 emoji are 80 bytes too.
+        for name in [
+            "д".repeat(40),
+            "🦀".repeat(20),
+            "a".repeat(200),
+            "ñ".repeat(33),
+        ] {
+            let (b, wire) = sign(&key, 1, &fp, &name, lan_list())
+                .unwrap_or_else(|e| panic!("{} bytes: {e}", name.len()));
+            assert!(b.name.len() <= termenbox_core::bundle::MAX_NAME);
+            assert!(name.starts_with(&b.name), "a prefix of the name");
+            assert!(
+                b.name.len() > termenbox_core::bundle::MAX_NAME - 4,
+                "no more is cut than one character needs"
+            );
+            Bundle::verify(&wire, now_secs(), Some(&key.server_id()), None).unwrap();
+        }
+    }
+
+    #[test]
+    fn concurrent_callers_never_get_the_same_seq() {
+        let dir = std::env::temp_dir().join(format!("termenbox-seq-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let dir = dir.clone();
+                std::thread::spawn(move || {
+                    (0..40).map(|_| next_seq(&dir).unwrap()).collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let mut all: Vec<u64> = handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect();
+        all.sort_unstable();
+        let expected: Vec<u64> = (1..=640).collect();
+        assert_eq!(all, expected, "every seq handed out once, none skipped");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_pairing_bundle_made_by_another_process_does_not_make_the_running_servers_bundle_stale() {
+        let dir = std::env::temp_dir().join(format!("termenbox-seq-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = Arc::new(ServerKey::from_seed([3u8; 32]));
+        let fp = format!("sha-256 {}", vec!["0A"; 32].join(":"));
+        let hub = PathHub::new(
+            dir.clone(),
+            key.clone(),
+            fp.clone(),
+            "box".into(),
+            4443,
+            Some("192.168.1.20".into()),
+            None,
+            None,
+            crate::reach::Handle::idle().0.rx,
+        );
+        hub.refresh().unwrap();
+        let before = hub.current_bundle().unwrap().seq;
+        // `termenbox-server --print-pairing`: a separate process bumping the same counter.
+        let pairing = pairing_bundle(&dir, &key, &fp, "box", 4443, Some("192.168.1.20")).unwrap();
+        let (paired, _) = Bundle::decode(&pairing).unwrap();
+        assert!(paired.seq > before);
+        // The phone has now stored the pairing seq. What the server pushes next has to beat it.
+        let pushed = hub.current_fresh().expect("a bundle");
+        let (pushed, _) = Bundle::decode(&pushed).unwrap();
+        assert!(
+            pushed.seq > paired.seq,
+            "pushed seq {} must be above the pairing seq {}",
+            pushed.seq,
+            paired.seq
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

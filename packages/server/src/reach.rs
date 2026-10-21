@@ -16,7 +16,7 @@ use std::time::Duration;
 use rand::RngCore;
 use tokio::net::UdpSocket;
 use tokio::sync::{watch, Mutex};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::netutil::is_public_unicast;
 
@@ -372,14 +372,23 @@ async fn upnp_discover(gw: &Gateway, http: &reqwest::Client) -> Result<(String, 
             .await
             .map_err(|e| format!("cannot search: {e}"))?;
         let deadline = tokio::time::Instant::now() + gw.timeout;
-        while let Ok(Ok((n, _))) = tokio::time::timeout_at(deadline, sock.recv_from(&mut buf)).await
+        while let Ok(Ok((n, from))) =
+            tokio::time::timeout_at(deadline, sock.recv_from(&mut buf)).await
         {
+            // Only the router speaks for the router: any other device on the network is ignored, and so is a
+            // Location that names a different host (it would make this server call whatever that host serves).
+            if from.ip() != IpAddr::V4(gw.addr) {
+                continue;
+            }
             let text = String::from_utf8_lossy(&buf[..n]);
             if let Some(l) = text.lines().find_map(|l| {
                 let (k, v) = l.split_once(':')?;
                 k.eq_ignore_ascii_case("location")
                     .then(|| v.trim().to_string())
             }) {
+                if !on_gateway(&l, gw) {
+                    continue;
+                }
                 location = Some(l);
                 break 'tries;
             }
@@ -394,7 +403,18 @@ async fn upnp_discover(gw: &Gateway, http: &reqwest::Client) -> Result<(String, 
         .text()
         .await
         .map_err(|e| format!("device description: {e}"))?;
-    igd_service(&desc, &location).ok_or_else(|| "no WAN connection service".into())
+    let (service, control) = igd_service(&desc, &location).ok_or("no WAN connection service")?;
+    if !on_gateway(&control, gw) {
+        return Err("the control URL is not on the router".into());
+    }
+    Ok((service, control))
+}
+
+/// True when `url` is plain HTTP(S) to the gateway's own address.
+fn on_gateway(url: &str, gw: &Gateway) -> bool {
+    reqwest::Url::parse(url).is_ok_and(|u| {
+        matches!(u.scheme(), "http" | "https") && u.host_str() == Some(gw.addr.to_string().as_str())
+    })
 }
 
 async fn upnp_add(
@@ -813,7 +833,12 @@ pub struct Handle {
     pub rx: watch::Receiver<Option<Report>>,
     mapping: Arc<Mutex<Option<Mapping>>>,
     http: reqwest::Client,
+    stop: watch::Sender<bool>,
+    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
+
+/// How long `release` waits for a check in progress to wind down (it removes what it opened on the way out).
+const RELEASE_WAIT: Duration = Duration::from_secs(10);
 
 impl Handle {
     /// A handle that never reports anything (LAN-only, or WebRTC off).
@@ -824,13 +849,22 @@ impl Handle {
                 rx,
                 mapping: Arc::default(),
                 http: reqwest::Client::new(),
+                stop: watch::channel(false).0,
+                task: Mutex::new(None),
             },
             tx,
         )
     }
 
-    /// Removes the router mapping, if any. Call on the way out.
+    /// Stops the check and removes the router mapping, including one that was being made at this moment. Call on
+    /// the way out.
     pub async fn release(&self) {
+        let _ = self.stop.send(true);
+        let task = self.task.lock().await.take();
+        if let Some(task) = task {
+            // The task removes what it holds when it sees the stop; wait for that, but not for ever.
+            let _ = tokio::time::timeout(RELEASE_WAIT, task).await;
+        }
         if let Some(m) = self.mapping.lock().await.take() {
             remove(&m, &self.http).await;
             debug!("removed the {} port mapping", m.proto.name());
@@ -839,48 +873,115 @@ impl Handle {
 }
 
 /// Starts the check in the background and prints its block when it is done.
-pub fn spawn(mut cfg: Config, http: reqwest::Client, lookup_seen: bool) -> Handle {
+pub fn spawn(cfg: Config, http: reqwest::Client, lookup_seen: bool) -> Handle {
+    spawn_with(cfg, http, lookup_seen, renew_after)
+}
+
+/// `spawn` with the renewal interval as a parameter, so a test does not wait half a lease.
+fn spawn_with(
+    cfg: Config,
+    http: reqwest::Client,
+    lookup_seen: bool,
+    wait: fn(u32) -> Duration,
+) -> Handle {
     let (tx, rx) = watch::channel(None);
+    let (stop, stop_rx) = watch::channel(false);
     let mapping: Arc<Mutex<Option<Mapping>>> = Arc::default();
-    let handle = Handle {
+    let task = tokio::spawn(maintain(
+        cfg,
+        http.clone(),
+        lookup_seen,
+        wait,
+        tx,
+        mapping.clone(),
+        stop_rx,
+    ));
+    Handle {
         rx,
-        mapping: mapping.clone(),
-        http: http.clone(),
-    };
-    tokio::spawn(async move {
-        if lookup_seen {
-            cfg.seen = match crate::netutil::external_ip_seen(&http).await {
-                Some(IpAddr::V4(ip)) => Some(ip),
-                _ => None,
-            };
+        mapping,
+        http,
+        stop,
+        task: Mutex::new(Some(task)),
+    }
+}
+
+/// The check, then the upkeep: renew at half the lease, publish what changed, remove everything on stop.
+async fn maintain(
+    mut cfg: Config,
+    http: reqwest::Client,
+    lookup_seen: bool,
+    wait: fn(u32) -> Duration,
+    tx: watch::Sender<Option<Report>>,
+    mapping: Arc<Mutex<Option<Mapping>>>,
+    mut stop: watch::Receiver<bool>,
+) {
+    if lookup_seen {
+        cfg.seen = match crate::netutil::external_ip_seen(&http).await {
+            Some(IpAddr::V4(ip)) => Some(ip),
+            _ => None,
+        };
+    }
+    // A check can take seconds (SSDP, SOAP); a stop that arrives meanwhile still has to find the port closed.
+    let report = check(&cfg, &http).await;
+    println!("{}", report.render());
+    if *stop.borrow() {
+        if let Some(m) = &report.mapping {
+            remove(m, &http).await;
         }
-        let report = check(&cfg, &http).await;
-        println!("{}", report.render());
-        *mapping.lock().await = report.mapping.clone();
-        let _ = tx.send(Some(report.clone()));
-        let mut current = report.mapping;
-        // Renew at half the lease. A router that stops answering ends the mapping: say so once and try from scratch.
-        while let Some(m) = current.clone() {
-            tokio::time::sleep(renew_after(m.lease_secs)).await;
-            match renew(&m, &http).await {
-                Ok(next) => {
-                    current = Some(next.clone());
-                    *mapping.lock().await = Some(next);
-                }
-                Err(e) => {
-                    warn!(
-                        "the router no longer keeps the {} mapping ({e}); asking again",
-                        m.proto.name()
+        return;
+    }
+    *mapping.lock().await = report.mapping.clone();
+    let _ = tx.send(Some(report.clone()));
+    let mut latest = report;
+    while let Some(m) = latest.mapping.clone() {
+        tokio::select! {
+            _ = tokio::time::sleep(wait(m.lease_secs)) => {}
+            _ = stop.changed() => break,
+        }
+        if *stop.borrow() {
+            break;
+        }
+        match renew(&m, &http).await {
+            Ok(next) => {
+                // The router may grant another address or port on renewal: the bundle has to follow it.
+                if (next.external_ip, next.external_port) != (m.external_ip, m.external_port) {
+                    info!(
+                        "the router now maps UDP {} to {:?}:{}",
+                        next.internal_port, next.external_ip, next.external_port
                     );
-                    let again = check(&cfg, &http).await;
-                    current = again.mapping.clone();
-                    *mapping.lock().await = again.mapping.clone();
-                    let _ = tx.send(Some(again));
+                    latest.mapping = Some(next.clone());
+                    let _ = tx.send(Some(latest.clone()));
+                } else {
+                    latest.mapping = Some(next.clone());
                 }
+                *mapping.lock().await = Some(next);
+            }
+            Err(e) => {
+                warn!(
+                    "the router no longer keeps the {} mapping ({e}); asking again",
+                    m.proto.name()
+                );
+                // Close the old one first: asking again may open a different one, and this one would stay open
+                // until its lease ended.
+                remove(&m, &http).await;
+                *mapping.lock().await = None;
+                let again = check(&cfg, &http).await;
+                if *stop.borrow() {
+                    if let Some(m) = &again.mapping {
+                        remove(m, &http).await;
+                    }
+                    return;
+                }
+                *mapping.lock().await = again.mapping.clone();
+                let _ = tx.send(Some(again.clone()));
+                latest = again;
             }
         }
-    });
-    handle
+    }
+    if let Some(m) = mapping.lock().await.take() {
+        remove(&m, &http).await;
+        debug!("removed the {} port mapping", m.proto.name());
+    }
 }
 
 #[cfg(test)]
@@ -902,6 +1003,7 @@ mod tests {
     /// A router's UDP 5351: PCP (version 2) and NAT-PMP (version 0), each with its own behaviour.
     struct FakePmpRouter {
         addr: SocketAddr,
+        granted: Arc<std::sync::atomic::AtomicU16>,
         /// Every request seen, as (protocol, requested lifetime).
         seen: Arc<StdMutex<Vec<(Proto, u32)>>>,
     }
@@ -912,6 +1014,8 @@ mod tests {
             let addr = sock.local_addr().unwrap();
             let seen: Arc<StdMutex<Vec<(Proto, u32)>>> = Arc::default();
             let log = seen.clone();
+            let granted = Arc::new(std::sync::atomic::AtomicU16::new(granted_port));
+            let live = granted.clone();
             tokio::spawn(async move {
                 let mut buf = [0u8; 1100];
                 loop {
@@ -919,6 +1023,7 @@ mod tests {
                         return;
                     };
                     let req = &buf[..n];
+                    let granted_port = live.load(std::sync::atomic::Ordering::SeqCst);
                     match req.first() {
                         // PCP MAP
                         Some(2) if n >= 60 => {
@@ -966,7 +1071,17 @@ mod tests {
                     }
                 }
             });
-            Self { addr, seen }
+            Self {
+                addr,
+                granted,
+                seen,
+            }
+        }
+
+        /// The external port the router grants from now on.
+        fn grant(&self, port: u16) {
+            self.granted
+                .store(port, std::sync::atomic::Ordering::SeqCst);
         }
 
         fn lifetimes(&self, p: Proto) -> Vec<u32> {
@@ -983,6 +1098,14 @@ mod tests {
     /// A router's UPnP IGD: SSDP answer, device description and SOAP control, on 127.0.0.1.
     struct FakeIgd {
         ssdp: SocketAddr,
+        /// Where its device description and control point listen.
+        http: SocketAddr,
+        /// Device-description requests served.
+        gets: Arc<std::sync::atomic::AtomicUsize>,
+        /// The UPnP error code AddPortMapping answers with now; 0 accepts.
+        add_error: Arc<std::sync::atomic::AtomicU32>,
+        /// How long AddPortMapping takes to answer, in ms.
+        add_delay_ms: Arc<std::sync::atomic::AtomicU64>,
         /// Every SOAP action with its arguments' text.
         actions: Arc<StdMutex<Vec<(String, String)>>>,
     }
@@ -990,7 +1113,19 @@ mod tests {
     impl FakeIgd {
         /// `add_error`: the UPnP error code AddPortMapping answers with, or none to accept.
         async fn start(wan: Ipv4Addr, add_error: Option<u32>) -> Self {
+            Self::start_with(wan, add_error, "/ctl/ip").await
+        }
+
+        /// `control`: what the device description says the control URL is (relative or absolute).
+        async fn start_with(wan: Ipv4Addr, add_error: Option<u32>, control: &str) -> Self {
+            use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let control = control.to_string();
+            let gets = Arc::new(AtomicUsize::new(0));
+            let add_error = Arc::new(AtomicU32::new(add_error.unwrap_or(0)));
+            let add_delay_ms = Arc::new(AtomicU64::new(0));
+            let (gets_in, err_in, delay_in) =
+                (gets.clone(), add_error.clone(), add_delay_ms.clone());
             let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let http_addr = tcp.local_addr().unwrap();
             let actions: Arc<StdMutex<Vec<(String, String)>>> = Arc::default();
@@ -1001,6 +1136,9 @@ mod tests {
                         return;
                     };
                     let log = log.clone();
+                    let control = control.clone();
+                    let (gets, add_error, add_delay_ms) =
+                        (gets_in.clone(), err_in.clone(), delay_in.clone());
                     tokio::spawn(async move {
                         let mut req = Vec::new();
                         let mut buf = [0u8; 4096];
@@ -1030,10 +1168,10 @@ mod tests {
                         }
                         let text = String::from_utf8_lossy(&req).into_owned();
                         let (status, body) = if text.starts_with("GET /desc.xml") {
-                            ("200 OK", "<root><device><deviceList><device><deviceList><device><serviceList>\
+                            gets.fetch_add(1, Ordering::SeqCst);
+                            ("200 OK", format!("<root><device><deviceList><device><deviceList><device><serviceList>\
                                  <service><serviceType>urn:schemas-upnp-org:service:WANIPConnection:1</serviceType>\
-                                 <controlURL>/ctl/ip</controlURL></service></serviceList></device></deviceList></device></deviceList></device></root>"
-                                .to_string())
+                                 <controlURL>{control}</controlURL></service></serviceList></device></deviceList></device></deviceList></device></root>"))
                         } else {
                             let action = text
                                 .lines()
@@ -1053,11 +1191,20 @@ mod tests {
                                 text.split("\r\n\r\n").nth(1).unwrap_or("").to_string(),
                             ));
                             match action.as_str() {
-                                "GetExternalIPAddress" => ("200 OK", format!("<NewExternalIPAddress>{wan}</NewExternalIPAddress>")),
-                                "AddPortMapping" => match add_error {
-                                    None => ("200 OK", "<ok/>".into()),
-                                    Some(code) => ("500 Internal Server Error", format!("<errorCode>{code}</errorCode><errorDescription>nope</errorDescription>")),
-                                },
+                                "GetExternalIPAddress" => (
+                                    "200 OK",
+                                    format!("<NewExternalIPAddress>{wan}</NewExternalIPAddress>"),
+                                ),
+                                "AddPortMapping" => {
+                                    let ms = add_delay_ms.load(Ordering::SeqCst);
+                                    if ms > 0 {
+                                        tokio::time::sleep(Duration::from_millis(ms)).await;
+                                    }
+                                    match add_error.load(Ordering::SeqCst) {
+                                    0 => ("200 OK", "<ok/>".into()),
+                                    code => ("500 Internal Server Error", format!("<errorCode>{code}</errorCode><errorDescription>nope</errorDescription>")),
+                                }
+                                }
                                 _ => ("200 OK", "<ok/>".into()),
                             }
                         };
@@ -1078,7 +1225,28 @@ mod tests {
                     let _ = udp.send_to(r.as_bytes(), from).await;
                 }
             });
-            Self { ssdp, actions }
+            Self {
+                ssdp,
+                http: http_addr,
+                gets,
+                add_error,
+                add_delay_ms,
+                actions,
+            }
+        }
+
+        fn set_add_error(&self, code: u32) {
+            self.add_error
+                .store(code, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn set_add_delay(&self, ms: u64) {
+            self.add_delay_ms
+                .store(ms, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn gets(&self) -> usize {
+            self.gets.load(std::sync::atomic::Ordering::SeqCst)
         }
 
         fn actions(&self, name: &str) -> Vec<String> {
@@ -1429,5 +1597,205 @@ mod tests {
         let (kind, url) = igd_service(desc, "http://192.168.1.1:5000/rootDesc.xml").unwrap();
         assert!(kind.ends_with("WANIPConnection:1"));
         assert_eq!(url, "http://192.168.1.1:5000/ctl/ip");
+    }
+
+    // --- the running check: renewal, re-checks and shutdown -------------------------------------------------------
+
+    fn quick(_lease: u32) -> Duration {
+        Duration::from_millis(60)
+    }
+
+    fn config(gw: Gateway) -> Config {
+        Config {
+            port: 4443,
+            gateway: Some(gw),
+            host_public4: false,
+            v6: None,
+            overlay: false,
+            seen: None,
+        }
+    }
+
+    /// Waits (at most 5 s) until the published report satisfies `ok`.
+    async fn until(
+        rx: &mut watch::Receiver<Option<Report>>,
+        what: &str,
+        ok: impl Fn(&Report) -> bool,
+    ) {
+        let wait = async {
+            loop {
+                if rx.borrow().as_ref().is_some_and(&ok) {
+                    return;
+                }
+                if rx.changed().await.is_err() {
+                    panic!("the check ended before: {what}");
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), wait)
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for: {what}"));
+    }
+
+    fn external_port(r: &Report) -> Option<u16> {
+        r.mapping.as_ref().map(|m| m.external_port)
+    }
+
+    #[tokio::test]
+    async fn a_renewal_that_moves_the_external_port_is_published_so_the_bundle_follows() {
+        let router = FakePmpRouter::start(Mode::Accept, Mode::Silent, wan(), 50123).await;
+        let handle = spawn_with(
+            config(gateway(Some(router.addr), None)),
+            reqwest::Client::new(),
+            false,
+            quick,
+        );
+        let mut rx = handle.rx.clone();
+        until(&mut rx, "the first mapping", |r| {
+            external_port(r) == Some(50123)
+        })
+        .await;
+        router.grant(50999);
+        until(&mut rx, "the report to follow the renewed mapping", |r| {
+            external_port(r) == Some(50999)
+        })
+        .await;
+        handle.release().await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_renewal_removes_the_old_mapping_before_asking_again() {
+        let igd = FakeIgd::start(wan(), None).await;
+        let handle = spawn_with(
+            config(gateway(None, Some(igd.ssdp))),
+            reqwest::Client::new(),
+            false,
+            quick,
+        );
+        let mut rx = handle.rx.clone();
+        until(&mut rx, "the first mapping", |r| r.mapping.is_some()).await;
+        igd.set_add_error(501); // the router stops keeping it
+        until(&mut rx, "the re-check without a mapping", |r| {
+            r.mapping.is_none()
+        })
+        .await;
+        assert_eq!(
+            igd.actions("DeletePortMapping").len(),
+            1,
+            "the old mapping must not be left open until its lease ends"
+        );
+        handle.release().await;
+    }
+
+    #[tokio::test]
+    async fn a_shutdown_during_the_start_up_check_still_removes_the_mapping() {
+        let igd = FakeIgd::start(wan(), None).await;
+        igd.set_add_delay(400);
+        let handle = spawn_with(
+            config(gateway(None, Some(igd.ssdp))),
+            reqwest::Client::new(),
+            false,
+            quick,
+        );
+        // The router has the request and is thinking about it; SIGTERM arrives now.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while igd.actions("AddPortMapping").is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the check reached the router");
+        handle.release().await;
+        assert_eq!(igd.actions("AddPortMapping").len(), 1);
+        assert_eq!(
+            igd.actions("DeletePortMapping").len(),
+            1,
+            "the mapping made while shutting down is removed too"
+        );
+    }
+
+    // --- UPnP only talks to the router -------------------------------------------------------------------------
+
+    /// An SSDP responder bound to `bind` that answers every search with `location`.
+    async fn ssdp_responder(bind: &str, location: String) -> SocketAddr {
+        let udp = UdpSocket::bind(format!("{bind}:0")).await.unwrap();
+        let addr = udp.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 1500];
+            while let Ok((_, from)) = udp.recv_from(&mut buf).await {
+                let r = format!("HTTP/1.1 200 OK\r\nLocation: {location}\r\nST: {IGD_ST}\r\n\r\n");
+                let _ = udp.send_to(r.as_bytes(), from).await;
+            }
+        });
+        addr
+    }
+
+    /// A listener on another loopback address that counts the connections made to it.
+    async fn bystander() -> (SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+        let tcp = tokio::net::TcpListener::bind("127.0.0.2:0").await.unwrap();
+        let addr = tcp.local_addr().unwrap();
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = hits.clone();
+        tokio::spawn(async move {
+            while let Ok((_s, _)) = tcp.accept().await {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        (addr, hits)
+    }
+
+    fn hits(h: &Arc<std::sync::atomic::AtomicUsize>) -> usize {
+        h.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[tokio::test]
+    async fn an_ssdp_answer_from_a_host_that_is_not_the_gateway_is_ignored() {
+        let igd = FakeIgd::start(wan(), None).await;
+        // The gateway is 127.0.0.1; the answer comes from 127.0.0.2 and points at a perfectly good IGD.
+        let rogue = ssdp_responder("127.0.0.2", format!("http://{}/desc.xml", igd.http)).await;
+        let out = open(
+            &gateway(None, Some(rogue)),
+            &reqwest::Client::new(),
+            4443,
+            600,
+        )
+        .await;
+        assert!(
+            out.mapping.is_none(),
+            "no mapping through a stranger's answer"
+        );
+        assert_eq!(igd.gets(), 0, "its description was not even fetched");
+        assert!(igd.actions("AddPortMapping").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_location_on_another_host_is_never_fetched() {
+        let (victim, victim_hits) = bystander().await;
+        // The answer comes from the gateway itself, but names some other machine in the network.
+        let ssdp = ssdp_responder("127.0.0.1", format!("http://{victim}/desc.xml")).await;
+        let out = open(
+            &gateway(None, Some(ssdp)),
+            &reqwest::Client::new(),
+            4443,
+            600,
+        )
+        .await;
+        assert!(out.mapping.is_none());
+        assert_eq!(hits(&victim_hits), 0, "nothing was sent to the other host");
+    }
+
+    #[tokio::test]
+    async fn a_control_url_on_another_host_is_never_called() {
+        let (victim, victim_hits) = bystander().await;
+        let igd = FakeIgd::start_with(wan(), None, &format!("http://{victim}/ctl")).await;
+        let out = open(
+            &gateway(None, Some(igd.ssdp)),
+            &reqwest::Client::new(),
+            4443,
+            600,
+        )
+        .await;
+        assert!(out.mapping.is_none());
+        assert_eq!(hits(&victim_hits), 0, "no SOAP call reached the other host");
     }
 }

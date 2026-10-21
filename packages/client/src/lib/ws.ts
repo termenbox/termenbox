@@ -60,23 +60,31 @@ export function openWs(url: string, timeoutMs: number, signal?: AbortSignal): Pr
       reject(new Error('invalid WebSocket URL'));
       return;
     }
-    const timer = setTimeout(() => {
-      ws.close();
-      reject(new Error(`no WebSocket after ${timeoutMs} ms`));
-    }, timeoutMs);
-    // Another path won the race: stop this one.
-    signal?.addEventListener('abort', () => {
+    const onAbort = () => {
       clearTimeout(timer);
       ws.onopen = ws.onerror = null;
       ws.close();
       reject(new Error('cancelled'));
-    }, { once: true });
-    ws.onopen = () => {
+    };
+    // Whichever way this attempt ends, the race's signal must not reach it any more: a winner would otherwise be
+    // closed by the abort that declares it the winner.
+    const settle = () => {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const timer = setTimeout(() => {
+      settle();
+      ws.close();
+      reject(new Error(`no WebSocket after ${timeoutMs} ms`));
+    }, timeoutMs);
+    // Another path won the race: stop this one.
+    signal?.addEventListener('abort', onAbort, { once: true });
+    ws.onopen = () => {
+      settle();
       resolve(new WsTransport(ws));
     };
     ws.onerror = () => {
-      clearTimeout(timer);
+      settle();
       reject(new Error('WebSocket failed'));
     };
   });

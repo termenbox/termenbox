@@ -68,3 +68,29 @@ describe('candidate bundle (shared vector with packages/core)', () => {
     expect(b.candidates.map((c) => c.kind)).toEqual(['lan', 'wan4', 'wan6', 'overlay', 'tunnel']);
   });
 });
+
+describe('candidate addresses are checked by kind before anything uses them', () => {
+  const lan = (addr: string, kind: Bundle['candidates'][number]['kind'] = 'lan') => ({ kind, addr, port: 4443 });
+  const withCandidate = (c: Bundle['candidates'][number]) => sign({ server_id: '', seq: 1, expires: NOW + 100, fingerprint: vectors.bundle.fingerprint, name: 'x', candidates: [c] });
+
+  it('rejects a line break, a hostname or a stray URL where an IP address belongs', async () => {
+    for (const c of [
+      lan('10.0.0.2\r\na=evil'), lan('10.0.0.2 extra'), lan('example.com'), lan('http://10.0.0.2'), lan('999.1.1.1'), lan(''),
+      lan('8.8.8.8\n', 'wan4'), lan('2001:db8::1', 'wan4'), lan('8.8.8.8', 'wan6'), lan('fe80::1%eth0', 'wan6'), lan('internal-host', 'overlay'),
+    ]) {
+      expect(await reason(verifyBundle(await withCandidate(c), { nowSecs: NOW, allowExpired: true })), JSON.stringify(c.addr)).toBe('malformed');
+    }
+  });
+
+  it('rejects a tunnel that is not a wss URL', async () => {
+    for (const addr of ['ws://internal-host/', 'https://t.example/ws', 'wss://', 'wss://t.example/ws\r\nx', 'wss://user:pw@t.example/', 'javascript:alert(1)', 'internal-host']) {
+      expect(await reason(verifyBundle(await withCandidate(lan(addr, 'tunnel')), { nowSecs: NOW, allowExpired: true })), addr).toBe('malformed');
+    }
+  });
+
+  it('accepts what a server really advertises', async () => {
+    for (const c of [lan('192.168.1.20'), lan('8.8.8.8', 'wan4'), lan('2001:4860::9', 'wan6'), lan('100.64.1.2', 'overlay'), lan('fd7a:115c::1', 'overlay'), lan('wss://t.example/ws', 'tunnel')]) {
+      expect(await reason(verifyBundle(await withCandidate(c), { nowSecs: NOW, allowExpired: true })), c.addr).toBe('ok');
+    }
+  });
+});

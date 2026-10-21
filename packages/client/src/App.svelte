@@ -28,7 +28,7 @@
   import { sendServerLink } from './lib/share';
   import { ServerHub, newSessionTargets, serverKey, sessionDestinations, sessionKey, type HubServer } from './lib/hub';
   import { lookup } from './lib/directory';
-  import { parsePairLink, type PairLink } from './lib/pair';
+  import { linksToAccount, mergePaired, parsePairLink, type PairLink } from './lib/pair';
   import { storedBundle } from './lib/paths';
   import { DeleteFailed, deleteMyData, registerServer, SIGN_IN_EXPIRED } from './lib/account';
   import { deviceKey, publicKeyB64, signChallenge, certExpiry, certUserId, avatarUrl } from './lib/device';
@@ -440,14 +440,20 @@
    * once the server has an owner it stops announcing the claim secret that proves who set it up. The server is added either way.
    */
   async function addAndLink(server: ServerListItem) {
-    if (server.claim && server.record && deviceCert) {
-      try { await registerServer(location.origin, { cert: deviceCert, pair: await deviceKey() }, server.claim); }
+    if (linksToAccount(server, !!deviceCert)) {
+      try { await registerServer(location.origin, { cert: deviceCert!, pair: await deviceKey() }, server.claim!); }
       catch (e) {
         noteError(`account link: ${e instanceof Error ? e.message : e}`);
         showToast('Server added, but it could not be linked to your account, so "Delete my data" will not cover it. Its record is removed 30 days after it goes quiet.', 'error');
       }
     }
     addServer(server);
+  }
+
+  /** A server confirmed in the pairing dialog; one already saved keeps what this device knows about it. */
+  async function addPaired(paired: ServerListItem) {
+    const existing = servers.find((s) => s.server_id === paired.server_id);
+    await addAndLink(mergePaired(existing, paired));
   }
 
   async function deleteData(): Promise<number> {
@@ -960,7 +966,7 @@
   {/if}
 
   {#if pairLink}
-    <PairDialog link={pairLink} onclose={() => pairLink = null} onadd={(server) => { pairLink = null; addServer(server); }} />
+    <PairDialog link={pairLink} onclose={() => pairLink = null} onadd={(server) => { pairLink = null; void addPaired(server); }} />
   {/if}
   {#if showAddServer}
     <AddServerModal origin={location.origin} prefillSecret={addPrefill} onserver={(id) => { showAddServer = false; void addServerById(id); }} onclose={() => showAddServer = false} onadd={(server) => void addAndLink(server)} />

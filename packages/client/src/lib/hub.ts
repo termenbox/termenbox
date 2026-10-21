@@ -4,7 +4,7 @@ import { applyActivity, applyAttention, applyEvents, applySnapshot, syncRequest,
 import type { ClientMessage, ServerHealth, ServerListItem, ServerMessage, SessionInfo } from './protocol';
 import type { Target } from './transport';
 import { storedBundle, type PathFailure } from './paths';
-import { verifyBundle } from './bundle';
+import { BundleRejected, decodeBundle, verifyBundle } from './bundle';
 import { applyWindowList, forgetWindows, type WindowMap } from './windows';
 
 export type HubConnection = Pick<Connection, 'start' | 'close' | 'subscribe' | 'send'> & Partial<Pick<Connection, 'kind' | 'pathLabel' | 'rtt' | 'drops' | 'retry' | 'retryNow'>>;
@@ -210,8 +210,13 @@ export class ServerHub {
       e.server = { ...e.server, bundle: wire, bundle_seq: bundle.seq };
       this.opts.onSaved?.(e.server);
     } catch (err) {
+      // The server pushes the same bundle after every authentication: the one already stored is not a problem.
+      if (err instanceof BundleRejected && err.reason === 'stale' && this.isStored(e, wire)) return;
       console.warn('[termenbox] ignored a candidate bundle:', err instanceof Error ? err.message : err);
     }
+  }
+  private isStored(e: Entry, wire: string): boolean {
+    try { return decodeBundle(wire).bundle.seq === e.server.bundle_seq; } catch { return false; }
   }
   /** The server list alone: a health sample every 10 s per server must not rebuild the session, agent and window stores. */
   private publishServers(entries = [...this.entries.values()]) {

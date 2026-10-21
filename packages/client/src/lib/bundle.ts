@@ -21,6 +21,40 @@ export class BundleRejected extends Error {
 
 const bad = (reason: BundleFailure = 'malformed') => new BundleRejected(reason);
 
+const IPV4 = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+
+function isIpv6(addr: string): boolean {
+  if (!/^[0-9a-fA-F:.]+$/.test(addr) || !addr.includes(':')) return false;
+  try {
+    return new URL(`http://[${addr}]/`).hostname !== '';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What a candidate's address may be, by kind. A bundle from a pairing link is signed by whatever key its maker chose, so
+ * the signature does not make its contents safe: addresses go into an SDP `c=` line and WebSocket URLs, and must be
+ * nothing but an IP address (direct paths) or a plain `wss://` host (tunnels).
+ */
+export function validAddr(kind: CandidateKind, addr: string): boolean {
+  switch (kind) {
+    case 'wan4': return IPV4.test(addr);
+    case 'wan6': return isIpv6(addr);
+    case 'lan':
+    case 'overlay': return IPV4.test(addr) || isIpv6(addr);
+    case 'tunnel': {
+      if (!/^wss:\/\/[A-Za-z0-9.:\-_[\]/?=&%~+#@!$'()*,;]*$/.test(addr)) return false;
+      try {
+        const u = new URL(addr);
+        return u.protocol === 'wss:' && u.hostname !== '' && !u.username && !u.password;
+      } catch {
+        return false;
+      }
+    }
+  }
+}
+
 function fingerprintBytes(fp: string): Uint8Array {
   const m = /^sha-256 ((?:[0-9A-F]{2}:){31}[0-9A-F]{2})$/.exec(fp);
   if (!m) throw bad();
@@ -92,7 +126,9 @@ export function decodeBundle(wire: string): { bundle: Bundle; signed: Uint8Array
     const kind = KINDS[take(1)[0] - 1];
     if (!kind) throw bad();
     const p = take(2);
-    candidates.push({ kind, port: (p[0] << 8) | p[1], addr: text(take(1)[0]) });
+    const addr = text(take(1)[0]);
+    if (!validAddr(kind, addr)) throw bad();
+    candidates.push({ kind, port: (p[0] << 8) | p[1], addr });
   }
   if (at !== body.length) throw bad();
   const bundle: Bundle = { server_id, seq, expires, fingerprint, name, candidates };

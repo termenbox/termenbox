@@ -98,6 +98,11 @@ export class Connection {
   private opening = false;
   /** The next loss comes from a network change: re-race at once instead of waiting out the backoff. */
   private fastReconnect = false;
+  /** Pings sent whose pong has not arrived yet: a pong is only the proof of life of the latest one once this is back to 0. */
+  private pingsOut = 0;
+  /** After a network change: only the answer to the ping asked for it counts, not other traffic or an older pong. */
+  private proving = false;
+  private pongDueAt = 0;
   private pingSentAt = 0;
   private readyAt = 0;
   /** How many times a live connection was lost since this one was created. */
@@ -174,6 +179,7 @@ export class Connection {
     if (this.stopped) return;
     if (this.transport && this.authed) {
       this.fastReconnect = true;
+      this.proving = true;
       this.ping(NETWORK_PONG_WITHIN_MS);
     } else if (!this.opening) {
       this.reconnectNow();
@@ -266,6 +272,13 @@ export class Connection {
   private onText(transport: Transport, text: string) {
     if (this.transport !== transport) return;
     const msg: ServerMessage = JSON.parse(text);
+    if (msg.type === 'pong') {
+      this.pingsOut = Math.max(0, this.pingsOut - 1);
+      if (this.pingsOut === 0 && this.proving) {
+        this.proving = false;
+        this.fastReconnect = false; // the link answered the ping asked after the change: it did not cost the link
+      }
+    }
     this.heard();
     if (msg.type === 'challenge') {
       void this.answer(transport, msg.server_id, msg.nonce);
@@ -274,6 +287,9 @@ export class Connection {
     if (msg.type === 'auth_ok') {
       const isReconnect = this.everReady;
       this.authed = true;
+      this.pingsOut = 0;
+      this.proving = false;
+      this.fastReconnect = false;
       this.lanes = !!transport.lanes && !!msg.channels?.includes('term');
       this.everReady = true;
       this.attempt = 0;
@@ -293,7 +309,6 @@ export class Connection {
       return;
     }
     if (msg.type === 'pong') {
-      this.fastReconnect = false; // the link answered: the network change did not cost it
       if (this.pingSentAt) this.rtt = Math.round(performance.now() - this.pingSentAt);
     } else {
       this.listeners.forEach((fn) => fn(msg));
@@ -337,15 +352,18 @@ export class Connection {
   private ping(within = PONG_WITHIN_MS) {
     if (this.stopped || !this.authed) return;
     this.pingSentAt = performance.now();
+    this.pingsOut++;
     this.send({ type: 'ping' });
     this.armPongTimeout(within);
   }
 
   private armPongTimeout(within: number) {
+    const due = performance.now() + within;
     if (this.pongTimer) {
-      if (within >= PONG_WITHIN_MS) return; // one deadline at a time...
-      clearTimeout(this.pongTimer); // ...unless a foregrounding wants a sooner one
+      if (due >= this.pongDueAt) return; // one deadline at a time: the sooner one stays...
+      clearTimeout(this.pongTimer); // ...so a foregrounding cannot stretch a network change's 2 s
     }
+    this.pongDueAt = due;
     // Any message counts as proof of life (see heard()); silence means a half-open connection.
     this.pongTimer = setTimeout(() => {
       this.pongTimer = null;
@@ -371,6 +389,9 @@ export class Connection {
   }
 
   private heard() {
+    // After a network change, traffic may be what the old network still had in flight: only the answer to the
+    // proof-of-life ping (see onText) ends the deadline.
+    if (this.proving) return;
     if (this.pongTimer) clearTimeout(this.pongTimer);
     if (this.staleTimer) clearTimeout(this.staleTimer);
     this.pongTimer = this.staleTimer = null;
@@ -387,5 +408,7 @@ export class Connection {
     if (this.staleTimer) clearTimeout(this.staleTimer);
     this.timer = this.pingTimer = this.pongTimer = this.staleTimer = null;
     this.checking = false;
+    this.proving = false;
+    this.pingsOut = 0;
   }
 }

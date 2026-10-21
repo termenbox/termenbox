@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import vectors from '../../../core/testdata/bundle-vectors.json';
-import { describeCandidates, pairedServer, parsePairLink, previewPair } from './pair';
+import { describeCandidates, linksToAccount, mergePaired, pairedServer, parsePairLink, previewPair } from './pair';
+import type { ServerListItem } from './protocol';
 import { bundleOf, newServerKey } from './bundleFixture';
 
 const CLAIM = 'c'.repeat(43);
@@ -42,5 +43,48 @@ describe('the pairing link', () => {
     expect(await previewPair({ payload: old }, NOW)).toEqual({ ok: false, reason: 'expired' });
     const r = await previewPair({ payload: vectors.wire }, 1_800_000_000);
     expect(r.ok && r.preview.name).toBe('home-box');
+  });
+
+  describe('pairing a server that is already saved', () => {
+    const lan = [{ kind: 'lan' as const, addr: '10.0.0.2', port: 4443 }];
+    const saved = (id: string): ServerListItem => ({
+      server_url: 'wss://t.example/ws', server_id: id, server_name: 'old name', registered_at: 5, winner: 'lan 10.0.0.2:4443', bundle: 'OLD', bundle_seq: 9,
+      record: { ip: '8.8.8.8', udp_port: 50000, fingerprint: 'sha-256 AB', ws_url: 'https://ws.example' } as never,
+    });
+    const paired = async (key: Awaited<ReturnType<typeof newServerKey>>, seq: number, claim?: string) => {
+      const payload = await key.sign(bundleOf(seq, lan, { name: 'fresh' }));
+      const r = await previewPair({ payload, claim }, NOW);
+      if (!r.ok) throw new Error('did not verify');
+      return pairedServer(r.preview);
+    };
+
+    it('keeps the tunnel URL, the directory record, the winner and a newer stored bundle, and does not let an older link overwrite it', async () => {
+      const key = await newServerKey();
+      const merged = mergePaired(saved(key.serverId), await paired(key, 1));
+      expect(merged).toMatchObject({ server_url: 'wss://t.example/ws', winner: 'lan 10.0.0.2:4443', bundle: 'OLD', bundle_seq: 9, registered_at: 5 });
+      expect(merged.record).toBeDefined();
+    });
+
+    it('takes a newer bundle from the link and the claim it carries, and the name given on this device', async () => {
+      const key = await newServerKey();
+      const merged = mergePaired(saved(key.serverId), await paired(key, 12, CLAIM));
+      expect(merged).toMatchObject({ bundle_seq: 12, claim: CLAIM, server_name: 'fresh', server_url: 'wss://t.example/ws', winner: 'lan 10.0.0.2:4443' });
+      expect(merged.record).toBeDefined();
+    });
+
+    it('is the link itself for a server not saved yet', async () => {
+      const key = await newServerKey();
+      const p = await paired(key, 1);
+      expect(mergePaired(undefined, p)).toEqual(p);
+    });
+  });
+
+  it('links a claimed server to the account only through a directory record: a pairing alone makes no directory request', () => {
+    const base: ServerListItem = { server_url: '', server_name: 'x', registered_at: 0 };
+    expect(linksToAccount({ ...base, claim: CLAIM, record: {} as never }, true)).toBe(true);
+    expect(linksToAccount({ ...base, claim: CLAIM, record: {} as never }, false)).toBe(false);
+    expect(linksToAccount({ ...base, claim: CLAIM, bundle: 'B' }, true)).toBe(false);
+    expect(linksToAccount({ ...base, bundle: 'B', record: {} as never }, true)).toBe(false);
+    expect(linksToAccount({ ...base, claim: CLAIM }, true)).toBe(false);
   });
 });

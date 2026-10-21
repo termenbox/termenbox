@@ -47,6 +47,32 @@ export function pairedServer(p: PairPreview, name = p.name): ServerListItem {
   return { server_url: '', server_id: p.serverId, server_name: name, registered_at: Date.now(), claim: p.claim, bundle: p.payload, bundle_seq: p.seq };
 }
 
+/**
+ * The list entry for a pairing link when the server may already be saved: what this device learned about it (tunnel URL,
+ * directory record, the path that won, a newer bundle) is kept, and the link adds its claim and a bundle only if it is
+ * newer than the stored one.
+ */
+export function mergePaired(existing: ServerListItem | undefined, paired: ServerListItem): ServerListItem {
+  if (!existing) return paired;
+  const newer = (paired.bundle_seq ?? 0) > (existing.bundle_seq ?? 0);
+  return {
+    ...existing,
+    server_name: paired.server_name || existing.server_name,
+    claim: paired.claim ?? existing.claim,
+    bundle: newer ? paired.bundle : existing.bundle,
+    bundle_seq: newer ? paired.bundle_seq : existing.bundle_seq,
+  };
+}
+
+/**
+ * Whether to tell the directory this account set the server up: it has a claim and a directory record. A server
+ * paired by link has no record, and a LAN-only one must cause no directory request at all
+ * (GUARDRAIL-lan-addresses-never-reach-the-directory), so a pairing alone never links.
+ */
+export function linksToAccount(server: ServerListItem, signedIn: boolean): boolean {
+  return signedIn && !!server.claim && !!server.record;
+}
+
 const KIND_WORD: Record<string, string> = { lan: 'LAN', wan4: 'internet (IPv4)', wan6: 'internet (IPv6)', overlay: 'overlay network', tunnel: 'tunnel' };
 
 /** `LAN, internet (IPv4)`: which ways the link says the server can be reached, without showing addresses. */

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 import { ServerHub, newSessionTargets, serverKey, sessionDestinations, type HubConnection } from './hub';
 import type { ConnectionOptions } from './connection';
@@ -243,6 +243,29 @@ describe('ServerHub candidate bundles (decision 0123)', () => {
     expect(saved[0]).toMatchObject({ bundle: good, bundle_seq: 6 });
     c.emit({ type: 'candidates', bundle: good }); await settle();
     expect(saved).toHaveLength(1); // the same seq again is stale
+  });
+
+  it('takes the same bundle again, as on every reconnect, as a quiet no-op, and still warns about a real rejection', async () => {
+    const { newServerKey, bundleOf } = await import('./bundleFixture');
+    const key = await newServerKey();
+    const lan = [{ kind: 'lan' as const, addr: '10.0.0.2', port: 4443 }];
+    const saved: ServerListItem[] = [];
+    const connections: Fake[] = [];
+    const hub = new ServerHub({ credentials: async () => ({ cert: 'c', sign: async () => 's' }), onSaved: s => saved.push(s), factory: opts => { const c = new Fake(opts); connections.push(c); return c; } });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      hub.start([server(key.serverId)]);
+      const c = connections[0];
+      const settle = () => new Promise(r => setTimeout(r, 20));
+      const same = await key.sign(bundleOf(4, lan));
+      c.emit({ type: 'candidates', bundle: same }); await settle();
+      c.emit({ type: 'candidates', bundle: same }); await settle();
+      c.emit({ type: 'candidates', bundle: same }); await settle();
+      expect(saved).toHaveLength(1);
+      expect(warn).not.toHaveBeenCalled();
+      c.emit({ type: 'candidates', bundle: await key.sign(bundleOf(3, lan)) }); await settle();
+      expect(warn).toHaveBeenCalledTimes(1); // an older seq is a real rejection
+    } finally { warn.mockRestore(); }
   });
 
   it('remembers the path that connected and shows the active path and every failure', () => {
