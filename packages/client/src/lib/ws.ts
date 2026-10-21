@@ -51,7 +51,7 @@ class WsTransport implements Transport {
   }
 }
 
-export function openWs(url: string, timeoutMs: number): Promise<Transport> {
+export function openWs(url: string, timeoutMs: number, signal?: AbortSignal): Promise<Transport> {
   return new Promise((resolve, reject) => {
     let ws: WebSocket;
     try {
@@ -64,6 +64,13 @@ export function openWs(url: string, timeoutMs: number): Promise<Transport> {
       ws.close();
       reject(new Error(`no WebSocket after ${timeoutMs} ms`));
     }, timeoutMs);
+    // Another path won the race: stop this one.
+    signal?.addEventListener('abort', () => {
+      clearTimeout(timer);
+      ws.onopen = ws.onerror = null;
+      ws.close();
+      reject(new Error('cancelled'));
+    }, { once: true });
     ws.onopen = () => {
       clearTimeout(timer);
       resolve(new WsTransport(ws));

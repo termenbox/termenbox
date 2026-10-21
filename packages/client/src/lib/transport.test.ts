@@ -57,3 +57,33 @@ describe('openTransport', () => {
     expect(err).toBeInstanceOf(Unreachable);
   });
 });
+
+describe('openTransport over a candidate bundle (decision 0123)', () => {
+  const FP = 'sha-256 ' + Array(32).fill('AB').join(':');
+  const bundle = {
+    server_id: 'A'.repeat(43), seq: 1, expires: 9e9, fingerprint: FP, name: 'box',
+    candidates: [{ kind: 'lan' as const, addr: '192.168.1.20', port: 4443 }, { kind: 'wan4' as const, addr: '8.8.8.8', port: 50000 }],
+  };
+
+  it('races the candidates and returns the first to connect, labelled with its path', async () => {
+    const o = openers({ rtc: vi.fn(async (t: { ip: string }) => { if (t.ip === '192.168.1.20') throw new Error('ICE failed'); return fake('rtc'); }) });
+    const t = await openTransport({ bundle }, o);
+    expect(t.path).toMatchObject({ kind: 'wan4', label: 'Direct, internet' });
+  });
+
+  it('wrong_fingerprint_never_connects: every attempt is pinned to the signed fingerprint, whatever address named it', async () => {
+    const o = openers({ rtc: vi.fn(async () => { throw new Error('DTLS fingerprint mismatch'); }) });
+    const recordFp = 'sha-256 ' + Array(32).fill('CD').join(':');
+    const err = await openTransport({ bundle, record: { ...record, ip: '9.9.9.9', fingerprint: recordFp } }, o).catch((e) => e);
+    expect(err).toBeInstanceOf(Unreachable);
+    const pins = o.rtc.mock.calls.map((c) => `${(c[0] as { ip: string }).ip}=${(c[0] as { fingerprint: string }).fingerprint}`).sort();
+    // The bundle's addresses carry the bundle's fingerprint; the record's own address carries the record's.
+    expect(pins).toEqual([`192.168.1.20=${FP}`, `8.8.8.8=${FP}`, `9.9.9.9=${recordFp}`].sort());
+    expect(err.failures).toHaveLength(3);
+  });
+
+  it('without a bundle the old order holds: the record over WebRTC, then the tunnel', async () => {
+    const o = openers();
+    expect((await openTransport({ record }, o)).path).toBeUndefined();
+  });
+});

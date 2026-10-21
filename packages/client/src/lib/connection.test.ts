@@ -228,3 +228,87 @@ describe('a connect that fails', () => {
     c.close();
   });
 });
+
+describe('after a network change (decision 0123)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** A connection whose carrier can be replaced, with a working `window` and `navigator.connection`. */
+  async function setup() {
+    vi.useFakeTimers();
+    const doc = Object.assign(new EventTarget(), { visibilityState: 'visible' });
+    const win = new EventTarget();
+    const net = new EventTarget();
+    vi.stubGlobal('document', doc);
+    vi.stubGlobal('window', win);
+    vi.stubGlobal('navigator', { connection: net });
+    const made: { t: Transport; sent: string[]; closed: boolean }[] = [];
+    const open = async () => {
+      const rec = { sent: [] as string[], closed: false } as { t: Transport; sent: string[]; closed: boolean };
+      rec.t = {
+        kind: 'rtc', onmessage: null, onclose: null, send: (x) => void rec.sent.push(x), close: () => { rec.closed = true; },
+        path: { key: `lan 10.0.0.${made.length + 2}:4443`, kind: 'lan', label: 'Direct, LAN', addr: '10.0.0.2', port: 4443 },
+      };
+      made.push(rec);
+      return rec.t;
+    };
+    const paths: (string | null)[] = [];
+    const winners: string[] = [];
+    const states: string[] = [];
+    const c = new Connection({
+      target: async () => ({ wsUrl: 'ws://x' }),
+      openers: { rtc: open, ws: open },
+      credentials: async () => ({ cert: 'c', sign: async () => 's' }),
+      onState: (s) => states.push(s),
+      onReady: () => {},
+      onFatal: () => {},
+      onPath: (p) => paths.push(p?.label ?? null),
+      onWinner: (k) => winners.push(k),
+    });
+    const login = async (rec: { t: Transport }) => {
+      await vi.advanceTimersByTimeAsync(10);
+      rec.t.onmessage!(JSON.stringify({ type: 'challenge', nonce: 'n', server_id: 's' }));
+      await vi.advanceTimersByTimeAsync(10);
+      rec.t.onmessage!(JSON.stringify({ type: 'auth_ok', user: 'u', server_name: 's' }));
+    };
+    c.start();
+    await login({ t: await vi.waitFor(() => made[0].t) });
+    return { c, made, win, net, paths, winners, states, login };
+  }
+
+  it('shows the path that carries the session and remembers it as the winner once authenticated', async () => {
+    const { c, paths, winners } = await setup();
+    expect(paths).toEqual(['Direct, LAN']);
+    expect(c.pathLabel).toBe('Direct, LAN');
+    expect(winners).toEqual(['lan 10.0.0.2:4443']);
+    c.close();
+  });
+
+  it('re-races at once when the network changed and the link does not answer within 2 s, with no backoff wait', async () => {
+    const { c, made, net, login } = await setup();
+    net.dispatchEvent(new Event('change')); // Wi-Fi to cellular
+    expect(made[0].sent.at(-1)).toContain('"ping"');
+    await vi.advanceTimersByTimeAsync(1900);
+    expect(made).toHaveLength(1); // still waiting for the answer
+    await vi.advanceTimersByTimeAsync(200);
+    // No reply: the old carrier is dropped and a new race has started, not after the 1 s backoff but immediately.
+    expect(made[0].closed).toBe(true);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(made).toHaveLength(2);
+    await login(made[1]);
+    expect(c.pathLabel).toBe('Direct, LAN');
+    c.close();
+  });
+
+  it('keeps the link when it answers the proof of life after a network change', async () => {
+    const { c, made, win } = await setup();
+    win.dispatchEvent(new Event('online'));
+    made[0].t.onmessage!(JSON.stringify({ type: 'pong' }));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(made).toHaveLength(1);
+    expect(made[0].closed).toBe(false);
+    c.close();
+  });
+});

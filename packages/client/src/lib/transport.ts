@@ -1,4 +1,9 @@
 import type { DirRecord } from './directory';
+import type { RtcTarget } from './rtc';
+import type { Bundle } from './protocol';
+import { buildPaths, isTunnel, orderPaths, racePaths, Unreachable, type Path } from './paths';
+
+export { Unreachable };
 
 /** What `Connection` needs from a carrier: ordered JSON text messages and a close notice. */
 export interface Transport {
@@ -12,23 +17,23 @@ export interface Transport {
   onterm?: ((bytes: Uint8Array) => void) | null;
   /** False when the lane is not open (yet): the caller falls back to the JSON `input` message. */
   sendTerm?(bytes: Uint8Array): boolean;
+  /** The path that carried this transport, when it was found by the race over candidate paths. */
+  path?: Path;
 }
 
 /** Where a server can be reached. A directory record is preferred; a plain WebSocket URL is the fallback. */
 export interface Target {
   record?: DirRecord;
   wsUrl?: string;
-}
-
-export class Unreachable extends Error {
-  constructor(message: string, readonly attempts: string[]) {
-    super(message);
-  }
+  /** A verified candidate bundle (decision 0123); with candidates in it the paths are raced instead of tried in turn. */
+  bundle?: Bundle | null;
+  /** The key of the path that connected last: it starts first. */
+  winner?: string;
 }
 
 export interface Openers {
-  rtc(record: DirRecord, timeoutMs: number): Promise<Transport>;
-  ws(url: string, timeoutMs: number): Promise<Transport>;
+  rtc(target: RtcTarget, timeoutMs: number, signal?: AbortSignal): Promise<Transport>;
+  ws(url: string, timeoutMs: number, signal?: AbortSignal): Promise<Transport>;
 }
 
 /** ICE, DTLS and the data channel take several round trips; on a slow mobile link 5 s was too short and looped. */
@@ -49,6 +54,7 @@ export function describeRtcFailure(record: DirRecord, cause?: string): string {
  * WebSocket (tunnel) fallback. Throws Unreachable with a message the UI can show.
  */
 export async function openTransport(target: Target, openers: Openers): Promise<Transport> {
+  if (target.bundle?.candidates.length) return raceTransport(target, openers);
   const attempts: string[] = [];
   let rtcFailure: string | null = null;
 
@@ -72,4 +78,17 @@ export async function openTransport(target: Target, openers: Openers): Promise<T
   }
 
   throw new Unreachable(rtcFailure ?? 'Server unreachable', attempts);
+}
+
+/**
+ * Decision 0123: every path the client knows (the bundle's candidates, the directory record, a tunnel URL) is raced,
+ * the remembered winner and the cheapest paths first, staggered 150-300 ms; the first to connect wins and the rest are
+ * cancelled. Every attempt pins the server's DTLS fingerprint, whichever address it came from.
+ */
+async function raceTransport(target: Target, openers: Openers): Promise<Transport> {
+  const paths = orderPaths(buildPaths({ bundle: target.bundle, record: target.record, wsUrl: target.wsUrl }), target.winner);
+  const { value, path } = await racePaths(paths, (p, signal) =>
+    isTunnel(p) ? openers.ws(p.url!, WS_TIMEOUT_MS, signal) : openers.rtc({ ip: p.addr, udp_port: p.port, fingerprint: p.fingerprint! }, RTC_TIMEOUT_MS, signal));
+  value.path = path;
+  return value;
 }

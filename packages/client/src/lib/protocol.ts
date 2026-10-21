@@ -57,6 +57,8 @@ export type ServerMessage =
   /** Answer to `claim_preview`: `mode` is `container` or `host`; `run_user` is empty in a container. */
   | { type: 'claim_preview'; name: string; mode: string; run_user?: string; version: string }
   | { type: 'uninstall_done'; mode: string }
+  /** Decision 0123: the server's signed candidate bundle, pushed after `auth_ok`; verify it before use (lib/bundle.ts). */
+  | { type: 'candidates'; bundle: string }
   | { type: 'auth_ok'; channels?: string[]; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string; acp_agents?: string[] }
   | { type: 'sessions'; sessions: SessionInfo[] }
   | { type: 'session_attached'; session_id: string }
@@ -293,6 +295,21 @@ export type AgentEvent = { session: string; seq: number; ts: number; source: str
 /** Legacy message of the parked termenbox-agent. */
 export type AgentEventType = 'spawned' | 'completed' | 'error';
 
+/** Decision 0123: the ways a server can be reached, each an address around one pinned identity. */
+export type CandidateKind = 'lan' | 'wan4' | 'wan6' | 'overlay' | 'tunnel';
+export interface Candidate { kind: CandidateKind; addr: string; port: number }
+/** A verified candidate bundle (wire form and layout: packages/core/src/bundle.rs, lib/bundle.ts). */
+export interface Bundle {
+  /** The server's Ed25519 public key, base64url. */
+  server_id: string;
+  seq: number;
+  /** Unix seconds. */
+  expires: number;
+  fingerprint: string;
+  name: string;
+  candidates: Candidate[];
+}
+
 export interface ServerListItem {
   /** Tunnel (WebSocket) fallback or manually entered address; optional once a directory record exists. */
   server_url: string;
@@ -304,4 +321,9 @@ export interface ServerListItem {
   registered_at: number;
   /** One-time claim token from the registration link; dropped after the first successful connect. */
   claim?: string;
+  /** The newest verified candidate bundle (wire string) and its `seq`; a hint to race, never the server's identity. */
+  bundle?: string;
+  bundle_seq?: number;
+  /** The path that connected last (`lan 192.168.1.20:4443`), tried first next time. */
+  winner?: string;
 }

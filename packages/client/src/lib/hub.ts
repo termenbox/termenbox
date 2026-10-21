@@ -3,9 +3,11 @@ import { Connection, type ConnectionOptions, type ConnState } from './connection
 import { applyActivity, applyAttention, applyEvents, applySnapshot, syncRequest, type AgentMap } from './agents';
 import type { ClientMessage, ServerHealth, ServerListItem, ServerMessage, SessionInfo } from './protocol';
 import type { Target } from './transport';
+import { storedBundle, type PathFailure } from './paths';
+import { verifyBundle } from './bundle';
 import { applyWindowList, forgetWindows, type WindowMap } from './windows';
 
-export type HubConnection = Pick<Connection, 'start' | 'close' | 'subscribe' | 'send'> & Partial<Pick<Connection, 'kind' | 'rtt' | 'drops' | 'retry' | 'retryNow'>>;
+export type HubConnection = Pick<Connection, 'start' | 'close' | 'subscribe' | 'send'> & Partial<Pick<Connection, 'kind' | 'pathLabel' | 'rtt' | 'drops' | 'retry' | 'retryNow'>>;
 export type ServerState = ConnState | 'paused';
 export interface HubServer {
   id: string;
@@ -23,6 +25,10 @@ export interface HubServer {
   prefix: string;
   /** Server health (U14). */
   health?: ServerHealth;
+  /** The path carrying the session (`Direct, LAN`, `Tunnel`); empty while there is none. */
+  path?: string;
+  /** Every path tried in the last failed attempt, with why and one fix (decision 0123). */
+  failures?: PathFailure[];
 }
 export interface HubSession extends SessionInfo { serverId: string; key: string; serverName: string }
 interface Entry extends HubServer {
@@ -85,8 +91,8 @@ export class ServerHub {
       else this.publish();
       return;
     }
-    const entry: Entry = { id, server, state: 'connecting', reason: '', version: '', backends: [], acpAgents: [], controlMode: false, tmuxVersion: '', prefix: '', connection: null,
-      sessions: [], agents: {}, windows: {}, refresh: !server.record && !!server.server_id, everReady: false };
+    const entry: Entry = { id, server, state: 'connecting', reason: '', version: '', backends: [], acpAgents: [], controlMode: false, tmuxVersion: '', prefix: '', connection: null, path: '', failures: [],
+      sessions: [], agents: {}, windows: {}, refresh: !server.record && !server.bundle && !!server.server_id, everReady: false };
     this.entries.set(id, entry);
     this.connect(entry);
   }
@@ -132,7 +138,7 @@ export class ServerHub {
     const current = () => e.connection === connection;
     const connection = (this.opts.factory ?? (opts => new Connection(opts)))({
       target: () => this.opts.target ? this.opts.target(e.server, e.refresh)
-        : Promise.resolve({ record: e.server.record, wsUrl: e.server.server_url || undefined }),
+        : storedBundle(e.server).then(bundle => ({ record: e.server.record, wsUrl: e.server.server_url || undefined, bundle, winner: e.server.winner })),
       credentials: this.opts.credentials, claim: e.server.claim, serverId: e.server.server_id,
       onState: (state, detail) => {
         if (!current()) return;
@@ -162,6 +168,13 @@ export class ServerHub {
         // A sample from before the drop is not the server's health now.
         e.reason = reason; e.health = undefined; this.publish(); this.opts.onDrop?.(e.id, reason, upMs);
       },
+      onPath: path => { if (current()) { e.path = path?.label ?? ''; this.publishServers(); } },
+      onFailures: failures => { if (current()) { e.failures = failures; this.publishServers(); } },
+      onWinner: key => {
+        if (!current() || e.server.winner === key) return;
+        e.server = { ...e.server, winner: key };
+        this.opts.onSaved?.(e.server);
+      },
       onFatal: reason => { if (current()) { e.state = 'closed'; e.reason = reason; this.publish(); this.opts.onFatal?.(e.id, reason); } },
     });
     e.connection = connection;
@@ -177,15 +190,32 @@ export class ServerHub {
         const result = applyEvents(e.agents, msg.events); e.agents = result.map;
         if (result.gap) connection.send({ type: 'agent_sync', after: syncRequest(e.agents) });
       }
+      if (msg.type === 'candidates') void this.acceptBundle(e, msg.bundle, current);
       if (msg.type === 'server_health') { const { type: _, ...h } = msg; e.health = h; this.publishServers(); }
       if (changed) this.publish();
       this.opts.onMessage?.(e.id, msg);
     });
     this.publish(); connection.start();
   }
+  /**
+   * The server pushed its signed bundle after auth. It is kept only when it verifies against the pinned server key, is
+   * not expired and its `seq` is above the stored one; anything else leaves the stored bundle as the hint it was.
+   */
+  private async acceptBundle(e: Entry, wire: string, current: () => boolean) {
+    const pin = e.server.server_id;
+    if (!pin) return;
+    try {
+      const bundle = await verifyBundle(wire, { nowSecs: Math.floor(Date.now() / 1000), pin, storedSeq: e.server.bundle_seq });
+      if (!current()) return;
+      e.server = { ...e.server, bundle: wire, bundle_seq: bundle.seq };
+      this.opts.onSaved?.(e.server);
+    } catch (err) {
+      console.warn('[termenbox] ignored a candidate bundle:', err instanceof Error ? err.message : err);
+    }
+  }
   /** The server list alone: a health sample every 10 s per server must not rebuild the session, agent and window stores. */
   private publishServers(entries = [...this.entries.values()]) {
-    this.servers.set(entries.map(({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix, health }) => ({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix, health })));
+    this.servers.set(entries.map(({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures }) => ({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures })));
   }
   private publish() {
     const entries = [...this.entries.values()];

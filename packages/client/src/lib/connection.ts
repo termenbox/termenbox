@@ -3,6 +3,7 @@ import { openRtc } from './rtc';
 import { openTransport, Unreachable, type Openers, type Target, type Transport } from './transport';
 import { openWs } from './ws';
 import type { Credentials } from './device';
+import type { PathFailure } from './paths';
 
 /** `checking`: still connected on paper, but the server has not answered for a few seconds (input may be lost). */
 export type ConnState = 'connecting' | 'connected' | 'checking' | 'reconnecting' | 'unreachable' | 'closed';
@@ -17,12 +18,23 @@ const WAKE_PONG_WITHIN_MS = 3000;
 const STALE_AFTER_MS = 2500;
 /** One late reply on a mobile link is normal; this long without any message means the connection is half-open. */
 const PONG_WITHIN_MS = 12000;
+/** After the network changed (Wi-Fi to cellular and back), a link that does not answer within this is re-raced (decision 0123). */
+const NETWORK_PONG_WITHIN_MS = 2000;
 
 /** 1s, 2s, 4s, 8s, 16s, then 30s; +0..25% jitter so many tabs do not reconnect in lockstep. */
 export function backoffDelay(attempt: number, random = Math.random): number {
   const base = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)];
   return Math.round(base * (1 + random() * 0.25));
 }
+
+/** The path of a transport; one opened without a race is named by its kind. */
+function pathOf(t: Transport): { key: string; label: string } {
+  return t.path ?? { key: t.kind, label: t.kind === 'rtc' ? 'Direct' : 'Tunnel' };
+}
+
+type NetInfo = { addEventListener(type: 'change', fn: () => void): void; removeEventListener(type: 'change', fn: () => void): void };
+/** `navigator.connection` (Chrome, Android); absent in Safari, where `online`/`offline` are all there is. */
+const netInfo = (): NetInfo | undefined => (navigator as unknown as { connection?: NetInfo }).connection;
 
 export function b64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64);
@@ -54,6 +66,12 @@ export interface ConnectionOptions {
   onReady: (msg: Extract<ServerMessage, { type: 'auth_ok' }>, isReconnect: boolean) => void;
   /** The connection was lost: why, and how long it had been up (for the diagnostics and the status bar). */
   onDrop?: (reason: string, upMs: number) => void;
+  /** The path now carrying the session (`Direct, LAN`, `Tunnel`), or null when there is none. */
+  onPath?: (path: { key: string; label: string } | null) => void;
+  /** Every path that was tried and failed in the last attempt, with why and one fix; empty after a success. */
+  onFailures?: (failures: PathFailure[]) => void;
+  /** The path that just authenticated: remembered per server and tried first next time. */
+  onWinner?: (key: string) => void;
   /** Auth errors are final: retrying with the same credentials would be rejected again. */
   onFatal: (message: string) => void;
 }
@@ -78,6 +96,8 @@ export class Connection {
   private everReady = false;
   private stopped = false;
   private opening = false;
+  /** The next loss comes from a network change: re-race at once instead of waiting out the backoff. */
+  private fastReconnect = false;
   private pingSentAt = 0;
   private readyAt = 0;
   /** How many times a live connection was lost since this one was created. */
@@ -89,6 +109,14 @@ export class Connection {
     document.addEventListener('visibilitychange', this.wake);
     window.addEventListener('online', this.wake);
     window.addEventListener('pageshow', this.wake);
+    window.addEventListener('online', this.networkChanged);
+    window.addEventListener('offline', this.networkChanged);
+    netInfo()?.addEventListener('change', this.networkChanged);
+  }
+
+  /** The path carrying the session, for the status line: `Direct, LAN` or `Tunnel`. */
+  get pathLabel(): string | null {
+    return this.transport ? pathOf(this.transport).label : null;
   }
 
   /** Which transport is carrying the session, for a connection-quality indicator. */
@@ -130,10 +158,27 @@ export class Connection {
     document.removeEventListener('visibilitychange', this.wake);
     window.removeEventListener('online', this.wake);
     window.removeEventListener('pageshow', this.wake);
+    window.removeEventListener('online', this.networkChanged);
+    window.removeEventListener('offline', this.networkChanged);
+    netInfo()?.removeEventListener('change', this.networkChanged);
     this.transport?.close();
     this.transport = null;
     this.opts.onState('closed');
   }
+
+  /**
+   * The device changed network. A live link is asked for proof within 2 s and, if it does not answer, dropped and
+   * raced again at once over every known path; a connection that is not up is retried now.
+   */
+  private networkChanged = () => {
+    if (this.stopped) return;
+    if (this.transport && this.authed) {
+      this.fastReconnect = true;
+      this.ping(NETWORK_PONG_WITHIN_MS);
+    } else if (!this.opening) {
+      this.reconnectNow();
+    }
+  };
 
   private wake = () => {
     if (this.stopped) return;
@@ -180,6 +225,8 @@ export class Connection {
       if (this.stopped) return;
       // The banner keeps one line; what each transport said goes to the console for whoever is debugging.
       if (e instanceof Unreachable) console.warn('[termenbox] connect failed:', e.attempts.join('; ') || e.message);
+      this.opts.onPath?.(null);
+      this.opts.onFailures?.(e instanceof Unreachable ? e.failures : []);
       this.opts.onState('unreachable', e instanceof Unreachable ? e.message : 'Server unreachable');
       this.scheduleRetry();
       return;
@@ -191,6 +238,8 @@ export class Connection {
     }
 
     this.transport = transport;
+    this.opts.onFailures?.([]);
+    this.opts.onPath?.(pathOf(transport));
     transport.onmessage = (text) => this.onText(transport, text);
     if (transport.lanes) {
       transport.onterm = (bytes) => {
@@ -206,7 +255,10 @@ export class Connection {
       this.authed = false;
       this.transport = null;
       this.opts.onState('reconnecting');
-      this.scheduleRetry();
+      if (this.fastReconnect) {
+        this.fastReconnect = false;
+        this.reconnectNow();
+      } else this.scheduleRetry();
     };
     transport.send(JSON.stringify({ type: 'hello' }));
   }
@@ -231,6 +283,7 @@ export class Connection {
       this.readyAt = performance.now();
       this.startHeartbeat();
       this.opts.onState('connected');
+      if (transport.path) this.opts.onWinner?.(transport.path.key);
       this.opts.onReady(msg, isReconnect);
     } else if (msg.type === 'error' && !this.authed) {
       this.stopped = true;
@@ -240,6 +293,7 @@ export class Connection {
       return;
     }
     if (msg.type === 'pong') {
+      this.fastReconnect = false; // the link answered: the network change did not cost it
       if (this.pingSentAt) this.rtt = Math.round(performance.now() - this.pingSentAt);
     } else {
       this.listeners.forEach((fn) => fn(msg));

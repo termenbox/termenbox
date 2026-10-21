@@ -2,6 +2,7 @@
   import type { ServerListItem } from './lib/protocol';
   import { serverKey, type HubServer } from './lib/hub';
   import PortHelp from './PortHelp.svelte';
+  import PathReport from './PathReport.svelte';
 
   export let servers: ServerListItem[] = [];
   export let states: HubServer[] = [];
@@ -43,10 +44,11 @@
             </div>
             <div style="flex: 1; min-width: 0;">
               <h3 style="font-size: 1rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{server.server_name || 'Server'}</h3>
-              <p style="font-size: 0.75rem; color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{server.server_url || (server.record ? `${server.record.ip}:${server.record.udp_port}` : '')}</p>
-              <p class="state">{status?.state ?? 'connecting'}</p>
+              <p style="font-size: 0.75rem; color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{server.server_url || (server.record ? `${server.record.ip}:${server.record.udp_port}` : server.bundle ? 'Paired by link' : '')}</p>
+              <p class="state">{status?.state ?? 'connecting'}{#if status?.state === 'connected' && status.path} · {status.path}{/if}</p>
               {#if status?.reason}<p class="reason">{status.reason}</p>{/if}
               {#if status?.state === 'unreachable'}
+                {#if status.failures?.length}<PathReport failures={status.failures} />{/if}
                 <details class="help">
                   <summary>Why can't I connect?</summary>
                   <p class="note">The server may be stopped, or its UDP port may be blocked. On the machine, <code>systemctl status termenbox</code> (or <code>systemctl --user status termenbox</code> for a user install) says whether it runs; a server whose port is taken stops with a message in <code>journalctl</code>.</p>
