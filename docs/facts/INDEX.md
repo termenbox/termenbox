@@ -50,5 +50,6 @@
 | 0048 | Claude Code 2.1.302 sends PermissionRequest for AskUserQuestion at once, Notification up to six seconds later, and no hook when a dialog or a turn is cancelled with Esc | agents, hooks, claude | active |
 | 0049 | The U14 health sampler costs about 62 microseconds of CPU per 10 s tick and about 36 KiB of RSS, far under the 1% CPU budget | server, performance, health | active |
 | 0050 | xterm.js 5.3 reads Android soft-keyboard input from its hidden textarea after a timer, so a microtask must not rewrite it | client, mobile, android, ios, terminal, xterm | active |
+| 0051 | The server needs no external call to accept a connection after claim | transport, auth, network, deployment | active |
 
 <!-- bootstrap-generated: true -->

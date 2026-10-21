@@ -12,6 +12,9 @@
 | paranoid-mode | Paranoid Mode (Outbound Block) | 0001 | 0001 | active |
 | bootstrap-simplicity | 1-2 Click Bootstrap for Users | 0013 | 0001,0011 | active |
 | ci-only-builds | All Builds Run in CI Only | 0010,0011 | 0010,0011 | active |
+| connection-hints-are-signed-and-never-identity | Candidate bundles are signed by the server key, and no address or intermediary decides who the server is | 0123 | 0057,0051 | active |
+| lan-addresses-never-reach-the-directory | Private (LAN) addresses never reach the public directory or telemetry | 0123 | 0056,0051 | active |
+| relays-carry-only-ciphertext | A relay or tunnel carries only end-to-end ciphertext keyed to the server | 0123 | 0057 | active |
 
 <!-- bootstrap-generated: true -->
 instruction-file-within-cap,"The instruction file must stay within 150 lines","practice-packs, harness, guardrail",active
