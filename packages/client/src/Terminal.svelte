@@ -16,6 +16,7 @@
   import { DEBUG_KEY, debugEnabled } from './lib/viewport';
   import { KeyboardMode } from './lib/terminal/keyboardMode';
   import { crumb } from './lib/breadcrumbs';
+  import { handleClipboardWrites } from './lib/terminal/osc52';
   import { dropColorReplies, setEnterKeyHint, silenceColorQueries } from './lib/terminal/inputGuards';
   import { WordTracker } from './lib/terminal/wordTracker';
   import { nextVoiceLang, parseVoiceLang, pickLanguage, recognizerFactory, Voice, type VoiceLang } from './lib/terminal/voice';
@@ -310,10 +311,14 @@
     selectText = bufferText((i) => buf.getLine(i)?.translateToString(true), buf.length);
   }
 
+  function flash(message: string) {
+    selStatus = message;
+    setTimeout(() => (selStatus = ''), 1500);
+  }
+
   async function copySelection() {
     const text = touch.text();
-    selStatus = text && (await copyText(text)) ? 'Copied' : 'Nothing to copy';
-    setTimeout(() => (selStatus = ''), 1500);
+    flash(text && (await copyText(text)) ? 'Copied' : 'Nothing to copy');
     if (text) touch.clear();
   }
 
@@ -504,9 +509,12 @@
     // ^C. With nothing selected, Ctrl+C stays the interrupt. Ctrl+Shift+C keeps working where the browser delivers it.
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== 'keydown' || ev.altKey) return true;
+      // The physical key too: on a Cyrillic (or any non-Latin) layout Ctrl+C arrives as key "с", and only `code` says KeyC.
       const key = ev.key.toLowerCase();
-      if (ev.ctrlKey && key === 'v') return false;
-      if ((ev.ctrlKey || ev.metaKey) && key === 'c') {
+      const isV = ev.code === 'KeyV' || key === 'v';
+      const isC = ev.code === 'KeyC' || key === 'c';
+      if (ev.ctrlKey && isV) return false;
+      if ((ev.ctrlKey || ev.metaKey) && isC) {
         const text = term?.getSelection();
         if (!text) return !(ev.ctrlKey && ev.shiftKey); // Ctrl+Shift+C with no selection is not the program's key
         ev.preventDefault(); // no browser copy command, no inspector, and no ^C
@@ -524,8 +532,42 @@
     };
     terminalContainer.addEventListener('contextmenu', onContextMenu, true);
     cleanups.push(() => terminalContainer.removeEventListener('contextmenu', onContextMenu, true));
+    // A program that has the mouse (tmux, opencode, vim) is sent every move and the button release by xterm, and xterm drops
+    // the selection on any input, its own mouse report included. A Shift-drag selection would be wiped by the moves, by the
+    // release, and by the pointer settling afterwards. So while a Shift-drag runs, xterm's selection gets the events (a
+    // copy on the document, where it listens) and the program gets none of them; with a selection and no button held the
+    // moves go nowhere. A click still reaches the program.
+    let forcing = false;
+    const toSelection = (ev: MouseEvent) => {
+      ev.stopPropagation();
+      document.dispatchEvent(new MouseEvent(ev.type, {
+        bubbles: true, clientX: ev.clientX, clientY: ev.clientY, screenX: ev.screenX, screenY: ev.screenY,
+        button: ev.button, buttons: ev.buttons, shiftKey: ev.shiftKey, altKey: ev.altKey, ctrlKey: ev.ctrlKey, metaKey: ev.metaKey,
+      }));
+    };
+    const onForceStart = (ev: MouseEvent) => {
+      forcing = ev.button === 0 && (ev.shiftKey || ev.altKey) && !!term && term.modes.mouseTrackingMode !== 'none';
+    };
+    const onForceMove = (ev: MouseEvent) => {
+      if (forcing) toSelection(ev);
+      else if (ev.buttons === 0 && term?.hasSelection()) ev.stopPropagation();
+    };
+    const onForceUp = (ev: MouseEvent) => forcing && toSelection(ev);
+    const onForceEnd = () => (forcing = false); // window, after the document's own handlers: the drag is over wherever it ended
+    terminalContainer.addEventListener('mousedown', onForceStart, true);
+    terminalContainer.addEventListener('mousemove', onForceMove, true);
+    terminalContainer.addEventListener('mouseup', onForceUp, true);
+    window.addEventListener('mouseup', onForceEnd);
+    cleanups.push(() => {
+      terminalContainer.removeEventListener('mousedown', onForceStart, true);
+      terminalContainer.removeEventListener('mousemove', onForceMove, true);
+      terminalContainer.removeEventListener('mouseup', onForceUp, true);
+      window.removeEventListener('mouseup', onForceEnd);
+    });
 
     cleanups.push(silenceColorQueries(term.parser).dispose);
+    // tmux and the programs in it copy with OSC 52; that is how a copy made on the server reaches this machine's clipboard.
+    cleanups.push(handleClipboardWrites(term.parser, (text) => void copyText(text).then((ok) => flash(ok ? 'Copied' : 'Copy blocked by the browser'))).dispose);
     term.onData((data) => typed(data));
     term.onBell(() => bell && beep());
     term.onScroll(() => touch.refresh()); // handles follow their text

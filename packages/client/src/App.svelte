@@ -51,7 +51,7 @@
   import SessionGroups from './SessionGroups.svelte';
   import { destination, navigate, startRouter, type Destination } from './lib/router';
   import ReportDialog from './ReportDialog.svelte';
-  import { buildReport, noteError, recentErrors } from './lib/report';
+  import { buildReport, noteError, recentErrors, scrub } from './lib/report';
   import { runningBundle } from './lib/update';
   import { startUsageMeter } from './lib/usageMeter';
   import { DEBUG_KEY, tapCounter, viewportReading } from './lib/viewport';
@@ -362,13 +362,25 @@
   $: if (hidden.size) { const live = new Set($allSessions.map(s => s.key)); if ([...hidden].some(k => !live.has(k)) && $allSessions.length) { hidden = new Set([...hidden].filter(k => live.has(k))); saveHidden(hidden); } }
   let showAddServer = false;
   let addPrefill: string | null = null;
-  let toast: { message: string; type: 'success' | 'error' } | null = null;
+  let toast: { message: string; type: 'success' | 'error'; detail?: string } | null = null;
 
   const GITHUB_CLIENT_ID = import.meta.env.VITE_GITHUB_CLIENT_ID || '';
 
-  function showToast(message: string, type: 'success' | 'error' = 'success') {
-    toast = { message, type };
-    setTimeout(() => toast = null, 4000);
+  let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  let toastHeld = false;
+  /** A toast with `detail` (the real error) stays long enough to read and copy; hovering it keeps it. */
+  function showToast(message: string, type: 'success' | 'error' = 'success', detail?: string) {
+    toast = { message, type, detail };
+    toastHeld = false;
+    armToast(detail ? 20000 : 4000);
+  }
+  function armToast(ms: number) {
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { if (!toastHeld) toast = null; }, ms);
+  }
+  function holdToast(held: boolean) {
+    toastHeld = held;
+    if (!held && toast) armToast(4000);
   }
 
   // Called on click, never during render: each call replaces the stored state, which would break the callback check.
@@ -715,7 +727,7 @@
       noteError(text);
       if (text.includes('ResizeObserver') || Date.now() - lastReport < 5000) return;
       lastReport = Date.now();
-      showToast('Something went wrong. If the screen looks stuck, go back to Servers.', 'error');
+      showToast('Something went wrong. If the screen looks stuck, go back to Servers.', 'error', scrub(text).slice(0, 300) || undefined);
     };
     window.addEventListener('error', report);
     window.addEventListener('unhandledrejection', report);
@@ -929,7 +941,7 @@
   {/if}
 
   {#if toast}
-    <Toast {toast} onclose={() => toast = null} />
+    <Toast {toast} onclose={() => toast = null} onhold={holdToast} />
   {/if}
 </AppShell>
 

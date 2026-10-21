@@ -56,6 +56,9 @@ pub fn render(term: &str, local: Option<&Path>) -> String {
         "# Written by termenbox-server on every start; changes here are lost. Put your own in tmux.local.conf.\n",
     );
     out.push_str(&format!("set -g default-terminal \"{term}\"\n"));
+    // Copying works across the browser: a drag in tmux copies, and tmux and the programs in it put the text on the
+    // clipboard of the machine the browser runs on (OSC 52). Shift+drag still makes the browser's own selection.
+    out.push_str("set -g mouse on\nset -g set-clipboard on\nset -gq allow-passthrough on\n");
     if let Some(local) = local {
         out.push_str(&format!("source-file -q \"{}\"\n", local.display()));
     }
@@ -111,6 +114,9 @@ mod tests {
         let c = render("screen-256color", Some(Path::new("/c/tmux.local.conf")));
         assert!(c.contains("set -g default-terminal \"screen-256color\"\n"));
         assert!(c.ends_with("source-file -q \"/c/tmux.local.conf\"\n"));
+        // the owner's file comes last, so it can switch any of these off
+        assert!(c.find("set -g mouse on").unwrap() < c.find("source-file").unwrap());
+        assert!(c.contains("set -g set-clipboard on\n"));
         assert!(!render("xterm-256color", None).contains("source-file"));
     }
 
