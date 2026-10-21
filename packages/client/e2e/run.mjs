@@ -456,15 +456,20 @@ try {
         await page.keyboard.press('Enter');
         await waitFor(() => /^чем$/m.test(execFileSync('tmux', ['-L', 'termenbox', 'capture-pane', '-p', '-t', 's1'], { env: utf8, encoding: 'utf8' })), 'the swiped Cyrillic word in the shell output', 8000);
         // The hidden input mirrors the last two words typed (iOS builds its suggestions from it), never stale text.
+        // The mirror writes in a task (after beforeinput's default action), so poll instead of reading immediately.
+        const mirrorValue = () => page.evaluate(() => document.querySelector('.xterm-helper-textarea').value);
         await page.keyboard.press('Control+u');
         await page.evaluate(() => { document.querySelector('.xterm-helper-textarea').value = 'утромпа'; });
         await page.keyboard.type('па');
-        const mirrored = await page.evaluate(() => document.querySelector('.xterm-helper-textarea').value);
+        await waitFor(async () => (await mirrorValue()) === 'па', 'the hidden input to hold the typed word', 3000);
+        const mirrored = await mirrorValue();
         if (mirrored !== 'па') fail(`the hidden input holds ${JSON.stringify(mirrored)} instead of the typed word`);
         await page.keyboard.press('Backspace');
-        if ((await page.evaluate(() => document.querySelector('.xterm-helper-textarea').value)) !== 'п') fail('Backspace did not shorten the mirrored word');
+        await waitFor(async () => (await mirrorValue()) === 'п', 'Backspace to shorten the mirrored word', 3000);
+        if ((await mirrorValue()) !== 'п') fail('Backspace did not shorten the mirrored word');
         await page.keyboard.type(' x');
-        if ((await page.evaluate(() => document.querySelector('.xterm-helper-textarea').value)) !== 'п x') fail('the hidden input does not hold the last two words');
+        await waitFor(async () => (await mirrorValue()) === 'п x', 'the hidden input to hold the last two words', 3000);
+        if ((await mirrorValue()) !== 'п x') fail('the hidden input does not hold the last two words');
         // The dictation language chip (only where the browser has a speech recognizer) cycles auto -> EN -> RU -> auto.
         if (await page.$('[data-testid="voice-lang"]')) {
           const chip = () => page.evaluate(() => document.querySelector('[data-testid="voice-lang"]').textContent.trim());

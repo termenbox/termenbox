@@ -1,0 +1,11 @@
+{
+  "id": "evt_01J00000000000000000000005",
+  "created": 1760950801000,
+  "type": "permission.asked",
+  "data": {
+    "id": "per_01J0000000000000000000000",
+    "sessionID": "ses_01J0000000000000000000000",
+    "action": "bash",
+    "resources": ["cargo test -p termenbox-server"]
+  }
+}

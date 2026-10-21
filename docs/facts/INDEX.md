@@ -37,7 +37,7 @@
 | 0035 | Which tier features need infrastructure beyond free tiers | tiers, scale, cloudflare, capacity | active |
 | 0036 | The task name without a hook would come from tmux's pane title, which is not yet measured | agents, server | active |
 | 0037 | Terminal output and agent status share one ordered JSON channel, with output as base64 | transport, protocol, agents | active |
-| 0038 | The client has icons for 11 agents, but only Claude Code has a verified event surface | agents, hooks, client | active |
+| 0038 | The client has icons for 11 agents; only Claude Code and OpenCode have a verified event surface | agents, hooks, client | active |
 | 0039 | Android is in the support floor but has never had a real-device check | client, mobile, android | active |
 | 0040 | What each ACP agent really sends and accepts, measured for the tiered session view | agents, protocol, client | active |
 | 0041 | Anthropic Claude model pricing including cache economics | cost, model-routing, governance | active |
@@ -50,5 +50,6 @@
 | 0048 | Claude Code 2.1.302 sends PermissionRequest for AskUserQuestion at once, Notification up to six seconds later, and no hook when a dialog or a turn is cancelled with Esc | agents, hooks, claude | active |
 | 0049 | The U14 health sampler costs about 62 microseconds of CPU per 10 s tick and about 36 KiB of RSS, far under the 1% CPU budget | server, performance, health | active |
 | 0051 | The server needs no external call to accept a connection after claim | transport, auth, network, deployment | active |
+| 0050 | xterm.js 5.3 reads Android soft-keyboard input from its hidden textarea after a timer, so a microtask must not rewrite it | client, mobile, android, ios, terminal, xterm | active |
 
 <!-- bootstrap-generated: true -->

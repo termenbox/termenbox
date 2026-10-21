@@ -1,16 +1,16 @@
 // The hook state of each agent on each server (U10, decisions 0079 and 0106), as the server reports it, and which card or
-// row that gives Home and Settings. Only Claude Code has a verified hook surface (fact 0038); every other agent is simply
-// never offered. Text from the server (a preview, an error) is shown as text only.
+// row that gives Home and Settings. Claude Code has hooks and OpenCode has plugins (fact 0038); every other agent is
+// simply never offered. Text from the server (a preview, an error) is shown as text only.
 import type { AgentMap, SessionAgent } from './agents';
 import type { HubServer, HubSession } from './hub';
 import { sessionKey } from './hub';
 import type { HookOffers } from './hookOffer';
 import type { ClientMessage, ServerMessage } from './protocol';
 
-export const HOOK_AGENTS = ['claude'] as const;
-export const HOOK_LABEL: Record<string, string> = { claude: 'Claude Code' };
+export const HOOK_AGENTS = ['claude', 'opencode'] as const;
+export const HOOK_LABEL: Record<string, string> = { claude: 'Claude Code', opencode: 'OpenCode' };
 export type HookState = 'connected' | 'not_connected' | 'unsupported' | 'unavailable';
-export interface HookInfo { state: HookState; /** The whole settings file as Enable will write it. */ preview?: string; error?: string; busy?: 'apply' | 'remove' }
+export interface HookInfo { state: HookState; /** The whole file (settings or plugin) as Enable will write it. */ preview?: string; error?: string; busy?: 'apply' | 'remove' }
 export type HookMap = Record<string, Record<string, HookInfo>>;
 type HookReply = Extract<ServerMessage, { type: 'agent_hooks' }>;
 

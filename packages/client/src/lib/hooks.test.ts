@@ -12,7 +12,10 @@ const reply = (state: string, extra = {}) => ({ type: 'agent_hooks' as const, ag
 
 describe('server hook state', () => {
   it('asks for the state and the exact change when a server connects', () => {
-    expect(hookQueries()).toEqual([{ type: 'agent_hooks', agent: 'claude', action: 'preview' }]);
+    expect(hookQueries()).toEqual([
+      { type: 'agent_hooks', agent: 'claude', action: 'preview' },
+      { type: 'agent_hooks', agent: 'opencode', action: 'preview' },
+    ]);
   });
   it('keeps the latest answer per server and agent, and reads an unknown state as unavailable', () => {
     let m: HookMap = applyHookReply({}, 's1', reply('not_connected', { preview: '{}' }));
@@ -41,6 +44,13 @@ describe('the offer on Home', () => {
     expect(o?.agent).toBe('claude');
     expect(o?.label).toBe('Claude Code');
     expect(o?.serverName).toBe('S1');
+  });
+  it('shows OpenCode with its own label', () => {
+    const agents: AgentMap = { 's1/a': agentOf('opencode') };
+    const hooks: HookMap = { s1: { opencode: { state: 'not_connected', preview: 'plugin' } } };
+    const o = pendingOffer(servers, sessions, agents, hooks, new HookOffers(memory(), () => 0));
+    expect(o?.agent).toBe('opencode');
+    expect(o?.label).toBe('OpenCode');
   });
   it('does not show without a detected agent, for another agent, with hooks on, or on a server that is not connected', () => {
     const offers = new HookOffers(memory(), () => 0);

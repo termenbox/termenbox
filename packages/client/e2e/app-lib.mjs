@@ -93,9 +93,9 @@ export async function startShared() {
   return { origin, browser, stop: async () => { await browser.close(); srv.close(); } };
 }
 
-export async function startApp(shared, { viewport, storage = {}, blockedStorage = false, server = new ScriptedServer() } = {}) {
+export async function startApp(shared, { viewport, storage = {}, blockedStorage = false, clipboard = false, server = new ScriptedServer() } = {}) {
   const { origin, browser } = shared;
-  const ctx = await browser.newContext({ viewport, isMobile: false, hasTouch: false });
+  const ctx = await browser.newContext({ viewport, isMobile: false, hasTouch: false, ...(clipboard ? { permissions: ['clipboard-read', 'clipboard-write'] } : {}) });
   const seed = { termenbox_auth: JSON.stringify({ cert, login: 'tester' }), termenbox_ios_hint: '1',
     termenbox_servers: JSON.stringify([{ server_id: 'one', server_name: 'one', server_url: 'ws://127.0.0.1:9/ws', registered_at: 0 }]),
     termenbox_settings: JSON.stringify({ renderer: 'dom' }), ...storage };

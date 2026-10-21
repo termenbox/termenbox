@@ -69,7 +69,7 @@
         {:else}
           <p class="note">
             Waiting for an answer.
-            {#if chip.stale}This status may be out of date.{:else}One-tap answers need the agent's hook connected (<code>termenbox-server --connect-claude</code>).{/if}
+            {#if chip.stale}This status may be out of date.{:else}One-tap answers need the agent's hook or plugin connected (Settings → Agent hooks).{/if}
             Open the terminal to answer.
           </p>
         {/if}

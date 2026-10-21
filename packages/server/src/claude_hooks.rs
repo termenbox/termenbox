@@ -6,6 +6,8 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::agent_hooks::Reply;
+
 /// Every event the turn-and-obligation reducer reads (`adapters::claude`). `PermissionRequest` is the one that
 /// says a dialog is open (`Notification` follows it by seconds and covers only some of them); the rest end a wait
 /// or a turn. Settings written by an earlier version lack the newer ones: `merge` adds them, nothing else.
@@ -265,16 +267,7 @@ pub struct Target {
     pub state_dir: PathBuf,
 }
 
-/// The answer to an `agent_hooks` request (U10, decisions 0079 and 0106).
-#[derive(Debug, PartialEq, Eq)]
-pub struct Reply {
-    /// `connected`, `not_connected`, `unsupported` (no verified hook surface) or `unavailable`.
-    pub state: &'static str,
-    pub preview: Option<String>,
-    pub error: Option<String>,
-}
-
-/// Only Claude Code has a verified hook surface (fact 0038).
+/// Whether Claude Code has a verified hook surface (fact 0038).
 pub fn supported(agent: &str) -> bool {
     agent == "claude"
 }
@@ -283,18 +276,10 @@ pub fn supported(agent: &str) -> bool {
 /// except as the preview the owner asked for; callers log the event only.
 pub fn respond(target: Option<&Target>, agent: &str, action: &str) -> Reply {
     if !supported(agent) {
-        return Reply {
-            state: "unsupported",
-            preview: None,
-            error: None,
-        };
+        return Reply::unsupported();
     }
     let Some(t) = target else {
-        return Reply {
-            state: "unavailable",
-            preview: None,
-            error: None,
-        };
+        return Reply::unavailable();
     };
     let settings = if t.auto {
         default_settings_path()

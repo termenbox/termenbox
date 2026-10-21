@@ -131,6 +131,69 @@ try {
   const down = (await bytes()).match(/\^\[\[<64;/g)?.length ?? 0;
   if (down < 4) fail(`a drag down sent ${down} wheel-up reports, want about 6`);
   else console.log(`ok  a drag down scrolls back (${down} wheel reports)`);
+
+  // 3. Soft-keyboard input (issue #250). Chrome Android delivers typing as composition or with keyCode 229, and
+  //    xterm reads the hidden textarea later, in a setTimeout. The mirror used to write the previous phrase first,
+  //    so every character was read as empty. The iOS insertText path must keep sending its data too.
+  const sentNow = () => page.evaluate(() => window.__e2e.sent.splice(0).join(''));
+  await sentNow(); // the drags above queued wheel reports
+  await page.locator('.xterm-helper-textarea').focus();
+
+  await page.evaluate(() => {
+    const ta = document.querySelector('.xterm-helper-textarea');
+    ta.value = '';
+    ta.dispatchEvent(new CompositionEvent('compositionstart', { data: '', bubbles: true }));
+    ta.value = 'z';
+    ta.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertCompositionText', data: 'z', isComposing: true }));
+    ta.dispatchEvent(new CompositionEvent('compositionupdate', { data: 'z', bubbles: true }));
+    ta.dispatchEvent(new CompositionEvent('compositionend', { data: 'z', bubbles: true }));
+  });
+  await sleep(150);
+  const composed = await sentNow();
+  if (composed !== 'z') fail(`a composed character sent ${JSON.stringify(composed)}, want "z" (issue #250)`);
+  else console.log('ok  a composed soft-keyboard character reaches the terminal once');
+
+  await page.evaluate(() => {
+    const ta = document.querySelector('.xterm-helper-textarea');
+    const before = ta.value;
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Unidentified', keyCode: 229, which: 229, bubbles: true, cancelable: true }));
+    ta.value = before + 'a';
+    ta.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertCompositionText', data: 'a', isComposing: true }));
+    ta.dispatchEvent(new KeyboardEvent('keyup', { key: 'Unidentified', keyCode: 229, bubbles: true }));
+  });
+  await sleep(150);
+  const legacy = await sentNow();
+  if (legacy !== 'a') fail(`a keyCode 229 character sent ${JSON.stringify(legacy)}, want "a" (issue #250)`);
+  else console.log('ok  a keyCode 229 character reaches the terminal once');
+
+  await page.evaluate(() => {
+    const ta = document.querySelector('.xterm-helper-textarea');
+    ta.value += 'q'; // the real event updates the field as well as data (fact 0027)
+    ta.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: 'q' }));
+  });
+  await sleep(150);
+  const ios = await sentNow();
+  if (ios !== 'q') fail(`an insertText character sent ${JSON.stringify(ios)}, want "q" (iOS path)`);
+  else console.log('ok  the iOS insertText path still reaches the terminal');
+
+  // 4. A tapped suggestion replaces the selected word. The mirror must follow the bytes the swipe path sent,
+  //    not only the paths that go through typed()/sendKey(). Fact 0027 records beforeinput followed by input.
+  await page.evaluate(() => {
+    const ta = document.querySelector('.xterm-helper-textarea');
+    ta.value = 'hello';
+    ta.setSelectionRange(0, 5);
+    ta.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertReplacementText', data: "he'll" }));
+    ta.value = "he'll";
+    ta.setSelectionRange(5, 5);
+    ta.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertReplacementText', data: "he'll" }));
+  });
+  await sleep(150);
+  const replaced = await sentNow();
+  const replacement = '\x7f'.repeat(5) + "he'll";
+  if (replaced !== replacement) fail(`a replacement sent ${JSON.stringify(replaced)}, want ${JSON.stringify(replacement)} (iOS swipe path)`);
+  const mirrored = await page.evaluate(() => document.querySelector('.xterm-helper-textarea').value);
+  if (mirrored !== "he'll") fail(`the field after a replacement holds ${JSON.stringify(mirrored)}, want "he'll"`);
+  else console.log('ok  an iOS replacement reaches the terminal and leaves the field mirrored');
   if (process.env.HOLD) await sleep(Number(process.env.HOLD));
 } finally {
   await browser?.close();

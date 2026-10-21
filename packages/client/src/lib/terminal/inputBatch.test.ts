@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { InputBatcher } from './inputBatch';
+import { InputBatcher, MAX_CHUNK_CHARS } from './inputBatch';
 
 function setup() {
   const sent: string[] = [];
@@ -40,5 +40,16 @@ describe('InputBatcher', () => {
     expect(sent).toEqual(['ab']);
     b.flush();
     expect(sent).toEqual(['ab']);
+  });
+
+  it('splits a large paste into messages that fit a data channel, in order and without cutting a character', () => {
+    const { b, sent } = setup();
+    const text = '😀'.repeat(MAX_CHUNK_CHARS) + 'tail'; // two UTF-16 units per emoji, so a cut would land mid-pair
+    b.add(text);
+    b.flush();
+    expect(sent.length).toBeGreaterThan(1);
+    expect(sent.every((s) => s.length <= MAX_CHUNK_CHARS && new TextEncoder().encode(s).length < 48 * 1024)).toBe(true);
+    expect(sent.join('')).toBe(text);
+    expect(sent.every((s) => !/^[\udc00-\udfff]/.test(s) && !/[\ud800-\udbff]$/.test(s))).toBe(true);
   });
 });
