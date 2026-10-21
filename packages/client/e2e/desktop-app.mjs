@@ -500,7 +500,8 @@ async function copySelectionWithMouseMode(shared) {
   server.clear();
   await page.keyboard.press('Control+c');
   await page.waitForTimeout(250);
-  const copied = (await clipboard()).includes(LINE);
+  // The drag starts a few columns in (the sidebar's resize handle covers the first ~22 px), so it copies the end of the line.
+  const copied = (await clipboard()).includes('DE-67890');
   t.check(copied, `mouse mode: Ctrl+C did not copy the Shift-drag selection (selection divs: after release ${afterRelease}, after a 1 px move ${afterMove})`);
   t.check(!typedBytes(server).some((s) => s.includes('\u0003')), `mouse mode: Ctrl+C with a Shift-drag selection also sent ^C (selection divs: after release ${afterRelease}, after a 1 px move ${afterMove})`);
 

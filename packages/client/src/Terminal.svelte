@@ -532,14 +532,38 @@
     };
     terminalContainer.addEventListener('contextmenu', onContextMenu, true);
     cleanups.push(() => terminalContainer.removeEventListener('contextmenu', onContextMenu, true));
-    // A program that reports all mouse motion (opencode, vim) gets every move from xterm, and xterm drops the selection on
-    // any input, its own mouse report included: the pointer settling after a Shift-drag would wipe the selection at once.
-    // Motion with no button held is not forwarded while a selection exists; a click still reaches the program.
-    const keepSelection = (ev: MouseEvent) => {
-      if (ev.buttons === 0 && term?.hasSelection()) ev.stopPropagation();
+    // A program that has the mouse (tmux, opencode, vim) is sent every move and the button release by xterm, and xterm drops
+    // the selection on any input, its own mouse report included. A Shift-drag selection would be wiped by the moves, by the
+    // release, and by the pointer settling afterwards. So while a Shift-drag runs, xterm's selection gets the events (a
+    // copy on the document, where it listens) and the program gets none of them; with a selection and no button held the
+    // moves go nowhere. A click still reaches the program.
+    let forcing = false;
+    const toSelection = (ev: MouseEvent) => {
+      ev.stopPropagation();
+      document.dispatchEvent(new MouseEvent(ev.type, {
+        bubbles: true, clientX: ev.clientX, clientY: ev.clientY, screenX: ev.screenX, screenY: ev.screenY,
+        button: ev.button, buttons: ev.buttons, shiftKey: ev.shiftKey, altKey: ev.altKey, ctrlKey: ev.ctrlKey, metaKey: ev.metaKey,
+      }));
     };
-    terminalContainer.addEventListener('mousemove', keepSelection, true);
-    cleanups.push(() => terminalContainer.removeEventListener('mousemove', keepSelection, true));
+    const onForceStart = (ev: MouseEvent) => {
+      forcing = ev.button === 0 && (ev.shiftKey || ev.altKey) && !!term && term.modes.mouseTrackingMode !== 'none';
+    };
+    const onForceMove = (ev: MouseEvent) => {
+      if (forcing) toSelection(ev);
+      else if (ev.buttons === 0 && term?.hasSelection()) ev.stopPropagation();
+    };
+    const onForceUp = (ev: MouseEvent) => forcing && toSelection(ev);
+    const onForceEnd = () => (forcing = false); // window, after the document's own handlers: the drag is over wherever it ended
+    terminalContainer.addEventListener('mousedown', onForceStart, true);
+    terminalContainer.addEventListener('mousemove', onForceMove, true);
+    terminalContainer.addEventListener('mouseup', onForceUp, true);
+    window.addEventListener('mouseup', onForceEnd);
+    cleanups.push(() => {
+      terminalContainer.removeEventListener('mousedown', onForceStart, true);
+      terminalContainer.removeEventListener('mousemove', onForceMove, true);
+      terminalContainer.removeEventListener('mouseup', onForceUp, true);
+      window.removeEventListener('mouseup', onForceEnd);
+    });
 
     cleanups.push(silenceColorQueries(term.parser).dispose);
     // tmux and the programs in it copy with OSC 52; that is how a copy made on the server reaches this machine's clipboard.
