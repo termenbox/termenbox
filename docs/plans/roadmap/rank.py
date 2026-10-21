@@ -71,10 +71,10 @@ pos = {k: i for i, k in enumerate(order)}
 for k in order:
     for p in act[k]['preds']:
         if p in pos and pos[p] > pos[k]: raise SystemExit(f'order puts {k} before its predecessor {p}; fix a Pin or Preds')
-rows = ['| # | Step | Title | Tier | Area | Platform | Status | WSJF | Preds |', '|---|---|---|---|---|---|---|---|---|']
+rows = ['| # | Step | Title | Tier | Area | Platform | Status | WSJF | Chain | Preds |', '|---|---|---|---|---|---|---|---|---|---|']
 for i, k in enumerate(order, 1):
     s = act[k]
-    rows.append(f"| {i} | [{k}](roadmap/{s['file']}) | {s['title']} | {s['tier']} | {s.get('area', '-')} | {s.get('platform', '-')} | {s.get('status', 'pending')} | {s['own']:.1f} | {', '.join(s['preds']) or '-'} |")
+    rows.append(f"| {i} | [{k}](roadmap/{s['file']}) | {s['title']} | {s['tier']} | {s.get('area', '-')} | {s.get('platform', '-')} | {s.get('status', 'pending')} | {s['own']:.1f} | {eff[k]:.1f} | {', '.join(s['preds']) or '-'} |")
 arch = sorted((D / 'archive').glob('*.md'))
 nd = sum(1 for f in arch if f.read_text().split('\n')[1].startswith('Status: done'))
 ns = len(arch) - nd
