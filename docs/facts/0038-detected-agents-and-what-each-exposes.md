@@ -59,7 +59,9 @@ Claude Code 2.1.302 no longer shows `esc to interrupt` while working, and `auto 
 OpenCode 2.x has no settings-file hooks, but it loads JavaScript/TypeScript plugins from
 `<config>/plugins/` (global) and `.opencode/plugins/` (project). A plugin's default export has an `id` and a
 `setup(ctx)`; `ctx.event.subscribe()` yields the same events the TUI sees. Termenbox's opt-in
-`--connect-opencode` writes one plugin to `<config>/plugins/termenbox.js`; it sends only
+`--connect-opencode` writes one plugin to `<config>/plugins/termenbox.js`; under systemd the server takes
+`<config>` from a running `opencode` process's environment, since a service does not inherit the login shell's
+`OPENCODE_CONFIG_DIR`/`XDG_CONFIG_HOME`. It sends only
 `session.inbox.enqueued`, `session.execution.started/succeeded/failed/interrupted`,
 `permission.asked/replied`, `form.created/replied/cancelled`, and the `session.tool.called/success/failed`
 events to `termenbox-server --hook opencode` (through the `TERMENBOX_*` variables in a Termenbox session).
@@ -74,11 +76,14 @@ adapter: a question form is titled `Questions`, with the actual question in the 
 and `permission.asked` carries `action` and `resources` (it may omit `message`).
 
 The plugin compacts each event to the fields the adapter reads, because tool output and provider metadata can
-exceed the 64 KiB one hook line accepts; it also remembers a tool's name from `session.tool.input.started`
-because `session.tool.called/success/failed` do not carry one. `session.status` is not used: `busy` after a
+exceed the 64 KiB one hook line accepts; each string is capped, and the remembered tool names are bounded. It
+remembers a tool's name from `session.tool.input.started` because `session.tool.called/success/failed` do not
+carry one. `session.status` is not used: `busy` after a
 pending permission would clear the obligation, and `idle` repeats the turn end already carried by
 `session.execution.interrupted`/`succeeded`. The plugin does not forward `session.idle` for that reason: a late
-idle would close a turn that already ended as `Done` (and clear any block).
+idle would close a turn that already ended as `Done` (and clear any block). Disconnect restores an unchanged
+plugin file or removes one Termenbox wrote; a file the owner edited since is left in place with the journal, and
+the owner removes it by hand.
 
 ## T2 priority
 

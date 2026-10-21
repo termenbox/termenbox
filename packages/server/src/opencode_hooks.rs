@@ -5,6 +5,7 @@
 //! `<config>/plugins/`; the plugin subscribes to the same session and permission events the TUI sees and feeds
 //! them to `termenbox-server --hook opencode` through the environment Termenbox puts in each session.
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
@@ -24,6 +25,8 @@ const TEMPLATE: &str = r#"// termenbox-opencode-plugin: written by `termenbox-se
 // Reports OpenCode's session, tool, permission and question events to the Termenbox session it was started in.
 // It does nothing when OpenCode runs outside Termenbox (the TERMENBOX_* variables are absent).
 const BINARY = __TERMENBOX_BINARY__;
+// Tool names are remembered between the input event and the call it starts; a long session must not grow it.
+const MAX_TOOLS = 64;
 
 const FORWARD = new Set([
   "session.inbox.enqueued",
@@ -47,27 +50,36 @@ export default {
     if (!process.env.TERMENBOX_SESSION || !process.env.TERMENBOX_EVENT_TOKEN || !process.env.TERMENBOX_EVENT_SOCKET) return;
     const tools = new Map();
     const toolKey = (data) => `${data.sessionID}:${data.id}`;
+    const cap = (value, max) => (typeof value === "string" ? value.slice(0, max) : value);
     // Keep only the fields the adapter reads. Tool output and provider metadata can be megabytes, and the hook
     // accepts at most 64 KiB of one event; the call's name is added here because OpenCode omits it from the
-    // events that start and end a tool.
+    // events that start and end a tool. Every string is capped so one long message cannot push the frame past
+    // the line limit, and the update is dropped as invalid JSON.
     const compact = (type, data, toolName) => {
       switch (type) {
         case "session.inbox.enqueued":
-          return { item: { type: data.item?.type, payload: { text: data.item?.payload?.text } } };
+          return { item: { type: data.item?.type, payload: { text: cap(data.item?.payload?.text, 2000) } } };
         case "session.execution.failed":
-          return { error: { message: data.error?.message } };
+          return { error: { message: cap(data.error?.message, 2000) } };
         case "permission.asked":
-          return { id: data.id, action: data.action, resources: data.resources, message: data.message };
+          return {
+            id: data.id,
+            action: data.action,
+            resources: Array.isArray(data.resources)
+              ? data.resources.slice(0, 8).map((r) => cap(String(r), 500))
+              : data.resources,
+            message: cap(data.message, 2000),
+          };
         case "permission.replied":
           return { requestID: data.requestID };
         case "form.created":
           return {
             form: {
               id: data.form?.id,
-              title: data.form?.title,
+              title: cap(data.form?.title, 500),
               fields: (Array.isArray(data.form?.fields) ? data.form.fields : [])
                 .slice(0, 8)
-                .map((f) => ({ title: f?.title, description: f?.description })),
+                .map((f) => ({ title: cap(f?.title, 200), description: cap(f?.description, 1000) })),
             },
           };
         case "form.replied":
@@ -114,7 +126,10 @@ export default {
           if (!data) continue;
           // Tool events carry an id but not always a name; remember it from the input event and add it to the
           // call that starts and ends the tool. The adapter then has the name for its block key and summary.
-          if (event.type === "session.tool.input.started" && data.id) tools.set(toolKey(data), data.name);
+          if (event.type === "session.tool.input.started" && data.id) {
+            tools.set(toolKey(data), cap(data.name, 100));
+            if (tools.size > MAX_TOOLS) tools.delete(tools.keys().next().value);
+          }
           let toolName;
           if (data.id && (event.type === "session.tool.called" || event.type === "session.tool.success" || event.type === "session.tool.failed")) {
             toolName = tools.get(toolKey(data));
@@ -137,13 +152,14 @@ pub fn plugin_source(binary: &str) -> String {
 }
 
 /// Where OpenCode reads global plugins: `OPENCODE_CONFIG_DIR` when the user set one (the custom directory is
-/// searched for plugins just like `~/.config/opencode`), else `$XDG_CONFIG_HOME/opencode`, else
-/// `~/.config/opencode`.
+/// searched for plugins just like `~/.config/opencode`), else the directory a running `opencode` process uses,
+/// else `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`.
 pub fn default_plugin_path() -> PathBuf {
     let home = std::env::var_os("HOME");
     let xdg = std::env::var_os("XDG_CONFIG_HOME").filter(|d| !d.is_empty());
     let custom = std::env::var_os("OPENCODE_CONFIG_DIR").filter(|d| !d.is_empty());
-    plugin_in(custom, xdg, home)
+    // The service may not have the variable; a running OpenCode process does.
+    plugin_in(custom.or_else(detected_config_dir), xdg, home)
 }
 
 fn plugin_in(
@@ -159,6 +175,100 @@ fn plugin_in(
         },
     };
     dir.join("plugins").join("termenbox.js")
+}
+
+/// How long a look at the process table is kept: it is read once per request, never in a loop.
+const DETECT_TTL: Duration = Duration::from_secs(10);
+
+/// The config directory the owner's running OpenCode uses. A service started by systemd does not inherit the
+/// login shell's `OPENCODE_CONFIG_DIR`/`XDG_CONFIG_HOME`, so looking only in this process can write the plugin
+/// where the user's OpenCode never reads it.
+fn detected_config_dir() -> Option<std::ffi::OsString> {
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<(Instant, Option<std::ffi::OsString>)>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap();
+    if let Some((at, v)) = cache.as_ref() {
+        if at.elapsed() < DETECT_TTL {
+            return v.clone();
+        }
+    }
+    let v = scan_proc_for_config_dir();
+    *cache = Some((Instant::now(), v.clone()));
+    v
+}
+
+/// The config directory from the environments of this user's `opencode` processes (`None` for a process whose
+/// environment names none).
+#[cfg(target_os = "linux")]
+fn scan_proc_for_config_dir() -> Option<std::ffi::OsString> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    let me = std::fs::metadata("/proc/self").ok()?.uid();
+    let mut seen = Vec::new();
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        let name = entry.file_name();
+        if !name.as_bytes().iter().all(u8::is_ascii_digit) {
+            continue;
+        }
+        let dir = entry.path();
+        if std::fs::metadata(&dir).map(|m| m.uid()).ok() != Some(me) {
+            continue;
+        }
+        if std::fs::read(dir.join("comm"))
+            .ok()
+            .as_deref()
+            .map(<[u8]>::trim_ascii)
+            != Some(b"opencode")
+        {
+            continue;
+        }
+        if let Ok(env) = std::fs::read(dir.join("environ")) {
+            seen.push(config_dir_in_environ(&env));
+            if seen.len() >= 64 {
+                break;
+            }
+        }
+    }
+    agreed_dir(seen)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn scan_proc_for_config_dir() -> Option<std::ffi::OsString> {
+    None
+}
+
+/// The config directory OpenCode would use from one `/proc/<pid>/environ` blob, with OpenCode's precedence:
+/// `OPENCODE_CONFIG_DIR`, then `$XDG_CONFIG_HOME/opencode`, then `$HOME/.config/opencode`.
+#[cfg(target_os = "linux")]
+fn config_dir_in_environ(environ: &[u8]) -> Option<std::ffi::OsString> {
+    use std::os::unix::ffi::OsStrExt;
+    let value = |key: &[u8]| {
+        environ
+            .split(|b| *b == 0)
+            .find_map(|kv| kv.strip_prefix(key))
+            .filter(|v| v.first() == Some(&b'/'))
+            .map(|v| std::ffi::OsStr::from_bytes(v).to_os_string())
+    };
+    if let Some(dir) = value(b"OPENCODE_CONFIG_DIR=") {
+        return Some(dir);
+    }
+    if let Some(xdg) = value(b"XDG_CONFIG_HOME=") {
+        return Some(PathBuf::from(xdg).join("opencode").into_os_string());
+    }
+    value(b"HOME=").map(|home| {
+        PathBuf::from(home)
+            .join(".config/opencode")
+            .into_os_string()
+    })
+}
+
+/// The directory every process agrees on; no answer when they differ or when some have none.
+#[cfg(target_os = "linux")]
+fn agreed_dir(seen: Vec<Option<std::ffi::OsString>>) -> Option<std::ffi::OsString> {
+    let first = seen.first()?.clone()?;
+    seen.iter()
+        .all(|d| d.as_ref() == Some(&first))
+        .then_some(first)
 }
 
 fn sha(bytes: &[u8]) -> String {
@@ -333,7 +443,8 @@ pub fn connect(plugin: &Path, binary: &str, state_dir: &Path, apply: bool) -> Re
     )))
 }
 
-/// Restores the original file when only we have changed it since; otherwise removes our plugin file.
+/// Restores the original file when only we have changed it since; otherwise removes our plugin file. A file the
+/// owner edited after we wrote it is left in place (with the journal), so their edit is not destroyed.
 pub fn disconnect(plugin: &Path, state_dir: &Path) -> Result<Outcome> {
     let jp = journal_path(state_dir);
     let journal: Option<Value> = std::fs::read_to_string(&jp)
@@ -373,10 +484,11 @@ pub fn disconnect(plugin: &Path, state_dir: &Path) -> Result<Outcome> {
             "Disconnected: the OpenCode plugin file is back to what it was.".into(),
         ));
     }
-    std::fs::remove_file(plugin)?;
-    let _ = std::fs::remove_file(&jp);
-    Ok(Outcome(
-        "Disconnected: removed the Termenbox OpenCode plugin (it had changed since it was written).".into(),
+    // The owner edited the file after Termenbox wrote it. Deleting it would throw their work away, so leave both
+    // the file and the journal: removing the file by hand still lets a later disconnect clear the journal.
+    Err(anyhow!(
+        "{} changed since Termenbox wrote it; leaving it in place. Remove it by hand, then run --disconnect-opencode again.",
+        plugin.display()
     ))
 }
 
@@ -416,9 +528,59 @@ mod tests {
         // `session.idle` repeats the turn end that execution.* already carries; forwarding it would let a late
         // event downgrade Done to Idle after the adapter closed the turn.
         assert!(!text.contains("session.idle"));
+        // Bounded frames and a bounded remembered-tool map: neither can grow with a long session.
+        assert!(text.contains("const cap ="));
+        assert!(text.contains("const MAX_TOOLS ="));
+        assert!(text.contains("tools.delete(tools.keys().next().value)"));
         // A path with a quote cannot break out of the JavaScript string.
         let odd = plugin_source("/tmp/a\"b/termenbox-server");
         assert!(odd.contains("/tmp/a\\\"b/termenbox-server"));
+    }
+
+    #[test]
+    fn the_generated_plugin_is_valid_javascript() {
+        let d = tmpdir("js");
+        let file = d.join("plugin.mjs");
+        std::fs::write(&file, plugin_source(BIN)).unwrap();
+        match std::process::Command::new("node")
+            .arg("--check")
+            .arg(&file)
+            .output()
+        {
+            Ok(out) => assert!(
+                out.status.success(),
+                "node --check: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ),
+            // The Rust CI image has no Node; local and --full builds do, and there the check is real.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("node is not installed; skipping the plugin syntax check")
+            }
+            Err(e) => panic!("{e}"),
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_opencode_process_names_its_config_directory() {
+        let parse = |s: &str| config_dir_in_environ(s.as_bytes());
+        let some = |p: &str| Some(PathBuf::from(p).into_os_string());
+        assert_eq!(
+            parse("OPENCODE_CONFIG_DIR=/data/oc\0XDG_CONFIG_HOME=/xdg\0HOME=/home/u\0"),
+            some("/data/oc")
+        );
+        assert_eq!(
+            parse("XDG_CONFIG_HOME=/xdg\0HOME=/home/u\0"),
+            some("/xdg/opencode")
+        );
+        assert_eq!(parse("HOME=/home/u\0"), some("/home/u/.config/opencode"));
+        // A relative value is ignored, exactly as OpenCode would not find it.
+        assert_eq!(
+            parse("OPENCODE_CONFIG_DIR=relative\0HOME=/home/u\0"),
+            some("/home/u/.config/opencode")
+        );
+        assert_eq!(parse(""), None);
     }
 
     #[test]
@@ -518,6 +680,31 @@ mod tests {
         assert_eq!(journal_plugin(&state), Some(b.clone()));
         disconnect(&b, &state).unwrap();
         assert!(!b.exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_plugin_changed_since_it_was_written_is_left_for_the_owner() {
+        let d = tmpdir("edit");
+        let plugin = d.join("plugins/termenbox.js");
+        let state = d.join("state");
+        connect(&plugin, BIN, &state, true).unwrap();
+        let edited = format!(
+            "{}// added by the owner\nexport const mine = true;\n",
+            std::fs::read_to_string(&plugin).unwrap()
+        );
+        std::fs::write(&plugin, &edited).unwrap();
+        let err = match disconnect(&plugin, &state) {
+            Ok(_) => panic!("a changed plugin must not be removed silently"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("changed"), "{err}");
+        assert_eq!(std::fs::read_to_string(&plugin).unwrap(), edited);
+        assert_eq!(journal_plugin(&state), Some(plugin.clone()));
+        // Once the owner removed their edited file, the journal can be cleared normally.
+        std::fs::remove_file(&plugin).unwrap();
+        disconnect(&plugin, &state).unwrap();
+        assert_eq!(journal_plugin(&state), None);
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -71,13 +71,14 @@ writeFileSync(settingsFile, ORIGINAL);
 const fakeBin = join(root, 'bin');
 mkdirSync(fakeBin);
 const configDir = join(root, 'config');
+const opencodeDir = join(root, 'opencode-config');
 const httpPort = 30000 + Math.floor(Math.random() * 30000);
 const claim = randomBytes(32).toString('base64url');
 const server = spawn(BIN, [], {
   env: {
     ...process.env, HOME: userHome, TMUX_TMPDIR: root, TERMENBOX_CONFIG_DIR: configDir, TERMENBOX_HOST: '127.0.0.1', TERMENBOX_PORT: String(httpPort),
     TERMENBOX_UDP_PORT: String(httpPort + 1), TERMENBOX_PUBLIC_IP: '127.0.0.1', TERMENBOX_DIRECTORY_URL: '', TERMENBOX_DEV_INFO: 'on',
-    TERMENBOX_CERT_KEYS: `e2e=${signerPublic}`, CLAUDE_CONFIG_DIR: claudeDir, LANG: 'C', LC_ALL: 'C', TERMENBOX_CLAIM_SECRET: claim,
+    TERMENBOX_CERT_KEYS: `e2e=${signerPublic}`, CLAUDE_CONFIG_DIR: claudeDir, OPENCODE_CONFIG_DIR: opencodeDir, LANG: 'C', LC_ALL: 'C', TERMENBOX_CLAIM_SECRET: claim,
   },
   stdio: ['ignore', 'inherit', 'inherit'],
 });
@@ -235,6 +236,23 @@ try {
   await waitFor(async () => (await row.getAttribute('data-hook-state')) === 'connected', 'hooks enabled in Settings');
   check(settings() === again, 'Settings wrote something other than its preview');
   console.log('ok  Settings removes the hooks (original bytes back) and enables them again after showing the change');
+
+  // 7. OpenCode's plugin takes the same Settings path: no process scan is needed, the row is offered per server.
+  await goto('settings');
+  const ocRow = page.locator('[data-hook-row=opencode]');
+  await ocRow.waitFor();
+  const ocPlugin = join(opencodeDir, 'plugins/termenbox.js');
+  await ocRow.getByRole('button', { name: 'Enable…' }).click();
+  await ocRow.locator('pre').waitFor();
+  check(!existsSync(ocPlugin), 'the OpenCode preview changed the file');
+  const ocPreview = await ocRow.locator('pre').evaluate((p) => p.textContent);
+  await ocRow.getByRole('button', { name: 'Enable', exact: true }).click();
+  await waitFor(async () => (await ocRow.getAttribute('data-hook-state')) === 'connected', 'OpenCode plugin enabled');
+  check(readFileSync(ocPlugin, 'utf8') === ocPreview, 'the OpenCode plugin written is not the preview');
+  await ocRow.getByRole('button', { name: 'Remove' }).click();
+  await waitFor(async () => (await ocRow.getAttribute('data-hook-state')) === 'not_connected', 'OpenCode plugin removed');
+  check(!existsSync(ocPlugin), 'Remove did not delete the OpenCode plugin');
+  console.log('ok  Settings enables and removes the OpenCode plugin with its preview');
   check(errors.length === 0, `page errors: ${errors.slice(0, 3).join(' | ')}`);
   await ctx.close();
 } catch (e) {
