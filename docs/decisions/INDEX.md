@@ -127,3 +127,4 @@
 0122-agent-state-comes-from-one-turn-and-obligation-reducer,"Agent state is derived by one reducer from open turns and open obligations, fed alike by hooks and ACP; the screen only closes what it no longer shows","agents, server, hooks, protocol",draft
 0123-connections-are-a-raced-set-of-signed-candidate-paths,"A server is one identity reached over a raced set of signed candidate paths, so every topology connects without a mode choice","transport, network, security, deployment, roadmap, lan",draft
 0124-connection-telemetry-is-opt-out-sampled-and-enum-only,"The hosted client reports connection outcomes as sampled, enum-only events through an IP-stripping proxy, opt-out","privacy, network, client, performance, roadmap",draft
+0125-the-roadmap-has-no-priority-tiers,"The roadmap has no priority tiers; order comes from WSJF chains, dependencies and the paid-lane rule","roadmap, repo",active
