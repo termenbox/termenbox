@@ -49,6 +49,11 @@ impl ServerKey {
     pub fn server_id(&self) -> String {
         B64.encode(self.0.verifying_key().to_bytes())
     }
+
+    /// Signs candidate bundles (`candidates.rs`) with the same key the directory records use.
+    pub fn sign(&self, message: &[u8]) -> [u8; 64] {
+        self.0.sign(message).to_bytes()
+    }
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -185,6 +190,23 @@ pub async fn run(
         };
         wait_or_change(wait, || announced && auth.active_claim() != claim).await;
     }
+}
+
+/// Starts the publisher, unless `enabled` is false (LAN-only, no public address, or no directory): then the
+/// directory is never contacted (GUARDRAIL-lan-addresses-never-reach-the-directory). True when it started.
+pub fn spawn_publisher(
+    enabled: bool,
+    origin: String,
+    key: Arc<ServerKey>,
+    info: RtcInfo,
+    auth: Arc<AuthState>,
+    http: reqwest::Client,
+) -> bool {
+    if !enabled || origin.is_empty() {
+        return false;
+    }
+    tokio::spawn(run(key, origin, info, String::new(), auth, http));
+    true
 }
 
 /// Sleeps for `wait`, returning early as soon as `changed` reports true (checked every 5 s).
@@ -355,6 +377,101 @@ mod tests {
             sig: rec["sig"].as_str().unwrap().into(),
         };
         assert!(verify(&r));
+    }
+
+    /// GUARDRAIL-lan-addresses-never-reach-the-directory: even with a bundle full of private candidates around, the
+    /// record the directory gets has the fields it always had and none of those addresses.
+    #[test]
+    fn record_has_no_private_candidates() {
+        use termenbox_core::bundle::CandidateKind;
+        let list = crate::candidates::candidates(&crate::candidates::Inputs {
+            port: 4443,
+            lan: vec!["192.168.1.20".parse().unwrap()],
+            overlay: vec!["100.64.1.2".parse().unwrap()],
+            public4: Some("185.199.108.153".parse().unwrap()),
+            ..Default::default()
+        });
+        assert!(list.iter().any(|c| c.kind == CandidateKind::Lan));
+        assert!(list.iter().any(|c| c.kind == CandidateKind::Overlay));
+        let record = build(&fixed_key(), 1, &info(), "", Some("s"));
+        let json = serde_json::to_value(&record).unwrap();
+        let mut keys: Vec<&str> = json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "claim_hash",
+                "claim_proof",
+                "fingerprint",
+                "ip",
+                "seq",
+                "server_id",
+                "sig",
+                "udp_port",
+                "ws_url"
+            ]
+        );
+        let text = json.to_string();
+        for c in list.iter().filter(|c| c.kind.is_private()) {
+            assert!(!text.contains(&c.addr), "{} leaked into the record", c.addr);
+        }
+    }
+
+    /// GUARDRAIL-lan-addresses-never-reach-the-directory: with LAN-only on, a recording stand-in directory sees no
+    /// request at all, while the same call with LAN-only off does reach it (so the stand-in really records).
+    #[tokio::test]
+    async fn lan_only_makes_no_directory_calls() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hits = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let counter = hits.clone();
+        tokio::spawn(async move {
+            while listener.accept().await.is_ok() {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("termenbox-lanonly-{}", uuid::Uuid::new_v4()));
+        let auth = Arc::new(
+            AuthState::new(dir.clone(), crate::cert::CertKeys::default(), "srv".into()).unwrap(),
+        );
+        let key = Arc::new(ServerKey::load_or_create(&dir).unwrap());
+
+        let lan_only = true;
+        let started = spawn_publisher(
+            !lan_only,
+            origin.clone(),
+            key.clone(),
+            info(),
+            auth.clone(),
+            reqwest::Client::new(),
+        );
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(!started);
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "LAN-only reached the directory"
+        );
+
+        assert!(spawn_publisher(
+            true,
+            origin,
+            key,
+            info(),
+            auth,
+            reqwest::Client::new()
+        ));
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(
+            hits.load(Ordering::SeqCst) >= 1,
+            "the control case never connected"
+        );
     }
 
     #[test]

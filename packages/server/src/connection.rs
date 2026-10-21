@@ -147,6 +147,13 @@ pub async fn run(mut link: Link, state: AppState) {
     if !send(&link, &ok).await {
         return;
     }
+    // The signed candidate bundle (decision 0123), in-band after authentication: the client verifies it against the
+    // pinned server key and keeps it as its list of addresses to race.
+    if let Some(bundle) = state.paths.get().and_then(|p| p.current()) {
+        if !send(&link, &ServerMessage::Candidates { bundle }).await {
+            return;
+        }
+    }
     // Queued behind `auth_ok`, so the client reads it before the first raw byte.
     if lanes {
         link.tx.enable_lanes();

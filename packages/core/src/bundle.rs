@@ -160,7 +160,9 @@ impl Bundle {
 
     /// Parses the layout without checking the signature.
     pub fn decode(wire: &str) -> Result<(Bundle, [u8; 64]), BundleError> {
-        let bytes = B64.decode(wire.trim()).map_err(|_| BundleError::Malformed)?;
+        let bytes = B64
+            .decode(wire.trim())
+            .map_err(|_| BundleError::Malformed)?;
         if bytes.len() < MAGIC.len() + SIG_LEN {
             return Err(BundleError::Malformed);
         }
@@ -297,7 +299,10 @@ mod tests {
     #[test]
     fn bundle_signature_verifies() {
         let b = vector_bundle();
-        assert_eq!(Bundle::verify(&signed(&b), 1_800_000_000, None, None), Ok(b));
+        assert_eq!(
+            Bundle::verify(&signed(&b), 1_800_000_000, None, None),
+            Ok(b)
+        );
     }
 
     /// The shared vector: the TypeScript client must produce and accept the same bytes.
@@ -333,8 +338,14 @@ mod tests {
     #[test]
     fn stale_seq_rejected() {
         let wire = signed(&vector_bundle());
-        assert_eq!(Bundle::verify(&wire, 1, None, Some(41)), Err(BundleError::Stale));
-        assert_eq!(Bundle::verify(&wire, 1, None, Some(99)), Err(BundleError::Stale));
+        assert_eq!(
+            Bundle::verify(&wire, 1, None, Some(41)),
+            Err(BundleError::Stale)
+        );
+        assert_eq!(
+            Bundle::verify(&wire, 1, None, Some(99)),
+            Err(BundleError::Stale)
+        );
         assert!(Bundle::verify(&wire, 1, None, Some(40)).is_ok());
     }
 
@@ -345,7 +356,11 @@ mod tests {
             Bundle::verify(&wire, 1_900_000_000, None, None),
             Err(BundleError::Expired)
         );
-        let other = B64.encode(SigningKey::from_bytes(&[9u8; 32]).verifying_key().to_bytes());
+        let other = B64.encode(
+            SigningKey::from_bytes(&[9u8; 32])
+                .verifying_key()
+                .to_bytes(),
+        );
         assert_eq!(
             Bundle::verify(&wire, 1, Some(&other), None),
             Err(BundleError::WrongServer)
@@ -357,7 +372,10 @@ mod tests {
         let b = vector_bundle();
         let sig = SigningKey::from_bytes(&[9u8; 32]).sign(&b.signed_bytes().unwrap());
         let wire = b.encode(&sig.to_bytes()).unwrap();
-        assert_eq!(Bundle::verify(&wire, 1, None, None), Err(BundleError::BadSignature));
+        assert_eq!(
+            Bundle::verify(&wire, 1, None, None),
+            Err(BundleError::BadSignature)
+        );
     }
 
     #[test]
