@@ -1,25 +1,20 @@
 ---
 id: 0051
-title: Server Already Supports Offline Operation After Claim
+title: The server needs no external call to accept a connection after claim
 status: active
+kind: decision
+governed-by: 0057-webrtc-direct-transport
 tags: [transport, auth, network, deployment]
 date: 2026-10-21
+last-verified: 2026-10-21
 ---
 
-# Server Already Supports Offline Operation After Claim
+# The server needs no external call to accept a connection after claim
 
-The server already works offline after the initial claim flow. No transport or auth changes are required for LAN-only mode — only the address source changes.
+Read from the code; not yet tested with the directory and internet blocked (R62 step 1 does that).
 
-## Transport
+- `--host` / `TERMENBOX_HOST` defaults to `0.0.0.0` (`main.rs`), and `rtc.rs::bind_transport` binds the UDP socket there, so LAN packets are accepted on every interface.
+- The server is ICE-lite (`rtc.rs`, `set_ice_lite(true)`): it answers checks but cannot start them, so it cannot hole-punch.
+- Device certificates are checked locally (`auth.rs`); owner identity is in `owner.json`.
 
-- `main.rs` `--host` defaults to `0.0.0.0`.
-- `rtc.rs::bind_transport` binds the UDP socket on that address → the socket accepts LAN packets on any interface.
-
-## Auth
-
-- `auth.rs::AuthState` + `CertKeys::verify` validate the device certificate locally using the server's keys — no GitHub API call at connect time.
-- Owner identity is stored in `owner.json` on the server; no external lookup needed.
-
-## Conclusion
-
-LAN-only mode requires **zero changes** to the transport layer or auth logic. The only difference is where the client gets the server's address and fingerprint (directory record vs. LAN-link artifact).
+Address-wise the client only needs IP, port and fingerprint (0057). Who supplies them is the open part (0123).

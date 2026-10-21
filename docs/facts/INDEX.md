@@ -49,6 +49,6 @@
 | 0047 | One server instance idles at about 8.3 MiB RSS (8.7 with three sessions); five instances cost about 41 to 44 MiB | deployment, server, performance | active |
 | 0048 | Claude Code 2.1.302 sends PermissionRequest for AskUserQuestion at once, Notification up to six seconds later, and no hook when a dialog or a turn is cancelled with Esc | agents, hooks, claude | active |
 | 0049 | The U14 health sampler costs about 62 microseconds of CPU per 10 s tick and about 36 KiB of RSS, far under the 1% CPU budget | server, performance, health | active |
-| 0051 | Server Already Supports Offline Operation After Claim | transport, auth, network, deployment | active |
+| 0051 | The server needs no external call to accept a connection after claim | transport, auth, network, deployment | active |
 
 <!-- bootstrap-generated: true -->

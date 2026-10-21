@@ -29,3 +29,11 @@ Free relays reach about 5-30 daily active users (FACT-0020); tunnels depend on a
 ## Open risks (plan 8.7)
 
 Rust library support for ICE-lite on one port; browser support for locally built descriptions on iOS Safari 16+; NAT-mapped public IPs on some clouds; UDP blocked by provider firewalls or some networks; connection-flood protection for unauthenticated peers on a 512MB server.
+
+## Amendment (proposed 2026-10-21, awaiting acceptance)
+
+From 0123, which adds candidate paths for servers without a reachable public UDP port:
+
+- **STUN is allowed as an optional, best-effort hint** for address discovery (free public servers, no account). It is never trusted for identity: the fingerprint pin and signed records still decide who the server is.
+- **Full ICE on the server** replaces ICE-lite only if hole punching (0123 rung 2) is built after measurement (0124). ICE-lite cannot start connectivity checks, so it cannot punch.
+- **Still no TURN and no signaling server of ours.** A mailbox, if built, is the existing directory.
