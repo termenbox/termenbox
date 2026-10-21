@@ -459,6 +459,66 @@ async function phone(shared) {
   return ok;
 }
 
+/** Copying a terminal selection on the desktop: the usual Ctrl+C/Cmd+C, and Ctrl+C still interrupts without one. */
+async function copySelection(shared) {
+  const t = await startApp(shared, { viewport: { width: 1280, height: 800 }, clipboard: true });
+  const { page, server } = t;
+  const LINE = 'COPY-TARGET-12345';
+  await t.open();
+  await t.openSession('s1');
+  server.output(`${LINE}\r\n`);
+  await page.waitForFunction((want) => [...document.querySelectorAll('.xterm-rows > div')].some((d) => d.textContent.includes(want)), LINE);
+  const row = page.locator('.xterm-rows > div').filter({ hasText: LINE }).first();
+  const box = await row.boundingBox();
+  const select = async () => {
+    // A double-click selects the whole word, as a desktop user does; the line is one word because '-' is not a
+    // word separator in xterm. Start well inside the text: the 44 px sidebar resize target overlaps the first
+    // ~22 px of the terminal.
+    await page.mouse.dblclick(box.x + 60, box.y + box.height / 2);
+    await page.locator('.xterm-helper-textarea').focus();
+  };
+  const clearClipboard = () => page.evaluate(() => navigator.clipboard.writeText(''));
+  const onClipboard = async (want) => {
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      const text = await page.evaluate(() => navigator.clipboard.readText()).catch(() => '');
+      if (text.includes(want)) return true;
+      await page.waitForTimeout(50);
+    }
+    return false;
+  };
+
+  // No selection: Ctrl+C must keep interrupting the program (the app's own U04 guarantee).
+  server.clear();
+  await page.locator('.xterm-helper-textarea').focus();
+  await page.keyboard.press('Control+c');
+  await page.waitForTimeout(200);
+  t.check(typedBytes(server).some((s) => s.includes('\u0003')), 'copy: Ctrl+C with no selection did not reach the program as ^C');
+
+  // The terminal convention this app documents today: select, then Ctrl+Shift+C.
+  await select();
+  await clearClipboard();
+  await page.keyboard.press('Control+Shift+C');
+  t.check(await onClipboard(LINE), 'copy: Ctrl+Shift+C did not put the selection on the clipboard');
+
+  // What a desktop user actually presses with a selection: Ctrl+C (Linux/Windows) and Cmd+C (macOS).
+  await select();
+  await clearClipboard();
+  server.clear();
+  await page.keyboard.press('Control+c');
+  t.check(await onClipboard(LINE), 'copy: Ctrl+C with a selection did not copy it');
+  t.check(!typedBytes(server).some((s) => s.includes('\u0003')), 'copy: Ctrl+C with a selection also sent ^C to the program');
+
+  await select();
+  await clearClipboard();
+  await page.keyboard.press('Meta+c');
+  t.check(await onClipboard(LINE), 'copy: Cmd+C with a selection did not copy it (macOS)');
+
+  const ok = await t.end();
+  if (ok) t.ok('a terminal selection copies with the desktop keys, and Ctrl+C still interrupts when nothing is selected');
+  return ok;
+}
+
 export async function realApp() {
   const shared = await startShared();
   const results = [];
@@ -468,6 +528,7 @@ export async function realApp() {
     results.push(await crossing(shared));
     results.push(await split(shared));
     results.push(await shortcuts(shared));
+    results.push(await copySelection(shared));
     results.push(await phone(shared));
   } finally {
     await shared.stop();

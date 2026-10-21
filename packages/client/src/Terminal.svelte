@@ -500,15 +500,17 @@
     cleanups.push(() => window.removeEventListener('termenbox-debug', syncDebug));
 
     // Ctrl+V and Ctrl+Shift+V would reach the program as ^V; let the browser paste instead (xterm handles the paste event).
-    // Ctrl+Shift+C copies the selection to this machine's clipboard (plain Ctrl+C stays an interrupt for the program).
+    // Copy: a selection goes to this machine's clipboard on Ctrl+C (Cmd+C on macOS) and the program must not also get
+    // ^C. With nothing selected, Ctrl+C stays the interrupt. Ctrl+Shift+C keeps working where the browser delivers it.
     term.attachCustomKeyEventHandler((ev) => {
-      if (ev.type !== 'keydown' || !ev.ctrlKey || ev.altKey || ev.metaKey) return true;
+      if (ev.type !== 'keydown' || ev.altKey) return true;
       const key = ev.key.toLowerCase();
-      if (key === 'v') return false;
-      if (key === 'c' && ev.shiftKey) {
-        ev.preventDefault(); // the browser's own Ctrl+Shift+C opens its inspector
+      if (ev.ctrlKey && key === 'v') return false;
+      if ((ev.ctrlKey || ev.metaKey) && key === 'c') {
         const text = term?.getSelection();
-        if (text) void copyText(text);
+        if (!text) return !(ev.ctrlKey && ev.shiftKey); // Ctrl+Shift+C with no selection is not the program's key
+        ev.preventDefault(); // no browser copy command, no inspector, and no ^C
+        void copyText(text);
         return false;
       }
       return true;
