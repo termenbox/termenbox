@@ -509,6 +509,30 @@ async function copySelectionWithMouseMode(shared) {
   return ok;
 }
 
+/** A copy made on the server (tmux copy-mode, a TUI) reaches this machine's clipboard through OSC 52; a query never reads it. */
+async function copyFromServer(shared) {
+  const t = await startApp(shared, { viewport: { width: 1280, height: 800 }, clipboard: true });
+  const { page, server } = t;
+  const clipboard = () => page.evaluate(() => navigator.clipboard.readText());
+  await t.open();
+  await t.openSession('s1');
+  await page.evaluate(() => navigator.clipboard.writeText('BEFORE'));
+  const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
+  server.output(`\u001b]52;c;${b64('FROM-TMUX Привет 😀')}\u0007`);
+  await page.waitForFunction(() => navigator.clipboard.readText().then((x) => x.includes('FROM-TMUX')), null, { timeout: 3000 }).catch(() => {});
+  t.check((await clipboard()) === 'FROM-TMUX Привет 😀', `osc52: the clipboard holds ${JSON.stringify(await clipboard())}, not what the program set`);
+
+  // A program asking to read the clipboard gets nothing, and the clipboard is left alone.
+  server.clear();
+  server.output('\u001b]52;c;?\u0007');
+  await page.waitForTimeout(300);
+  t.check(!typedBytes(server).some((s) => s.includes('52;')), 'osc52: a clipboard query was answered');
+  t.check((await clipboard()) === 'FROM-TMUX Привет 😀', 'osc52: a query changed the clipboard');
+  const ok = await t.end();
+  if (ok) t.ok('a copy made on the server reaches the clipboard (OSC 52), and a query reads nothing');
+  return ok;
+}
+
 /** Copying a terminal selection on the desktop: the usual Ctrl+C/Cmd+C, and Ctrl+C still interrupts without one. */
 async function copySelection(shared) {
   const t = await startApp(shared, { viewport: { width: 1280, height: 800 }, clipboard: true });
@@ -580,6 +604,7 @@ export async function realApp() {
     results.push(await shortcuts(shared));
     results.push(await copySelection(shared));
     results.push(await copySelectionWithMouseMode(shared));
+    results.push(await copyFromServer(shared));
     results.push(await phone(shared));
   } finally {
     await shared.stop();
