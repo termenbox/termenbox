@@ -7,7 +7,7 @@ Proposed 2026-10-16, not yet applied to `termenbox-roadmap.md` (no `Owner:` fiel
 | **Points** | **167** | **165** (plus the shared gate U16, 3) |
 | **UX programme** | U03, U06, U07, U07a, U07b, U07c (key row), U08 (decision card), U09, U10, U11, U12, U13, U14 | U02 (design system), U04 (shell), U05 (Home), U15 (desktop workspace) |
 | **Desktop fixes on today's client** | none | R55, R56, R57, R58, R60 (unfolded again), R61, R59, R36 |
-| **Agents and phone checks** | R19, R21, R02, R03 | none |
+| **Agents and phone checks** | R19, R21, R03 | none |
 | **Server and host** | R23, R24, R29, R30, R33 | R27, R28, R25, R31, R38 |
 | **Cloud, release, CI, security** | none | R07, R08, R09, R17, R18, R26, R50, R51, R32, R34 |
 | **Other client work** | none | R16, R22, R39 |
