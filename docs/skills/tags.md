@@ -24,6 +24,7 @@ bootstrap-generated: true
 | infrastructure | Servers, databases, external services |
 | ios | iOS Safari specific behavior |
 | license | Legal, SPDX, compliance |
+| lan | Local area network addressing, RFC1918, off-grid connectivity |
 | mobile | Touch, gestures, battery, background |
 | monorepo | Repository structure, workspaces |
 | network | Transport, protocols, binding |

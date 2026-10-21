@@ -125,3 +125,4 @@
 0120-termenbox-runs-its-own-tmux-server-with-its-own-config,"Termenbox runs its own tmux server on a private socket with a config it owns, apart from the user's tmux","server, sessions, deployment, compatibility",active
 0121-the-tmux-server-is-always-the-private-one-unless-the-owner-opts-out,"Sessions always live on the private tmux server; the default one is used only when the owner opts in","server, sessions, deployment, compatibility",active
 0122-agent-state-comes-from-one-turn-and-obligation-reducer,"Agent state is derived by one reducer from open turns and open obligations, fed alike by hooks and ACP; the screen only closes what it no longer shows","agents, server, hooks, protocol",draft
+0123-add-lan-link-mode,"Add LAN-link mode for off-grid LAN connections to a server with no public IP","transport, network, security, deployment, roadmap, lan",active

@@ -12,6 +12,8 @@
 | paranoid-mode | Paranoid Mode (Outbound Block) | 0001 | 0001 | active |
 | bootstrap-simplicity | 1-2 Click Bootstrap for Users | 0013 | 0001,0011 | active |
 | ci-only-builds | All Builds Run in CI Only | 0010,0011 | 0010,0011 | active |
+| lan-link-is-signed-by-server-key | A LAN-link is signed by the server's ed25519 key and verified against the pinned server_id | 0123 | 0056,0021,0051 | active |
+| lan-only-mode-skips-directory | TERMENBOX_LAN_ONLY mode does not publish or update directory records; the directory never sees LAN addresses | 0123 | 0056,0051 | active |
 
 <!-- bootstrap-generated: true -->
 instruction-file-within-cap,"The instruction file must stay within 150 lines","practice-packs, harness, guardrail",active
