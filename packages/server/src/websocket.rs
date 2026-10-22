@@ -8,7 +8,7 @@ use axum::{
     http::HeaderMap,
 };
 
-use crate::link::{Inbound, LANE_TERM, pair};
+use crate::link::{pair, Inbound, LANE_TERM};
 
 const PING_EVERY: Duration = Duration::from_secs(20);
 /// Queued terminal chunks are joined into frames of about this size.
