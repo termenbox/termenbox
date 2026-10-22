@@ -87,7 +87,7 @@ await page.evaluate(([cert]) => { localStorage.setItem('termenbox_auth', JSON.st
 await page.goto(corrupted);
 await page.reload();
 await page.getByTestId('pair-invalid').waitFor({ timeout: 15000 });
-check((await page.getByTestId('pair-invalid').innerText()).toLowerCase().includes('invalid link'), 'a corrupted signature shows "Invalid link"');
+check(/not a valid|expired/i.test(await page.getByTestId('pair-invalid').innerText()), 'a corrupted signature shows one failure cause');
 check((await page.getByTestId('pair-preview').count()) === 0, 'a corrupted signature never shows the preview');
 check(!existsSync(join(home, 'config', 'owner.json')), 'a corrupted link claimed nothing');
 await page.getByTestId('pair-invalid').getByRole('button', { name: 'Close' }).click();

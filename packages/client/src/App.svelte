@@ -379,6 +379,7 @@
   /** A pairing link waiting for the user's confirmation (decision 0123). */
   let pairLink: PairLink | null = null;
   let addPrefill: string | null = null;
+  let addStart: 'install' | 'scan' = 'install';
   let toast: { message: string; type: 'success' | 'error'; detail?: string } | null = null;
 
   const GITHUB_CLIENT_ID = import.meta.env.VITE_GITHUB_CLIENT_ID || '';
@@ -893,7 +894,7 @@
       {/snippet}
       {#if serversPage || servers.length === 0}
         {#if servers.length > 0}<button class="secondary" on:click={showWorkspace}>← Sessions</button>{/if}
-        <ServerList {servers} states={$hubServers} onpause={(id) => { hub.pause(id); }} onresume={(id) => hub.resume(id)} onretry={(id) => hub.retry(id)} onadd={() => { addPrefill = null; showAddServer = true; }} onremove={removeServer} onshare={shareServer} />
+        <ServerList {servers} states={$hubServers} onpause={(id) => { hub.pause(id); }} onresume={(id) => hub.resume(id)} onretry={(id) => hub.retry(id)} onadd={() => { addPrefill = null; addStart = 'install'; showAddServer = true; }} onscan={() => { addPrefill = null; addStart = 'scan'; showAddServer = true; }} onremove={removeServer} onshare={shareServer} />
       {:else if $destination === 'home'}
         <Home sessions={$allSessions} agents={$allAgents} servers={$hubServers} {now} {lastKey} offer={hookOffer} onhook={homeHook} onopen={attach} onservers={leaveServer} onnew={newSession}
           onanswer={(key, choice, prompt) => sendSession({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })}
@@ -980,7 +981,7 @@
     <PairDialog link={pairLink} onclose={() => pairLink = null} onadd={(server) => { pairLink = null; void addPaired(server); }} />
   {/if}
   {#if showAddServer}
-    <AddServerModal origin={location.origin} prefillSecret={addPrefill} onserver={(id) => { showAddServer = false; void addServerById(id); }} onclose={() => showAddServer = false} onadd={(server) => void addAndLink(server)} />
+    <AddServerModal origin={location.origin} prefillSecret={addPrefill} start={addPrefill ? 'install' : addStart} onserver={(id) => { showAddServer = false; void addServerById(id); }} onclose={() => showAddServer = false} onadd={(server) => void addAndLink(server)} />
   {/if}
 
   {#if toast}

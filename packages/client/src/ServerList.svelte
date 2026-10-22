@@ -10,18 +10,23 @@
   export let onresume: (id: string) => void;
   export let onretry: (id: string) => void;
   export let onadd: () => void;
+  /** Scan QR (decision 0127): the camera opens full-screen and a pairing link goes straight to Confirm. */
+  export let onscan: () => void = () => {};
   export let onremove: (index: number) => void;
   export let onshare: (index: number) => void;
 </script>
 
 <div class="server-list" style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 48px 24px;">
   <div style="width: 100%; max-width: 600px;">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 32px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 32px;">
       <h2 style="font-size: 1.5rem;">Your Servers</h2>
-      <button on:click={onadd} style="display: flex; align-items: center; gap: 8px;">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-        Add Server
-      </button>
+      <div style="display: flex; gap: 8px;">
+        <button class="secondary" on:click={onscan} data-testid="scan-qr">Scan QR</button>
+        <button on:click={onadd} style="display: flex; align-items: center; gap: 8px;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          Add Server
+        </button>
+      </div>
     </div>
 
     {#if servers.length === 0}

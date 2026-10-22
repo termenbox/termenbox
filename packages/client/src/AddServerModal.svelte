@@ -1,25 +1,36 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
-  import type { ServerListItem } from './lib/protocol';
+  import { onDestroy, onMount, tick } from 'svelte';
+  import type { Bundle, ServerListItem } from './lib/protocol';
   import type { DirRecord } from './lib/directory';
   import { randomClaimSecret } from './lib/directory';
-  import { installCommand, scanCommand as scanCommandFor, parseClaim, parseServerLink, waitForServer, previewClaim, checkReachable, ClaimTimeout, type Reachability, type ClaimPreview, type RunChoice } from './lib/onboard';
+  import { installCommand, parseClaim, parseServerLink, waitForServer, previewClaim, checkReachable, ClaimTimeout, type Reachability, type ClaimPreview, type RunChoice } from './lib/onboard';
+  import { connectPaths, DIAGNOSES, diagnose, initialState, reduce, type ActionId, type Diagnosis, type Event } from './lib/addServer';
+  import { buildPaths, isTunnel, orderPaths } from './lib/paths';
+  import { pairedServer, parsePairLink, previewPair, type PairPreview } from './lib/pair';
   import { decodeQrFile, startCameraScan } from './lib/scan';
   import { wsUrl } from './lib/servers';
   import { Unreachable } from './lib/transport';
   import { Dialog } from './lib/ui';
   import PortHelp from './PortHelp.svelte';
+  import StepIndicator from './addserver/StepIndicator.svelte';
+  import InstallStep from './addserver/InstallStep.svelte';
+  import ConnectStep from './addserver/ConnectStep.svelte';
+  import ConfirmStep from './addserver/ConfirmStep.svelte';
+  import DoneStep from './addserver/DoneStep.svelte';
 
   export let origin: string;
   /** A secret that arrived by link or earlier scan: start waiting for that server right away. */
   export let prefillSecret: string | null = null;
+  /** `scan` is the Scan QR button outside the wizard (decision 0127): straight to the camera, then to Confirm. */
+  export let start: 'install' | 'scan' = 'install';
   export let onclose: () => void;
   export let onadd: (server: ServerListItem) => void;
   /** A scanned or pasted re-add link for a server that is already registered. */
   export let onserver: (serverId: string) => void;
 
-  type Tab = 'paste' | 'scan' | 'url';
-  let tab: Tab = prefillSecret ? 'paste' : 'paste';
+  let s = start === 'scan' ? reduce(initialState(), { type: 'next' }) : initialState();
+  const dispatch = (e: Event) => (s = reduce(s, e));
+
   let name = '';
   let secret = prefillSecret ?? randomClaimSecret();
   /** Where sessions run. The host choices give this browser a shell on the machine itself, so they need consent. */
@@ -32,100 +43,127 @@
   $: if (where === 'container' || hostAs) consent = false; // each choice of a host mode is agreed to on its own
   $: allowed = mode === 'container' || consent;
   $: command = installCommand(origin, secret, mode);
-  let waiting = false;
+
   let error = '';
-  let copied = false;
-  let manualUrl = '';
-  let manualClaim = '';
-  let video: HTMLVideoElement;
+  let codeRead = false;
+  let video: HTMLVideoElement | null = null;
   let stopCamera: (() => void) | null = null;
   let scanning = false;
   let abort: AbortController | null = null;
-
-  /** The server has announced itself; its preview is fetched and shown, and nothing is claimed until Add is tapped (0117). */
-  let found: DirRecord | null = null;
-  let preview: ClaimPreview | null = null;
-  let previewing = false;
-  let previewName = '';
   /** The preview failed because the server could not be reached (not because of what it said). */
   let blocked = false;
 
-  async function showPreview(record: DirRecord, s: string) {
+  /** The server has announced itself; its preview is fetched and shown, and nothing is claimed until Add is tapped (0117). */
+  let found: DirRecord | null = null;
+  let claimPreview: ClaimPreview | null = null;
+  let pairPrev: PairPreview | null = null;
+  let previewName = '';
+
+  /** Set once the server is added and the reachability check is running or done (decision 0118). */
+  let checking = false;
+  let reach: Reachability | null = null;
+  let pathLabel = '';
+
+  function ensureConnect() {
+    if (s.step === 'install') dispatch({ type: 'next' });
+  }
+
+  function fail(diagnosis: Diagnosis) {
+    ensureConnect();
+    dispatch({ type: 'failed', diagnosis });
+  }
+
+  async function showPreview(record: DirRecord, sec: string) {
     found = record;
-    previewing = true;
+    ensureConnect();
+    dispatch({ type: 'reading' });
     error = '';
     blocked = false;
     abort?.abort();
     abort = new AbortController();
     try {
-      preview = await previewClaim({ record }, s, abort.signal);
-      previewName = name.trim() || preview.name;
+      claimPreview = await previewClaim({ record }, sec, abort.signal);
+      previewName = name.trim() || claimPreview.name;
+      dispatch({ type: 'previewed' });
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') return;
       blocked = e instanceof Unreachable;
-      error = `Could not read what this server is: ${e instanceof Error ? e.message : 'failed'}`;
-    } finally {
-      previewing = false;
+      const why = e instanceof Error ? e.message : 'failed';
+      fail(blocked ? { ...DIAGNOSES.udp_closed, action: { id: 'retry', label: 'Try again' }, detail: `${why}. ${DIAGNOSES.udp_closed.detail}` } : { ...DIAGNOSES.server_stopped, title: 'Could not read what this server is.', detail: why });
     }
   }
 
-  /** The only place a claim leaves the dialog: the client connects with the token on this server's first connection. */
-  /** Set once the server is added and the reachability check is running or done (decision 0118). */
-  let added: DirRecord | null = null;
-  let checking = false;
-  let reach: Reachability | null = null;
+  async function begin(sec: string) {
+    abort?.abort();
+    abort = new AbortController();
+    secret = sec;
+    codeRead = true;
+    error = '';
+    if (s.step === 'connect') dispatch({ type: 'looking' });
+    try {
+      const record = await waitForServer(origin, sec, abort.signal);
+      ensureConnect();
+      dispatch({ type: 'found' });
+      await showPreview(record, sec);
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return;
+      fail(e instanceof ClaimTimeout ? DIAGNOSES.server_stopped : { ...DIAGNOSES.server_stopped, title: e instanceof Error ? e.message : 'Failed', detail: DIAGNOSES.server_stopped.detail });
+    }
+  }
+
+  /** A pairing link (decision 0123): verified, then every address is tried live so the checklist and the cause are real. */
+  async function handlePair(text: string) {
+    const link = parsePairLink(text);
+    if (!link) return;
+    abort?.abort();
+    abort = new AbortController();
+    const { signal } = abort;
+    codeRead = true;
+    error = '';
+    ensureConnect();
+    dispatch({ type: 'looking' });
+    const result = await previewPair(link);
+    if (!result.ok) return fail(diagnose({ type: 'link', result: result.reason })!);
+    pairPrev = result.preview;
+    previewName = name.trim() || result.preview.name;
+    const p = result.preview;
+    const bundle = { server_id: p.serverId, seq: p.seq, expires: 0, published: p.published, fingerprint: p.fingerprint, name: p.name, candidates: p.candidates } as Bundle;
+    const [{ openRtc }, { openWs }] = await Promise.all([import('./lib/rtc'), import('./lib/ws')]);
+    const paths = orderPaths(buildPaths({ bundle }));
+    const r = await connectPaths(paths, (path, sig) => (isTunnel(path) ? openWs(path.url!, 8000, sig) : openRtc({ ip: path.addr, udp_port: path.port, fingerprint: path.fingerprint! }, 10000, sig)), dispatch, { signal });
+    if (signal.aborted) return;
+    if (r.won) {
+      r.won.value.close();
+      pathLabel = r.won.path.label;
+      reach = r.fallback ? { state: 'degraded', port: p.candidates.find((c) => c.kind !== 'tunnel')?.port ?? null } : { state: 'reachable' };
+      dispatch({ type: 'found' });
+      dispatch({ type: 'previewed' });
+    } else {
+      reach = { state: 'unreachable', port: null, message: r.diagnosis?.title ?? '' };
+    }
+  }
 
   function confirm() {
+    if (pairPrev) {
+      onadd(pairedServer(pairPrev, previewName.trim() || pairPrev.name));
+      dispatch({ type: 'confirmed' });
+      return;
+    }
     if (!found) return;
     const record = found;
-    onadd({ server_id: found.server_id, server_name: (preview ? previewName : name).trim(), server_url: '', record: found, registered_at: Date.now(), claim: secret });
+    onadd({ server_id: record.server_id, server_name: (claimPreview ? previewName : name).trim(), server_url: '', record, registered_at: Date.now(), claim: secret });
+    dispatch({ type: 'confirmed' });
     // The server stays added whatever the check says; it only advises (GUARDRAIL connections-warn-never-drop).
-    added = record;
     checking = true;
     void checkReachable({ record }).then((r) => { reach = r; checking = false; });
   }
 
-  async function begin(s: string) {
-    abort?.abort();
-    abort = new AbortController();
-    secret = s;
-    waiting = true;
-    error = '';
-    try {
-      const record = await waitForServer(origin, s, abort.signal);
-      waiting = false;
-      await showPreview(record, s);
-    } catch (e) {
-      waiting = false;
-      if (e instanceof DOMException && e.name === 'AbortError') return;
-      error = e instanceof ClaimTimeout ? 'Nothing arrived within 15 minutes. Start again to get a new command.' : e instanceof Error ? e.message : 'Failed';
-    }
-  }
-
-  $: scanCommand = scanCommandFor(origin, mode);
-
-  /** A tap selects the whole command, so it can also be copied by hand on browsers without clipboard access. */
-  function selectAll(e: MouseEvent) {
-    const sel = window.getSelection();
-    if (!sel) return;
-    const range = document.createRange();
-    range.selectNodeContents(e.currentTarget as Node);
-    sel.removeAllRanges();
-    sel.addRange(range);
-  }
-
-  let linkText = '';
-  let linkError = '';
-  function submitLink() {
-    linkError = '';
-    if (!parseServerLink(linkText) && !parseClaim(linkText)) { linkError = 'That is not a Termenbox link or code.'; return; }
-    gotText(linkText);
-  }
-
-  async function copy(text: string) {
-    await navigator.clipboard.writeText(text);
-    copied = true;
-    setTimeout(() => (copied = false), 2000);
+  /** Added although no address answered: the server stays in the list and keeps retrying. */
+  function addAnyway() {
+    if (!pairPrev) return;
+    onadd(pairedServer(pairPrev, previewName.trim() || pairPrev.name));
+    dispatch({ type: 'previewed' });
+    dispatch({ type: 'confirmed' });
   }
 
   function gotText(text: string) {
@@ -135,18 +173,56 @@
       onserver(known);
       return;
     }
-    const s = parseClaim(text);
-    if (!s) {
-      error = 'That is not a Termenbox link, code or QR.';
+    stopScan();
+    if (parsePairLink(text)) return void handlePair(text);
+    const sec = parseClaim(text);
+    if (!sec) {
+      fail(DIAGNOSES.bad_link);
       return;
     }
-    stopScan();
-    void begin(s);
+    ensureConnect();
+    void begin(sec);
+  }
+
+  function onAction(id: ActionId) {
+    switch (id) {
+      case 'retry':
+        if (found && !claimPreview) void showPreview(found, secret);
+        else if (pairPrev) void handlePair(`#/pair/${pairPrev.payload}${pairPrev.claim ? `?claim=${pairPrev.claim}` : ''}`);
+        else void begin(secret);
+        break;
+      case 'rescan':
+        dispatch({ type: 'looking' });
+        void startScan();
+        break;
+      case 'rerun_installer':
+        secret = randomClaimSecret();
+        found = claimPreview = pairPrev = null;
+        codeRead = false;
+        dispatch({ type: 'reset' });
+        void begin(secret);
+        break;
+      case 'edit_code':
+        document.getElementById('have-link')?.focus();
+        break;
+      case 'open_settings':
+        void handleSettings();
+        break;
+      case 'copy_firewall':
+        break;
+    }
+  }
+
+  /** Browsers give no way to open the permission page; the cause's detail says where it is, so this only retries. */
+  async function handleSettings() {
+    if (pairPrev) void handlePair(`#/pair/${pairPrev.payload}${pairPrev.claim ? `?claim=${pairPrev.claim}` : ''}`);
   }
 
   async function startScan() {
     error = '';
     scanning = true;
+    await tick();
+    if (!video) return;
     stopCamera = await startCameraScan(video, gotText, (m) => {
       error = m;
       scanning = false;
@@ -182,16 +258,18 @@
     onadd({ server_url: manualUrl.trim(), server_name: name.trim(), registered_at: Date.now(), claim: manualClaim.trim() || undefined });
     onclose();
   }
+  let manualUrl = '';
+  let manualClaim = '';
 
-  function choose(t: Tab) {
-    stopScan();
-    error = '';
-    tab = t;
+  function goConnect() {
+    dispatch({ type: 'next' });
+    if (codeRead && !found) dispatch({ type: 'looking' });
   }
 
   onMount(() => {
     // Flow A starts waiting immediately: the secret is already in the command the user is about to paste.
-    void begin(secret);
+    if (start === 'scan') void startScan();
+    else void begin(secret);
   });
   onDestroy(() => {
     abort?.abort();
@@ -199,160 +277,32 @@
   });
 </script>
 
-<Dialog title="Add Server" {onclose}>
-    <!-- Once a server is found the setup steps are done: only its preview or result is shown. -->
-    {#if !found}
-    <form class="have-link" on:submit|preventDefault={submitLink} style="margin-bottom: 16px;">
-      <label for="have-link" style="display: block; font-size: 0.875rem; margin-bottom: 6px; color: var(--fg-muted);">Already added on another device? Paste its link or code</label>
-      <div style="display: flex; gap: 8px;">
-        <input id="have-link" bind:value={linkText} placeholder="termenbox-server:… or a link" autocapitalize="off" autocomplete="off" spellcheck="false" style="flex: 1; min-width: 0;" />
-        <button type="submit" class="secondary" disabled={!linkText.trim()}>Add</button>
-      </div>
-      {#if linkError}<p role="alert" style="color: var(--danger); margin-top: 6px; font-size: 0.875rem;">{linkError}</p>{/if}
-    </form>
-    <div style="display: flex; gap: 8px; margin-bottom: 16px;">
-      <button class={tab === 'paste' ? '' : 'secondary'} on:click={() => choose('paste')} style="flex: 1; padding: 8px;">Paste a command</button>
-      <button class={tab === 'scan' ? '' : 'secondary'} on:click={() => choose('scan')} style="flex: 1; padding: 8px;">Scan a QR</button>
-    </div>
+<Dialog title="Add Server" {onclose} class="p-4">
+  {#if start === 'install'}<StepIndicator step={s.step} />{/if}
 
-    <label style="display: block; font-size: 0.875rem; margin-bottom: 6px; color: var(--fg-muted);">Name</label>
-    <input bind:value={name} placeholder="Leave empty to use the server's hostname" maxlength="40" style="width: 100%; margin-bottom: 16px;" />
-
-    <fieldset class="where">
-      <legend>Where should sessions run?</legend>
-      <label class="choice">
-        <input type="radio" bind:group={where} value="container" />
-        <span><strong>In an isolated container</strong> (recommended)<br /><small>Sessions run in a Docker container and cannot see the rest of your VPS. Docker is installed if missing.</small></span>
-      </label>
-      <label class="choice">
-        <input type="radio" bind:group={where} value="host" />
-        <span><strong>On the machine itself</strong> (no Docker)<br /><small>Sessions run directly on your VPS, where your repos and agent tools already are.</small></span>
-      </label>
-      {#if where === 'host'}
-        <div class="sub">
-          <label class="choice">
-            <input type="radio" bind:group={hostAs} value="user" />
-            <span>As a dedicated user <code>termenbox</code> (recommended)<br /><small>Created for you. It can only touch its own files and what you give it access to. Needs sudo; the command asks for it.</small></span>
-          </label>
-          <label class="choice">
-            <input type="radio" bind:group={hostAs} value="me" />
-            <span>As the user who runs the command<br /><small>Sessions open as you, in your home, with your repos, keys and agent logins. Nothing new is created and <strong>no root is needed</strong>: it runs as a service of your own. Anything that would need root (starting at boot when your system does not allow it, a firewall rule) is listed at the end, for you to run if you want it.</small></span>
-          </label>
-          <label class="choice">
-            <input type="radio" bind:group={hostAs} value="root" />
-            <span>As <code>root</code><br /><small>Full control of the machine. Needs sudo; the command asks for it.</small></span>
-          </label>
-        </div>
-        <div class="warning" role="note">
-          <strong>This gives your browser a shell on your server.</strong>
-          Anything you run in a session can read and change this machine's files and run programs as {hostAs === 'root' ? 'root, so it can change anything' : hostAs === 'me' ? 'you, with access to everything you can reach, including your SSH keys and agent logins' : 'the termenbox user'}.
-          Only continue on a machine you own. The installer lists every change it makes first and can undo them all.
-        </div>
-        <label class="choice">
-          <input type="checkbox" bind:checked={consent} />
-          <span>I understand and want sessions to run on this machine{hostAs === 'root' ? ' as root' : hostAs === 'me' ? ' as my own user' : ''}.</span>
-        </label>
-      {/if}
-    </fieldset>
-
-    {#if tab === 'paste'}
-      <p style="color: var(--fg-muted); margin-bottom: 8px;">Run this once on your VPS. It installs and starts everything, and the server appears here by itself. Running as your own user needs no root; the other choices ask for sudo.</p>
-      {#if allowed}
-        <pre class="command" on:click={selectAll}>{command}</pre>
-        <button on:click={() => copy(command)} style="width: 100%; margin-bottom: 12px;">{copied ? 'Copied' : 'Copy command'}</button>
-      {:else}
-        <p class="locked">Tick the box above to see the command.</p>
-      {/if}
-    {:else if tab === 'scan'}
-      <p style="color: var(--fg-muted); margin-bottom: 8px;">On a new VPS run this. It shows a QR code. Scan it here, or take a screenshot of it and choose the screenshot. Delete the screenshot afterwards.</p>
-      {#if allowed}
-        <pre class="command" on:click={selectAll}>{scanCommand}</pre>
-        <button class="secondary" on:click={() => copy(scanCommand)} style="width: 100%; margin-bottom: 12px;">{copied ? 'Copied' : 'Copy command'}</button>
-      {:else}
-        <p class="locked">Tick the box above to see the command.</p>
-      {/if}
-      <video bind:this={video} muted playsinline style="width: 100%; border-radius: 8px; background: #000; margin-bottom: 8px; display: {scanning ? 'block' : 'none'};"></video>
-      <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-        {#if scanning}
-          <button class="secondary" on:click={stopScan} style="flex: 1;">Stop camera</button>
-        {:else}
-          <button on:click={startScan} style="flex: 1;">Scan with camera</button>
+  {#if s.step === 'install'}
+    <InstallStep {command} {allowed} bind:name bind:where bind:hostAs bind:consent onnext={goConnect} />
+  {:else if s.step === 'connect'}
+    <ConnectStep connect={s.connect} {codeRead} {scanning} bind:video {error} onscan={startScan} onstopscan={stopScan} onfile={onFile} ontext={gotText} onaction={onAction}>
+      <svelte:fragment slot="detail">
+        {#if blocked && found}<PortHelp port={found.udp_port ?? null} />{/if}
+        {#if pairPrev && s.connect.diagnosis}
+          <button class="secondary" on:click={addAnyway} style="width: 100%; margin-top: 8px;">Add it anyway</button>
         {/if}
-        <label class="secondary" style="flex: 1; text-align: center; cursor: pointer; padding: 10px; border: 1px solid var(--border); border-radius: 8px;">
-          Choose screenshot
-          <input type="file" accept="image/*" on:change={onFile} style="display: none;" />
-        </label>
-      </div>
-    {/if}
-    {/if}
-
-    {#if added}
-      <div class="preview" role="status" aria-live="polite">
-        <strong>Server added</strong>
-        {#if checking}
-          <p class="note">Checking that this device can reach it…</p>
-        {:else if reach?.state === 'reachable'}
-          <p class="note">This device can reach it.</p>
-        {:else if reach?.state === 'degraded'}
-          <p class="note">This device reached it only through the WebSocket fallback{reach.port ? `; UDP port ${reach.port} did not work` : ''}. Sessions work but can feel slower. It stays in your list.</p>
-          <PortHelp port={reach.port} />
-        {:else if reach?.state === 'unreachable'}
-          <p class="note">This device could not reach it{reach.port ? ` on UDP port ${reach.port}` : ''}. It stays in your list and keeps retrying.</p>
-          <PortHelp port={reach.port} />
-        {:else}
-          <p class="note">Could not tell whether this device can reach it. It stays in your list.</p>
+        {#if found && !claimPreview}
+          <button class="secondary" on:click={confirm} style="width: 100%; margin-top: 8px;">Add without a preview</button>
         {/if}
-        <button on:click={onclose} disabled={checking} style="width: 100%;">Done</button>
-      </div>
-    {:else if preview}
-      <div class="preview" role="group" aria-label="What you are adding">
-        <strong>This server is ready to add</strong>
-        <dl>
-          <dt>Runs sessions</dt>
-          <dd>{preview.mode === 'container' ? 'in an isolated container' : `on the machine itself, as ${preview.run_user || 'its own user'}`}</dd>
-          <dt>Version</dt>
-          <dd>{preview.version}</dd>
-        </dl>
-        <label for="preview-name" style="display: block; font-size: 0.875rem; margin-bottom: 6px; color: var(--fg-muted);">Name</label>
-        <input id="preview-name" bind:value={previewName} maxlength="40" style="width: 100%; margin-bottom: 12px;" />
-        <p style="color: var(--fg-muted); font-size: 0.8rem; margin: 0 0 12px;">Nothing is claimed yet. Tap Add to become this server's owner; closing this leaves the link valid until it expires.</p>
-        <button on:click={confirm} style="width: 100%;">Add</button>
-      </div>
-    {:else if previewing}
-      <p style="color: var(--fg-muted); font-size: 0.875rem;">Your server appeared. Reading what it is…</p>
-    {:else if found && error}
-      {#if blocked}<PortHelp port={found.udp_port ?? null} />{/if}
-      <button class="secondary" on:click={() => found && showPreview(found, secret)} style="width: 100%; margin-bottom: 8px;">Try again</button>
-      <button class="secondary" on:click={confirm} style="width: 100%;">Add without a preview</button>
-    {/if}
-    {#if waiting}
-      <p style="color: var(--fg-muted); font-size: 0.875rem;">Waiting for your server to appear… this can take a minute.</p>
-    {/if}
-    {#if error}
-      <p style="color: var(--danger); margin: 8px 0; font-size: 0.875rem;">{error}</p>
-    {/if}
-
-    <details style="margin-top: 16px;">
-      <summary style="cursor: pointer; color: var(--fg-muted); font-size: 0.875rem;">Advanced: connect by URL (tunnel or reverse proxy)</summary>
+      </svelte:fragment>
+    </ConnectStep>
+    <details style="margin-top: 12px;">
+      <summary style="cursor: pointer; color: var(--fg-muted); font-size: 0.8rem;">Advanced: connect by URL (tunnel or reverse proxy)</summary>
       <input bind:value={manualUrl} placeholder="https://xxxx.trycloudflare.com" style="width: 100%; margin: 8px 0;" />
       <input bind:value={manualClaim} placeholder="Registration token (first connection only)" style="width: 100%; margin-bottom: 8px;" />
       <button class="secondary" on:click={addByUrl} disabled={!manualUrl} style="width: 100%;">Add and connect</button>
     </details>
+  {:else if s.step === 'confirm'}
+    <ConfirmStep claim={claimPreview} pair={pairPrev} bind:name={previewName} onconfirm={confirm} />
+  {:else}
+    <DoneStep {checking} {reach} {pathLabel} ondone={onclose} />
+  {/if}
 </Dialog>
-
-<style>
-  .where { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin: 0 0 16px; }
-  .where legend { padding: 0 6px; font-size: 0.875rem; color: var(--fg-muted); }
-  .choice { display: flex; gap: 10px; align-items: flex-start; margin: 6px 0; cursor: pointer; }
-  .choice input { margin-top: 4px; }
-  .choice small { color: var(--fg-muted); }
-  .sub { margin-left: 24px; border-left: 2px solid var(--border); padding-left: 12px; }
-  .warning { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--danger); border-radius: 8px; font-size: 0.8rem; background: rgba(248, 81, 73, 0.08); }
-  .preview { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin: 0 0 12px; }
-  .preview dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 8px 0 12px; font-size: 0.875rem; }
-  .preview dt { color: var(--fg-muted); }
-  .preview dd { margin: 0; }
-  .note { color: var(--fg-muted); font-size: 0.85rem; margin: 8px 0; }
-  .locked { color: var(--fg-muted); font-size: 0.85rem; margin: 0 0 12px; }
-  .command { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-family: monospace; font-size: 0.75rem; white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; cursor: copy; margin: 0 0 8px; }
-</style>
