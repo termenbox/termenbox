@@ -133,7 +133,8 @@ impl ServerClient {
             }
             ServerMessage::Challenge { .. }
             | ServerMessage::DeviceRevoked { .. }
-            | ServerMessage::UninstallDone { .. } => {}
+            | ServerMessage::UninstallDone { .. }
+            | ServerMessage::Candidates { .. } => {}
             ServerMessage::Sessions { sessions } => {
                 info!("Received {} sessions", sessions.len());
                 for session in sessions {

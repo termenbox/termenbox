@@ -41,6 +41,8 @@ struct Fixture {
     stopped: Arc<std::sync::atomic::AtomicBool>,
     hub: crate::events::EventHub,
     events_socket: std::path::PathBuf,
+    /// The key id the candidate bundle is signed by (not the fake id the handshake uses).
+    bundle_key_id: String,
 }
 
 /// A browser: its device key and the certificate the hosted function issued for it.
@@ -122,6 +124,7 @@ async fn fixture() -> Fixture {
         server_name: "test-vps".into(),
         mode: "container".into(),
         rtc_info: None,
+        paths: Arc::default(),
     };
     let cert = rtc::load_or_create_cert(&dir).unwrap();
     let (socket, _) = rtc::bind_transport(
@@ -142,6 +145,22 @@ async fn fixture() -> Fixture {
     .await
     .unwrap();
     state.rtc_info = Some(rtc.clone());
+    let bundle_key = Arc::new(crate::directory::ServerKey::from_seed([5u8; 32]));
+    let bundle_key_id = bundle_key.server_id();
+    let paths = crate::candidates::PathHub::new(
+        dir.clone(),
+        bundle_key,
+        rtc.fingerprint.clone(),
+        "test-vps".into(),
+        rtc.port,
+        Some("192.168.77.7".into()),
+        None,
+        None,
+        false,
+        crate::reach::Handle::idle().0.rx,
+    );
+    paths.refresh().unwrap();
+    let _ = state.paths.set(paths);
     Fixture {
         ws_addr: serve(router(state, false)).await,
         rtc,
@@ -153,6 +172,7 @@ async fn fixture() -> Fixture {
         stopped,
         hub,
         events_socket,
+        bundle_key_id,
     }
 }
 
@@ -1193,6 +1213,30 @@ async fn session_view_reads_the_screen_and_unknown_messages_are_ignored(kind: Ki
         .output();
 }
 
+/// DECISION-0123: after auth the server pushes its signed candidate bundle; it verifies against the server key and
+/// names this server's fingerprint and the LAN address the owner configured.
+async fn an_authenticated_client_gets_a_signed_candidate_bundle(kind: Kind) {
+    use termenbox_core::bundle::{Bundle, CandidateKind};
+    let f = fixture().await;
+    let alice = f.who(1, "alice");
+    let mut c = Conn::open(kind, &f).await;
+    c.login(&f, &alice, &f.claim).await;
+    c.recv_type("auth_ok").await;
+    let msg = c.recv_type("candidates").await;
+    let b = Bundle::verify(
+        msg["bundle"].as_str().unwrap(),
+        now(),
+        Some(&f.bundle_key_id),
+        None,
+    )
+    .unwrap();
+    assert_eq!(b.fingerprint, f.rtc.fingerprint);
+    assert!(b
+        .candidates
+        .iter()
+        .any(|c| c.kind == CandidateKind::Lan && c.addr == "192.168.77.7" && c.port == f.rtc.port));
+}
+
 macro_rules! over_both_transports {
     ($($name:ident),*) => {$(
         mod $name {
@@ -1204,6 +1248,7 @@ macro_rules! over_both_transports {
 
 over_both_transports!(
     only_the_claiming_github_user_gets_in,
+    an_authenticated_client_gets_a_signed_candidate_bundle,
     a_connection_for_another_server_expired_or_revoked_certificates_fail,
     uninstall_needs_the_name_and_a_recent_login_then_wipes_the_config,
     nothing_is_served_before_auth,

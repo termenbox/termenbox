@@ -21,6 +21,7 @@ mod agent_hooks;
 mod agentwatch;
 mod auth;
 mod backend;
+mod candidates;
 mod cert;
 mod claude_hooks;
 mod connection;
@@ -40,6 +41,7 @@ mod opencode_hooks;
 mod profile;
 mod pty;
 mod push;
+mod reach;
 mod reducer;
 mod release;
 mod requests;
@@ -130,6 +132,25 @@ struct Args {
     /// Turn the WebRTC-direct transport off (WebSocket only).
     #[arg(long, env = "TERMENBOX_WEBRTC", default_value = "on")]
     webrtc: String,
+
+    /// Reach this server over the LAN only (decision 0123): no directory publisher, no public-IP lookup, no router
+    /// port mapping. Pair a phone with `--print-pairing`.
+    #[arg(
+        long,
+        env = "TERMENBOX_LAN_ONLY",
+        default_value = "false",
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
+    lan_only: bool,
+
+    /// The LAN addresses to put in the candidate bundle, comma-separated, instead of the ones found on the
+    /// interfaces (at most 4 are kept).
+    #[arg(long, env = "TERMENBOX_LAN_ADDRS")]
+    lan_addrs: Option<String>,
+
+    /// Print the pairing link and QR for this server (a signed candidate bundle; works with no directory) and exit.
+    #[arg(long, default_value = "false")]
+    print_pairing: bool,
 
     /// Serve /rtc-info with the unsigned connection details. For development and tests only.
     #[arg(long, env = "TERMENBOX_DEV_INFO", default_value = "off")]
@@ -287,6 +308,8 @@ pub struct AppState {
     /// `container` or `host:<user>`, shown to the owner.
     pub mode: String,
     pub rtc_info: Option<rtc::RtcInfo>,
+    /// The signed candidate bundle pushed to every client after it authenticates; set once the transport is up.
+    pub paths: Arc<std::sync::OnceLock<Arc<candidates::PathHub>>>,
 }
 
 /// `0.1.0+abc1234`: the crate version and, in the Docker image, the commit it was built from.
@@ -668,6 +691,10 @@ async fn main() -> anyhow::Result<()> {
         return print_registration(&args, &auth);
     }
 
+    if args.print_pairing {
+        return print_pairing(&args, &auth);
+    }
+
     if let Some(secret) = &args.claim_secret {
         auth.provide_claim(secret)?;
     }
@@ -844,18 +871,40 @@ async fn main() -> anyhow::Result<()> {
         server_name: args.server_name.clone(),
         mode: mode.label(),
         rtc_info: None,
+        paths: Arc::default(),
     };
 
+    let mut reach: Option<reach::Handle> = None;
     if args.webrtc != "off" {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
             .build()?;
+        let lan_only = args.lan_only;
+        // LAN-only never looks outside. Otherwise a host that cannot find its public address (no internet) still
+        // serves its LAN and overlay candidates instead of refusing to start.
         let public_ip = match args.public_ip {
-            Some(ip) => ip,
-            None => netutil::discover_public_ip(&http).await.ok_or_else(|| {
-                anyhow::anyhow!("cannot find this host's public IP; set TERMENBOX_PUBLIC_IP")
-            })?,
+            Some(ip) => Some(ip),
+            None if lan_only => None,
+            None => {
+                let found = netutil::discover_public_ip(&http).await;
+                if found.is_none() {
+                    tracing::warn!(
+                        "cannot find this host's public IP (no internet?): serving LAN and overlay candidates only; \
+                         set TERMENBOX_PUBLIC_IP to announce one"
+                    );
+                }
+                found
+            }
         };
+        let ifaces = candidates::interfaces();
+        let lan = candidates::lan_addrs(&ifaces, args.lan_addrs.as_deref());
+        // The address ICE-lite declares; clients dial the candidates of the bundle, so with no public address a
+        // LAN one (or loopback) stands in.
+        let rtc_ip = public_ip.unwrap_or_else(|| {
+            lan.first()
+                .map(|a| (*a).into())
+                .unwrap_or(std::net::Ipv4Addr::LOCALHOST.into())
+        });
         let cert = rtc::load_or_create_cert(&args.config_dir)?;
         // The server owns the socket, so it picks the port in one step: no pick-then-bind race
         // (decision 0118). An explicit port wins; otherwise the saved one (never swapped for another); a first start scans the range.
@@ -877,8 +926,8 @@ async fn main() -> anyhow::Result<()> {
         }
         let info = rtc::start_with_socket(
             socket,
-            public_ip,
-            cert,
+            rtc_ip,
+            cert.clone(),
             rtc::Limits::default(),
             state.clone(),
         )
@@ -887,22 +936,81 @@ async fn main() -> anyhow::Result<()> {
             "WebRTC-direct on udp {}:{} ({})",
             info.ip, info.port, info.fingerprint
         );
+        // A global IPv6 address gets a socket of its own on the same port, so a `wan6` candidate is real.
+        let mut v6 = None;
+        if !lan_only {
+            if let Some(addr) = candidates::global_ipv6(&ifaces) {
+                match tokio::net::UdpSocket::bind((addr, port)).await {
+                    Ok(socket) => {
+                        rtc::start_with_socket(
+                            socket,
+                            addr.into(),
+                            cert,
+                            rtc::Limits::default(),
+                            state.clone(),
+                        )
+                        .await?;
+                        info!("WebRTC-direct also on udp [{addr}]:{port}");
+                        v6 = Some(addr);
+                    }
+                    Err(e) => tracing::warn!("cannot listen on IPv6 {addr}: {e}"),
+                }
+            }
+        }
+        // Where this host sits and whether the router will open the port (R64); never in LAN-only mode.
+        let handle = if lan_only {
+            println!("Reachability\n  LAN-only: no directory, no public-IP lookup, no router port mapping.\n  Next: pair a phone with `termenbox-server --print-pairing`");
+            reach::Handle::idle().0
+        } else {
+            reach::spawn(
+                reach::Config {
+                    port,
+                    gateway: reach::detect_gateway(),
+                    host_public4: netutil::local_route_ip().is_some_and(netutil::is_public_unicast),
+                    v6,
+                    overlay: !candidates::overlay_addrs(&ifaces, None).is_empty(),
+                    seen: None,
+                },
+                http.clone(),
+                true,
+            )
+        };
         let origin = args
             .directory_url
             .clone()
             .unwrap_or_else(|| args.client_url.clone());
-        if !origin.is_empty() {
-            let key = Arc::new(directory::ServerKey::load_or_create(&args.config_dir)?);
-            info!("Server id {}", key.server_id());
-            tokio::spawn(directory::run(
-                key,
-                origin,
-                info.clone(),
-                String::new(),
-                state.auth.clone(),
-                http,
-            ));
+        let publishes = directory::publishes(!lan_only && public_ip.is_some(), &origin);
+        let hub = candidates::PathHub::new(
+            args.config_dir.clone(),
+            Arc::new(directory::ServerKey::load_or_create(&args.config_dir)?),
+            info.fingerprint.clone(),
+            args.server_name.clone(),
+            port,
+            args.lan_addrs.clone(),
+            match public_ip {
+                Some(std::net::IpAddr::V4(ip)) => Some(ip),
+                _ => None,
+            },
+            v6,
+            publishes,
+            handle.rx.clone(),
+        );
+        if let Err(e) = hub.refresh() {
+            tracing::warn!("cannot sign a candidate bundle: {e:#}");
         }
+        tokio::spawn(hub.clone().run());
+        let _ = state.paths.set(hub);
+        reach = Some(handle);
+        let key = Arc::new(directory::ServerKey::load_or_create(&args.config_dir)?);
+        info!("Server id {}", key.server_id());
+        directory::spawn_publisher(
+            publishes,
+            origin,
+            key,
+            info.clone(),
+            state.auth.clone(),
+            http,
+        );
         state.rtc_info = Some(info);
     }
 
@@ -912,8 +1020,63 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting server on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    // On SIGTERM or Ctrl-C the router mapping is taken away again, so the port does not stay open for the rest of
+    // its lease.
+    tokio::select! {
+        r = axum::serve(listener, app) => r?,
+        _ = shutdown_signal() => info!("Shutting down"),
+    }
+    if let Some(reach) = &reach {
+        reach.release().await;
+    }
 
+    Ok(())
+}
+
+async fn shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+    match signal(SignalKind::terminate()) {
+        Ok(mut term) => tokio::select! {
+            _ = term.recv() => {},
+            _ = tokio::signal::ctrl_c() => {},
+        },
+        Err(_) => {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    }
+}
+
+/// `--print-pairing`: the signed candidate bundle as a link and QR, for a phone that has no directory path to this
+/// server (LAN-only, offline, or behind a NAT with no relay). An unclaimed server adds its claim token, so the same
+/// link also claims it (decision 0117's preview still comes first).
+fn print_pairing(args: &Args, auth: &AuthState) -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+    let port = saved_udp_port(&args.config_dir).ok_or_else(|| {
+        anyhow::anyhow!("this server has not started yet; start it once, then run --print-pairing")
+    })?;
+    let cert = rtc::load_or_create_cert(&args.config_dir)?;
+    let key = directory::ServerKey::load_or_create(&args.config_dir)?;
+    let wire = candidates::pairing_bundle(
+        &args.config_dir,
+        &key,
+        &rtc::fingerprint(&cert),
+        &args.server_name,
+        port,
+        args.lan_addrs.as_deref(),
+        args.lan_only,
+    )?;
+    let claim = auth.claim_token()?;
+    let link = candidates::pairing_link(&args.client_url, &wire, claim.as_deref());
+    if args.qr || std::io::stdout().is_terminal() {
+        if let Some(qr) = auth::claim_qr(&link) {
+            println!("{qr}");
+        }
+    }
+    println!("Scan the code with your phone's camera, or open:\n\n  {link}\n");
+    println!("The link carries this server's name, key fingerprint and addresses, signed by the server; the app shows them before it connects.");
+    if claim.is_some() {
+        println!("It also claims the server for the first user who confirms (15 minutes, once).");
+    }
     Ok(())
 }
 

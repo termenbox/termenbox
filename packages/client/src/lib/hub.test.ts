@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 import { ServerHub, newSessionTargets, serverKey, sessionDestinations, type HubConnection } from './hub';
 import type { ConnectionOptions } from './connection';
@@ -216,5 +216,84 @@ describe('server health (U14)', () => {
     (connections[0] as unknown as { rtt: number }).rtt = 37;
     expect(hub.rtt('a')).toBe(37);
     expect(hub.rtt('missing')).toBeNull();
+  });
+});
+
+describe('ServerHub candidate bundles (decision 0123)', () => {
+  it('keeps a newer verified bundle and ignores a stale one, one for another key, and one that does not verify', async () => {
+    const { newServerKey, bundleOf } = await import('./bundleFixture');
+    const key = await newServerKey();
+    const other = await newServerKey();
+    const lan = [{ kind: 'lan' as const, addr: '10.0.0.2', port: 4443 }];
+    const saved: ServerListItem[] = [];
+    const connections: Fake[] = [];
+    const hub = new ServerHub({ credentials: async () => ({ cert: 'c', sign: async () => 's' }), onSaved: s => saved.push(s), factory: opts => { const c = new Fake(opts); connections.push(c); return c; } });
+    hub.start([{ ...server(key.serverId), bundle_seq: 5 }]);
+    const c = connections[0];
+    const settle = () => new Promise(r => setTimeout(r, 20));
+
+    c.emit({ type: 'candidates', bundle: await key.sign(bundleOf(5, lan)) }); await settle();
+    c.emit({ type: 'candidates', bundle: await other.sign(bundleOf(9, lan)) }); await settle();
+    const good = await key.sign(bundleOf(6, lan));
+    c.emit({ type: 'candidates', bundle: good.slice(0, -3) + 'AAA' }); await settle();
+    expect(saved).toHaveLength(0);
+
+    c.emit({ type: 'candidates', bundle: good }); await settle();
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({ bundle: good, bundle_seq: 6 });
+    c.emit({ type: 'candidates', bundle: good }); await settle();
+    expect(saved).toHaveLength(1); // the same seq again is stale
+  });
+
+  it('follows the published flag of the newest verified bundle', async () => {
+    const { newServerKey, bundleOf } = await import('./bundleFixture');
+    const key = await newServerKey();
+    const lan = [{ kind: 'lan' as const, addr: '10.0.0.2', port: 4443 }];
+    const saved: ServerListItem[] = [];
+    const connections: Fake[] = [];
+    const hub = new ServerHub({ credentials: async () => ({ cert: 'c', sign: async () => 's' }), onSaved: s => saved.push(s), factory: opts => { const c = new Fake(opts); connections.push(c); return c; } });
+    hub.start([server(key.serverId)]);
+    const settle = () => new Promise(r => setTimeout(r, 20));
+    connections[0].emit({ type: 'candidates', bundle: await key.sign(bundleOf(1, lan, { published: true })) }); await settle();
+    expect(saved.at(-1)?.published).toBe(true);
+    connections[0].emit({ type: 'candidates', bundle: await key.sign(bundleOf(2, lan, { published: false })) }); await settle();
+    expect(saved.at(-1)?.published).toBe(false);
+  });
+
+  it('takes the same bundle again, as on every reconnect, as a quiet no-op, and still warns about a real rejection', async () => {
+    const { newServerKey, bundleOf } = await import('./bundleFixture');
+    const key = await newServerKey();
+    const lan = [{ kind: 'lan' as const, addr: '10.0.0.2', port: 4443 }];
+    const saved: ServerListItem[] = [];
+    const connections: Fake[] = [];
+    const hub = new ServerHub({ credentials: async () => ({ cert: 'c', sign: async () => 's' }), onSaved: s => saved.push(s), factory: opts => { const c = new Fake(opts); connections.push(c); return c; } });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      hub.start([server(key.serverId)]);
+      const c = connections[0];
+      const settle = () => new Promise(r => setTimeout(r, 20));
+      const same = await key.sign(bundleOf(4, lan));
+      c.emit({ type: 'candidates', bundle: same }); await settle();
+      c.emit({ type: 'candidates', bundle: same }); await settle();
+      c.emit({ type: 'candidates', bundle: same }); await settle();
+      expect(saved).toHaveLength(1);
+      expect(warn).not.toHaveBeenCalled();
+      c.emit({ type: 'candidates', bundle: await key.sign(bundleOf(3, lan)) }); await settle();
+      expect(warn).toHaveBeenCalledTimes(1); // an older seq is a real rejection
+    } finally { warn.mockRestore(); }
+  });
+
+  it('remembers the path that connected and shows the active path and every failure', () => {
+    const saved: ServerListItem[] = [];
+    const connections: Fake[] = [];
+    const hub = new ServerHub({ credentials: async () => ({ cert: 'c', sign: async () => 's' }), onSaved: s => saved.push(s), factory: opts => { const c = new Fake(opts); connections.push(c); return c; } });
+    hub.start([server('a')]);
+    const failure = { path: { key: 'lan 10.0.0.2:4443', kind: 'lan' as const, label: 'Direct, LAN', addr: '10.0.0.2', port: 4443 }, reason: 'ICE failed', fix: 'Join the same Wi-Fi' };
+    connections[0].opts.onFailures?.([failure]);
+    expect(get(hub.servers)[0].failures).toEqual([failure]);
+    connections[0].opts.onPath?.({ key: 'lan 10.0.0.2:4443', label: 'Direct, LAN' });
+    connections[0].opts.onWinner?.('lan 10.0.0.2:4443');
+    expect(get(hub.servers)[0].path).toBe('Direct, LAN');
+    expect(saved.at(-1)?.winner).toBe('lan 10.0.0.2:4443');
   });
 });

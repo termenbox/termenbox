@@ -231,6 +231,11 @@ pub enum ServerMessage {
     UninstallDone {
         mode: String,
     },
+    /// The server's signed candidate bundle (decision 0123), pushed after `auth_ok`: `bundle` is the wire string of
+    /// `bundle::Bundle`. The client verifies it against the pinned server id before it keeps any of it.
+    Candidates {
+        bundle: String,
+    },
     AuthOk {
         user: String,
         /// The lanes this connection uses besides JSON (`term`); absent means the single pipe.

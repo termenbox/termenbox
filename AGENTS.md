@@ -63,6 +63,7 @@ lint
 
 - **Baseline**: hybrid MVP (DECISION-0051); v1-only designs (SSP, SSH auth, WASM) are deferred
 - **Transport**: WebRTC data channel direct to one UDP port, no STUN/TURN/signaling (DECISION-0057); WebSocket fallback
+- **Paths**: one identity (key + fingerprint) over raced signed candidates `lan|wan4|wan6|overlay|tunnel`; `--print-pairing`, `TERMENBOX_LAN_ONLY` (DECISION-0123)
 - **Directory**: signed records (Pages Functions + D1) map server key -> address/fingerprint (DECISION-0056)
 - **Auth**: GitHub OAuth; one owner per server, claimed with a one-time secret (DECISION-0053)
 - **Sessions**: server owns tmux/PTY via a SessionBackend trait (DECISION-0054); reconnect = re-attach
@@ -84,6 +85,14 @@ lint
 - iOS Safari 16.4+ (DECISION-0112; WebSocket baseline, see FACT-0016)
 - Chrome Android 111+
 - Desktop: Chrome/Firefox/Edge current-2, Safari 16.4+
+
+## Commit Messages
+
+- Subject: `type(scope): summary`, checked by CI over every commit of a PR. `type` is one of feat, fix, docs, chore,
+  ci, test, refactor, perf, build, style, revert. `scope` is optional, one word `[a-z0-9-]+`: no comma, slash or
+  space (`fix(paths)`, not `fix(server,client)`; omit it when a change spans areas).
+- Body: `Why:` then `What:`. No Co-Authored-By or "Generated with" lines. Use the `attribute` skill.
+- A bad subject cannot be amended on a pushed PR branch: it needs a rewrite and a force-push, so check it first.
 
 ## License
 

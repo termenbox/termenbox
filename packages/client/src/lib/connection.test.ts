@@ -228,3 +228,140 @@ describe('a connect that fails', () => {
     c.close();
   });
 });
+
+describe('after a network change (decision 0123)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** A connection whose carrier can be replaced, with a working `window` and `navigator.connection`. */
+  async function setup() {
+    vi.useFakeTimers();
+    const doc = Object.assign(new EventTarget(), { visibilityState: 'visible' });
+    const win = new EventTarget();
+    const net = new EventTarget();
+    vi.stubGlobal('document', doc);
+    vi.stubGlobal('window', win);
+    vi.stubGlobal('navigator', { connection: net });
+    const made: { t: Transport; sent: string[]; closed: boolean }[] = [];
+    const open = async () => {
+      const rec = { sent: [] as string[], closed: false } as { t: Transport; sent: string[]; closed: boolean };
+      rec.t = {
+        kind: 'rtc', onmessage: null, onclose: null, send: (x) => void rec.sent.push(x), close: () => { rec.closed = true; },
+        path: { key: `lan 10.0.0.${made.length + 2}:4443`, kind: 'lan', label: 'Direct, LAN', addr: '10.0.0.2', port: 4443 },
+      };
+      made.push(rec);
+      return rec.t;
+    };
+    const paths: (string | null)[] = [];
+    const winners: string[] = [];
+    const states: string[] = [];
+    const c = new Connection({
+      target: async () => ({ wsUrl: 'ws://x' }),
+      openers: { rtc: open, ws: open },
+      credentials: async () => ({ cert: 'c', sign: async () => 's' }),
+      onState: (s) => states.push(s),
+      onReady: () => {},
+      onFatal: () => {},
+      onPath: (p) => paths.push(p?.label ?? null),
+      onWinner: (k) => winners.push(k),
+    });
+    const login = async (rec: { t: Transport }) => {
+      await vi.advanceTimersByTimeAsync(10);
+      rec.t.onmessage!(JSON.stringify({ type: 'challenge', nonce: 'n', server_id: 's' }));
+      await vi.advanceTimersByTimeAsync(10);
+      rec.t.onmessage!(JSON.stringify({ type: 'auth_ok', user: 'u', server_name: 's' }));
+    };
+    c.start();
+    await login({ t: await vi.waitFor(() => made[0].t) });
+    return { c, made, win, net, doc, paths, winners, states, login };
+  }
+
+  it('shows the path that carries the session and remembers it as the winner once authenticated', async () => {
+    const { c, paths, winners } = await setup();
+    expect(paths).toEqual(['Direct, LAN']);
+    expect(c.pathLabel).toBe('Direct, LAN');
+    expect(winners).toEqual(['lan 10.0.0.2:4443']);
+    c.close();
+  });
+
+  it('re-races at once when the network changed and the link does not answer within 2 s, with no backoff wait', async () => {
+    const { c, made, net, login } = await setup();
+    net.dispatchEvent(new Event('change')); // Wi-Fi to cellular
+    expect(made[0].sent.at(-1)).toContain('"ping"');
+    await vi.advanceTimersByTimeAsync(1900);
+    expect(made).toHaveLength(1); // still waiting for the answer
+    await vi.advanceTimersByTimeAsync(200);
+    // No reply: the old carrier is dropped and a new race has started, not after the 1 s backoff but immediately.
+    expect(made[0].closed).toBe(true);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(made).toHaveLength(2);
+    await login(made[1]);
+    expect(c.pathLabel).toBe('Direct, LAN');
+    c.close();
+  });
+
+  it('keeps the link when it answers the proof of life after a network change', async () => {
+    const { c, made, win } = await setup();
+    win.dispatchEvent(new Event('online')); // a foregrounding ping and a proof-of-life ping
+    const pings = made[0].sent.filter((x) => x.includes('"ping"')).length;
+    for (let i = 0; i < pings; i++) made[0].t.onmessage!(JSON.stringify({ type: 'pong' }));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(made).toHaveLength(1);
+    expect(made[0].closed).toBe(false);
+    c.close();
+  });
+  it('does not take a pong that was already in flight for the proof of life, and drops a dead link within 2 s', async () => {
+    const { c, made, win, doc } = await setup();
+    doc.dispatchEvent(new Event('visibilitychange')); // a ping is on its way...
+    win.dispatchEvent(new Event('online')); // ...when the network changes (and one more ping asks for proof)
+    made[0].t.onmessage!(JSON.stringify({ type: 'pong' })); // the old answer arrives; the new ping is never answered
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(made[0].closed).toBe(true);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(made).toHaveLength(2); // re-raced at once, no backoff
+    c.close();
+  });
+
+  it('keeps the link once every ping sent since the change has been answered', async () => {
+    const { c, made, win, doc } = await setup();
+    doc.dispatchEvent(new Event('visibilitychange'));
+    win.dispatchEvent(new Event('online'));
+    const pings = made[0].sent.filter((x) => x.includes('"ping"')).length;
+    for (let i = 0; i < pings; i++) made[0].t.onmessage!(JSON.stringify({ type: 'pong' }));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(made).toHaveLength(1);
+    expect(made[0].closed).toBe(false);
+    c.close();
+  });
+
+  it('other traffic does not cancel the 2 s deadline of a network change: only the answer to the ping does', async () => {
+    const { c, made, net } = await setup();
+    net.dispatchEvent(new Event('change'));
+    made[0].t.onmessage!(JSON.stringify({ type: 'server_health', health: {} })); // buffered data from the old network
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(made[0].closed).toBe(true);
+    c.close();
+  });
+
+  it('a foregrounding right after a network change does not stretch the 2 s deadline to 3 s', async () => {
+    const { c, made, net, doc } = await setup();
+    net.dispatchEvent(new Event('change'));
+    doc.dispatchEvent(new Event('visibilitychange')); // wake asks for a 3 s answer
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(made[0].closed).toBe(true);
+    c.close();
+  });
+
+  it('a drop with no network change goes through the backoff, whatever happened to an earlier change', async () => {
+    const { c, made, win } = await setup();
+    win.dispatchEvent(new Event('online'));
+    const pings = made[0].sent.filter((x) => x.includes('"ping"')).length;
+    for (let i = 0; i < pings; i++) made[0].t.onmessage!(JSON.stringify({ type: 'pong' }));
+    made[0].t.onclose!(); // an unrelated drop
+    await vi.advanceTimersByTimeAsync(100);
+    expect(made).toHaveLength(1); // waiting out the 1 s backoff
+    c.close();
+  });
+});

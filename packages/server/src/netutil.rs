@@ -29,7 +29,7 @@ pub fn is_public_unicast(ip: IpAddr) -> bool {
 }
 
 /// The address of the interface that routes to the internet. No packet is sent.
-fn local_route_ip() -> Option<IpAddr> {
+pub fn local_route_ip() -> Option<IpAddr> {
     let s = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
     s.connect(("8.8.8.8", 53)).ok()?;
     Some(s.local_addr().ok()?.ip())
@@ -41,6 +41,11 @@ pub async fn discover_public_ip(http: &reqwest::Client) -> Option<IpAddr> {
     if let Some(ip) = local_route_ip().filter(|ip| is_public_unicast(*ip)) {
         return Some(ip);
     }
+    external_ip_seen(http).await
+}
+
+/// What an external echo service sees this host as, whatever the host's own address is.
+pub async fn external_ip_seen(http: &reqwest::Client) -> Option<IpAddr> {
     for url in ["https://api.ipify.org", "https://ifconfig.me/ip"] {
         if let Ok(resp) = http.get(url).send().await {
             if let Ok(text) = resp.text().await {

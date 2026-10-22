@@ -24,7 +24,7 @@ export function setIceCredentials(sdp: string, ufrag: string): string {
 }
 
 /** The answer a signaling server would have sent, built from the record instead. */
-export function buildAnswer(r: Pick<DirRecord, 'ip' | 'udp_port' | 'fingerprint'>, mid: string): string {
+export function buildAnswer(r: RtcTarget, mid: string): string {
   const v6 = r.ip.includes(':');
   return [
     'v=0',
@@ -98,8 +98,11 @@ class RtcTransport implements Transport {
   }
 }
 
-/** Resolves when the data channel is open; rejects on timeout or ICE/DTLS failure. */
-export async function openRtc(record: DirRecord, timeoutMs: number): Promise<Transport> {
+/** What a WebRTC-direct attempt needs: an address and the pinned fingerprint. A directory record has all three. */
+export type RtcTarget = Pick<DirRecord, 'ip' | 'udp_port' | 'fingerprint'>;
+
+/** Resolves when the data channel is open; rejects on timeout, ICE/DTLS failure or `signal` (another path won). */
+export async function openRtc(record: RtcTarget, timeoutMs: number, signal?: AbortSignal): Promise<Transport> {
   const pc = new RTCPeerConnection({ iceServers: [] });
   const dc = pc.createDataChannel('t', { negotiated: true, id: CHANNEL_ID });
   const term = pc.createDataChannel('term', { negotiated: true, id: TERM_CHANNEL_ID });
@@ -111,6 +114,7 @@ export async function openRtc(record: DirRecord, timeoutMs: number): Promise<Tra
     await pc.setRemoteDescription({ type: 'answer', sdp: buildAnswer(record, mid) });
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`no data channel after ${timeoutMs} ms`)), timeoutMs);
+      signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('cancelled')); }, { once: true });
       dc.onopen = () => {
         clearTimeout(timer);
         resolve();

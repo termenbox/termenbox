@@ -3,6 +3,7 @@
   import Terminal from './Terminal.svelte';
   import ServerList from './ServerList.svelte';
   import AddServerModal from './AddServerModal.svelte';
+  import PairDialog from './PairDialog.svelte';
   import { Toast } from './lib/ui';
   import SessionSheet from './SessionSheet.svelte';
   import type { SheetHeight } from './lib/sheet';
@@ -27,6 +28,8 @@
   import { sendServerLink } from './lib/share';
   import { ServerHub, newSessionTargets, serverKey, sessionDestinations, sessionKey, type HubServer } from './lib/hub';
   import { lookup } from './lib/directory';
+  import { linksToAccount, mergePaired, parsePairLink, type PairLink } from './lib/pair';
+  import { storedBundle } from './lib/paths';
   import { DeleteFailed, deleteMyData, registerServer, SIGN_IN_EXPIRED } from './lib/account';
   import { deviceKey, publicKeyB64, signChallenge, certExpiry, certUserId, avatarUrl } from './lib/device';
   import AppShell from './AppShell.svelte';
@@ -115,11 +118,12 @@
       return { cert: deviceCert!, sign: (id, nonce) => signChallenge(pair, id, nonce) };
     },
     target: async (server, refresh) => {
-      if (refresh && server.server_id) {
+      // A server added by a pairing link may never have been in the directory (LAN-only): do not ask it.
+      if (refresh && server.server_id && !(server.bundle && !server.record)) {
         try { server.record = (await lookup(location.origin, server.server_id)) ?? server.record; }
         catch { /* Try the last verified address before reporting unreachable. */ }
       }
-      return { record: server.record, wsUrl: server.server_url || undefined };
+      return { record: server.record, wsUrl: server.server_url || undefined, bundle: await storedBundle(server), winner: server.winner };
     },
     onSaved: server => saveServers(servers.map(s => serverKey(s) === serverKey(server) ? server : s)),
     onReady: (id, msg, reconnect) => {
@@ -361,6 +365,8 @@
   $: link = selected ? { ok: connState === 'connected', text: connState === 'connected' ? quality || 'connected' : connState } : null;
   $: if (hidden.size) { const live = new Set($allSessions.map(s => s.key)); if ([...hidden].some(k => !live.has(k)) && $allSessions.length) { hidden = new Set([...hidden].filter(k => live.has(k))); saveHidden(hidden); } }
   let showAddServer = false;
+  /** A pairing link waiting for the user's confirmation (decision 0123). */
+  let pairLink: PairLink | null = null;
   let addPrefill: string | null = null;
   let toast: { message: string; type: 'success' | 'error'; detail?: string } | null = null;
 
@@ -434,14 +440,20 @@
    * once the server has an owner it stops announcing the claim secret that proves who set it up. The server is added either way.
    */
   async function addAndLink(server: ServerListItem) {
-    if (server.claim && server.record && deviceCert) {
-      try { await registerServer(location.origin, { cert: deviceCert, pair: await deviceKey() }, server.claim); }
+    if (linksToAccount(server, !!deviceCert)) {
+      try { await registerServer(location.origin, { cert: deviceCert!, pair: await deviceKey() }, server.claim!); }
       catch (e) {
         noteError(`account link: ${e instanceof Error ? e.message : e}`);
         showToast('Server added, but it could not be linked to your account, so "Delete my data" will not cover it. Its record is removed 30 days after it goes quiet.', 'error');
       }
     }
     addServer(server);
+  }
+
+  /** A server confirmed in the pairing dialog; one already saved keeps what this device knows about it. */
+  async function addPaired(paired: ServerListItem) {
+    const existing = servers.find((s) => s.server_id === paired.server_id);
+    await addAndLink(mergePaired(existing, paired));
   }
 
   async function deleteData(): Promise<number> {
@@ -707,7 +719,7 @@
       now = Date.now();
       const c = connection;
       const kind = c?.kind;
-      quality = kind ? `${kind === 'rtc' ? 'direct' : 'relay'}${c?.rtt != null ? ` · ${c.rtt} ms` : ''}` : '';
+      quality = kind ? `${c?.pathLabel ?? (kind === 'rtc' ? 'Direct' : 'Tunnel')}${c?.rtt != null ? ` · ${c.rtt} ms` : ''}` : '';
     }, 1000);
     const vv = window.visualViewport;
     const kb = () => { keyboardOpen = !!vv && window.innerHeight - vv.height > 150; };
@@ -754,9 +766,13 @@
     const onHash = () => {
       const claim = parseClaim(window.location.hash);
       const serverId = parseServerLink(window.location.hash);
-      if (!claim && !serverId) return;
+      const pair = parsePairLink(window.location.hash);
+      if (!claim && !serverId && !pair) return;
       window.history.replaceState({}, '', window.location.pathname);
-      if (!user) {
+      if (pair) {
+        if (!user) sessionStorage.setItem('termenbox_pending_pair', `#/pair/${pair.payload}${pair.claim ? `?claim=${pair.claim}` : ''}`);
+        else pairLink = pair;
+      } else if (!user) {
         // Signed out: keep it across the GitHub login, as a load with the fragment does.
         if (serverId) sessionStorage.setItem('termenbox_pending_server', serverId);
         else if (claim) sessionStorage.setItem('termenbox_pending_claim', claim);
@@ -779,6 +795,13 @@
       window.history.replaceState({}, '', window.location.pathname);
     }
 
+    // A pairing link (#/pair/...): kept across the GitHub login redirect, then verified and previewed before anything connects.
+    const pair = parsePairLink(window.location.hash);
+    if (pair) {
+      sessionStorage.setItem('termenbox_pending_pair', `#/pair/${pair.payload}${pair.claim ? `?claim=${pair.claim}` : ''}`);
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+
     // A re-add link (#server=...) from the installer or a QR, kept across the GitHub login redirect.
     const serverId = parseServerLink(window.location.hash);
     if (serverId) {
@@ -793,6 +816,12 @@
 
     loadServers();
     hub.start(servers);
+    const pendingPair = parsePairLink(sessionStorage.getItem('termenbox_pending_pair') ?? '');
+    if (pendingPair) {
+      sessionStorage.removeItem('termenbox_pending_pair');
+      pairLink = pendingPair;
+      return;
+    }
     const pendingServer = sessionStorage.getItem('termenbox_pending_server');
     if (pendingServer) {
       sessionStorage.removeItem('termenbox_pending_server');
@@ -936,6 +965,9 @@
     <ReportDialog text={reportText} onclose={() => (reportText = null)} />
   {/if}
 
+  {#if pairLink}
+    <PairDialog link={pairLink} onclose={() => pairLink = null} onadd={(server) => { pairLink = null; void addPaired(server); }} />
+  {/if}
   {#if showAddServer}
     <AddServerModal origin={location.origin} prefillSecret={addPrefill} onserver={(id) => { showAddServer = false; void addServerById(id); }} onclose={() => showAddServer = false} onadd={(server) => void addAndLink(server)} />
   {/if}

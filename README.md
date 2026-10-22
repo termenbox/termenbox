@@ -34,6 +34,21 @@ The server needs **one inbound UDP port** (the installer picks a free one, usual
 
 Some mobile and corporate networks block UDP. Those clients cannot connect until the tunnel fallback is available (see the roadmap).
 
+### Home servers, LAN and pairing links
+
+A server is one identity (its key and certificate fingerprint) that a client reaches over several candidate paths and races: your LAN address, a public IPv4 or IPv6 address, an overlay address (Tailscale, WireGuard) and, later, a tunnel (decision 0123). The server signs the list and sends it to each client after login; the app tries the paths, keeps the first that connects, shows which one it is using (*Direct, LAN*, *Tunnel*) and, after a Wi-Fi to cellular change or a missed heartbeat, races again and re-attaches by itself. When nothing connects it lists every path it tried, why each failed and one fix.
+
+At start the server checks where it sits and prints a short block: whether it has a public address, IPv6 or an overlay, whether the router's WAN address is private or shared (carrier-grade NAT, where no port forward can help), and whether the router opened the UDP port for it by PCP, NAT-PMP or UPnP (renewed every half lease, removed on exit). It says **mapped, not verified from outside**: nothing outside confirms the port is reachable, so a router that accepted the mapping can still sit behind a firewall you do not control.
+
+To use a server on its own network, with no directory or internet:
+
+```bash
+TERMENBOX_LAN_ONLY=1 termenbox-server       # no directory announcements, no public-IP lookup, no router mapping
+termenbox-server --print-pairing            # a link and a QR code for your phone
+```
+
+Open the link or scan the code on a phone on the same network. The app checks the signature, shows the server's name and fingerprint, and connects only when you confirm; compare the fingerprint with the one on the server. An unclaimed server's link also claims it. The link carries the signed list in its fragment, which no host sees. LAN and overlay addresses never go to the public directory. A server behind carrier-grade NAT with no relay can only be reached from its own network or over an overlay: the app says so when it fails.
+
 ### Where your agents run
 
 Add Server offers two places (decisions 0058, 0075 and 0078):
@@ -161,6 +176,9 @@ Server (environment variables of the container; the installer sets the first two
 | `TERMENBOX_UDP_PORT` | UDP port of the WebRTC transport (default: the first free port in 4443-4542, remembered across restarts) |
 | `TERMENBOX_CLIENT_URL` | Client and directory origin (default https://app.termenbox.dev) |
 | `TERMENBOX_PUBLIC_IP` | Address clients connect to; detected when unset |
+| `TERMENBOX_LAN_ONLY` | `1`: reach the server over the LAN or an overlay only (no directory, no public-IP lookup, no router mapping); pair with `--print-pairing` |
+| `TERMENBOX_LAN_ADDRS` | LAN addresses for the signed list, comma-separated, instead of the ones found on the interfaces (at most 4 are used) |
+| `TERMENBOX_OVERLAY_ADDRS` | Overlay addresses (Tailscale, WireGuard) for the signed list, instead of the ones found |
 | `TERMENBOX_WEBRTC` | `off` for WebSocket only |
 | `TERMENBOX_SERVER_NAME` | Display name; default: the host's short hostname (the installer passes it into the container) |
 | `TERMENBOX_BACKEND` | `tmux` (default), `command`, `acp`, or a comma list such as `tmux,acp` |
