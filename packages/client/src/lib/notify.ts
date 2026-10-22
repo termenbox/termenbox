@@ -163,39 +163,3 @@ export function startBrowserNotifications(
     },
   };
 }
-
-/** Shows a one-time nudge to pin the tab for native attention glow (pinned tabs only).
- *  Call when waiting sessions exist. Returns a handle to stop/cleanup. */
-export interface PinNudgeHandle {
-  stop: () => void;
-}
-
-const PIN_NUDGE_KEY = 'termenbox_pin_nudge_shown';
-
-export function startPinNudge(
-  waiting: Waiting[],
-  doc: Document = document,
-  showToast: (msg: string) => void,
-): PinNudgeHandle {
-  let stopped = false;
-
-  // Only show if there are waiting sessions and we haven't shown it this session
-  if (waiting.length === 0) return { stop: () => {} };
-
-  const alreadyShown = sessionStorage.getItem(PIN_NUDGE_KEY);
-  if (alreadyShown) return { stop: () => {} };
-
-  // Show nudge after a short delay (so it doesn't compete with other UI)
-  const timer = setTimeout(() => {
-    if (stopped) return;
-    sessionStorage.setItem(PIN_NUDGE_KEY, '1');
-    showToast('Pin this tab for native attention glow 📌', 'success');
-  }, 2000);
-
-  return {
-    stop: () => {
-      stopped = true;
-      clearTimeout(timer);
-    },
-  };
-}
