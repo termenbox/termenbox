@@ -71,6 +71,80 @@ resource "cloudflare_record" "app" {
   ttl     = 1
 }
 
+# Landing site (packages/site): static, built nowhere, uploaded by deploy-site.yaml. The apex is canonical; www is
+# redirected to it at the edge (a Pages _redirects file cannot match a host).
+locals {
+  site_domain = local.prefixed ? "site.${local.dns_prefix}${var.cloudflare_zone_name}" : var.cloudflare_zone_name
+  site_host   = local.prefixed ? "site${local.dns_name_prefix}" : "@"
+}
+
+resource "cloudflare_pages_project" "site" {
+  account_id        = var.cloudflare_account_id
+  name              = var.site_project_name
+  production_branch = "master"
+
+  # No build_config and no source, like the client project.
+
+  deployment_configs {
+  }
+}
+
+resource "cloudflare_pages_domain" "site" {
+  account_id   = var.cloudflare_account_id
+  project_name = cloudflare_pages_project.site.name
+  domain       = local.site_domain
+}
+
+# CNAME at the apex: Cloudflare flattens it.
+resource "cloudflare_record" "site" {
+  zone_id = data.cloudflare_zone.main.id
+  name    = local.site_host
+  type    = "CNAME"
+  content = "${var.site_project_name}.pages.dev"
+  proxied = true
+  ttl     = 1
+}
+
+resource "cloudflare_record" "www" {
+  count   = local.prefixed ? 0 : 1
+  zone_id = data.cloudflare_zone.main.id
+  name    = "www"
+  type    = "CNAME"
+  content = "${var.site_project_name}.pages.dev"
+  proxied = true
+  ttl     = 1
+}
+
+# www.{zone} -> {zone}, permanent, path and query kept. Needs the token to edit zone rulesets.
+resource "cloudflare_ruleset" "www_to_apex" {
+  count   = local.prefixed ? 0 : 1
+  zone_id = data.cloudflare_zone.main.id
+  name    = "www to apex"
+  kind    = "zone"
+  phase   = "http_request_dynamic_redirect"
+
+  rules {
+    action      = "redirect"
+    description = "Redirect www to the apex"
+    enabled     = true
+    expression  = "(http.host eq \"www.${var.cloudflare_zone_name}\")"
+
+    action_parameters {
+      from_value {
+        status_code           = 301
+        preserve_query_string = true
+        target_url {
+          expression = "concat(\"https://${var.cloudflare_zone_name}\", http.request.uri.path)"
+        }
+      }
+    }
+  }
+}
+
+output "site_url" {
+  value = "https://${local.site_domain}"
+}
+
 output "client_url" {
   value = "https://app.${local.dns_prefix}${var.cloudflare_zone_name}"
 }

@@ -31,3 +31,9 @@ variable "pages_project_name" {
   type        = string
   default     = null
 }
+
+variable "site_project_name" {
+  description = "Pages project of the landing site (packages/site), served at the zone apex and www redirected to it. On a prefixed fork the site is served at site.{name}.{zone} and there is no www."
+  type        = string
+  default     = "termenbox-site"
+}

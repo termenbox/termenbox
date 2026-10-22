@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Termenbox: run Claude Code and Codex from your phone</title>
+  <meta name="description" content="A self-hosted web terminal for AI coding agents. Run Claude Code and Codex on your own server from your phone. tmux sessions survive dropped connections.">
+  <link rel="canonical" href="https://termenbox.dev/">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <meta name="theme-color" content="#1a1a2e">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Termenbox">
+  <meta property="og:title" content="Termenbox: run Claude Code and Codex from your phone">
+  <meta property="og:description" content="A self-hosted web terminal for AI coding agents. tmux sessions survive dropped connections. No app, no subscription.">
+  <meta property="og:url" content="https://termenbox.dev/">
+  <meta name="twitter:card" content="summary">
+  <link rel="stylesheet" href="/site.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "SoftwareApplication",
+        "name": "Termenbox",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Linux (server); iOS, Android and desktop browsers (client)",
+        "description": "A self-hosted web terminal for managing AI coding agents such as Claude Code and Codex from a phone or desktop browser.",
+        "url": "https://termenbox.dev/",
+        "license": "https://opensource.org/license/mit",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "codeRepository": "https://github.com/termenbox/termenbox"
+      },
+      {
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "Can I use Claude Code or Codex from my phone?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Yes. Install Termenbox on the machine where the agent runs, then use the app as the terminal: start the agent in a session, answer its questions from the banner, and come back later to the same session." }
+          },
+          {
+            "@type": "Question",
+            "name": "Is this like Mosh or tmux over SSH?",
+            "acceptedAnswer": { "@type": "Answer", "text": "The persistence is tmux's: the server keeps the session and each connection attaches to it. Termenbox adds a browser client made for touch, a connection that re-races its paths after a network change, and notifications. It is not an SSH client." }
+          },
+          {
+            "@type": "Question",
+            "name": "Does my terminal traffic go through your servers?",
+            "acceptedAnswer": { "@type": "Answer", "text": "No. It goes from your browser to your machine over an encrypted WebRTC data channel, and the browser pins the server's fingerprint. Only a signed record with the server's public key and address goes through the free directory." }
+          },
+          {
+            "@type": "Question",
+            "name": "Does it need a public IP or port forwarding?",
+            "acceptedAnswer": { "@type": "Answer", "text": "On the same network as your phone, scan the QR the installer prints. Away from home you need one reachable UDP port, or an overlay such as Tailscale. A server behind carrier-grade NAT can only be reached from its own network or over an overlay." }
+          },
+          {
+            "@type": "Question",
+            "name": "What does it cost?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Nothing beyond the machine you run it on. It is MIT licensed, with no subscription and no native app." }
+          }
+        ]
+      }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/">Termenbox</a>
+    <nav aria-label="Main">
+      <a href="https://github.com/termenbox/termenbox/tree/master/docs/guide">Docs</a>
+      <a href="https://github.com/termenbox/termenbox">GitHub</a>
+      <a class="cta" href="https://app.termenbox.dev">Open the app</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <h1>Run Claude Code and Codex on your own server, from your phone</h1>
+      <p class="lead">A self-hosted web terminal for AI coding agents. Sessions live in tmux and survive dropped connections. No app to install, no subscription.</p>
+      <div class="command" data-command>
+        <code id="cmd">curl -fsSL https://app.termenbox.dev/i | sh</code>
+        <button type="button" id="copy" aria-label="Copy the install command">Copy</button>
+      </div>
+      <p class="after">Run it on the Linux machine that will run your agents. Then open the app, log in with GitHub, tap <strong>Add Server</strong> and scan the QR it printed. The command carries no secret and is safe to run again.</p>
+    </section>
+
+    <section aria-labelledby="paths">
+      <h2 id="paths">Pick your path</h2>
+      <div class="paths">
+        <article>
+          <h3>A VPS with a public IP</h3>
+          <pre><code>curl -fsSL https://app.termenbox.dev/i | sh</code></pre>
+          <p>Scan the QR in Add Server. If it cannot connect, open the one UDP port the installer names.</p>
+        </article>
+        <article>
+          <h3>A home server on your Wi-Fi</h3>
+          <pre><code>curl -fsSL https://app.termenbox.dev/i | sh</code></pre>
+          <p>The same command. Scan the QR from a phone on the same network; no domain or router setting needed.</p>
+        </article>
+        <article>
+          <h3>Sessions isolated in Docker</h3>
+          <pre><code>curl -fsSL https://app.termenbox.dev/i | sh -s -- container</code></pre>
+          <p>Sessions cannot see the rest of the machine. Docker is installed if missing.</p>
+        </article>
+        <article>
+          <h3>Your own client and domain</h3>
+          <pre><code>the command your client shows</code></pre>
+          <p>Follow the <a href="https://github.com/termenbox/termenbox/blob/master/docs/BOOTSTRAP.md">self-hosting guide</a>.</p>
+        </article>
+      </div>
+      <p class="note">The default install runs sessions directly on the machine as your own user, with your repositories, keys and agent logins. Choose Docker if that is more access than you want.</p>
+    </section>
+
+    <section aria-labelledby="why">
+      <h2 id="why">Why Termenbox</h2>
+      <ul class="why">
+        <li><strong>Built for the phone.</strong> Tabs per session, a key row for Esc, Ctrl and arrows, and a banner when an agent is waiting for you.</li>
+        <li><strong>Survives bad networks.</strong> The session runs in tmux on your server. Lose signal or switch from Wi-Fi to cellular and it is still there; reconnecting re-attaches and repaints.</li>
+        <li><strong>Direct and private.</strong> The browser talks to your server over an encrypted WebRTC data channel on one UDP port. No relay in the middle.</li>
+        <li><strong>Works with your agents.</strong> Claude Code, Codex, OpenCode, or any program in a terminal.</li>
+        <li><strong>Free and yours.</strong> MIT licensed. The server needs 512 MB of RAM and one vCPU.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="faq">
+      <h2 id="faq">Questions</h2>
+      <details><summary>Can I use Claude Code or Codex from my phone?</summary>
+        <p>Yes. Install Termenbox on the machine where the agent runs, then use the app as the terminal: start the agent in a session, answer its questions from the banner, and come back later to the same session. Supported browsers: iOS Safari 16.4+, Chrome on Android 111+, and current Chrome, Firefox, Edge and Safari on desktop.</p></details>
+      <details><summary>Is this like Mosh or tmux over SSH?</summary>
+        <p>The persistence is tmux's: the server keeps the session and each connection attaches to it. Termenbox adds a browser client made for touch, a connection that re-races its paths after a network change, and notifications. It is not an SSH client.</p></details>
+      <details><summary>Does my terminal traffic go through your servers?</summary>
+        <p>No. It goes from your browser to your machine over an encrypted WebRTC data channel, and the browser pins the server's fingerprint. Only a signed record with the server's public key and address goes through the free directory.</p></details>
+      <details><summary>Does it need a public IP or port forwarding?</summary>
+        <p>On the same network as your phone, scan the QR the installer prints; on iPhone this depends on Safari's Local Network permission, which we have not finished testing. Away from home you need one reachable UDP port, or an overlay such as Tailscale. A server behind carrier-grade NAT can only be reached from its own network or over an overlay.</p></details>
+      <details><summary>What does it cost?</summary>
+        <p>Nothing beyond the machine you run it on. It is MIT licensed, with no subscription and no native app.</p></details>
+    </section>
+  </main>
+
+  <footer>
+    <p>Termenbox is open source under the MIT license.
+      <a href="https://github.com/termenbox/termenbox">Source</a> ·
+      <a href="https://github.com/termenbox/termenbox/blob/master/SECURITY.md">Security</a> ·
+      <a href="https://app.termenbox.dev">Open the app</a></p>
+  </footer>
+  <script src="/copy.js" defer></script>
+</body>
+</html>
