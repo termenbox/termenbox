@@ -1,0 +1,11 @@
+#!/bin/sh
+# Prevent accidental direct push to master
+while read local_ref local_sha remote_ref remote_sha; do
+  if [ "$remote_ref" = "refs/heads/master" ]; then
+    echo "❌ Direct push to 'master' is forbidden."
+    echo "   Push your feature branch and open PR against 'develop'."
+    echo "   Only release-managers may push to master (via release workflow)."
+    exit 1
+  fi
+done
+exit 0
