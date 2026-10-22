@@ -70,7 +70,7 @@ Next ready step: [R71](roadmap/R71.md).
 | # | Step | Title | Area | Platform | Status | WSJF | Chain | Preds |
 |---|---|---|---|---|---|---|---|---|
 | 1 | [R03](roadmap/R03.md) | Real-iPhone checklist and two-real-server e2e (G.10, H.11) | ux | mobile | blocked (owner's iPhone checklist, docs/skills/mobile-ui-device-check.md) | 10.5 | 10.5 | - |
-| 2 | [R71](roadmap/R71.md) | Create develop and guard master with a GitHub ruleset | ci | n/a | pending | 5.5 | 5.5 | - |
+| 2 | [R71](roadmap/R71.md) | Guard master and develop with GitHub rulesets | ci | n/a | pending | 5.5 | 5.5 | - |
 | 3 | [R59](roadmap/R59.md) | Spike: search tmux history and local terminal text | terminal | both | pending | 5.3 | 5.3 | - |
 | 4 | [R36](roadmap/R36.md) | Desktop browser regression matrix and WebKit in CI | ci | both | pending | 2.5 | 3.7 | - |
 | 5 | [U11](roadmap/U11.md) | Escalation ladder | server | both | pending | 2.2 | 3.7 | - |
