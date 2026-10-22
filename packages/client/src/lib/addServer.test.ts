@@ -127,6 +127,8 @@ describe('connectPaths with fake openers', () => {
     const r = await connectPaths([lan, wan], async (p) => (p.key === lan.key ? closable() : Promise.reject(new Error('timeout'))), (e) => events.push(e), instant);
     expect(r.won?.path.key).toBe(lan.key);
     expect(r.fallback).toBe(false);
+    const looking = events.find((e) => e.type === 'looking');
+    expect(looking && looking.type === 'looking' && looking.addresses?.map((a) => a.addr)).toEqual(['192.168.1.5:4443', '8.8.8.8:4443']);
     const s = events.reduce(reduce, run([{ type: 'next' }]));
     expect(s.connect.addresses.find((a) => a.key === lan.key)?.state).toBe('won');
   });

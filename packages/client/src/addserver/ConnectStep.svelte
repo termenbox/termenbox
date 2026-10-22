@@ -49,14 +49,11 @@
 </ul>
 
 {#if connect.addresses.length}
-  <details class="addrs" data-testid="addresses">
-    <summary>Addresses tried ({connect.addresses.length})</summary>
-    <ul>
-      {#each connect.addresses as a}
-        <li>{a.label}: {a.state === 'trying' ? 'trying…' : a.state === 'won' ? 'connected' : `failed${a.reason ? ` (${a.reason})` : ''}`}</li>
-      {/each}
-    </ul>
-  </details>
+  <ul class="addrs" data-testid="addresses" aria-label="Addresses">
+    {#each connect.addresses as a}
+      <li class:bad={a.state === 'failed'}><span class="mono">{a.addr ?? a.label}</span> {a.label}: {a.state === 'trying' ? 'trying…' : a.state === 'won' ? 'connected' : `failed${a.reason ? ` (${a.reason})` : ''}`}</li>
+    {/each}
+  </ul>
 {/if}
 
 <form on:submit|preventDefault={() => text.trim() && ontext(text.trim())} class="paste">
@@ -79,9 +76,10 @@
   .checks li.done { color: var(--fg); }
   .checks li.active { color: var(--fg); font-weight: 600; }
   .checks span { display: inline-block; width: 1.2em; }
-  .addrs { font-size: 0.8rem; color: var(--fg-muted); margin-bottom: 8px; }
-  .addrs summary { cursor: pointer; }
-  .addrs ul { margin: 6px 0 0; padding-left: 18px; }
+  .addrs { list-style: none; padding: 0; margin: 0 0 8px; font-size: 0.8rem; color: var(--fg-muted); }
+  .addrs li { padding: 1px 0; overflow-wrap: anywhere; }
+  .addrs li.bad { color: var(--danger); }
+  .mono { font-family: monospace; color: var(--fg); }
   .paste label { display: block; font-size: 0.8rem; margin-bottom: 4px; color: var(--fg-muted); }
   .file { display: block; margin-top: 8px; font-size: 0.8rem; color: var(--fg-muted); text-decoration: underline; cursor: pointer; }
   .err { color: var(--danger); font-size: 0.875rem; margin: 8px 0; }

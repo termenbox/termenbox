@@ -242,6 +242,16 @@ port_report() {
     vultr) say "Your host looks like Vultr: if a firewall group is attached, add an inbound UDP $_port rule." ;;
     *) say "If your hosting provider has a network firewall or security group, allow inbound UDP $_port there too." ;;
   esac
+  # WSL2 sits behind Windows' own NAT: its UDP port is not reachable from other devices, and the address it advertises is
+  # internal. Mirrored networking is the one setting that makes UDP work; netsh portproxy handles TCP only.
+  if grep -qi microsoft /proc/version 2>/dev/null; then
+    say ""
+    say "This looks like WSL. Its network is behind Windows, so UDP $_port is not reachable from other devices as it is. The app falls back to a slower connection until you do this, once, on Windows:"
+    say "  1. In %UserProfile%\\.wslconfig add:   [wsl2]  networkingMode=mirrored"
+    say "  2. In PowerShell:   wsl --shutdown     (then start WSL again)"
+    say "  3. In an admin PowerShell, allow it through Windows Firewall:   New-NetFirewallRule -DisplayName Termenbox -Direction Inbound -Protocol UDP -LocalPort $_port -Action Allow"
+    say "  If WSL still blocks it:   Set-NetFirewallHyperVVMSetting -Name '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -DefaultInboundAction Allow"
+  fi
   say "Add Server tests the connection from your browser and shows what is blocking it."
 }
 

@@ -28,11 +28,17 @@
 </script>
 
 <p class="lead">Run this once on your server. It installs and starts everything, then prints a QR, a link and a code.</p>
+{#if where === 'host'}
+  <label class="choice consent" data-testid="consent">
+    <input type="checkbox" bind:checked={consent} />
+    <span>This gives my browser a shell on the server{hostAs === 'root' ? ', as root' : hostAs === 'me' ? ', as the user who runs the command' : ', as the termenbox user'}. I own it and want that. <small>Other choices are under Options.</small></span>
+  </label>
+{/if}
 {#if allowed}
   <pre class="command" on:click={selectAll}>{command}</pre>
   <button on:click={copy} style="width: 100%; margin-bottom: 8px;" data-testid="copy-command">{copied ? 'Copied' : 'Copy command'}</button>
 {:else}
-  <p class="locked">Tick the box under Options to see the command.</p>
+  <p class="locked">Tick the box above to see the command.</p>
 {/if}
 <button class="secondary" on:click={onnext} style="width: 100%; margin-bottom: 8px;" data-testid="install-next">I ran it</button>
 
@@ -90,6 +96,7 @@
   .choice small { color: var(--fg-muted); }
   .sub { margin-left: 24px; border-left: 2px solid var(--border); padding-left: 12px; }
   .warning { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--danger); border-radius: 8px; font-size: 0.8rem; background: rgba(248, 81, 73, 0.08); }
+  .consent { font-size: 0.8rem; margin: 0 0 8px; }
   .locked { color: var(--fg-muted); font-size: 0.85rem; margin: 0 0 12px; }
   .command { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-family: monospace; font-size: 0.7rem; white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; cursor: copy; margin: 0 0 8px; }
 </style>
