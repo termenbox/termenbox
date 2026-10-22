@@ -1,0 +1,4 @@
+{
+  "name": "Termenbox",
+  "postCreateCommand": "git config core.hooksPath .github/hooks"
+}
