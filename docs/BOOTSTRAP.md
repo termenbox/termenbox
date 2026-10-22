@@ -158,13 +158,15 @@ wrangler pages secret put DIRECTORY_SALT --project-name <pages project>
 
 ## 4. Add servers
 
-Open your client (the Terraform output `client_url`, for example `https://app.yourdomain.com`), log in with GitHub and choose **Add Server**. The command it shows already contains your client's address, so servers announce themselves to *your* directory:
+Open your client (the Terraform output `client_url`, for example `https://app.yourdomain.com`), log in with GitHub and choose **Add Server**. The command it shows is the same one as on the hosted client, with your client's address:
 
 ```bash
-curl -fsSL https://app.yourdomain.com/install.sh | sh -s -- <secret> https://app.yourdomain.com
+curl -fsSL https://app.yourdomain.com/i | sh
 ```
 
-Run it on the VPS. See the README for what it does, firewall notes and updating/removing. The image comes from `ghcr.io/termenbox/termenbox:latest`; to use your own build set `TERMENBOX_IMAGE` before the command.
+It carries no secret. The client build writes your address into the installer it serves at `/i` as the default, so the server pairs with *your* client and directory: set the repository variable `TERMENBOX_CLIENT_ORIGIN` to `https://app.yourdomain.com` (`gh variable set TERMENBOX_CLIENT_ORIGIN --body https://app.yourdomain.com`) before the first deploy. Left unset, `/i` pairs with the hosted client.
+
+Run it on the VPS. See the [install guide](guide/install.md) for what it does, firewall notes and updating/removing. The image comes from `ghcr.io/termenbox/termenbox:latest`; to use your own build set `TERMENBOX_IMAGE` before the command.
 
 ---
 
@@ -181,7 +183,7 @@ Run it on the VPS. See the README for what it does, firewall notes and updating/
 **On push to `master`:**
 - CI: `cargo fmt`, `clippy`, build, tests (with tmux), installer syntax check, client build and tests.
 - Docker image built for amd64 and arm64 and pushed to `ghcr.io/<owner>/termenbox:latest` (pull requests build it without pushing).
-- Client, Pages Functions (OAuth exchange, directory) and `install.sh` deployed to Cloudflare Pages; D1 migrations applied.
+- Client, Pages Functions (OAuth exchange, directory) and the installer (`/i`) deployed to Cloudflare Pages; D1 migrations applied.
 
 Required repository settings: secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `TERMENBOX_GITHUB_CLIENT_ID`, `TERMENBOX_GITHUB_CLIENT_SECRET`, `TERMENBOX_CERT_SIGNING_KEY`, `TERMENBOX_DIRECTORY_SALT` (the last four are synced to the Pages Function on each deploy); variables `TERMENBOX_PAGES_PROJECT_NAME`, `TERMENBOX_D1_DATABASE_ID`. Terraform sets most of them.
 

@@ -1,228 +1,99 @@
-# Termenbox
+<h1 align="center">Termenbox</h1>
 
-A web terminal for managing remote AI coding agents (Codex, Claude Code) from any phone or desktop browser. Sessions live in tmux on your own server and survive dropped connections. No native apps, no subscriptions, no relay in the middle.
+<p align="center">
+  <b>Run Claude Code and Codex on your own server, from your phone.</b><br>
+  A self-hosted web terminal for AI coding agents. Sessions live in tmux and survive dropped connections. No app to install, no subscription.
+</p>
 
-## How it works
+<p align="center">
+  <a href="https://github.com/termenbox/termenbox/actions/workflows/ci.yaml"><img alt="CI" src="https://github.com/termenbox/termenbox/actions/workflows/ci.yaml/badge.svg"></a>
+  <a href="https://github.com/termenbox/termenbox/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/termenbox/termenbox"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/termenbox/termenbox"></a>
+</p>
 
-```
- Browser (client)  ── WebRTC data channel, direct, end-to-end encrypted ──►  Your VPS
- app.termenbox.dev          one UDP port                               termenbox-server + tmux
-        │                                                                          │
-        └── GitHub login ── signed directory (address + key, never traffic) ◄──────┘
-```
+## Install
 
-- **Direct connection.** The browser talks to your server over a WebRTC data channel on one UDP port. No tunnel, domain, certificate or relay is needed. The channel is encrypted (DTLS) and the browser pins the server's fingerprint.
-- **Persistence = tmux.** The server attaches a tmux client per connection. If your phone drops off the network, the session keeps running and reconnecting repaints the screen. Any session manager with a CLI can be used instead (see Session backends).
-- **Owner only.** The first GitHub user to connect becomes the server's owner; everyone else is refused.
-- **Free to run.** The client and a small signed directory run on Cloudflare's free tier. Your server needs a VPS with 512 MB of RAM and a public IP.
-
-## Quick start
-
-You need a Linux VPS with a public IP (512 MB RAM, 1 vCPU is enough) and root access.
-
-1. Open **https://app.termenbox.dev** and log in with GitHub.
-2. Choose **Add Server**. Copy the command it shows and run it on your VPS.
-3. Wait a minute. The server appears in the list. Tap it.
-
-That is the whole setup. The command picks a free UDP port, starts the server and hands it a one-time secret. It is safe to run again; running it with a new secret re-claims the server for a new owner. Add Server also asks **where sessions should run** (see below).
-
-**Prefer to scan?** On the VPS run `curl -fsSL https://app.termenbox.dev/install.sh | sh -s -- - https://app.termenbox.dev`. It shows a QR code; in Add Server choose **Scan a QR** and use the camera, or take a screenshot of the code and pick it from the gallery (delete the screenshot afterwards).
-
-### Firewalls
-
-The server needs **one inbound UDP port** (the installer picks a free one, usually 4443, and opens it in `ufw` or `firewalld` if they are active). If you use a provider firewall or security group (AWS, GCP, Oracle, Hetzner Cloud Firewall), open that port there. The app tells you which port when it cannot reach your server: *"Server unreachable on UDP port N"*. To see the port: `cat /opt/termenbox/udp_port` (isolated container) or `sudo cat /var/lib/termenbox-root/udp_port` (on the machine).
-
-Some mobile and corporate networks block UDP. Those clients cannot connect until the tunnel fallback is available (see the roadmap).
-
-### Home servers, LAN and pairing links
-
-A server is one identity (its key and certificate fingerprint) that a client reaches over several candidate paths and races: your LAN address, a public IPv4 or IPv6 address, an overlay address (Tailscale, WireGuard) and, later, a tunnel (decision 0123). The server signs the list and sends it to each client after login; the app tries the paths, keeps the first that connects, shows which one it is using (*Direct, LAN*, *Tunnel*) and, after a Wi-Fi to cellular change or a missed heartbeat, races again and re-attaches by itself. When nothing connects it lists every path it tried, why each failed and one fix.
-
-At start the server checks where it sits and prints a short block: whether it has a public address, IPv6 or an overlay, whether the router's WAN address is private or shared (carrier-grade NAT, where no port forward can help), and whether the router opened the UDP port for it by PCP, NAT-PMP or UPnP (renewed every half lease, removed on exit). It says **mapped, not verified from outside**: nothing outside confirms the port is reachable, so a router that accepted the mapping can still sit behind a firewall you do not control.
-
-To use a server on its own network, with no directory or internet:
+On the Linux machine that will run your agents (a VPS or a home server; x86_64 or aarch64, with systemd):
 
 ```bash
-TERMENBOX_LAN_ONLY=1 termenbox-server       # no directory announcements, no public-IP lookup, no router mapping
-termenbox-server --print-pairing            # a link and a QR code for your phone
+curl -fsSL https://app.termenbox.dev/i | sh
 ```
 
-Open the link or scan the code on a phone on the same network. The app checks the signature, shows the server's name and fingerprint, and connects only when you confirm; compare the fingerprint with the one on the server. An unclaimed server's link also claims it. The link carries the signed list in its fragment, which no host sees. LAN and overlay addresses never go to the public directory. A server behind carrier-grade NAT with no relay can only be reached from its own network or over an overlay: the app says so when it fails.
+Then open **[app.termenbox.dev](https://app.termenbox.dev)** on your phone or laptop, log in with GitHub, tap **Add Server** and scan the QR the command printed (or paste its link). That is the whole setup. The command carries no secret and is safe to run again.
 
-### Where your agents run
+> [!TIP]
+> No camera? Paste the link the command printed into Add Server instead.
 
-Add Server offers two places (decisions 0058, 0075 and 0078):
+## Pick your path
 
-**In an isolated container** (the default). Sessions run inside a Docker container, in `/opt/termenbox/home` (mounted as the container's home, so it survives restarts and upgrades). Docker is installed if missing. The container cannot see the rest of your VPS. The image has tmux, git, curl and Node. Install your agents in a Termenbox session, for example:
+| You have | Run on the machine | Then |
+|---|---|---|
+| **A VPS with a public IP** | `curl -fsSL https://app.termenbox.dev/i \| sh` | Scan the QR in Add Server. If it cannot connect, open the one UDP port the installer names. |
+| **A home server or laptop on your Wi-Fi** | the same command | Scan the QR from a phone on the same Wi-Fi. No public IP, domain or router setting needed. |
+| **Sessions isolated in Docker** | `curl -fsSL https://app.termenbox.dev/i \| sh -s -- container` | Scan the QR. Docker is installed if missing. |
+| **A dedicated user or root service** | `… \| sh -s -- host-user` or `… \| sh -s -- host` | Scan the QR; asks for `sudo`. |
+| **Your own client and domain** | the command your client shows | Follow [BOOTSTRAP.md](docs/BOOTSTRAP.md). |
+| **To remove it** | `curl -fsSL https://app.termenbox.dev/uninstall.sh \| sudo sh` | Shows what it would do first; add `-s -- --yes` to apply. |
 
-```bash
-npm install -g @anthropic-ai/claude-code @openai/codex
-```
+> [!IMPORTANT]
+> The default install runs sessions directly on the machine as **your own user**, so the app gets a shell with your repositories, keys and agent logins. Choose the container path if that is more access than you want.
 
-**On the machine itself** (no Docker). The server is a single static binary run as a systemd service, and sessions run directly on your VPS, where your repositories and agent tools already are. You choose who the sessions run as: a dedicated unprivileged user `termenbox` (created for you, recommended), the user who runs the install command (sessions open on your behalf, in your home, with your repositories, keys and agent logins; nothing is created), or `root`. This gives your browser a shell on the server itself, so the app shows a warning and asks you to confirm. Requirements: systemd, `curl`, `ssh-keygen` (package `openssh-client`), x86_64 or aarch64. A pinned static `tmux` (3.2 or newer, decision 0119) is installed next to the server, so none has to be installed first; `TERMENBOX_TMUX` points the server at a tmux of your own instead.
+> [!NOTE]
+> **Windows:** run it inside WSL2 with `networkingMode=mirrored`, otherwise other devices cannot reach it ([details](docs/guide/networking.md#servers-inside-a-virtual-machine)).
 
-**As your own user, with no root** (decision 0113). The same machine-itself install, but as a user service of the account that runs the command: no `sudo`, no new user. The binary lives in `~/.local/bin`, state in `~/.config/termenbox`, and the update check is a timer of your own. Starting at boot needs lingering, which systemd lets you switch on for yourself (`loginctl enable-linger`); if your system refuses, the installer says so and prints the one command root would have to run. A firewall rule is printed the same way, never run. The pinned static `tmux` goes to `~/.local/bin` beside the server, so none has to be installed. The dedicated user and root choices still use a system service and ask for `sudo`.
+## Why Termenbox
 
-The installer also sets up a daily update check that runs as root, separately from the server (which can stay an unprivileged user). Before anything is installed, and before every update, the release is checked: its manifest must carry a valid signature by the project's release key, and the binary must match the signed SHA-256 (see `SECURITY.md`). It lists every change it will make, records each one in a journal in `/var/lib/termenbox-root` before making it, and can undo them.
-
-### Updating and removing
-
-Remove the server from the machine with one command. Without `--yes` it only shows what it would do:
-
-```bash
-curl -fsSL https://app.termenbox.dev/uninstall.sh | sudo sh            # preview, changes nothing
-curl -fsSL https://app.termenbox.dev/uninstall.sh | sudo sh -s -- --yes
-```
-
-An install made for your own user needs no `sudo` to remove: run the same command as that user, without `sudo`.
-
-It handles both install kinds. For the container it removes the container and `/opt/termenbox`. On the machine itself it stops the service and the updater, deletes the server's state and undoes every journaled change (binary, units, firewall rule, and the `termenbox` user and tmux only if the installer added them). It never touches your repositories, or the home of the user your sessions run as. Add `--keep-state` to keep the server's keys and owner, `--delete-home` to also delete the home of a `termenbox` user the installer created. Running tmux sessions are left alone. Then use **Remove server** in the app to drop it from your list; you can also uninstall from there while connected.
-
-Updates: the container updates when you run the install command again. On the machine itself a timer (root-owned, or your own for the no-root install) checks for a new signed release every day; if the new server does not come up healthy the old one is put back. Check now: `sudo termenbox-server --root-helper update`.
-
-## Sessions, tabs and windows
-
-- **Tabs.** Each running session is a tab at the top, showing the folder and the agent of the window it speaks for; sessions from every saved server share one strip. Several sessions in the same folder are told apart by name. Tap an inactive tab to open it (its last screen shows at once, then the live one), tap the active tab for its windows, long-press for actions.
-- **Windows.** The dropdown of the active tab lists the tmux windows of the session: switch to one, close it (a running program or the last window asks first), or open a new one with **+ New window** in the folder of the current window.
-- **Detach or close.** Detach hides the tab and keeps the session running; Close session asks first and ends it.
-- **Needs you.** When an agent waits for an answer, a banner names the session and offers its choices without changing the tab you are on.
-- **Servers.** The Servers screen lists the saved servers; Add Server shows the install command for a container or for host mode and waits for the server to appear.
-
-These behaviours are tested in a real browser (`packages/client/e2e/`), including two real server processes with real tmux. The browser runs emulate a phone; the soft keyboard, safe areas and gestures on a real iPhone are checked by hand with `docs/skills/mobile-ui-device-check.md`.
-
-## Is it safe to use?
-
-What a stranger on the internet can and cannot do, and what you accept by installing:
-
-- **Only you can open a session.** The first GitHub account to connect owns the server; everyone else is refused. Your browser holds a device key that cannot be exported, and the server checks a certificate for it on every connection.
-- **Your terminal traffic never touches our servers.** It goes from your browser to your machine, encrypted. The free directory only maps your server's public key to its address.
-- **Your GitHub token is not kept.** It is used once to sign the certificate and dropped.
-- **Host install = a shell on your machine, for your browser.** Whoever controls your GitHub account and an enrolled browser can run commands as the user the sessions run as. That is the product; choose the narrowest option you can live with: the isolated container, then a dedicated `termenbox` user, then your own user, then root. Turn on two-factor authentication on GitHub.
-- **Nothing is installed silently.** The installer lists every change first, records each in a journal before making it, and can undo all of them. Binaries are checked against a signature by the release key before they run, on install and on every update; a signed freeze can stop updates.
-- **Nothing else runs as root.** The server runs as an unprivileged user; root work (updates, removal) is done by a separate small helper that accepts only a fixed list of requests.
-- **What we cannot protect against:** a compromised machine, a stolen unlocked phone with an enrolled browser (remove the device in the app), or a malicious agent you run in a session.
-
-Full model and how to report a problem: [SECURITY.md](SECURITY.md).
-
-## Hosting your own client
-
-By default everything uses the hosted client at app.termenbox.dev. To run your own (your domain, your OAuth app, your directory) follow [docs/BOOTSTRAP.md](docs/BOOTSTRAP.md). Servers then need `TERMENBOX_CLIENT_URL=https://your-client` (the install command carries it).
-
-## Session backends
-
-The default (`TERMENBOX_BACKEND=auto`) uses tmux. To use another tool with a CLI, give three commands (no shell; `{name}` and `{id}` are replaced by a validated session name):
+- **Built for the phone.** Tabs per session, a key row for Esc, Ctrl and arrows, and a banner when an agent is waiting for you.
+- **Survives bad networks.** The session runs in tmux on your server. Close the tab, lose signal or switch from Wi-Fi to cellular and it is still there; reconnecting re-attaches and repaints.
+- **Direct and private.** The browser talks to your server over an encrypted WebRTC data channel on one UDP port. There is no relay in the middle, and our free directory only maps your server's key to its address.
+- **Works with your agents.** Claude Code, Codex, OpenCode, or any program in a terminal. Notifications and agent status come from hooks you switch on yourself.
+- **Free and yours.** MIT licensed. The hosted client and directory run on Cloudflare's free tier, and the server needs 512 MB of RAM and one vCPU.
 
 ```
-TERMENBOX_BACKEND=command
-TERMENBOX_BACKEND_NAME=zellij
-TERMENBOX_BACKEND_LIST=zellij list-sessions --short
-TERMENBOX_BACKEND_CREATE=zellij attach --create-background {name}
-TERMENBOX_BACKEND_ATTACH=zellij attach {id}
+ Browser (app.termenbox.dev)  ── WebRTC, direct, encrypted ──►  Your machine
+                                      one UDP port             termenbox-server + tmux
 ```
 
-The attach command runs in a PTY. It must repaint the session when it starts and only detach when it is killed; that is how a dropped connection resumes. The zellij lines are an illustration and untested. Otherwise implement the `SessionBackend` trait (`packages/server/src/backend.rs`).
+## Questions
 
-### Agent sessions over ACP (T0)
+<details><summary><b>Can I use Claude Code or Codex from my phone?</b></summary>
 
-An agent that speaks the Agent Client Protocol can run as a session the server starts itself, with a view the app draws (Markdown replies, tool calls, diffs, the plan, permission questions you answer with one tap) instead of a terminal. The server starts only the commands you list, in `acp-agents.toml` in the config directory (a missing file means none):
+Yes. Install Termenbox on the machine where the agent runs, then use the app as the terminal: start the agent in a session, answer its questions from the banner, and come back later to the same session. Supported browsers: iOS Safari 16.4+, Chrome on Android 111+, current Chrome, Firefox, Edge and Safari on desktop.
+</details>
 
-```
-max_sessions = 2            # agents at once; each is a Node or Rust process of a few hundred MB
-[agents.claude]
-command = "claude-agent-acp"
-env_remove = ["CLAUDECODE"]
-```
+<details><summary><b>Is this like Mosh or tmux over SSH?</b></summary>
 
-Run `TERMENBOX_BACKEND=tmux,acp` to offer both: New session then asks for the manager ("Agent session (ACP)") and the directory. Keep `tmux` in the list: the **Shell** key in an agent session opens a plain tmux session in the same directory (an ACP agent has no terminal of its own). See `docs/skills/probe-an-agent-over-acp.md` for adding an agent.
+The persistence is tmux's: the server keeps the session and each connection attaches to it. What Termenbox adds is a browser client made for touch, a connection that re-races its paths after a network change, and notifications. It is not an SSH client and does not need one.
+</details>
 
-## Notifications
+<details><summary><b>Does my terminal traffic go through your servers?</b></summary>
 
-When a Claude Code session asks for you, finishes or fails, the server raises an item the app shows in the banner, the tab title, the app badge and the Inbox (Settings → Appearance, notifications and more → Inbox). To also get a notification on a phone that is not looking at the app, set up Web Push once:
+No. It goes from your browser to your machine, encrypted, and the browser pins the server's fingerprint. Only a signed record (the server's public key and address) goes through the directory, and LAN addresses never do. Details: [security](docs/guide/safety.md) and [SECURITY.md](SECURITY.md).
+</details>
 
-```
-termenbox-server --setup-push     # writes the key to connectors.env (mode 0600) next to the server's other state
-```
+<details><summary><b>Does it need a public IP or port forwarding?</b></summary>
 
-Restart the server, then Settings → Appearance, notifications and more → Turn on notifications (on iPhone the app must be added to the Home Screen first, iOS 16.4+). A notification is sent about 5 seconds after the item appears, unless a device is showing that session. It names the session and what happened and never carries anything the agent wrote. A phone follows one server at a time.
+On the same network as your phone, no: scan the QR and it connects over the LAN. On iPhone this depends on Safari's Local Network permission, which we have not finished testing; the link and QR work wherever the phone can reach the machine. Away from home you need one reachable UDP port, or an overlay such as Tailscale. A server behind carrier-grade NAT can only be reached from its own network or over an overlay until a relay exists. The app lists every path it tried and what to fix. See [networking](docs/guide/networking.md).
+</details>
 
-## Agent events
+<details><summary><b>What does it cost?</b></summary>
 
-The server turns what agents do into a small typed stream (idle, working, needs input, done) that clients can follow. With no setup it comes from a process scan and screen heuristics (low confidence). For exact tool and "needs input" events from Claude Code, opt in:
+Nothing beyond the machine you run it on. There is no subscription and no native app.
+</details>
 
-```
-termenbox-server --connect-claude          # shows the hook lines it would add
-termenbox-server --connect-claude --yes    # applies them (backup kept)
-termenbox-server --disconnect-claude       # removes exactly those again
-```
+<details><summary><b>Who can open a session?</b></summary>
 
-For exact OpenCode events, opt in to its plugin the same way:
+Only the GitHub account that claims the server first, from a browser you have enrolled. Everyone else is refused.
+</details>
 
-```
-termenbox-server --connect-opencode          # shows the plugin it would write
-termenbox-server --connect-opencode --yes    # writes <config>/plugins/termenbox.js (backup kept)
-termenbox-server --disconnect-opencode       # removes exactly that again
-```
+## Documentation
 
-The OpenCode config directory is `$OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`; `--opencode-dir DIR` names it explicitly. Restart OpenCode after connecting.
-
-Only sessions created by Termenbox carry the variables hooks need. Agent text in events is cleaned (control characters, secrets, addresses) and capped before it is stored or sent. Details: `docs/plans/archive/termenbox-v6-agent-events.md`.
-
-## Configuration
-
-Server (environment variables of the container; the installer sets the first two):
-
-| Variable | Description |
+| | |
 |---|---|
-| `TERMENBOX_UDP_PORT` | UDP port of the WebRTC transport (default: the first free port in 4443-4542, remembered across restarts) |
-| `TERMENBOX_CLIENT_URL` | Client and directory origin (default https://app.termenbox.dev) |
-| `TERMENBOX_PUBLIC_IP` | Address clients connect to; detected when unset |
-| `TERMENBOX_LAN_ONLY` | `1`: reach the server over the LAN or an overlay only (no directory, no public-IP lookup, no router mapping); pair with `--print-pairing` |
-| `TERMENBOX_LAN_ADDRS` | LAN addresses for the signed list, comma-separated, instead of the ones found on the interfaces (at most 4 are used) |
-| `TERMENBOX_OVERLAY_ADDRS` | Overlay addresses (Tailscale, WireGuard) for the signed list, instead of the ones found |
-| `TERMENBOX_WEBRTC` | `off` for WebSocket only |
-| `TERMENBOX_SERVER_NAME` | Display name; default: the host's short hostname (the installer passes it into the container) |
-| `TERMENBOX_BACKEND` | `tmux` (default), `command`, `acp`, or a comma list such as `tmux,acp` |
-| `TERMENBOX_CONFIG_DIR` | Owner, keys and certificate (default `~/.config/termenbox`) |
-| `TERMENBOX_HISTORY_DAYS` | Days of agent history kept for the Activity view (default 90) |
-| `TERMENBOX_HISTORY_MAX_MB` | Most disk the history may use, oldest dropped first (default 20) |
-
-Client build: `VITE_GITHUB_CLIENT_ID`. The OAuth code exchange runs in a Pages Function that needs `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` and `CERT_SIGNING_KEY` (base64 PKCS#8 Ed25519) as secrets on the Pages project. Servers trust its public key from `packages/server/cert-keys.txt`; self-hosters set `TERMENBOX_CERT_KEYS=kid=<base64url key>` on their servers.
-
-## Development
-
-```bash
-cargo test --workspace                 # needs tmux for the end-to-end tests
-cd packages/client && npx pnpm@9 install && ./node_modules/.bin/vitest run
-# browser end-to-end (needs a built server, `pnpm build`, `pnpm e2e:build` and Chrome)
-node e2e/run.mjs && node e2e/touch.mjs && node e2e/cards.mjs && node e2e/windows.mjs && node e2e/two-servers.mjs
-```
-
-No compiler on the machine? `scripts/dev.sh` runs any command in a pinned build container (Rust, tmux, and with
-`--full` Node, pnpm and Chromium). The repo is mounted; cargo's registry and `target/`, and pnpm's store, live in a
-named Docker volume, so repeat builds are incremental (`docker compose -f docker/docker-compose.dev.yml down -v`
-clears them):
-
-```bash
-scripts/dev.sh cargo test --workspace
-scripts/dev.sh --full sh -c 'pnpm install --frozen-lockfile && pnpm --filter termenbox-client e2e:build && cd packages/client && node e2e/run.mjs'
-```
-
-All builds and image publishing run in CI (`.github/workflows/`). Layout:
-
-```
-packages/core     shared protocol types (Rust)
-packages/server   termenbox-server: auth, sessions, WebRTC + WebSocket transports, directory announcer
-packages/client   Svelte 5 + xterm.js client, Pages Functions (OAuth exchange, signed directory)
-packages/agent    parked (agent detection moves into the server, issue #19)
-docker/           image (built by CI), dev build container, sample compose file
-docs/             facts, decisions, guardrails, plans
-```
-
-The plan and its status live in GitHub issues; see `docs/plans/termenbox-roadmap.md`.
-
-## Roadmap
-
-Mobile UX, the installable PWA, agent notifications, end-to-end tests and resource gates are done. What comes next is ordered in `docs/plans/termenbox-roadmap.md`.
+| [Install, firewall, run modes, update and remove](docs/guide/install.md) | [Sessions, agents and notifications](docs/guide/sessions.md) |
+| [How it connects, home servers, WSL](docs/guide/networking.md) | [Configuration](docs/guide/configuration.md) |
+| [Security model](docs/guide/safety.md) and [reporting a problem](SECURITY.md) | [Hosting your own client](docs/BOOTSTRAP.md) |
+| [Development and tests](docs/guide/development.md) | [Roadmap](docs/plans/termenbox-roadmap.md) |
 
 ## License
 
