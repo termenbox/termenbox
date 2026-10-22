@@ -2,7 +2,7 @@ name: Deploy to Cloudflare Pages
 
 on:
   push:
-    branches: [master]
+    branches: [master, develop]
     # Docs, server and image changes do not change what is deployed to Pages, except the server version, which the app shows.
     paths: ['packages/client/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'packages/server/Cargo.toml', '.github/workflows/deploy-pages.yaml']
   workflow_dispatch:
@@ -81,9 +81,18 @@ jobs:
           wrangler pages secret bulk "$RUNNER_TEMP/pages-secrets.json" --project-name=${{ vars.TERMENBOX_PAGES_PROJECT_NAME || 'termenbox' }}
           rm -f "$RUNNER_TEMP/pages-secrets.json"
 
-      - name: Deploy to Cloudflare Pages
+      - name: Deploy to Cloudflare Pages (stable from master)
+        if: github.ref == 'refs/heads/master'
         working-directory: packages/client
         run: wrangler pages deploy dist --project-name=${{ vars.TERMENBOX_PAGES_PROJECT_NAME || 'termenbox' }} --branch=master
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy to Cloudflare Pages (beta from develop)
+        if: github.ref == 'refs/heads/develop'
+        working-directory: packages/client
+        run: wrangler pages deploy dist --project-name=${{ vars.TERMENBOX_PAGES_PROJECT_NAME_BETA || 'termenbox-beta' }} --branch=develop
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

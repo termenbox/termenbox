@@ -3,6 +3,11 @@ name: Release
 # A tag v<version> builds the static server binaries and the bundled tmux (decision 0119), writes a manifest of their hashes, signs it with the release key
 # (decision 0076) and publishes both as a GitHub Release. Run by hand (workflow_dispatch) it does everything but
 # publish, with a throwaway key when the real one is not configured, so the pipeline can be tested.
+#
+# Release channels (DECISION-0125):
+# - Stable: tag vX.Y.Z pushed to master
+# - Beta:   tag vX.Y.Z-beta.N or vX.Y.Z-rc.N pushed to develop
+# - Nightly: auto from develop at 00:00 UTC (separate workflow)
 
 on:
   push:
@@ -28,6 +33,39 @@ jobs:
           - { arch: aarch64, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect release type
+        id: release_type
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          branch="${GITHUB_REF#refs/heads/}"
+          is_beta=false
+          is_stable=false
+          
+          if [[ "$tag" =~ -beta\.|-rc\. ]]; then
+            is_beta=true
+            echo "beta=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            is_stable=true
+            echo "stable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Unknown version format: $tag"; exit 1
+          fi
+          
+          if [ "$is_beta" = true ] && [ "$branch" != "develop" ]; then
+            echo "::error::Beta tags (containing -beta. or -rc.) must be pushed from 'develop' branch, not '$branch'"
+            exit 1
+          fi
+          
+          if [ "$is_stable" = true ] && [ "$branch" != "master" ]; then
+            echo "::error::Stable tags (vX.Y.Z) must be pushed from 'master' branch, not '$branch'"
+            exit 1
+          fi
+          
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: The tag matches the version in Cargo.toml
         if: github.ref_type == 'tag'
@@ -165,11 +203,21 @@ jobs:
           retention-days: 7
 
       - name: Publish
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' && steps.release_type.outputs.stable == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes \
+            dist/termenbox-server-x86_64-linux dist/termenbox-server-aarch64-linux \
+            dist/tmux-x86_64-linux dist/tmux-aarch64-linux dist/tmux-COPYING dist/tmux-libevent-LICENSE dist/tmux-ncurses-COPYING \
+            dist/manifest.json dist/manifest.json.sig
+
+      - name: Publish Beta
+        if: github.ref_type == 'tag' && steps.release_type.outputs.beta == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --prerelease \
             dist/termenbox-server-x86_64-linux dist/termenbox-server-aarch64-linux \
             dist/tmux-x86_64-linux dist/tmux-aarch64-linux dist/tmux-COPYING dist/tmux-libevent-LICENSE dist/tmux-ncurses-COPYING \
             dist/manifest.json dist/manifest.json.sig
