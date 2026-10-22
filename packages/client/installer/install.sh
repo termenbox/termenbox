@@ -1,26 +1,30 @@
 #!/bin/sh
-# Termenbox installer. Served by the client at /install.sh.
+# Termenbox installer. Served by the client at /i, with that client's address as the default below.
 #
-#   curl -fsSL https://app.termenbox.dev/install.sh | sh -s -- <claim secret> <client origin> [mode]
-#   curl -fsSL https://app.termenbox.dev/install.sh | sh -s -- - <client origin> [mode]      (no secret: just the pairing block)
+#   curl -fsSL https://app.termenbox.dev/i | sh                      this machine, as the user who runs it
+#   curl -fsSL https://app.termenbox.dev/i | sh -s -- <mode>         another place for sessions (see below)
 #
-# Every run ends with the same pairing block: a QR, the link it encodes and a short code (decision 0126).
+# One command for every topology: the host makes its own one-time claim and every run ends with the same pairing block,
+# a QR, the link it encodes and a short code (decisions 0126, 0127). Nothing secret is in the command.
 #
-# The optional last word picks where sessions run (DECISION-0058, 0075):
-#   (none)      an isolated Docker container (installs Docker if missing)
+# The optional word picks where sessions run (DECISION-0058, 0075):
+#   container   an isolated Docker container (installs Docker if missing)
 #   host-user   directly on this machine as a dedicated unprivileged user `termenbox`, as a systemd service
+#   (none)      host-me
 #   host-me     directly on this machine as the user who runs this command: sessions open on their behalf, in their
 #               home, with their repositories, keys and agent logins. No user is created. No root is needed: it is a
 #               user systemd service (decision 0113); what would need root is stated up front, not run.
 #   host        directly on this machine as root, as a systemd service
 # The host modes give the owner's browser a shell on the machine itself and need no Docker.
 #
-# It starts the server and hands it the claim secret. The UDP port is picked once, from the reserved range 4443-4542
+# It starts the server and prints the pairing block. The UDP port is picked once, from the reserved range 4443-4542
 # (DECISION-0118), and then stays: the server uses that port or stops with a message, it never moves to another. To
 # choose the port yourself, set TERMENBOX_UDP_PORT=<port> in front of `sh` (needed when the range has no free port;
 # an interactive run asks then). The installer says which port it is and how to open it. It asks nothing otherwise and
-# needs nothing afterwards: the server appears in Termenbox by itself. Safe to run again: a new secret re-claims the server (root on this host
-# already allows that).
+# needs nothing afterwards. Safe to run again: on an owned server it prints a link to add it to another browser.
+#
+# For tests and automation, TERMENBOX_CLAIM=<43-character secret> hands the server that claim secret, and
+# TERMENBOX_CLIENT_URL names a different client (a self-hosted client serves this file with its own address as the default).
 #
 # Host modes: every change is recorded in /var/lib/termenbox-root before it is made and can be undone with
 # `termenbox-server --revert`. The release is checked before anything is installed: its manifest must carry a valid
@@ -29,9 +33,9 @@
 # way, so no tmux has to be installed first and no package manager or root is needed for it. Docker keeps its own.
 set -eu
 
-SECRET="${1:--}"
-ORIGIN="${2:-${TERMENBOX_CLIENT_URL:-https://app.termenbox.dev}}"
-MODE="${3:-container}"
+SECRET="${TERMENBOX_CLAIM:--}"
+ORIGIN="${TERMENBOX_CLIENT_URL:-https://app.termenbox.dev}" # client-origin: the client build bakes its own address here
+MODE="${1:-host-me}"
 IMAGE="${TERMENBOX_IMAGE:-ghcr.io/termenbox/termenbox:latest}"
 NAME="${TERMENBOX_CONTAINER:-termenbox}"
 ROOT="${TERMENBOX_DATA:-/opt/termenbox}"
@@ -75,7 +79,7 @@ esac
 ORIGIN="${ORIGIN%/}"
 case "$MODE" in
   container|host|host-user|host-me) ;;
-  *) die "unknown mode \"$MODE\" (use host-me, host-user, host, or leave it out)" ;;
+  *) die "unknown mode \"$MODE\" (use host-me, host-user, host, container, or leave it out)" ;;
 esac
 if [ "$SECRET" != "-" ]; then
   case "$SECRET" in
@@ -113,7 +117,8 @@ else
     exec sudo env TERMENBOX_IMAGE="$IMAGE" TERMENBOX_CONTAINER="$NAME" TERMENBOX_DATA="$ROOT" \
       TERMENBOX_SKIP_FIREWALL="${TERMENBOX_SKIP_FIREWALL:-}" TERMENBOX_DRY_RUN="${TERMENBOX_DRY_RUN:-}" \
       TERMENBOX_FORCE="${TERMENBOX_FORCE:-}" TERMENBOX_UDP_PORT="${TERMENBOX_UDP_PORT:-}" TERMENBOX_RELEASE_URL="${TERMENBOX_RELEASE_URL:-}" TERMENBOX_RELEASE_KEYS="${TERMENBOX_RELEASE_KEYS:-}" \
-      sh -c "$(curl -fsSL "$ORIGIN/install.sh")" termenbox-install "$SECRET" "$ORIGIN" "$MODE"
+      TERMENBOX_CLAIM="$SECRET" TERMENBOX_CLIENT_URL="$ORIGIN" \
+      sh -c "$(curl -fsSL "$ORIGIN/i")" termenbox-install "$MODE"
   fi
 fi
 
@@ -346,10 +351,10 @@ install_container() {
     sleep 1
   done
 
-  # The secret shortcut still runs first; whatever it is, the same pairing block is printed after it (decision 0126).
+  # A claim handed in by a test or a script runs first; whatever it is, the same pairing block is printed after it (decision 0126).
   if [ "$SECRET" != "-" ]; then
     docker exec "$NAME" termenbox-server --claim "$SECRET" >/dev/null
-    say "Termenbox server started. It will appear in the app within a minute."
+    say "Termenbox server started with the claim you gave it."
   fi
   OUT="$(pairing_output docker exec "$NAME" termenbox-server --register --qr)"
   show_pairing "$OUT"
@@ -374,7 +379,7 @@ native_claim() {
   if [ "$SECRET" != "-" ]; then
     # shellcheck disable=SC2086
     $_run "$BIN" --claim "$SECRET" >/dev/null
-    say "Termenbox server started. It will appear in the app within a minute."
+    say "Termenbox server started with the claim you gave it."
   fi
   # shellcheck disable=SC2086
   OUT="$(pairing_output $_run "$BIN" --register --qr)"

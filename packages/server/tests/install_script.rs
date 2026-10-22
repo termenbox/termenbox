@@ -1,4 +1,4 @@
-//! The served installer ends every run with the pairing block (decision 0126), whatever the secret was and whether the
+//! The served installer ends every run with the pairing block (decision 0126), whatever claim a script handed in and whether the
 //! server is already owned. The container branch runs against stubbed host tools in a temporary directory, so nothing
 //! real is touched; the stubbed `termenbox-server` prints what the real one would.
 use std::os::unix::fs::PermissionsExt;
@@ -21,7 +21,7 @@ fn dir(name: &str) -> PathBuf {
     d
 }
 
-/// Runs the container install with `secret` and a stub server whose `--register` prints `register`; returns stdout and
+/// Runs the container install with the claim `secret` (`-` for none) and a stub server whose `--register` prints `register`; returns stdout and
 /// the log of `docker exec` calls.
 fn run(name: &str, secret: &str, register: &str) -> (String, String) {
     let d = dir(name);
@@ -43,10 +43,12 @@ fn run(name: &str, secret: &str, register: &str) -> (String, String) {
         &stubs.join("id"),
         "#!/bin/sh\ncase \"$1\" in -u) echo 0 ;; -un) echo root ;; *) exec /usr/bin/id \"$@\" ;; esac\n",
     );
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../client/public/install.sh");
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../client/installer/install.sh");
     let out = Command::new("sh")
         .arg(&script)
-        .args([secret, "https://app.test", "container"])
+        .arg("container")
+        .env("TERMENBOX_CLAIM", secret)
+        .env("TERMENBOX_CLIENT_URL", "https://app.test")
         .env("PATH", format!("{}:/usr/bin:/bin", stubs.display()))
         .env("TERMENBOX_DATA", d.join("data"))
         .env("TERMENBOX_UDP_PORT", "4443")
@@ -69,7 +71,7 @@ fn the_block_is_shown_after_a_secret_install() {
     let secret = "A".repeat(43);
     let (out, calls) = run("secret", &secret, &format!("QRART\n{LINK}\n"));
     assert!(out.contains(LINK) && out.contains("QRART"), "{out}");
-    // The shortcut still runs first.
+    // A claim handed in by a script still runs first.
     let claim = calls.find("--claim").expect("--claim ran");
     assert!(claim < calls.find("--register").expect("--register ran"));
 }

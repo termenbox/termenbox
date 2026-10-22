@@ -67,7 +67,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Check the installer script
-        run: for f in install uninstall; do sh -n packages/client/public/$f.sh && dash -n packages/client/public/$f.sh; done
+        run: for f in packages/client/installer/install.sh packages/client/public/uninstall.sh; do sh -n $f && dash -n $f; done
+
+      - name: Check the landing site (metadata, structured data, assets, the install command)
+        run: node scripts/check-site.mjs
 
       - run: pnpm --filter termenbox-client run build
 
@@ -283,7 +286,7 @@ jobs:
           docker run -d --name machine --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
             -v "$PWD/work/release:/release" -v "$PWD/work/release2:/release2" \
             -v "$PWD/work/release3:/release3" -v "$PWD/work/release4:/release4" \
-            -v "$PWD/packages/client/public/install.sh:/install.sh:ro" -v "$PWD/packages/client/public/uninstall.sh:/uninstall.sh:ro" \
+            -v "$PWD/packages/client/installer/install.sh:/install.sh:ro" -v "$PWD/packages/client/public/uninstall.sh:/uninstall.sh:ro" \
             -v "$PWD/work/keys.txt:/keys.txt:ro" -v "$PWD/.github/scripts/test-native-install.sh:/test.sh:ro" \
             -v "$PWD/.github/scripts/test-user-install.sh:/test-user.sh:ro" \
             ${{ matrix.image }}

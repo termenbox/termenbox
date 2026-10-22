@@ -37,9 +37,9 @@ Rungs 0, 1 and 4 need no new server transport. Rung 3 is deferred until a one-li
 
 ### Topologies covered
 
-Server: S1 public UDP-reachable, S2 public but UDP blocked, S3 port-forwardable, S4 CGNAT, S5 IPv6, S6 on an overlay, S7 no internet. Client: C1 remote, C2 same LAN, C3 restricted network, C4 on the overlay. Transient: roaming, sleep, server IP change, restart, stale directory, LAN to WAN switch.
+Server: S1 public UDP-reachable, S2 public but UDP blocked, S3 port-forwardable, S4 CGNAT, S5 IPv6, S6 on an overlay, S7 no internet, S8 inside a NAT'd VM (WSL2 NAT mode, VirtualBox NAT, Docker Desktop: the server advertises an address internal to the VM, so a LAN device cannot reach it until the VM is bridged or mirrored, or a port is forwarded; FACT-0053). Client: C1 remote, C2 same LAN, C3 restricted network, C4 on the overlay. Transient: roaming, sleep, server IP change, restart, stale directory, LAN to WAN switch.
 
-Not solvable without a relay or overlay: S4 or S7 with the client away from the server's network.
+Not solvable without a relay or overlay: S4 or S7 with the client away from the server's network. S8 is solved by the user's setup (WSL's `networkingMode=mirrored`, a bridged NIC, an overlay), not by a relay; the installer says so when it detects WSL.
 
 ## Why
 

@@ -49,3 +49,6 @@ The irreducible human step is pasting one client-generated command on the VPS. I
 
 ## Scope (0126)
 The installer now prints a pairing QR, link and code on every run. Printing is optional for the user: the paste path still needs no action on what is printed, and a LAN-only server is added by scanning it.
+
+## Scope (0127, 0128)
+The command no longer carries a secret (0056's "secret included" clause is replaced): it is bare, `curl -fsSL <client>/i | sh`, the same on every topology. The user finishes Connect by scanning the printed QR (one action, as in the Required Flow), or, with no camera, by pasting the printed link or, once the mailbox exists, typing the 8-character code. Pasting the link or typing the code is a fallback to the scan, not a second required step; it is the one place a value passes between terminal and browser, and the "copy-pasting tokens/URLs" prohibition above is relaxed to that fallback. The README stays the single entry with the copy-paste command; its reference sections live in `docs/guide/`.

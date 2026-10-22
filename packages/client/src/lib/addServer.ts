@@ -33,6 +33,7 @@ export type Cause =
   | 'link_expired'
   | 'bad_link'
   | 'udp_closed'
+  | 'announced_unreachable'
   | 'wrong_code'
   | 'code_burned';
 
@@ -153,6 +154,7 @@ export const DIAGNOSES: Record<Cause, Diagnosis> = {
   link_expired: D('link_expired', 'This link has expired.', 'Run the installer again', 'rerun_installer', 'A pairing link works for 15 minutes. Running the install command again prints a new one.'),
   bad_link: D('bad_link', 'That is not a valid Termenbox link.', 'Scan again', 'rescan', 'The link was cut off or altered, or it was not made by a Termenbox server. Copy the whole line from the terminal, or scan the QR.'),
   udp_closed: D('udp_closed', 'The server\'s UDP port is closed.', 'Copy firewall commands', 'copy_firewall', 'Direct connections need the server\'s UDP port open in its firewall and, behind a router, forwarded. The firewall commands for ufw and firewalld are in the port help.'),
+  announced_unreachable: D('announced_unreachable', 'Could not reach the address the server announced.', 'Use the link instead', 'edit_code', 'The server announced only its public address, which this network may not reach (a router without hairpin NAT, WSL behind Windows, a closed UDP port). The link or QR the installer printed also carries its local addresses and is tried first: paste it, or scan the QR. Run the install command again to print them again.'),
   wrong_code: D('wrong_code', 'That code is not right.', 'Check the code', 'edit_code', 'The code is the 8 characters printed under the QR, for example K7QM-4TXD. Letters can be lower case.'),
   code_burned: D('code_burned', 'This code can no longer be used.', 'Run the installer again', 'rerun_installer', 'A code stops working after too many wrong tries, after 15 minutes, or once it has been used. Running the install command again prints a new one.'),
 };

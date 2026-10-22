@@ -318,7 +318,7 @@ try {
     // The default is this machine as the current user (host-me); the command waits for consent, which is on the first screen.
     if (await page.locator('pre.command').count()) fail('a host-mode command was shown before consent');
     await page.getByTestId('consent').getByRole('checkbox').check();
-    if (!/sh -s -- \S{43} http\S+ host-me$/.test((await cmd()) ?? '')) fail(`the default command is not the host-me install: ${await cmd()}`);
+    if (!/^curl -fsSL http\S+\/i \| sh$/.test((await cmd()) ?? '')) fail(`the default command is not the bare host-me install: ${await cmd()}`);
     await page.getByTestId('install-options').locator('summary').click(); // the other run modes are folded under Options (decision 0127)
     if (!(await page.getByText('This gives your browser a shell on your server').isVisible())) fail('the host-mode warning is missing');
     await page.getByRole('radio', { name: /As a dedicated user/ }).check();
@@ -329,7 +329,7 @@ try {
     await page.getByTestId('consent').getByRole('checkbox').check();
     if (!/ host$/.test((await cmd()) ?? '')) fail(`the root command is wrong: ${await cmd()}`);
     await page.getByRole('radio', { name: /In an isolated container/ }).check();
-    if (!/sh -s -- \S{43} http\S+$/.test((await cmd()) ?? '') || / host(-user|-me)?$/.test((await cmd()) ?? '')) fail(`the container command is wrong: ${await cmd()}`);
+    if (!/ \| sh -s -- container$/.test((await cmd()) ?? '')) fail(`the container command is wrong: ${await cmd()}`);
     await page.getByRole('button', { name: 'Close', exact: true }).click();
 
     // Report a problem: shows scrubbed diagnostics and opens a prefilled issue on the project's repository.

@@ -3,13 +3,13 @@
 Plan for DECISION-0126, 0127, 0128, GUARDRAIL errors-fit-one-screen and pairing-code-guesses-are-bounded, tracker item R65.
 Read those five files and `docs/plans/roadmap/R62.md` first. Repo: Termenbox (Rust server in `packages/server`, shared types in `packages/core`, Svelte 5 client in `packages/client`). Work on a branch (never master), one squashed PR, commit subjects `type(scope): summary`. No compiler on this machine: use `scripts/dev.sh <cmd>` (DECISION-0114).
 
-Legend: `[ ]` pending, `[~]` in progress, `[x]` done, `[!]` blocked, `[>]` moved. Current state at writing: the default installer (`packages/client/public/install.sh`) prints no QR when given a secret; the QR comes from `sh -s -- -` via `termenbox-server --register --qr` (`packages/server/src/main.rs` `print_registration`, `auth::claim_qr`); `--print-pairing` (R62) prints a bundle link and QR separately; `packages/client/src/AddServerModal.svelte` has tabs Paste and Scan, with the scan buttons below the command.
+Legend: `[ ]` pending, `[~]` in progress, `[x]` done, `[!]` blocked, `[>]` moved. Current state at writing (the installer has since moved to `packages/client/installer/install.sh`, is served at `/i` and takes no secret; see Notes): the default installer (`packages/client/public/install.sh`) prints no QR when given a secret; the QR comes from `sh -s -- -` via `termenbox-server --register --qr` (`packages/server/src/main.rs` `print_registration`, `auth::claim_qr`); `--print-pairing` (R62) prints a bundle link and QR separately; `packages/client/src/AddServerModal.svelte` has tabs Paste and Scan, with the scan buttons below the command.
 
 ### 1.1 Spike the PAKE and iOS Local Network behaviour — [ ]
-Class: explore · Needs: none · Check: `test -f docs/facts/0052-pairing-code-pake-and-ios-local-network-spike.md`
-Context: DECISION-0128 requires a PAKE (CPace or similar) so a short code can authenticate a LAN server; it expires if none fits. R62 step 1 (the physical-device spike) is still pending and decides whether an HTTPS page can reach an RFC1918 address on iOS. Rust crates and a TypeScript implementation are both needed because the client is a browser.
-Do: Find a PAKE with a maintained Rust crate and a browser-usable implementation (or WASM from `packages/core`) that runs within the 512 MB / 1 vCPU limit. On a physical iPhone (Safari and PWA) and an Android phone, open the hosted client and reach a LAN server over WebSocket and WebRTC; note the Local Network permission prompt and what the page sees when it is denied. Write the findings as `docs/facts/0052-pairing-code-pake-and-ios-local-network-spike.md` (next free fact number; add the row to `docs/facts/INDEX.md`). If no PAKE fits, set decision 0128 `status: deprecated` and mark steps 2.3, 3.4 and 3.5 `[>]` dropped.
-Done-when: the fact file exists with the chosen PAKE (or the no-fit verdict) and iPhone and Android results labelled by platform.
+Class: explore · Needs: none · Check: `grep -q 'iPhone' docs/facts/0052-pairing-code-pake-and-ios-local-network-spike.md`
+Context: DECISION-0128 needs a PAKE for the claim proof and a stretch for the mailbox key. **The PAKE half is done** (FACT-0052, 2026-10-22): CPace over ristretto255 fits in Rust (`curve25519-dalek` is already in the tree) and in TypeScript (`@noble/curves`, about 14 kB gzip, no WASM; the client CSP has no `wasm-unsafe-eval`); a handshake costs 0.31 ms in Rust and about 2.4 ms per scalar multiplication in Node. What remains needs physical devices, which also decide R62 step 1.
+Do: On a real iPhone (Safari and the installed PWA) and an Android phone, open the hosted client and reach a LAN server over WebSocket and WebRTC; note the Local Network permission prompt and what the page sees when it is denied. Time the stretch (Argon2id or scrypt, pure JS) on the slowest phone and set the parameter (about 100 to 300 ms). Check whether `crypto.subtle` verifies Ed25519 on iOS 16.4 (the floor, decision 0112); if not, `lib/bundle.ts` needs the noble fallback. Add the results, labelled by platform, to FACT-0052 and set it `active`. Procedure: `docs/skills/walk-the-add-server-paths.md`, section "Connectivity spike".
+Done-when: FACT-0052 holds iPhone and Android results labelled by platform, the stretch parameter, and the Ed25519 check.
 
 ### 1.2 One pairing output in the server — [x]
 Class: implement · Needs: none · Check: `scripts/dev.sh cargo test -p termenbox-server pairing`
@@ -35,11 +35,17 @@ Context: DECISION-0127 and GUARDRAIL errors-fit-one-screen. Replace the tabs in 
 Do: Build step components: Install (one command, Copy, "Options" fold holding name and run mode), Connect (live checklist, inline "Scan it" with the camera at the top using `lib/scan.ts`, paste-link field, code field, per-address results in a fold), Confirm (the 0117 preview and name), Done (active path and plain fix). Show one step at a time with a step indicator. Failures use 2.1's cause and action, details folded, working WebSocket fallback as a notice. Make `PortHelp` a folded detail.
 Done-when: the e2e walks Install to Done on loopback LAN pairing, and the scan button and camera are in the first viewport at 375x667.
 
-### 2.3 Short code server endpoint — [ ]
-Class: implement · Needs: 1.1, 1.2 · Check: `scripts/dev.sh cargo test -p termenbox-server pairing_code`
-Context: DECISION-0128 and GUARDRAIL pairing-code-guesses-are-bounded. Control endpoints stay on 127.0.0.1 (GUARDRAIL internal-network-binding); this endpoint is the one public-LAN surface and must stay minimal. FACT-0021 gives the half-open cap.
-Do: Generate the 8-character base32 code with the claim, print it in the pairing block, and implement the PAKE exchange chosen in 1.1 on the existing server port, answering only RFC1918, ULA and link-local sources. Enforce expiry, single use, per-source backoff, the 20-failure burn and the reply-size rule. Add every test in the guardrail's table including a fuzz target.
-Done-when: all six guardrail tests exist and pass, and the code never appears in a log (GUARDRAIL security-secrets-handling).
+### 2.3 Short code on the server: the PAKE endpoint — [ ]
+Class: implement · Needs: 1.1 (PAKE choice; done), 1.2 · Check: `scripts/dev.sh cargo test -p termenbox-server pairing_code`
+Context: DECISION-0128 and GUARDRAIL pairing-code-guesses-are-bounded. Control endpoints stay on 127.0.0.1 (GUARDRAIL internal-network-binding); this endpoint is the one unauthenticated surface on the server's port and must stay minimal. FACT-0021 gives the half-open cap. FACT-0052 says the PAKE libraries give a key, not authentication.
+Do: Generate the 8-character base32 code with the claim, print it with the short fingerprint in the pairing block, and implement CPace (the current CFRG draft, with the draft's test vectors shared by Rust and TypeScript) plus key confirmation on the existing server port, with the DTLS fingerprint in the associated data. Enforce expiry, single use, per-source backoff, the 20-failure burn and the reply-size rule. Add every test in the guardrail's table that applies to the server, including a fuzz target.
+Done-when: those tests exist and pass, and the code never appears in a log (GUARDRAIL security-secrets-handling).
+
+### 2.5 The pairing mailbox — [ ]
+Class: implement · Needs: 2.3 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && pnpm test'`
+Context: DECISION-0128 and FACT-0022 (capacity). Writes go through one Pages Function; reads are public R2 GETs on a custom domain and run no Worker. `infra/termenbox-cloud` is Terraform.
+Do: Add the upload route (server-key signature, per-key limit, atomic D1 daily counter, delete on claim), the R2 bucket, its custom domain and a one-day lifecycle rule to Terraform (check the cloudflare provider version supports the R2 custom domain; the zone and token must allow it); on the server, upload the encrypted bundle after start and on a claim change, never with `TERMENBOX_LAN_ONLY=1`. Add the guardrail tests for the mailbox (`mailbox_write_needs_server_signature`, `misses_are_indistinguishable`, `mailbox_object_is_ciphertext`).
+Done-when: those tests pass, the plan output for the Terraform change is attached to the PR, and the daily cap refuses writes while the installer still prints the link and QR.
 
 ### 2.4 Scan QR outside the wizard — [x]
 Class: implement · Needs: 2.2 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test'`
@@ -48,10 +54,10 @@ Do: Add a Scan QR button to the server list and header that opens the camera ful
 Done-when: a test shows a scanned pairing link reaches Confirm with no Install or Connect step, and the button is visible without scrolling at 375x667.
 
 ### 3.1 Short-code client path — [ ]
-Class: implement · Needs: 2.2, 2.3 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test'`
-Context: the client has no PAKE yet; step 1.1 chose one.
-Do: Implement the client side of the PAKE, the code field in Connect (with the `XXXX-XXXX` format, case-insensitive), the guess of candidate LAN addresses (the device's own subnets, capped and staggered as in 0123), and the "wrong code / code burned, re-run the installer" messages.
-Done-when: tests show a right code reaches Confirm, a wrong code shows one action, and a burned code says to re-run the installer.
+Class: implement · Needs: 2.2, 2.3, 2.5 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test'`
+Context: the client has no PAKE yet; step 1.1 chose CPace. A typed code is a mailbox lookup (DECISION-0128), not a LAN guess.
+Do: Implement the stretch, the mailbox fetch and decrypt, bundle verification and expiry check, the CPace claim proof with key confirmation, the code field in Connect (the `XXXX-XXXX` format, case-insensitive), Confirm showing the server name and the fingerprint to compare, and the "wrong code / code burned, re-run the installer" messages.
+Done-when: tests show a right code reaches Confirm, a wrong code shows one action, a burned code says to re-run the installer, and an unequal fingerprint is refused.
 
 ### 3.2 Error-fit tests — [x]
 Class: implement · Needs: 2.2, 2.4 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && node e2e/run.mjs'`
@@ -80,3 +86,9 @@ Deviations:
 - `AddServerModal` has no vitest mount test: vitest here resolves Svelte's server build, so the Scan QR path is covered by `e2e/wizard.mjs` with a fake camera.
 
 Not done: 1.1 (PAKE and iOS spike, needs physical devices), 2.3 and 3.1 (wait on 1.1; the code field is not in Connect yet), 4.1 (real iPhone, Android and desktop walk), 4.2.
+
+Updated 2026-10-22 (branch `feat/server-version`):
+- Done: the bare command `curl -fsSL <client>/i | sh` (default this machine as the current user; one mode word for the others), the client build baking its address into `/i`, no secret in the command (`scanCommand` removed; the installer takes a claim only from `TERMENBOX_CLAIM`), an unclaimed server no longer re-announcing every 5 minutes, the Connect lead and "Nothing yet?" hint, the `announced_unreachable` failure, `--version`.
+- Re-planned: 2.3 and 3.1 follow the mailbox design of the rewritten 0128; 2.5 is new. 1.1 is half done (FACT-0052).
+- Without the mailbox, Connect finishes only by scan or pasted link; there is no automatic detection and no code field until 2.5 and 3.1 land.
+- Not done: 1.1 (phones), 2.3, 2.5, 3.1, 4.1, 4.2.

@@ -61,7 +61,7 @@ use sessions::SessionManager;
 use websocket::handle_websocket;
 
 #[derive(Parser, Debug)]
-#[command(name = "termenbox-server")]
+#[command(name = "termenbox-server", version)]
 struct Args {
     #[arg(long, env = "TERMENBOX_HOST", default_value = "0.0.0.0")]
     host: String,

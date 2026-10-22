@@ -56,4 +56,4 @@ notifications-carry-no-agent-text,"A notification or push payload never carries 
 ux-acceptance-targets,"Every UX screen meets the acceptance targets for taps, glanceability, speed and device checks","client, mobile, ux",active
 a-phone-check-names-its-platform,"A phone check names the platform it ran on, and an emulator is never reported as a phone","client, mobile, android",active
 | errors-fit-one-screen | An error state fits one phone screen with one cause and one action | 0127 | ux-acceptance-targets,connections-warn-never-drop | active |
-| pairing-code-guesses-are-bounded | Guesses of the short pairing code are rate-limited, burned and answered only to private sources | 0128 | 0021,0117,0123 | active |
+| pairing-code-guesses-are-bounded | The short pairing code is stretched and short-lived, and its guesses are budgeted | 0128 | 0021,0022,0117,0123 | active |

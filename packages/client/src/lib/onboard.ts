@@ -1,6 +1,6 @@
-// Add Server (DECISION-0056): the user's only job is to get a claim secret onto the VPS, by pasting one
-// command (flow A) or scanning a QR the installer shows (flow B). Everything after that is automatic:
-// the server announces itself to the directory with a proof that it knows the secret.
+// Add Server (DECISION-0056, 0126, 0127): the user's only job is to run one command on the server. It prints a QR, a
+// link and a code (the link carries the one-time claim and the signed addresses); scanning or pasting the link finishes
+// Connect. A claim secret that arrives alone (an older link) is still waited for in the directory.
 import { pending, type DirRecord } from './directory';
 import type { ClientMessage, ServerMessage } from './protocol';
 import { openTransport, Unreachable, type Target, type Transport } from './transport';
@@ -9,21 +9,15 @@ import { openTransport, Unreachable, type Target, type Transport } from './trans
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
 
 /**
- * Where sessions run (DECISION-0058, 0075). The installer takes it as a last word: none for the isolated container,
+ * Where sessions run (DECISION-0058, 0075). The installer takes it as a word after `sh -s --`: none for `host-me`, `container` for the isolated container,
  * `host-user` for this machine as a dedicated unprivileged user, `host-me` as the user who runs the
  * installer (sessions open on their behalf, in their home), `host` for this machine as root.
  */
 export type RunChoice = 'container' | 'host-user' | 'host-me' | 'host';
 
-const modeWord = (mode: RunChoice) => (mode === 'container' ? '' : ` ${mode}`);
-
-export function installCommand(origin: string, secret: string, mode: RunChoice = 'container'): string {
-  return `curl -fsSL ${origin}/install.sh | sh -s -- ${secret} ${origin}${modeWord(mode)}`;
-}
-
-/** The command for the QR flow: the installer shows a QR instead of taking a secret (`-`). */
-export function scanCommand(origin: string, mode: RunChoice = 'container'): string {
-  return mode === 'container' ? `curl -fsSL ${origin}/install.sh | sh` : `curl -fsSL ${origin}/install.sh | sh -s -- - ${origin}${modeWord(mode)}`;
+/** The command to run on the server: one line, no secret, the same on every network (decisions 0126, 0127). */
+export function installCommand(origin: string, mode: RunChoice = 'host-me'): string {
+  return `curl -fsSL ${origin}/i | sh${mode === 'host-me' ? '' : ` -s -- ${mode}`}`;
 }
 
 /** The text the installer's QR encodes: opening it in any camera app starts Add Server in the client. */

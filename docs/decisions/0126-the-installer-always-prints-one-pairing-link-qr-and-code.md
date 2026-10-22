@@ -12,7 +12,7 @@ date: 2026-10-22
 
 Refines 0117, 0123 and 0056.
 
-- The installer ends every run, first install and re-run, with the same block: a terminal **QR**, the **link** it encodes, and a short **code** (0128). The command with an embedded secret stays as the shortcut for a server that can announce itself; it no longer decides whether anything is printed.
+- The installer ends every run, first install and re-run, with the same block: a terminal **QR**, the **link** it encodes, and a short **code** (0128). The command carries no secret (0127): the host mints the claim, and the block is how the browser learns of the server. A server no longer re-announces itself to the directory every 5 minutes while unclaimed; it announces once and then on change or every 7 days.
 - The link is `https://<client>/#/pair/<payload>`. The payload holds the one-time claim token and the signed candidate bundle (`lan`, `wan4`, `wan6`, …). One scan finds the server and authorises the claim, with or without internet or directory. The fragment never reaches a host.
 - The claim rules of 0117 are unchanged: 15 minutes, previewed first, consumed only on confirm.
 - Re-running the installer on an owned server prints a re-add link with the bundle and no claim token.
@@ -27,5 +27,6 @@ Not chosen: printing the QR only when no public path exists. It adds a second be
 ## Consequences
 
 - Extends `--register` and `--print-pairing` to one output; the installer prints it for container and native modes.
+- The installer takes the claim only from `TERMENBOX_CLAIM` (tests and automation), not from the command line.
 - Amends the scope note in `bootstrap-simplicity`: printed output is optional for the paste path.
 - Plan: R65.

@@ -11,7 +11,7 @@ confirmed issues within 90 days and publish an advisory when the fix ships; plea
 ## Scope
 
 In scope: `termenbox-server`, the hosted client and its Pages Functions (`app.termenbox.dev`), the installer
-(`install.sh`) and the published container images.
+(`/i`) and the published container images.
 
 Out of scope: findings that need a rooted device or an already-compromised server owner account, denial of service by
 sheer traffic volume, and issues in third-party services (GitHub, Cloudflare).

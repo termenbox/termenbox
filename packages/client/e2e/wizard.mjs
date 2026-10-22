@@ -124,6 +124,8 @@ check((await page.getByText('Where should sessions run?').isVisible()) === false
 await page.getByTestId('install-next').click();
 check(await inView(page.getByTestId('scan-it')), 'Connect: the scan button is in the first viewport');
 check((await page.getByTestId('checklist').innerText()).includes('Looking for the server'), 'Connect: the checklist is shown');
+check((await page.getByTestId('connect-lead').innerText()).includes('Scan the QR or paste the link'), 'Connect: says what to do with what the installer printed');
+check((await page.getByTestId('connect-hint').count()) === 0, 'Connect: no "nothing yet" hint before anything was read');
 await page.getByTestId('scan-it').click();
 await page.getByTestId('scan-video').waitFor({ state: 'visible' });
 check(await inView(page.getByTestId('scan-video')) || (await page.getByTestId('scan-video').boundingBox()).y < 400, 'Connect: the camera opens in place at the top');

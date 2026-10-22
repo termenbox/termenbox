@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { installCommand, scanCommand, claimLink, parseClaim, parseServerLink, serverCode, serverLink, pollDelay, waitForServer, previewClaim, checkReachable, firewallCommands, ClaimTimeout, CLAIM_WINDOW_MS, type WaitDeps } from './onboard';
+import { installCommand, claimLink, parseClaim, parseServerLink, serverCode, serverLink, pollDelay, waitForServer, previewClaim, checkReachable, firewallCommands, ClaimTimeout, CLAIM_WINDOW_MS, type WaitDeps } from './onboard';
 import type { DirRecord } from './directory';
 import { Unreachable, type Transport } from './transport';
 
@@ -7,8 +7,10 @@ const S = 'A'.repeat(43);
 const rec = { server_id: 'K'.repeat(43) } as DirRecord;
 
 describe('claim text', () => {
-  it('builds one command that carries the secret and the origin', () => {
-    expect(installCommand('https://app.example.dev', S)).toBe(`curl -fsSL https://app.example.dev/install.sh | sh -s -- ${S} https://app.example.dev`);
+  it('builds one bare command: the client address and no secret', () => {
+    const cmd = installCommand('https://app.example.dev');
+    expect(cmd).toBe('curl -fsSL https://app.example.dev/i | sh');
+    expect(cmd).not.toMatch(/[A-Za-z0-9_-]{43}/);
   });
 
   it('round-trips through a link the phone camera can open', () => {
@@ -98,20 +100,14 @@ describe('parseServerLink', () => {
   });
 });
 
-describe('run choice in the install commands', () => {
+describe('run choice in the install command', () => {
   const O = 'https://app.example.dev';
-  it('adds the mode word only for the host modes', () => {
-    expect(installCommand(O, S)).toBe(`curl -fsSL ${O}/install.sh | sh -s -- ${S} ${O}`);
-    expect(installCommand(O, S, 'container')).toBe(installCommand(O, S));
-    expect(installCommand(O, S, 'host-me')).toBe(`curl -fsSL ${O}/install.sh | sh -s -- ${S} ${O} host-me`);
-    expect(installCommand(O, S, 'host-user')).toBe(`curl -fsSL ${O}/install.sh | sh -s -- ${S} ${O} host-user`);
-    expect(installCommand(O, S, 'host')).toBe(`curl -fsSL ${O}/install.sh | sh -s -- ${S} ${O} host`);
-  });
-
-  it('keeps the QR command short for the container and passes - for the host modes', () => {
-    expect(scanCommand(O)).toBe(`curl -fsSL ${O}/install.sh | sh`);
-    expect(scanCommand(O, 'host-user')).toBe(`curl -fsSL ${O}/install.sh | sh -s -- - ${O} host-user`);
-    expect(scanCommand(O, 'host')).toBe(`curl -fsSL ${O}/install.sh | sh -s -- - ${O} host`);
+  it('is bare for this machine as the current user and adds a mode word for the others', () => {
+    expect(installCommand(O)).toBe(`curl -fsSL ${O}/i | sh`);
+    expect(installCommand(O, 'host-me')).toBe(installCommand(O));
+    expect(installCommand(O, 'container')).toBe(`curl -fsSL ${O}/i | sh -s -- container`);
+    expect(installCommand(O, 'host-user')).toBe(`curl -fsSL ${O}/i | sh -s -- host-user`);
+    expect(installCommand(O, 'host')).toBe(`curl -fsSL ${O}/i | sh -s -- host`);
   });
 });
 

@@ -23,11 +23,11 @@ before="$(snapshot)"
 ! command -v tmux >/dev/null 2>&1 || fail "this test needs a machine with no tmux (the install must bring one, decision 0119)"
 
 echo "== a dry run changes nothing"
-TERMENBOX_DRY_RUN=1 sh /install.sh "$SECRET" "$ORIGIN" "$MODE"
+TERMENBOX_DRY_RUN=1 TERMENBOX_CLAIM="$SECRET" TERMENBOX_CLIENT_URL="$ORIGIN" sh /install.sh "$MODE"
 [ "$(snapshot)" = "$before" ] || fail "the dry run changed the machine"
 
 echo "== install"
-sh /install.sh "$SECRET" "$ORIGIN" "$MODE"
+TERMENBOX_CLAIM="$SECRET" TERMENBOX_CLIENT_URL="$ORIGIN" sh /install.sh "$MODE"
 systemctl is-active --quiet termenbox || fail "the service is not active"
 port="$(sed -n 's/^Environment=TERMENBOX_PORT=//p' /etc/systemd/system/termenbox.service)"
 curl -fs "http://127.0.0.1:$port/health" >/dev/null || fail "the server does not answer on its health port"
@@ -58,7 +58,7 @@ termenbox-server --journal-list | grep -q file_created || fail "the journal has 
 
 echo "== installing again changes nothing"
 entries="$(termenbox-server --journal-list | wc -l)"
-sh /install.sh "$SECRET" "$ORIGIN" "$MODE"
+TERMENBOX_CLAIM="$SECRET" TERMENBOX_CLIENT_URL="$ORIGIN" sh /install.sh "$MODE"
 [ "$(termenbox-server --journal-list | wc -l)" = "$entries" ] || fail "a second install wrote more journal entries"
 systemctl is-active --quiet termenbox || fail "the service stopped"
 
@@ -121,7 +121,7 @@ done
 echo "== a changed release is refused"
 cp /release/manifest.json /tmp/manifest.good
 echo " " >> /release/manifest.json 2>/dev/null || true
-if TERMENBOX_FORCE=1 sh /install.sh "$SECRET" "$ORIGIN" "$MODE" >/tmp/refused.txt 2>&1; then
+if TERMENBOX_FORCE=1 TERMENBOX_CLAIM="$SECRET" TERMENBOX_CLIENT_URL="$ORIGIN" sh /install.sh "$MODE" >/tmp/refused.txt 2>&1; then
   cp /tmp/manifest.good /release/manifest.json 2>/dev/null || true
   fail "a release with a broken signature was installed"
 fi
