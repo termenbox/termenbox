@@ -30,6 +30,8 @@ Numbers are from one local run in the dev container (tmux 3.3a, Chrome with the 
 | 8 | Two sessions, two windows, a rename | A capture of another session or window never contains the token. A name target (`=s2:`) fails after `rename-session`; a pane id (`%n`) still resolves. |
 | 9 | `history-limit 20000`, 25000 lines of about 50 characters in a 44-column pane | 19976 history rows held. The limit counts rows, so wrapped lines use two and about 10000 logical lines remain. Snapshot 0.53 MB (26 KB gzip), capture 30 ms, page search 9 ms. tmux RSS 4.7 to 8.4 MB, server RSS 11 MB. The first retained line can start mid-line. Browser heap growth was not measurable (below the granularity of `performance.memory`). |
 
+CI evidence (PR #279, `e2e` job, GitHub runner, `search.mjs` step): scenarios 2 to 9 passed with the same results. Snapshot capture 9 ms (2005 lines), page search 0.3 ms, copy-mode search reached `TOK-1500`, the 20000-row case captured in 18 ms and searched in 2 ms, tmux RSS 6.7 to 21.8 MB. The first CI run failed only scenario 1's read of the browser rows (they were read before xterm painted); the experiment now waits for the paint.
+
 ## Options
 
 | | A. Bounded tmux history snapshot, searched in the browser | B. tmux copy-mode search | C. Current-screen-only Find |

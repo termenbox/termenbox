@@ -145,6 +145,7 @@ try {
   await run(`printf 'TOK-%04d\\n' $(seq 1 ${N})`, 'printed');
   await sleep(500);
   const m1 = meta();
+  await waitFor(async () => tokens(await screen()).includes(N), `the browser to paint TOK-${N}`, 20000);
   const shown = await screen();
   const seen = tokens(shown);
   R.viewport = { rowsInDom: shown.length, tokenRange: [Math.min(...seen), Math.max(...seen)], tmuxRows: m1.rows, tmuxCols: m1.cols };
