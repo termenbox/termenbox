@@ -55,6 +55,7 @@ The directory, mailbox, STUN, relay and LAN are untrusted. Signaling messages ar
 - Replaces the `termenbox://` link in the first draft: a custom scheme cannot be registered from a web manifest and does not work on iOS Safari (to confirm in the spike).
 - The R33 tunnel carries WebSocket over a provider's TLS; it needs the inner end-to-end handshake before it can claim 0057's "no tunnel provider can read the traffic".
 - Plan: R62.
+- 0126 extends the pairing link: its payload also carries the one-time claim token, and the installer prints it on every run.
 
 ## Open risks
 

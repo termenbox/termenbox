@@ -3,6 +3,8 @@
   import { Dialog } from './lib/ui';
   import { describeCandidates, pairedServer, previewPair, type PairLink, type PairResult } from './lib/pair';
   import type { ServerListItem } from './lib/protocol';
+  import { DIAGNOSES } from './lib/addServer';
+  import Failure from './addserver/Failure.svelte';
 
   /** A pairing link from `termenbox-server --print-pairing` (decision 0123). */
   export let link: PairLink;
@@ -26,16 +28,8 @@
   {#if !result}
     <p class="note">Checking the link…</p>
   {:else if !result.ok}
-    <div class="bad" role="alert" data-testid="pair-invalid">
-      <strong>Invalid link</strong>
-      <p>
-        {#if result.reason === 'expired'}
-          This pairing link has expired. Run <code>termenbox-server --print-pairing</code> on the server for a new one.
-        {:else}
-          This pairing link did not verify: it is damaged, cut short or was changed on the way. Nothing was added. Run <code>termenbox-server --print-pairing</code> on the server and scan or open the new link.
-        {/if}
-      </p>
-      <button on:click={onclose} style="width: 100%;">Close</button>
+    <div data-testid="pair-invalid">
+      <Failure diagnosis={{ ...DIAGNOSES[result.reason === 'expired' ? 'link_expired' : 'bad_link'], action: { id: 'retry', label: 'Close' } }} onaction={onclose} />
     </div>
   {:else}
     <div class="preview" role="group" aria-label="What you are pairing" data-testid="pair-preview">

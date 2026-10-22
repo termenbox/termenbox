@@ -133,6 +133,8 @@ jobs:
           node e2e/hookoffer.mjs
           node e2e/add-server.mjs
           node e2e/pair.mjs
+          node e2e/failures.mjs
+          node e2e/wizard.mjs
   # The native host mode (decision 0075) ships one static musl binary per architecture: no glibc, no OpenSSL,
   # nothing to install. Build both on the native runners and fail if anything is linked dynamically.
   static:

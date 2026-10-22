@@ -519,6 +519,17 @@ fn build_backend(
 
 fn print_registration(args: &Args, auth: &AuthState) -> anyhow::Result<()> {
     use std::io::IsTerminal;
+    // The same block as --print-pairing. Before the first start there is no port to sign, so fall back to the bare links.
+    if let Ok(block) = pairing_block(args, auth) {
+        if let Some(owner) = auth.owner() {
+            println!("This server is registered to @{}.", owner.login);
+        }
+        print!(
+            "{}",
+            block.render(args.qr || std::io::stdout().is_terminal())
+        );
+        return Ok(());
+    }
     if let Some(owner) = auth.owner() {
         println!("This server is registered to @{}.", owner.login);
         // A browser that forgot the server (removed it, or a new device) can add it again by id: no secret needed.
@@ -1046,11 +1057,10 @@ async fn shutdown_signal() {
     }
 }
 
-/// `--print-pairing`: the signed candidate bundle as a link and QR, for a phone that has no directory path to this
-/// server (LAN-only, offline, or behind a NAT with no relay). An unclaimed server adds its claim token, so the same
-/// link also claims it (decision 0117's preview still comes first).
-fn print_pairing(args: &Args, auth: &AuthState) -> anyhow::Result<()> {
-    use std::io::IsTerminal;
+/// The pairing block (decision 0126): the signed candidate bundle as a link, QR and (later) a short code. An unclaimed
+/// server adds its claim token, so the same link also claims it (decision 0117's preview still comes first); an owned
+/// server prints a re-add link with the bundle and no claim. Needs the server to have started once, for its port.
+fn pairing_block(args: &Args, auth: &AuthState) -> anyhow::Result<candidates::PairingBlock> {
     let port = saved_udp_port(&args.config_dir).ok_or_else(|| {
         anyhow::anyhow!("this server has not started yet; start it once, then run --print-pairing")
     })?;
@@ -1065,18 +1075,28 @@ fn print_pairing(args: &Args, auth: &AuthState) -> anyhow::Result<()> {
         args.lan_addrs.as_deref(),
         args.lan_only,
     )?;
-    let claim = auth.claim_token()?;
-    let link = candidates::pairing_link(&args.client_url, &wire, claim.as_deref());
-    if args.qr || std::io::stdout().is_terminal() {
-        if let Some(qr) = auth::claim_qr(&link) {
-            println!("{qr}");
-        }
-    }
-    println!("Scan the code with your phone's camera, or open:\n\n  {link}\n");
-    println!("The link carries this server's name, key fingerprint and addresses, signed by the server; the app shows them before it connects.");
-    if claim.is_some() {
-        println!("It also claims the server for the first user who confirms (15 minutes, once).");
-    }
+    let claim = if auth.owner().is_some() {
+        None
+    } else {
+        auth.claim_token()?
+    };
+    Ok(candidates::PairingBlock::new(
+        &args.client_url,
+        &wire,
+        claim.as_deref(),
+        None,
+    ))
+}
+
+/// `--print-pairing`: for a phone that has no directory path to this server (LAN-only, offline, or behind a NAT with no
+/// relay), and what `--register` prints too.
+fn print_pairing(args: &Args, auth: &AuthState) -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+    let block = pairing_block(args, auth)?;
+    print!(
+        "{}",
+        block.render(args.qr || std::io::stdout().is_terminal())
+    );
     Ok(())
 }
 

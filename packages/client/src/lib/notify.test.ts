@@ -1,5 +1,5 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { announce, bannerChoices, bannerText, titleFor, waitingList, startAnnounce, startBrowserNotifications } from './notify';
+import { describe, expect, it, vi } from 'vitest';
+import { announce, attentionIcon, bannerChoices, bannerText, createAttention, createNotifier, titleFor, waitingList } from './notify';
 import type { AgentMap, SessionAgent } from './agents';
 
 const ag = (patch: Partial<SessionAgent>): SessionAgent => ({ state: 'needs_input', seq: 1, stale: false, ts: 1000, ...patch });
@@ -36,170 +36,96 @@ describe('needs-you signals', () => {
   });
 });
 
-describe('startAnnounce', () => {
-  let doc: Document;
-  let nav: { setAppBadge?: (n?: number) => Promise<void>; clearAppBadge?: () => Promise<void> };
-  let originalSetInterval: typeof setInterval;
-  let originalClearInterval: typeof clearInterval;
-  let timers: Map<number, ReturnType<typeof setInterval>> = new Map();
-  let timerId = 0;
+describe('attention while the tab is hidden', () => {
+  const page = () => ({ title: 'Termenbox', icon: { href: 'https://x.test/favicon.svg?v=3' } });
 
-  beforeEach(() => {
-    // Mock document
-    const faviconLink = document.createElement('link');
-    faviconLink.rel = 'icon';
-    faviconLink.href = '/favicon.svg';
-    document.head.appendChild(faviconLink);
-    doc = document;
-    nav = { setAppBadge: vi.fn(async () => {}), clearAppBadge: vi.fn(async () => {}) };
-
-    // Mock timers
-    originalSetInterval = global.setInterval;
-    originalClearInterval = global.clearInterval;
-    global.setInterval = vi.fn((fn, delay) => {
-      const id = ++timerId;
-      timers.set(id, originalSetInterval(fn, delay));
-      return id as unknown as ReturnType<typeof setInterval>;
-    });
-    global.clearInterval = vi.fn((id) => {
-      const timer = timers.get(id as number);
-      if (timer) originalClearInterval(timer);
-      timers.delete(id as number);
-    }) as typeof clearInterval;
+  it('maps the favicon to its attention twin and leaves other names alone', () => {
+    expect(attentionIcon('/favicon.svg')).toBe('/favicon-attention.svg');
+    expect(attentionIcon('https://x.test/favicon.svg?v=3')).toBe('https://x.test/favicon-attention.svg?v=3');
+    expect(attentionIcon('/other.png')).toBe('/other.png');
   });
 
-  afterEach(() => {
-    global.setInterval = originalSetInterval;
-    global.clearInterval = originalClearInterval;
-    timers.clear();
-    timerId = 0;
-    const faviconLink = document.querySelector('link[rel="icon"]');
-    if (faviconLink) faviconLink.remove();
+  it('flashes only while hidden, and holds still while the page is visible', () => {
+    vi.useFakeTimers();
+    const p = page();
+    const a = createAttention(p, 1000);
+    a.update(2, false);
+    expect(p.title).toBe('(2) Termenbox');
+    vi.advanceTimersByTime(3000);
+    expect(p.title).toBe('(2) Termenbox');
+    a.update(2, true);
+    expect(p.icon.href).toContain('favicon-attention.svg');
+    vi.advanceTimersByTime(1000);
+    expect(p.title).toBe('Termenbox');
+    expect(p.icon.href).toBe('https://x.test/favicon.svg?v=3');
+    vi.advanceTimersByTime(1000);
+    expect(p.title).toBe('(2) Termenbox');
+    a.stop();
+    vi.useRealTimers();
   });
 
-  it('flashes title and favicon when count > 0', () => {
-    const handle = startAnnounce(2, doc, nav);
-    // Initial call should set attention title
-    expect(doc.title).toBe('(2) Termenbox');
-    expect(nav.setAppBadge).toHaveBeenCalledWith(2);
-    // Favicon should be attention version initially
-    const faviconLink = doc.querySelector('link[rel="icon"]') as HTMLLinkElement;
-    expect(faviconLink?.href).toContain('favicon-attention.svg');
-    // Simulate timer tick (flash to normal)
-    const timerFn = (global.setInterval as vi.Mock).mock.calls[0]?.[0];
-    if (timerFn) timerFn();
-    // Should flash to normal title
-    expect(doc.title).toBe('Termenbox');
-    handle.stop();
+  it('restores the page and stops the timer when nothing needs you', () => {
+    vi.useFakeTimers();
+    const p = page();
+    const a = createAttention(p, 1000);
+    a.update(1, true);
+    a.update(0, true);
+    expect(p.title).toBe('Termenbox');
+    expect(p.icon.href).toBe('https://x.test/favicon.svg?v=3');
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
   });
 
-  it('stops flashing and restores original state on stop', () => {
-    doc.title = 'Termenbox'; // Set initial title
-    const handle = startAnnounce(2, doc, nav);
-    handle.stop();
-    expect(doc.title).toBe('Termenbox');
-    expect(nav.clearAppBadge).toHaveBeenCalled();
-    const faviconLink = doc.querySelector('link[rel="icon"]') as HTMLLinkElement;
-    expect(faviconLink?.href).toContain('favicon.svg');
-  });
-
-  it('does not flash when count is 0', () => {
-    const handle = startAnnounce(0, doc, nav);
-    expect(doc.title).toBe('Termenbox');
-    expect(nav.clearAppBadge).toHaveBeenCalled();
-    // No interval should be set
-    expect(global.setInterval).not.toHaveBeenCalled();
-    handle.stop();
+  it('works on a page without a favicon link', () => {
+    const p = { title: 'Termenbox', icon: null };
+    const a = createAttention(p);
+    a.update(1, false);
+    expect(p.title).toBe('(1) Termenbox');
+    a.stop();
   });
 });
 
-describe('startBrowserNotifications', () => {
-  let doc: Document;
-  let mockNotification: ReturnType<typeof vi.fn>;
-  let originalNotification: typeof Notification;
+describe('browser notifications', () => {
+  const w = (key: string, name = key) => ({ key, name, since: 1, agent: ag({}) });
+  const setup = (permission = 'granted') => {
+    const shown: { title: string; options: NotificationOptions }[] = [];
+    const opened: string[] = [];
+    const notes: { onclick: (() => void) | null; close: () => void }[] = [];
+    const update = createNotifier((title, options) => {
+      shown.push({ title, options });
+      const n = { onclick: null as (() => void) | null, close: vi.fn() };
+      notes.push(n);
+      return n;
+    }, () => permission, (k) => opened.push(k));
+    return { update, shown, opened, notes };
+  };
 
-  beforeEach(() => {
-    doc = document;
-    originalNotification = global.Notification;
-    mockNotification = vi.fn();
-    // @ts-expect-error - mocking global
-    global.Notification = mockNotification;
-    mockNotification.permission = 'granted';
-    mockNotification.requestPermission = vi.fn(async () => 'granted');
+  it('stays quiet while the page is visible, without permission, or when push already notifies', () => {
+    const { update, shown } = setup();
+    update([w('a')], false, false);
+    update([w('a')], true, true);
+    setup('default').update([w('a')], true, false);
+    expect(shown).toHaveLength(0);
   });
 
-  afterEach(() => {
-    global.Notification = originalNotification;
-    vi.clearAllMocks();
+  it('tells once per session however often it is updated, and again after the session stops needing you', () => {
+    const { update, shown } = setup();
+    update([w('a', 'Alpha')], true, false);
+    update([w('a', 'Alpha')], true, false);
+    expect(shown).toHaveLength(1);
+    expect(shown[0].options).toMatchObject({ body: 'Alpha needs you', tag: 'termenbox-a' });
+    update([w('a'), w('b')], true, false);
+    expect(shown).toHaveLength(2);
+    update([], true, false);
+    update([w('a')], true, false);
+    expect(shown).toHaveLength(3);
   });
 
-  it('does nothing when page is visible', () => {
-    const waiting = [{ key: 'a', name: 'Session A', since: 1000, agent: ag({ waitingSince: 1000 }) }];
-    const handle = startBrowserNotifications(waiting, true, doc);
-    handle.stop();
-    expect(mockNotification).not.toHaveBeenCalled();
-  });
-
-  it('shows notification for first waiting session when page is hidden', async () => {
-    const waiting = [{ key: 'a', name: 'Session A', since: 1000, agent: ag({ waitingSince: 1000 }) }];
-    const handle = startBrowserNotifications(waiting, false, doc);
-    // Wait for async permission check
-    await new Promise(r => setTimeout(r, 10));
-    expect(mockNotification).toHaveBeenCalledWith('Termenbox', expect.objectContaining({
-      body: 'Session A needs you',
-      tag: 'termenbox-a',
-      requireInteraction: true,
-    }));
-    handle.stop();
-  });
-
-  it('deduplicates notifications for same session via tag within same handle', async () => {
-    const waiting = [{ key: 'a', name: 'Session A', since: 1000, agent: ag({ waitingSince: 1000 }) }];
-    const handle = startBrowserNotifications(waiting, false, doc);
-    await new Promise(r => setTimeout(r, 10));
-    expect(mockNotification).toHaveBeenCalledTimes(1);
-    // Call notifyIfNeeded again internally (simulating reactive update with same session)
-    // Since we can't access notifyIfNeeded directly, test that creating a new handle
-    // after stopping the old one with same session doesn't re-notify immediately
-    handle.stop();
-    const handle2 = startBrowserNotifications(waiting, false, doc);
-    await new Promise(r => setTimeout(r, 10));
-    // New handle instance - will notify again (this is expected behavior)
-    expect(mockNotification).toHaveBeenCalledTimes(2);
-    handle2.stop();
-  });
-
-  it('notifies for new session when waiting changes', async () => {
-    const waiting1 = [{ key: 'a', name: 'Session A', since: 1000, agent: ag({ waitingSince: 1000 }) }];
-    const handle1 = startBrowserNotifications(waiting1, false, doc);
-    await new Promise(r => setTimeout(r, 10));
-    expect(mockNotification).toHaveBeenCalledTimes(1);
-    handle1.stop();
-
-    // New waiting with different session
-    const waiting2 = [{ key: 'b', name: 'Session B', since: 2000, agent: ag({ waitingSince: 2000 }) }];
-    const handle2 = startBrowserNotifications(waiting2, false, doc);
-    await new Promise(r => setTimeout(r, 10));
-    expect(mockNotification).toHaveBeenCalledTimes(2);
-    handle2.stop();
-  });
-
-  it('does nothing when Notification is not available', async () => {
-    // @ts-expect-error - removing Notification
-    global.Notification = undefined;
-    const waiting = [{ key: 'a', name: 'Session A', since: 1000, agent: ag({ waitingSince: 1000 }) }];
-    const handle = startBrowserNotifications(waiting, false, doc);
-    await new Promise(r => setTimeout(r, 10));
-    expect(mockNotification).not.toHaveBeenCalled();
-    handle.stop();
-  });
-
-  it('does nothing when permission is denied', async () => {
-    mockNotification.permission = 'denied';
-    const waiting = [{ key: 'a', name: 'Session A', since: 1000, agent: ag({ waitingSince: 1000 }) }];
-    const handle = startBrowserNotifications(waiting, false, doc);
-    await new Promise(r => setTimeout(r, 10));
-    expect(mockNotification).not.toHaveBeenCalled();
-    handle.stop();
+  it('opens the session when the notification is clicked', () => {
+    const { update, opened, notes } = setup();
+    update([w('a')], true, false);
+    notes[0].onclick?.();
+    expect(opened).toEqual(['a']);
+    expect(notes[0].close).toHaveBeenCalled();
   });
 });

@@ -103,6 +103,8 @@ async function run(label, srv, extraArgs, freeze, expected) {
   // Reach Add Server.
   await page.getByRole('button', { name: 'Add Server', exact: true }).first().click();
   await page.getByRole('dialog').waitFor();
+  // Install is step 1; the server announces itself while the command is being run, so go on to Connect.
+  await page.getByTestId('install-next').click();
   // Feed the claim code of the running server (the dialog's own random secret would need a server started with it).
   await page.locator('#have-link').fill(srv.claim);
   await page.getByRole('button', { name: 'Add', exact: true }).first().click();
@@ -119,8 +121,8 @@ async function run(label, srv, extraArgs, freeze, expected) {
   await page.getByRole('group', { name: 'What you are adding' }).getByRole('button', { name: 'Add', exact: true }).click();
   await page.getByText('Server added').waitFor();
   await page.getByText(/This device can reach it|could not reach it|Could not tell/).first().waitFor({ timeout: 60000 });
-  await page.locator('.preview[role=status]').scrollIntoViewIfNeeded();
-  const panel = await page.locator('.preview[role=status]').innerText();
+  await page.locator('.done[role=status]').scrollIntoViewIfNeeded();
+  const panel = await page.locator('.done[role=status]').innerText();
   check(expected.test(panel), `${label}: the result panel says ${expected} (got ${JSON.stringify(panel.replace(/\n+/g, ' | ').slice(0, 160))})`);
   check(errors.length === 0, `${label}: no page errors (${JSON.stringify(errors.slice(0, 3))})`);
   check((await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)) <= 0, `${label}: no horizontal overflow`);

@@ -46,3 +46,6 @@ The two-click bound applies to the Termenbox-hosted client mode. The self-hosted
 
 ## Scope (0056)
 The irreducible human step is pasting one client-generated command on the VPS. It must contain everything needed (secret included); the user never copies a URL, a token shown separately, or a link between terminal and browser. Nothing is printed for the user to act on.
+
+## Scope (0126)
+The installer now prints a pairing QR, link and code on every run. Printing is optional for the user: the paste path still needs no action on what is printed, and a LAN-only server is added by scanning it.

@@ -2,7 +2,9 @@
 # Termenbox installer. Served by the client at /install.sh.
 #
 #   curl -fsSL https://app.termenbox.dev/install.sh | sh -s -- <claim secret> <client origin> [mode]
-#   curl -fsSL https://app.termenbox.dev/install.sh | sh -s -- - <client origin> [mode]      (shows a QR instead)
+#   curl -fsSL https://app.termenbox.dev/install.sh | sh -s -- - <client origin> [mode]      (no secret: just the pairing block)
+#
+# Every run ends with the same pairing block: a QR, the link it encodes and a short code (decision 0126).
 #
 # The optional last word picks where sessions run (DECISION-0058, 0075):
 #   (none)      an isolated Docker container (installs Docker if missing)
@@ -41,6 +43,30 @@ RELEASE_URL="${TERMENBOX_RELEASE_URL:-https://github.com/termenbox/termenbox/rel
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'termenbox: %s\n' "$*" >&2; exit 1; }
+
+# The server saves its UDP port when it starts; until then --register can only print the bare claim link, so ask again
+# for a few seconds until the output carries the signed bundle.
+pairing_output() {
+  _n=0
+  while :; do
+    _o="$("$@")" || _o=""
+    case "$_o" in *"/#/pair/"*) break ;; esac
+    _n=$((_n + 1))
+    [ "$_n" -lt 15 ] || break
+    sleep 1
+  done
+  printf '%s' "$_o"
+}
+
+# The block every run ends with (decision 0126): QR, link and code, or the re-add link of an owned server.
+# $1 is what `termenbox-server --register --qr` printed; empty means the server is not ready to say.
+show_pairing() {
+  if [ -z "$1" ]; then
+    [ "$SECRET" != "-" ] || die "the server did not print its pairing link; see its log"
+    return 0
+  fi
+  say "$1"
+}
 
 case "$ORIGIN" in
   https://*|http://localhost*|http://127.0.0.1*) ;;
@@ -216,6 +242,16 @@ port_report() {
     vultr) say "Your host looks like Vultr: if a firewall group is attached, add an inbound UDP $_port rule." ;;
     *) say "If your hosting provider has a network firewall or security group, allow inbound UDP $_port there too." ;;
   esac
+  # WSL2 sits behind Windows' own NAT: its UDP port is not reachable from other devices, and the address it advertises is
+  # internal. Mirrored networking is the one setting that makes UDP work; netsh portproxy handles TCP only.
+  if grep -qi microsoft /proc/version 2>/dev/null; then
+    say ""
+    say "This looks like WSL. Its network is behind Windows, so UDP $_port is not reachable from other devices as it is. The app falls back to a slower connection until you do this, once, on Windows:"
+    say "  1. In %UserProfile%\\.wslconfig add:   [wsl2]  networkingMode=mirrored"
+    say "  2. In PowerShell:   wsl --shutdown     (then start WSL again)"
+    say "  3. In an admin PowerShell, allow it through Windows Firewall:   New-NetFirewallRule -DisplayName Termenbox -Direction Inbound -Protocol UDP -LocalPort $_port -Action Allow"
+    say "  If WSL still blocks it:   Set-NetFirewallHyperVVMSetting -Name '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -DefaultInboundAction Allow"
+  fi
   say "Add Server tests the connection from your browser and shows what is blocking it."
 }
 
@@ -310,19 +346,13 @@ install_container() {
     sleep 1
   done
 
-  if [ "$SECRET" = "-" ]; then
-    OUT="$(docker exec "$NAME" termenbox-server --register --qr)"
-    case "$OUT" in
-      *"is registered to"*) say "$OUT" ;;
-      *)
-        say "Scan this with Termenbox (Add Server > Scan a QR), or open the link:"
-        say "$OUT"
-        ;;
-    esac
-  else
+  # The secret shortcut still runs first; whatever it is, the same pairing block is printed after it (decision 0126).
+  if [ "$SECRET" != "-" ]; then
     docker exec "$NAME" termenbox-server --claim "$SECRET" >/dev/null
     say "Termenbox server started. It will appear in the app within a minute."
   fi
+  OUT="$(pairing_output docker exec "$NAME" termenbox-server --register --qr)"
+  show_pairing "$OUT"
   _opened=1; [ -z "${TERMENBOX_SKIP_FIREWALL:-}" ] || _opened=""
   port_report "$PORT" "$_opened"
 }
@@ -341,21 +371,14 @@ native_claim() {
   _env="TERMENBOX_CONFIG_DIR=$STATE TERMENBOX_CLIENT_URL=$ORIGIN"
   # shellcheck disable=SC2086 # _env is a list of NAME=value words
   if [ "$RUN_USER" = root ] || [ "$RUN_USER" = "$(id -un)" ]; then _run="env $_env"; else _run="runuser -u $RUN_USER -- env $_env"; fi
-  if [ "$SECRET" = "-" ]; then
-    # shellcheck disable=SC2086
-    OUT="$($_run "$BIN" --register --qr)"
-    case "$OUT" in
-      *"is registered to"*) say "$OUT" ;;
-      *)
-        say "Scan this with Termenbox (Add Server > Scan a QR), or open the link:"
-        say "$OUT"
-        ;;
-    esac
-  else
+  if [ "$SECRET" != "-" ]; then
     # shellcheck disable=SC2086
     $_run "$BIN" --claim "$SECRET" >/dev/null
     say "Termenbox server started. It will appear in the app within a minute."
   fi
+  # shellcheck disable=SC2086
+  OUT="$(pairing_output $_run "$BIN" --register --qr)"
+  show_pairing "$OUT"
   # CLAIM_UNIT and CLAIM_OPENED say which unit this is and whether this run opened the host firewall (root modes).
   if [ -r "$STATE/udp_port" ]; then
     port_report "$(cat "$STATE/udp_port")" "${CLAIM_OPENED:-}"

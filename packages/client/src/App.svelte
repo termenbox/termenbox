@@ -19,7 +19,7 @@
   import { SnapshotStore } from './lib/snapshots';
   import { serverAtLeast, NEW_WINDOW_VERSION } from './lib/serverVersion';
   import { loadHidden, openTabs, saveHidden } from './lib/tabs';
-  import { waitingList, startAnnounce, startBrowserNotifications, type AnnounceHandle, type NotificationHandle } from './lib/notify';
+  import { announce, waitingList, createAttention, createNotifier } from './lib/notify';
   import { attentionToAck } from './lib/agents';
   import { cacheRemaining, expiringSoon } from './lib/cache';
   import { settings, applyTheme, type Skin } from './lib/settings';
@@ -343,16 +343,18 @@
   $: canShell = !!activeSession && ($hubServers.find(h => h.id === activeSession.serverId)?.backends.includes('tmux') ?? false);
   $: tabSessions = openTabs($allSessions, $allAgents, hidden);
   $: waiting = waitingList($allSessions, $allAgents);
-  let announceHandle: AnnounceHandle | null = null;
-  $: {
-    announceHandle?.stop();
-    announceHandle = startAnnounce(waiting.length);
-  }
-  let notificationHandle: NotificationHandle | null = null;
-  $: {
-    notificationHandle?.stop();
-    notificationHandle = startBrowserNotifications(waiting, pageVisible);
-  }
+  $: announce(waiting.length);
+  const attention = typeof document === 'undefined' ? null : createAttention({
+    get title() { return document.title; }, set title(t) { document.title = t; },
+    icon: document.querySelector<HTMLLinkElement>('link[rel="icon"]'),
+  });
+  $: attention?.update(waiting.length, !pageVisible);
+  const notifyWaiting = typeof Notification === 'undefined' ? null : createNotifier(
+    (title, o) => new Notification(title, o),
+    () => Notification.permission,
+    (key) => { window.focus(); void attach(key); },
+  );
+  $: notifyWaiting?.(waiting, !pageVisible, pushOn);
   // Looking at a session clears its finished or failed item on the server; a question stays until it is answered.
   let pageVisible = typeof document === 'undefined' || document.visibilityState !== 'hidden';
   const acked = new Set<string>();
@@ -377,6 +379,7 @@
   /** A pairing link waiting for the user's confirmation (decision 0123). */
   let pairLink: PairLink | null = null;
   let addPrefill: string | null = null;
+  let addStart: 'install' | 'scan' = 'install';
   let toast: { message: string; type: 'success' | 'error'; detail?: string } | null = null;
 
   const GITHUB_CLIENT_ID = import.meta.env.VITE_GITHUB_CLIENT_ID || '';
@@ -891,7 +894,7 @@
       {/snippet}
       {#if serversPage || servers.length === 0}
         {#if servers.length > 0}<button class="secondary" on:click={showWorkspace}>← Sessions</button>{/if}
-        <ServerList {servers} states={$hubServers} onpause={(id) => { hub.pause(id); }} onresume={(id) => hub.resume(id)} onretry={(id) => hub.retry(id)} onadd={() => { addPrefill = null; showAddServer = true; }} onremove={removeServer} onshare={shareServer} />
+        <ServerList {servers} states={$hubServers} onpause={(id) => { hub.pause(id); }} onresume={(id) => hub.resume(id)} onretry={(id) => hub.retry(id)} onadd={() => { addPrefill = null; addStart = 'install'; showAddServer = true; }} onscan={() => { addPrefill = null; addStart = 'scan'; showAddServer = true; }} onremove={removeServer} onshare={shareServer} />
       {:else if $destination === 'home'}
         <Home sessions={$allSessions} agents={$allAgents} servers={$hubServers} {now} {lastKey} offer={hookOffer} onhook={homeHook} onopen={attach} onservers={leaveServer} onnew={newSession}
           onanswer={(key, choice, prompt) => sendSession({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })}
@@ -978,7 +981,7 @@
     <PairDialog link={pairLink} onclose={() => pairLink = null} onadd={(server) => { pairLink = null; void addPaired(server); }} />
   {/if}
   {#if showAddServer}
-    <AddServerModal origin={location.origin} prefillSecret={addPrefill} onserver={(id) => { showAddServer = false; void addServerById(id); }} onclose={() => showAddServer = false} onadd={(server) => void addAndLink(server)} />
+    <AddServerModal origin={location.origin} prefillSecret={addPrefill} start={addPrefill ? 'install' : addStart} onserver={(id) => { showAddServer = false; void addServerById(id); }} onclose={() => showAddServer = false} onadd={(server) => void addAndLink(server)} />
   {/if}
 
   {#if toast}
