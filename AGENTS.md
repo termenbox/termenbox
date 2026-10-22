@@ -54,6 +54,11 @@ docker build -t termenbox -f docker/Dockerfile .
 scripts/dev.sh cargo test --workspace
 scripts/dev.sh --full sh -c 'cd packages/client && node e2e/run.mjs'
 
+# Release channels (DECISION-0125)
+# Stable: push tag vX.Y.Z to master
+# Beta: push tag vX.Y.Z-beta.N or vX.Y.Z-rc.N to master
+# Nightly: auto from develop at 00:00 UTC (or manual workflow_dispatch)
+
 # Lint knowledge base
 # (requires go-getter plugin)
 lint
@@ -69,6 +74,7 @@ lint
 - **Sessions**: server owns tmux/PTY via a SessionBackend trait (DECISION-0054); reconnect = re-attach
 - **Client**: Svelte 5 + xterm.js WebGL; hosted or self-hosted (DECISION-0052)
 - **Deployment**: Docker image (ghcr.io), one command from the client; 512MB RAM, 1 vCPU (FACT-0001)
+- **Release channels**: stable / beta / nightly (DECISION-0125); per-channel keys (DECISION-0125), alias releases (DECISION-0127), compile-time version (DECISION-0126); separate Pages deployments (DECISION-0128)
 - **Plan**: docs/plans/termenbox-roadmap.md, tracked in GitHub issues
 
 ## Guardrail Highlights

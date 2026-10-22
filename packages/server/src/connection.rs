@@ -11,11 +11,14 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The next message within the auth window; `None` on timeout, close, or unparseable input.
 async fn next(link: &mut Link) -> Option<ClientMessage> {
-    // Terminal bytes before the handshake is done are not a handshake.
-    let Inbound::Json(text) = tokio::time::timeout(AUTH_TIMEOUT, link.rx.recv())
+    use tracing::debug;
+    // Pre-auth binary frames are not a handshake; they are ignored (a client that sends them
+    // before `auth_ok` is confused or malicious).
+    let msg = tokio::time::timeout(AUTH_TIMEOUT, link.rx.recv())
         .await
-        .ok()??
-    else {
+        .ok()??;
+    let Inbound::Json(text) = msg else {
+        debug!(?msg, "ignoring pre-auth binary frame");
         return None;
     };
     serde_json::from_str(&text).ok()
@@ -74,6 +77,9 @@ pub async fn run(mut link: Link, state: AppState) {
         // Decision 0117: the dialog asks what it is about to add. One answer, then the connection ends; nothing is
         // bound and the token stays valid.
         Some(ClientMessage::ClaimPreview { server_token }) => {
+            // link.peer_ip comes from the transport: for WebSocket it's the cf-connecting-ip header
+            // (Cloudflare tunnel), for WebRTC it's the real client IP. We trust Cloudflare to send
+            // the real client IP; if the tunnel is misconfigured, the audit log will show the tunnel IP.
             let reply = if state
                 .auth
                 .preview_claim(&server_token, link.peer_ip.as_deref())

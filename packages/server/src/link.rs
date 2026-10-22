@@ -10,8 +10,8 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use termenbox_core::protocol::ServerMessage;
 use tokio::sync::{mpsc, Notify};
 
-/// First byte of a binary WebSocket frame that carries terminal bytes.
-pub const LANE_TERM: u8 = 1;
+/// First byte of a binary frame that carries terminal bytes; re-exported from termenbox-core for convenience.
+pub use termenbox_core::protocol::LANE_TERM;
 
 /// What the client sent: a JSON message, or terminal input bytes from the `term` lane.
 #[derive(Debug, PartialEq, Eq)]

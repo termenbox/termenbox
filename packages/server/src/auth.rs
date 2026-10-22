@@ -290,7 +290,10 @@ impl AuthState {
     }
 
     /// Full check for one connection: certificate, challenge signature, revocation, ownership. Writes the
-    /// audit record (never the certificate or signature).
+    /// audit record (never the certificate or signature). The `ip` parameter comes from the transport:
+    /// for WebSocket it's the cf-connecting-ip header (Cloudflare tunnel), for WebRTC it's the real
+    /// client IP. We trust Cloudflare to send the real client IP; if the tunnel is misconfigured, the
+    /// audit log will show the tunnel IP.
     pub fn check(
         &self,
         cert: &str,

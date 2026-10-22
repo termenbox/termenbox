@@ -81,28 +81,28 @@ Next ready step: [R59](roadmap/R59.md).
 | 10 | [R61](roadmap/R61.md) | Open terminal web links with a desktop pointer | terminal | desktop | pending | 3.7 | 3.7 | - |
 | 11 | [R10](roadmap/R10.md) | Spike: connector payload and abuse review (O.1) | connectors | n/a | pending | 3.5 | 3.5 | - |
 | 12 | [R09](roadmap/R09.md) | Directory abuse controls and degraded mode (S.4) | cloud | n/a | pending | 3.4 | 3.4 | - |
-| 13 | [R19](roadmap/R19.md) | Cache event and Claude status-line forwarder (G.8) | agents | n/a | pending | 2.8 | 2.8 | - |
-| 14 | [R22](roadmap/R22.md) | Badge, stats sheet and Say thanks (T.2) | ux | both | pending | 2.7 | 2.7 | - |
-| 15 | [R32](roadmap/R32.md) | Key rotation and incident runbook (S.8) | security | n/a | pending | 2.6 | 2.6 | - |
-| 16 | [R64](roadmap/R64.md) | Server reachability self-check and automatic port opening | server | n/a | pending | 2.6 | 2.6 | - |
-| 17 | [R27](roadmap/R27.md) | Remote uninstall on the native host (N.6) | server | n/a | pending | 2.2 | 2.5 | - |
-| 18 | [R62](roadmap/R62.md) | Candidate paths: signed bundle, LAN and pairing, raced connect, seamless re-attach | server | both | pending | 2.1 | 2.2 | - |
-| 19 | [R63](roadmap/R63.md) | Connection telemetry: sampled, enum-only, opt-out on the hosted client | cloud | both | pending | 2.4 | 2.4 | R62 |
-| 20 | [R34](roadmap/R34.md) | Self-hosted client docs (rest of 5.1) | docs | n/a | pending | 2.3 | 2.3 | - |
-| 21 | [R31](roadmap/R31.md) | Passkey step-up for root sessions and device revocation (S.2) | security | both | pending | 2.1 | 2.1 | - |
-| 22 | [R28](roadmap/R28.md) | Remove server flow in the app (D.4, container parts of D.3) | server | both | pending | 2.0 | 2.0 | R26, R27 |
-| 23 | [R29](roadmap/R29.md) | Migrate Docker host installs (N.7) | server | n/a | pending | 1.8 | 1.9 | - |
-| 24 | [R30](roadmap/R30.md) | Remove the Docker host code (N.8) | server | n/a | pending | 2.0 | 2.0 | R29 |
-| 25 | [R17](roadmap/R17.md) | Signed records on R2 behind the CDN (C.3) | cloud | n/a | pending | 1.4 | 1.8 | R09 |
-| 26 | [R11](roadmap/R11.md) | Rule engine, connector trait and outbound guard (O.2) | connectors | n/a | pending | 1.2 | 1.7 | R10 |
-| 27 | [R14](roadmap/R14.md) | Telegram and generic webhook (O.4) | connectors | n/a | pending | 1.8 | 1.8 | R11 |
-| 28 | [R39](roadmap/R39.md) | Image and file upload to a session, with threat review (new) | terminal | both | pending | 1.6 | 1.6 | - |
-| 29 | [R51](roadmap/R51.md) | Cloudflare isolation, usage dashboard and threshold alerts | cloud | n/a | pending | 1.6 | 1.6 | R07 |
-| 30 | [R18](roadmap/R18.md) | Owner-keyed server list and settings sync (C.4, 0068) | cloud | both | pending | 1.5 | 1.5 | R17 |
-| 31 | [R16](roadmap/R16.md) | Rules screen (O.6) | connectors | both | pending | 1.4 | 1.4 | R11 |
-| 32 | [R38](roadmap/R38.md) | Session sharing links, read-only and read-write (new) | server | both | pending | 1.4 | 1.4 | - |
-| 33 | [R33](roadmap/R33.md) | Managed quick-tunnel fallback for hosts with no UDP port (8.3) | server | n/a | pending | 1.2 | 1.2 | - |
-| 34 | [R50](roadmap/R50.md) | Release channels and auto-update policies for server and client | release | both | pending | 1.2 | 1.2 | - |
+| 13 | [R70](roadmap/R70.md) | Release channels: stable / beta / nightly — full specification | release | both | pending | 2.7 | 2.7 | - |
+| 14 | [R19](roadmap/R19.md) | Cache event and Claude status-line forwarder (G.8) | agents | n/a | pending | 2.8 | 2.8 | - |
+| 15 | [R22](roadmap/R22.md) | Badge, stats sheet and Say thanks (T.2) | ux | both | pending | 2.7 | 2.7 | - |
+| 16 | [R32](roadmap/R32.md) | Key rotation and incident runbook (S.8) | security | n/a | pending | 2.6 | 2.6 | - |
+| 17 | [R64](roadmap/R64.md) | Server reachability self-check and automatic port opening | server | n/a | pending | 2.6 | 2.6 | - |
+| 18 | [R27](roadmap/R27.md) | Remote uninstall on the native host (N.6) | server | n/a | pending | 2.2 | 2.5 | - |
+| 19 | [R62](roadmap/R62.md) | Candidate paths: signed bundle, LAN and pairing, raced connect, seamless re-attach | server | both | pending | 2.1 | 2.2 | - |
+| 20 | [R63](roadmap/R63.md) | Connection telemetry: sampled, enum-only, opt-out on the hosted client | cloud | both | pending | 2.4 | 2.4 | R62 |
+| 21 | [R34](roadmap/R34.md) | Self-hosted client docs (rest of 5.1) | docs | n/a | pending | 2.3 | 2.3 | - |
+| 22 | [R31](roadmap/R31.md) | Passkey step-up for root sessions and device revocation (S.2) | security | both | pending | 2.1 | 2.1 | - |
+| 23 | [R28](roadmap/R28.md) | Remove server flow in the app (D.4, container parts of D.3) | server | both | pending | 2.0 | 2.0 | R26, R27 |
+| 24 | [R29](roadmap/R29.md) | Migrate Docker host installs (N.7) | server | n/a | pending | 1.8 | 1.9 | - |
+| 25 | [R30](roadmap/R30.md) | Remove the Docker host code (N.8) | server | n/a | pending | 2.0 | 2.0 | R29 |
+| 26 | [R17](roadmap/R17.md) | Signed records on R2 behind the CDN (C.3) | cloud | n/a | pending | 1.4 | 1.8 | R09 |
+| 27 | [R11](roadmap/R11.md) | Rule engine, connector trait and outbound guard (O.2) | connectors | n/a | pending | 1.2 | 1.7 | R10 |
+| 28 | [R14](roadmap/R14.md) | Telegram and generic webhook (O.4) | connectors | n/a | pending | 1.8 | 1.8 | R11 |
+| 29 | [R39](roadmap/R39.md) | Image and file upload to a session, with threat review (new) | terminal | both | pending | 1.6 | 1.6 | - |
+| 30 | [R51](roadmap/R51.md) | Cloudflare isolation, usage dashboard and threshold alerts | cloud | n/a | pending | 1.6 | 1.6 | R07 |
+| 31 | [R18](roadmap/R18.md) | Owner-keyed server list and settings sync (C.4, 0068) | cloud | both | pending | 1.5 | 1.5 | R17 |
+| 32 | [R16](roadmap/R16.md) | Rules screen (O.6) | connectors | both | pending | 1.4 | 1.4 | R11 |
+| 33 | [R38](roadmap/R38.md) | Session sharing links, read-only and read-write (new) | server | both | pending | 1.4 | 1.4 | - |
+| 34 | [R33](roadmap/R33.md) | Managed quick-tunnel fallback for hosts with no UDP port (8.3) | server | n/a | pending | 1.2 | 1.2 | - |
 | 35 | [R24](roadmap/R24.md) | Environment profile on the native host (replaces B.4-B.6) | server | both | pending | 1.1 | 1.1 | - |
 | 36 | [R15](roadmap/R15.md) | Session and model connectors (O.5) | connectors | n/a | pending | 1.0 | 1.0 | R10, R11 |
 | 37 | [R40](roadmap/R40.md) | The free gate check (P.1) | paid | n/a | pending | 15.0 | 15.0 | R03, R18, U16 |
@@ -115,7 +115,7 @@ Next ready step: [R59](roadmap/R59.md).
 | 44 | [R44](roadmap/R44.md) | Pro: reliable push and inbox retention (P.5) | paid | both | blocked (R40, the free gate) | 1.2 | 1.2 | R43 |
 | 45 | [R45](roadmap/R45.md) | Pro: fleet view and usage reports (P.6) | paid | both | blocked (R40, the free gate) | 1.2 | 1.2 | R43 |
 
-45 open steps. 29 done and 9 superseded or folded steps are in `roadmap/archive/` (their text is kept; `grep -h '^Status' roadmap/archive/*.md`).
+46 open steps. 29 done and 10 superseded or folded steps are in `roadmap/archive/` (their text is kept; `grep -h '^Status' roadmap/archive/*.md`).
 <!-- order:end -->
 
 ## Product tiers (free, Pro, Team, Enterprise)
@@ -147,7 +147,7 @@ Verified against the code and `git log` on 2026-10-14, plus what landed since. E
 ## Open questions for the owner
 
 1. PR #139 ("unified agent hooks for five agents") is listed as merged on 2026-10-15, but its merge commit `cb1098c0` is not reachable from master and `agent_hooks.rs` is absent. Was it reverted? If it returns, its auto-install on attach conflicts with the opt-in rule of decisions 0079 and 0106 (see U03, U10).
-2. PR #149 (desktop review) is folded into this roadmap (R55 to U15, R56 and R60 to U07c and U15, R57 and R58 to U04 and U15; R59 and R61 kept; R36, R39 and R50 enriched). Close it once this lands.
+2. PR #149 (desktop review) is folded into this roadmap (R55 to U15, R56 and R60 to U07c and U15, R57 and R58 to U04 and U15; R36, R39 and R50 enriched). Close it once this lands.
 3. R03 needs the owner's iPhone (R02 is done). U16 (real-device pass, iPhone and Android) needs it too and also carries U04 step 0 (the iOS keyboard hypotheses K1, K2, K4), which was not run before U04 landed. U16 repeats the R03 checklist, so R03 could be folded into U16.
 4. Decisions 0123 (candidate paths) and the 0057 amendment await the owner's acceptance; 0124 (telemetry) is a deferred draft.
 

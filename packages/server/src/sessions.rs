@@ -228,6 +228,8 @@ impl SessionManager {
                     let Ok(client_msg) = serde_json::from_str::<ClientMessage>(&text) else { continue };
                     if let (true, ClientMessage::Attach { session_id }) = (self.mode.is_host(), &client_msg) {
                         // Who got a shell on the host and as whom; never what they typed.
+                        // In Native mode, run_as shows "host:<user>" but commands run as the service user
+                        // (no nsenter). In Host mode, commands run via nsenter as the specified user.
                         info!(target: "audit", event = "host_session", provider = %identity.provider, account_id = %identity.id, login = %identity.login, run_as = %self.mode.label(), session = %session_id);
                     }
                     if let Err(e) = self.handle(conn, client_msg, auth, &identity, &mut attachment, &mut cols, &mut rows, &mut acp, &link.tx).await {

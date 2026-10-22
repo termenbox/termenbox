@@ -8,7 +8,7 @@ use axum::{
     http::HeaderMap,
 };
 
-use crate::link::{self, Inbound, LANE_TERM};
+use crate::link::{Inbound, LANE_TERM, pair};
 
 const PING_EVERY: Duration = Duration::from_secs(20);
 /// Queued terminal chunks are joined into frames of about this size.
@@ -25,7 +25,7 @@ pub async fn handle_websocket(
         .get("cf-connecting-ip")
         .and_then(|v| v.to_str().ok())
         .map(String::from);
-    let (l, mut end) = link::pair(ip, None);
+    let (l, mut end) = pair(ip, None);
     let session = tokio::spawn(crate::connection::run(l, state));
     let mut ping = tokio::time::interval(PING_EVERY);
 

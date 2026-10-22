@@ -1,8 +1,6 @@
 import { wsUrl } from './servers';
 import type { Transport } from './transport';
-
-/** First byte of a binary frame that carries terminal bytes; must match packages/server/src/link.rs. */
-export const LANE_TERM = 1;
+import { LANE_TERM } from './protocol';
 
 class WsTransport implements Transport {
   readonly kind = 'ws' as const;

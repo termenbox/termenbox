@@ -1,3 +1,6 @@
+/** First byte of a binary frame that carries terminal bytes; matches packages/server/src/link.rs and termenbox-core. */
+export const LANE_TERM = 1;
+
 export type ClientMessage =
   | { type: 'hello' }
   | { type: 'auth'; cert: string; signature: string; server_token: string; channels?: boolean }
@@ -216,8 +219,9 @@ export interface TimelineMessage {
 export interface SessionInfo {
   id: string;
   name: string;
-  agent: 'tmux' | 'codex' | null;
-  /** The session manager it lives in; set when the server runs more than one (`tmux`). */
+  /** The agent in the session (`claude`, `codex`, `opencode`, `qwen`, `copilot`, `gemini`, `tmux` for a plain shell); absent for unknown agents and from older servers. */
+  agent?: string;
+  /** The session manager it lives in (`tmux`, `command`); set when the server runs more than one. */
   backend?: string;
 }
 

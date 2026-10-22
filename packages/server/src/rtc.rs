@@ -365,6 +365,7 @@ impl Server {
             });
             d.set_ice_controlling(false);
             // The client certificate is unknown up front; str0m wants a value even with checks off.
+            // We disable fingerprint verification (the client verifies our cert against the directory record).
             d.set_remote_fingerprint(Fingerprint {
                 hash_func: "sha-256".into(),
                 bytes: vec![0; 32],

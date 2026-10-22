@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
+/// First byte of a binary frame that carries terminal bytes; must match packages/server/src/link.rs
+/// and packages/client/src/lib/ws.ts.
+pub const LANE_TERM: u8 = 1;
+
 /// Client → Server (WebSocket)
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
