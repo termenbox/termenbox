@@ -130,4 +130,4 @@
 0125-the-roadmap-has-no-priority-tiers,"The roadmap has no priority tiers; order comes from WSJF chains, dependencies and the paid-lane rule","roadmap, repo",active
 | 0126-the-installer-always-prints-one-pairing-link-qr-and-code | The installer prints one pairing link, QR and short code on every run, carrying the claim and the signed candidates | product | active | Sergey Strebulaev | - |
 | 0127-add-server-is-a-four-step-wizard-with-a-standalone-scan | Add Server is a four-step wizard with no fork up front, and Scan QR is a separate path outside it | product | active | Sergey Strebulaev | - |
-| 0128-a-short-pairing-code-is-a-rate-limited-pake-secret | A short pairing code finds a LAN server only through a PAKE and a bounded number of guesses | product | active | Sergey Strebulaev | dropped if the PAKE spike finds no fit |
+| 0128-a-short-pairing-code-is-a-rate-limited-pake-secret | A short pairing code is a mailbox key and a PAKE password, bounded by its life, a stretch and a guess budget | product | active | Sergey Strebulaev | - |

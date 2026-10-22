@@ -22,7 +22,7 @@ Not verified: whether R2 needs a payment method on file, Pages build limit (500/
 
 ## Today (`directory.rs`)
 
-A claimed server announces on start, when its claim changes, and every 7 days (`KEEPALIVE`); an unclaimed one every 5 min until it is claimed. Its address, port and fingerprint are fixed for the process, so a change of any of them is a restart. That is about 1/7 request/day/server (10^5 servers: 1.4·10^4/day); before 2026-10-14 it was every 12 h, 2·10^5/day at 10^5 servers, over the limit. The binding limit is still Workers requests once reads, polls and user-data writes are added (about 10^4 servers with the other traffic until the CDN reads of R17).
+A claimed server announces on start, when its claim changes, and every 7 days (`KEEPALIVE`); an unclaimed one only on start and on a claim change (until 2026-10-22 it also announced every 5 min; the wizard no longer polls for it, 0126/0127). Its address, port and fingerprint are fixed for the process, so a change of any of them is a restart. That is about 1/7 request/day/server (10^5 servers: 1.4·10^4/day); before 2026-10-14 it was every 12 h, 2·10^5/day at 10^5 servers, over the limit. The binding limit is still Workers requests once reads, polls and user-data writes are added (about 10^4 servers with the other traffic until the CDN reads of R17).
 
 ## Target model (decisions 0060 and 0068)
 
@@ -47,6 +47,22 @@ D1 read cost of the owner links (R08, migration 0002): D1 bills rows scanned, no
 | Pages builds | per month | about 20 | 500 (unverified) | about 4% |
 | Web Push (optional) | pushes/day | about 6k, subrequests inside write requests | not metered by us | n/a |
 | WebRTC, UDP, tmux | all | runs on each user's VPS | no cost to us | n/a |
+
+## Pairing mailbox (decision 0128, estimated, not built)
+
+Assumptions: 500 installs/day, each uploading one blob (about 1 KB) through a Worker; a fraction of users type a code (say 20%, 100 lookups/day) and the rest scan or paste. Lookups are plain GETs on a public R2 bucket under a custom domain, so they invoke no Worker.
+
+| Service | Metric | Added load | Limit | Used by this |
+|---|---|---|---|---|
+| Workers | requests/day | 500 uploads (a lookup is not a Worker request) | 100k | 0.5% |
+| D1 | writes/day | 500 (the atomic daily upload counter) | 100k | 0.5% |
+| R2 Class A | ops/month | 15k puts (plus deletes on claim, 15k) | 1M | 3% |
+| R2 Class B | ops/month | about 3k typed lookups | 10M | under 0.1% |
+| R2 storage | bytes | objects live at most a day: under 1 MB | 10 GB | negligible |
+
+The wizard's pending polls (10k/day in the model above) occur only for a claim link that arrived alone since the bare install command (0127); the 47k Workers figure is therefore an upper bound from the old flow.
+
+Abuse: a flood of lookups has no hard cap on a free path. Here it lands on R2 Class B reads, with about 7.8M a month of headroom beyond the 2.2M modelled, and not on the Workers quota that login and claims share. Objects can stay up to a day (R2 lifecycle granularity), so the client enforces the signed expiry. Check before building: whether the zone can front an R2 bucket with a custom domain under provider v4, and whether the free plan has edge rate-limiting rules.
 
 ## Where it binds
 
