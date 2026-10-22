@@ -33,11 +33,11 @@
 
   let name = '';
   let secret = prefillSecret ?? randomClaimSecret();
-  /** Where sessions run. The host choices give this browser a shell on the machine itself, so they need consent. */
-  let where: 'container' | 'host' = 'container';
+  /** Where sessions run: this machine, as the current user, by default (decision 0113). Host choices give this browser a shell on the machine, so they need consent. */
+  let where: 'container' | 'host' = 'host';
   type HostAs = 'user' | 'me' | 'root';
   const hostMode: Record<HostAs, RunChoice> = { user: 'host-user', me: 'host-me', root: 'host' };
-  let hostAs: HostAs = 'user';
+  let hostAs: HostAs = 'me';
   let consent = false;
   $: mode = where === 'container' ? 'container' : hostMode[hostAs];
   $: if (where === 'container' || hostAs) consent = false; // each choice of a host mode is agreed to on its own
@@ -77,6 +77,8 @@
     found = record;
     ensureConnect();
     dispatch({ type: 'reading' });
+    const row = { key: 'record', label: 'Direct', addr: `${record.ip.includes(':') ? `[${record.ip}]` : record.ip}:${record.udp_port}` };
+    dispatch({ type: 'address', row: { ...row, state: 'trying' } });
     error = '';
     blocked = false;
     abort?.abort();
@@ -84,10 +86,12 @@
     try {
       claimPreview = await previewClaim({ record }, sec, abort.signal);
       previewName = name.trim() || claimPreview.name;
+      dispatch({ type: 'address', row: { ...row, state: 'won' } });
       dispatch({ type: 'previewed' });
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') return;
       blocked = e instanceof Unreachable;
+      dispatch({ type: 'address', row: { ...row, state: 'failed', reason: blocked ? 'unreachable' : 'other' } });
       const why = e instanceof Error ? e.message : 'failed';
       fail(blocked ? { ...DIAGNOSES.udp_closed, action: { id: 'retry', label: 'Try again' }, detail: `${why}. ${DIAGNOSES.udp_closed.detail}` } : { ...DIAGNOSES.server_stopped, title: 'Could not read what this server is.', detail: why });
     }
@@ -156,6 +160,12 @@
     // The server stays added whatever the check says; it only advises (GUARDRAIL connections-warn-never-drop).
     checking = true;
     void checkReachable({ record }).then((r) => { reach = r; checking = false; });
+  }
+
+  /** The preview could not be read, but the server announced itself: add it, and let the reachability check advise. */
+  function addWithoutPreview() {
+    dispatch({ type: 'previewed' });
+    confirm();
   }
 
   /** Added although no address answered: the server stays in the list and keeps retrying. */
@@ -290,7 +300,7 @@
           <button class="secondary" on:click={addAnyway} style="width: 100%; margin-top: 8px;">Add it anyway</button>
         {/if}
         {#if found && !claimPreview}
-          <button class="secondary" on:click={confirm} style="width: 100%; margin-top: 8px;">Add without a preview</button>
+          <button class="secondary" on:click={addWithoutPreview} style="width: 100%; margin-top: 8px;">Add without a preview</button>
         {/if}
       </svelte:fragment>
     </ConnectStep>

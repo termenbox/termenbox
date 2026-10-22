@@ -315,19 +315,21 @@ try {
     // Add Server: where sessions run. The container is the default; the host modes show a warning and need consent.
     await page.getByRole('button', { name: 'Add Server' }).first().click();
     const cmd = () => page.locator('pre.command').first().textContent();
-    if (!/sh -s -- \S{43} http\S+$/.test((await cmd()) ?? '')) fail(`the default command is not the container install: ${await cmd()}`);
-    await page.getByTestId('install-options').locator('summary').click(); // the run-mode choice is folded under Options (decision 0127)
-    await page.getByRole('radio', { name: /On the machine itself/ }).check();
+    // The default is this machine as the current user (host-me); the command waits for consent, which is on the first screen.
     if (await page.locator('pre.command').count()) fail('a host-mode command was shown before consent');
+    await page.getByTestId('consent').getByRole('checkbox').check();
+    if (!/sh -s -- \S{43} http\S+ host-me$/.test((await cmd()) ?? '')) fail(`the default command is not the host-me install: ${await cmd()}`);
+    await page.getByTestId('install-options').locator('summary').click(); // the other run modes are folded under Options (decision 0127)
     if (!(await page.getByText('This gives your browser a shell on your server').isVisible())) fail('the host-mode warning is missing');
-    await page.getByRole('checkbox').check();
+    await page.getByRole('radio', { name: /As a dedicated user/ }).check();
+    if (await page.locator('pre.command').count()) fail('choosing another host mode did not ask for consent again');
+    await page.getByTestId('consent').getByRole('checkbox').check();
     if (!/ host-user$/.test((await cmd()) ?? '')) fail(`the dedicated-user command is wrong: ${await cmd()}`);
     await page.getByRole('radio', { name: /As root/ }).check();
-    if (await page.locator('pre.command').count()) fail('choosing root did not ask for consent again');
-    await page.getByRole('checkbox').check();
+    await page.getByTestId('consent').getByRole('checkbox').check();
     if (!/ host$/.test((await cmd()) ?? '')) fail(`the root command is wrong: ${await cmd()}`);
     await page.getByRole('radio', { name: /In an isolated container/ }).check();
-    if (/ host(-user)?$/.test((await cmd()) ?? '')) fail('going back to the container kept a host word');
+    if (!/sh -s -- \S{43} http\S+$/.test((await cmd()) ?? '') || / host(-user|-me)?$/.test((await cmd()) ?? '')) fail(`the container command is wrong: ${await cmd()}`);
     await page.getByRole('button', { name: 'Close', exact: true }).click();
 
     // Report a problem: shows scrubbed diagnostics and opens a prefilled issue on the project's repository.

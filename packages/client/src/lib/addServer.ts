@@ -16,6 +16,8 @@ export type FailReason = 'timeout' | 'refused' | 'denied' | 'unreachable' | 'oth
 export interface AddressRow {
   key: string;
   label: string;
+  /** `192.168.1.5:4443`: what was tried, so the user can tell which machine it is. */
+  addr?: string;
   state: AddressState;
   reason?: FailReason;
   /** What the attempt itself said; shown only inside the fold. */
@@ -196,14 +198,15 @@ export async function connectPaths<T extends { close(): void }>(
   emit: (e: Event) => void,
   opts: { signal?: AbortSignal; stagger?: () => number; sameNetwork?: boolean | null } = {},
 ): Promise<ConnectResult<T> & { fallback: boolean }> {
-  const rows = paths.map((p): AddressRow => ({ key: p.key, label: p.label, state: 'trying' }));
+  const addrOf = (p: Path) => (p.url ?? (p.addr.includes(':') ? `[${p.addr}]:${p.port}` : `${p.addr}:${p.port}`));
+  const rows = paths.map((p): AddressRow => ({ key: p.key, label: p.label, addr: addrOf(p), state: 'trying' }));
   emit({ type: 'looking', addresses: rows });
   const reasons = new Map<string, { reason: FailReason; message: string }>();
   const tracked = async (p: Path, signal: AbortSignal) => {
     try {
       return await open(p, signal);
     } catch (e) {
-      const row = { key: p.key, label: p.label, state: 'failed' as const, reason: reasonOf(e), message: e instanceof Error ? e.message : String(e) };
+      const row = { key: p.key, label: p.label, addr: addrOf(p), state: 'failed' as const, reason: reasonOf(e), message: e instanceof Error ? e.message : String(e) };
       reasons.set(p.key, { reason: row.reason, message: row.message });
       emit({ type: 'address', row });
       throw e;
@@ -211,7 +214,7 @@ export async function connectPaths<T extends { close(): void }>(
   };
   try {
     const won = await racePaths(paths, tracked, { signal: opts.signal, stagger: opts.stagger });
-    emit({ type: 'address', row: { key: won.path.key, label: won.path.label, state: 'won' } });
+    emit({ type: 'address', row: { key: won.path.key, label: won.path.label, addr: addrOf(won.path), state: 'won' } });
     // Direct paths all failed and a tunnel or WebSocket won: it works, so it is a notice.
     const directFailed = paths.some((p) => p.kind !== 'tunnel' && p.kind !== 'ws') && paths.filter((p) => p.kind !== 'tunnel' && p.kind !== 'ws').every((p) => reasons.has(p.key));
     const fallback = (won.path.kind === 'tunnel' || won.path.kind === 'ws') && directFailed;

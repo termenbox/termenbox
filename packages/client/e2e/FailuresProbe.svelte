@@ -13,9 +13,9 @@
     wrong_code: 'wrong_code', burned_code: 'code_burned', different_network: 'different_network', guest_isolation: 'guest_isolation',
   };
   const addresses = [
-    { key: 'a', label: 'Direct, LAN', state: 'failed' as const, reason: 'timeout' as const },
-    { key: 'b', label: 'Direct, internet', state: 'failed' as const, reason: 'timeout' as const },
-    { key: 'c', label: 'Tunnel', state: 'failed' as const, reason: 'refused' as const },
+    { key: 'a', label: 'Direct, LAN', addr: '192.168.100.200:4443', state: 'failed' as const, reason: 'timeout' as const },
+    { key: 'b', label: 'Direct, internet', addr: '203.0.113.45:4443', state: 'failed' as const, reason: 'timeout' as const },
+    { key: 'c', label: 'Tunnel', addr: 'wss://box.example.com/ws', state: 'failed' as const, reason: 'refused' as const },
   ];
   const connect: Connect | null = CAUSE[state] ? { phase: 'code', addresses, diagnosis: DIAGNOSES[CAUSE[state]] } : null;
   const done = state === 'udp_closed_no_fallback' ? { state: 'unreachable' as const, port: 4443, message: 'timed out' } : state === 'udp_closed_with_fallback' ? { state: 'degraded' as const, port: 4443 } : null;

@@ -113,7 +113,9 @@ check(await inView(page.getByTestId('scan-qr')), 'Scan QR is visible in the firs
 // Step 1: Install. One command and one Copy button in the first viewport; the run-mode choice is folded under Options.
 await page.getByRole('button', { name: 'Add Server', exact: true }).first().click();
 await page.getByRole('dialog').waitFor();
-check(await inView(page.getByTestId('copy-command')), 'Install: the Copy button is in the first viewport');
+check(await page.getByTestId('copy-command').count() === 0, 'Install: the command waits for consent (this machine, current user, by default)');
+await page.getByTestId('consent').getByRole('checkbox').check();
+check(await inView(page.getByTestId('copy-command')), 'Install: the Copy button is in the first viewport once consent is given');
 check((await page.getByTestId('steps').locator('li').allInnerTexts()).join('|') === '1 Install|2 Connect|3 Confirm|4 Done', 'the four steps are shown');
 check(!(await page.getByTestId('install-options').evaluate((d) => d.open)), 'Install: Options (name, run mode) is folded');
 check((await page.getByText('Where should sessions run?').isVisible()) === false, 'Install: the run-mode form is not on screen until Options is opened');
