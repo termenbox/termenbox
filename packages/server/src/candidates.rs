@@ -475,6 +475,49 @@ pub fn pairing_link(client_url: &str, wire: &str, claim: Option<&str>) -> String
     }
 }
 
+/// The one block every pairing command prints (decision 0126): the QR, the link it encodes and, once the server has
+/// one, the short code. An unclaimed server's link also claims it; an owned server's link only re-adds it.
+pub struct PairingBlock {
+    pub link: String,
+    pub claims: bool,
+    pub code: Option<String>,
+}
+
+impl PairingBlock {
+    pub fn new(client_url: &str, wire: &str, claim: Option<&str>, code: Option<&str>) -> Self {
+        PairingBlock {
+            link: pairing_link(client_url, wire, claim),
+            claims: claim.is_some(),
+            code: code.map(str::to_string),
+        }
+    }
+
+    /// The terminal text. `with_qr` is false when output is piped and no `--qr` was asked for.
+    pub fn render(&self, with_qr: bool) -> String {
+        let mut out = String::new();
+        if with_qr {
+            if let Some(qr) = crate::auth::claim_qr(&self.link) {
+                out.push_str(&qr);
+                out.push('\n');
+            }
+        }
+        out.push_str(&format!(
+            "Scan this, open the link, or type the code in Add Server:\n\n  {}\n\n",
+            self.link
+        ));
+        if let Some(code) = &self.code {
+            out.push_str(&format!("  Code: {code}\n\n"));
+        }
+        out.push_str("The link carries this server's name, key fingerprint and addresses, signed by the server; the app shows them before it connects.\n");
+        if self.claims {
+            out.push_str(
+                "The first user to confirm becomes the owner. It works for 15 minutes, once.\n",
+            );
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -760,5 +803,39 @@ mod tests {
 
         // Never started: no claim that anything is published.
         assert!(!pairing(&fresh(), false));
+    }
+
+    #[test]
+    fn pairing_block_has_link_and_claim_only_when_unowned() {
+        let unowned = PairingBlock::new("https://app.example", "PAYLOAD", Some("tok"), None);
+        let text = unowned.render(false);
+        assert!(text.contains("https://app.example/#/pair/PAYLOAD?claim=tok"));
+        assert!(text.contains("becomes the owner"));
+        let owned = PairingBlock::new("https://app.example", "PAYLOAD", None, None).render(false);
+        assert!(owned.contains("https://app.example/#/pair/PAYLOAD"));
+        assert!(!owned.contains("claim=") && !owned.contains("becomes the owner"));
+    }
+
+    #[test]
+    fn pairing_block_qr_fits_an_80_column_terminal_for_a_real_bundle() {
+        let key = ServerKey::from_seed([3u8; 32]);
+        let fp = format!("sha-256 {}", vec!["0A"; 32].join(":"));
+        let list = candidates(&Inputs {
+            port: 4443,
+            lan: vec!["192.168.1.20".parse().unwrap()],
+            ..Inputs::default()
+        });
+        let (_, wire) = sign(&key, 1, &fp, "box", false, list).unwrap();
+        let claim = "A".repeat(43);
+        let text =
+            PairingBlock::new("https://app.termenbox.dev", &wire, Some(&claim), None).render(true);
+        let widest = text
+            .lines()
+            .take_while(|l| !l.starts_with("Scan this"))
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap();
+        // Plan R65 asked for 60, but a claim plus a signed bundle needs a version-13 code (69 columns at the lowest correction).
+        assert!(widest <= 80, "QR is {widest} columns wide");
     }
 }

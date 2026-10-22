@@ -316,6 +316,7 @@ try {
     await page.getByRole('button', { name: 'Add Server' }).first().click();
     const cmd = () => page.locator('pre.command').first().textContent();
     if (!/sh -s -- \S{43} http\S+$/.test((await cmd()) ?? '')) fail(`the default command is not the container install: ${await cmd()}`);
+    await page.getByTestId('install-options').locator('summary').click(); // the run-mode choice is folded under Options (decision 0127)
     await page.getByRole('radio', { name: /On the machine itself/ }).check();
     if (await page.locator('pre.command').count()) fail('a host-mode command was shown before consent');
     if (!(await page.getByText('This gives your browser a shell on your server').isVisible())) fail('the host-mode warning is missing');

@@ -406,7 +406,9 @@ pub fn server_link(client_url: &str, server_id: &str) -> String {
 /// decoder tries both polarities.
 pub fn claim_qr(link: &str) -> Option<String> {
     use qrcode::render::unicode::Dense1x2;
-    let code = qrcode::QrCode::new(link.as_bytes()).ok()?;
+    // Lowest error correction: a terminal renders it cleanly, and every module saved narrows the QR for small windows.
+    let code =
+        qrcode::QrCode::with_error_correction_level(link.as_bytes(), qrcode::EcLevel::L).ok()?;
     Some(
         code.render::<Dense1x2>()
             .dark_color(Dense1x2::Light)
