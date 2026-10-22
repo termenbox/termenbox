@@ -263,7 +263,7 @@
       })
     : null;
   function toggleVoice() {
-    voice?.toggle();
+    void voice?.toggle();
     term?.focus();
   }
 

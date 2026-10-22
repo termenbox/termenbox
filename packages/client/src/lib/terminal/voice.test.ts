@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { errorMessage, mapResults, nextVoiceLang, parseVoiceLang, pickLanguage, recognizerFactory, Voice, type Recognizer, type RecognizerEvent } from './voice';
+import { askMicrophone, errorMessage, mapResults, nextVoiceLang, parseVoiceLang, pickLanguage, recognizerFactory, Voice, type Recognizer, type RecognizerEvent } from './voice';
 
 const ev = (resultIndex: number, ...rs: [string, boolean][]): RecognizerEvent => ({
   resultIndex,
@@ -70,61 +70,155 @@ function fake() {
 }
 
 describe('Voice', () => {
-  const setup = () => {
+  const setup = (ask: () => Promise<string | null> = async () => null) => {
     const rec = fake();
     const on = { onText: vi.fn(), onInterim: vi.fn(), onState: vi.fn(), onError: vi.fn() };
-    const voice = new Voice(() => rec, () => 'ru-RU', on);
+    const voice = new Voice(() => rec, () => 'ru-RU', on, ask);
     return { rec, on, voice };
   };
 
-  it('listens in the given language, continuously, with interim results', () => {
+  it('listens in the given language, continuously, with interim results', async () => {
     const { rec, on, voice } = setup();
-    voice.toggle();
+    await voice.toggle();
     expect(rec.lang).toBe('ru-RU');
     expect(rec.continuous && rec.interimResults).toBe(true);
     expect(rec.start).toHaveBeenCalled();
     expect(on.onState).toHaveBeenLastCalledWith(true);
   });
 
-  it('types final phrases with a space between them, and clears the interim line at the end', () => {
+  it('asks for the microphone before starting', async () => {
+    const ask = vi.fn(async () => null);
+    const { rec, voice } = setup(ask);
+    await voice.toggle();
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(rec.start).toHaveBeenCalled();
+  });
+
+  it('checks for the microphone only once after it is granted', async () => {
+    const ask = vi.fn(async () => null);
+    const { rec, voice } = setup(ask);
+    await voice.toggle();
+    await voice.toggle(); // stop
+    await voice.toggle(); // start again
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(rec.start).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not start when the microphone is refused, and does not stay pressed', async () => {
+    const ask = vi.fn(async () => errorMessage('not-allowed')!);
+    const { rec, on, voice } = setup(ask);
+    await voice.toggle();
+    expect(rec.start).not.toHaveBeenCalled();
+    expect(on.onError).toHaveBeenCalledWith(expect.stringMatching(/blocked/));
+    expect(on.onState).toHaveBeenLastCalledWith(false);
+    expect(voice.listening).toBe(false);
+  });
+
+  it('ignores a second tap while waiting for the permission answer', async () => {
+    let answer!: (message: string | null) => void;
+    const ask = vi.fn(() => new Promise<string | null>((resolve) => (answer = resolve)));
+    const { rec, on, voice } = setup(ask);
+    const starting = voice.toggle();
+    expect(voice.listening).toBe(false);
+    await voice.toggle(); // a second tap leaves the browser prompt alone
+    expect(on.onState).not.toHaveBeenCalledWith(true);
+    answer(null);
+    await starting;
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(rec.start).toHaveBeenCalledTimes(1);
+    expect(on.onState).toHaveBeenLastCalledWith(true);
+  });
+
+  it('does not start when stopped while the permission answer is pending', async () => {
+    let answer!: (message: string | null) => void;
+    const ask = vi.fn(() => new Promise<string | null>((resolve) => (answer = resolve)));
+    const { rec, on, voice } = setup(ask);
+    const starting = voice.toggle();
+    voice.stop(); // e.g. the view closes while the prompt is open
+    answer(null);
+    await starting;
+    expect(rec.start).not.toHaveBeenCalled();
+    expect(on.onState).not.toHaveBeenCalledWith(true);
+  });
+
+  it('types final phrases with a space between them, and clears the interim line at the end', async () => {
     const { rec, on, voice } = setup();
-    voice.toggle();
+    await voice.toggle();
     rec.onresult?.(ev(0, ['one two', false]));
     expect(on.onInterim).toHaveBeenLastCalledWith('one two');
     rec.onresult?.(ev(0, ['one two', true]));
     rec.onresult?.(ev(1, ['one two', true], ['three', true]));
     expect(on.onText.mock.calls).toEqual([['one two'], [' three']]);
-    voice.toggle();
+    await voice.toggle();
     expect(voice.listening).toBe(false);
     expect(on.onInterim).toHaveBeenLastCalledWith('');
     expect(on.onState).toHaveBeenLastCalledWith(false);
   });
 
-  it('starts a new session without a leading space', () => {
+  it('starts a new session without a leading space', async () => {
     const { rec, on, voice } = setup();
-    voice.toggle();
+    await voice.toggle();
     rec.onresult?.(ev(0, ['first', true]));
-    voice.toggle();
-    voice.toggle();
+    await voice.toggle();
+    await voice.toggle();
     rec.onresult?.(ev(0, ['second', true]));
     expect(on.onText.mock.calls).toEqual([['first'], ['second']]);
   });
 
-  it('reports a denied microphone', () => {
-    const { rec, on, voice } = setup();
-    voice.toggle();
+  it('reports a denied microphone and resets even when no end event follows', async () => {
+    const ask = vi.fn(async () => null);
+    const { rec, on, voice } = setup(ask);
+    await voice.toggle();
+    expect(voice.listening).toBe(true);
+    (rec.stop as ReturnType<typeof vi.fn>).mockImplementation(() => {}); // no onend may follow onerror
     rec.onerror?.({ error: 'not-allowed' });
     expect(on.onError).toHaveBeenCalledWith(expect.stringMatching(/blocked/));
+    expect(on.onState).toHaveBeenLastCalledWith(false);
+    expect(voice.listening).toBe(false);
+    await voice.toggle(); // the key can be tapped again
+    expect(ask).toHaveBeenCalledTimes(2); // a blocked mic is checked again
+    expect(rec.start).toHaveBeenCalledTimes(2);
   });
 
-  it('reports a recognizer that cannot start', () => {
+  it('reports a recognizer that cannot start', async () => {
     const { rec, on, voice } = setup();
     (rec.start as ReturnType<typeof vi.fn>).mockImplementation(() => {
       throw new Error('busy');
     });
-    voice.toggle();
+    await voice.toggle();
     expect(voice.listening).toBe(false);
+    expect(on.onState).toHaveBeenLastCalledWith(false);
     expect(on.onError).toHaveBeenCalled();
+  });
+});
+
+describe('askMicrophone', () => {
+  const devices = (getUserMedia: () => Promise<MediaStream>) => ({ getUserMedia } as unknown as MediaDevices);
+
+  it('asks for the microphone and releases the device for the recognizer', async () => {
+    const stop = vi.fn();
+    const getUserMedia = vi.fn(async () => ({ getTracks: () => [{ stop }] }) as unknown as MediaStream);
+    expect(await askMicrophone({ mediaDevices: devices(getUserMedia) })).toBeNull();
+    expect(getUserMedia).toHaveBeenCalledWith({ audio: true });
+    expect(stop).toHaveBeenCalled();
+  });
+
+  it('explains a missing microphone', async () => {
+    const getUserMedia = async () => {
+      throw Object.assign(new Error('missing'), { name: 'NotFoundError' });
+    };
+    expect(await askMicrophone({ mediaDevices: devices(getUserMedia) })).toMatch(/No microphone/);
+  });
+
+  it('explains a blocked microphone', async () => {
+    const getUserMedia = async () => {
+      throw Object.assign(new Error('blocked'), { name: 'NotAllowedError' });
+    };
+    expect(await askMicrophone({ mediaDevices: devices(getUserMedia) })).toMatch(/blocked/);
+  });
+
+  it('lets the recognizer ask when the browser has no MediaDevices', async () => {
+    expect(await askMicrophone({})).toBeNull();
   });
 });
 
