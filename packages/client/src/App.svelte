@@ -19,7 +19,7 @@
   import { SnapshotStore } from './lib/snapshots';
   import { serverAtLeast, NEW_WINDOW_VERSION } from './lib/serverVersion';
   import { loadHidden, openTabs, saveHidden } from './lib/tabs';
-  import { waitingList, startAnnounce, startBrowserNotifications, type AnnounceHandle, type NotificationHandle } from './lib/notify';
+  import { waitingList, startAnnounce, startBrowserNotifications, startPinNudge, type AnnounceHandle, type NotificationHandle, type PinNudgeHandle } from './lib/notify';
   import { attentionToAck } from './lib/agents';
   import { cacheRemaining, expiringSoon } from './lib/cache';
   import { settings, applyTheme, type Skin } from './lib/settings';
@@ -352,6 +352,11 @@
   $: {
     notificationHandle?.stop();
     notificationHandle = startBrowserNotifications(waiting, pageVisible);
+  }
+  let pinNudgeHandle: PinNudgeHandle | null = null;
+  $: {
+    pinNudgeHandle?.stop();
+    pinNudgeHandle = startPinNudge(waiting, document, showToast);
   }
   // Looking at a session clears its finished or failed item on the server; a question stays until it is answered.
   let pageVisible = typeof document === 'undefined' || document.visibilityState !== 'hidden';

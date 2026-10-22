@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { announce, bannerChoices, bannerText, titleFor, waitingList, startAnnounce, startBrowserNotifications } from './notify';
+import { announce, bannerChoices, bannerText, titleFor, waitingList, startAnnounce, startBrowserNotifications, startPinNudge } from './notify';
 import type { AgentMap, SessionAgent } from './agents';
 
 const ag = (patch: Partial<SessionAgent>): SessionAgent => ({ state: 'needs_input', seq: 1, stale: false, ts: 1000, ...patch });
@@ -201,5 +201,61 @@ describe('startBrowserNotifications', () => {
     await new Promise(r => setTimeout(r, 10));
     expect(mockNotification).not.toHaveBeenCalled();
     handle.stop();
+  });
+});
+
+describe('startPinNudge', () => {
+  let showToast: ReturnType<typeof vi.fn>;
+  let originalSessionStorage: Storage;
+
+  beforeEach(() => {
+    showToast = vi.fn();
+    originalSessionStorage = global.sessionStorage;
+    global.sessionStorage = {
+      ...originalSessionStorage,
+      getItem: vi.fn(),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+      clear: vi.fn(),
+    };
+  });
+
+  afterEach(() => {
+    global.sessionStorage = originalSessionStorage;
+    vi.clearAllMocks();
+  });
+
+  it('does nothing when no waiting sessions', () => {
+    const handle = startPinNudge([], document, showToast);
+    handle.stop();
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it('shows toast once per session when waiting exists', async () => {
+    (global.sessionStorage.getItem as ReturnType<typeof vi.fn>).mockReturnValue(null);
+    const waiting = [{ key: 'a', name: 'Session A', since: 1000, agent: ag({ waitingSince: 1000 }) }];
+    const handle = startPinNudge(waiting, document, showToast);
+    // Wait for the 2s timer
+    await new Promise(r => setTimeout(r, 2100));
+    expect(showToast).toHaveBeenCalledWith('Pin this tab for native attention glow 📌', 'success');
+    handle.stop();
+  });
+
+  it('does not show toast if already shown this session', async () => {
+    (global.sessionStorage.getItem as ReturnType<typeof vi.fn>).mockReturnValue('1');
+    const waiting = [{ key: 'a', name: 'Session A', since: 1000, agent: ag({ waitingSince: 1000 }) }];
+    const handle = startPinNudge(waiting, document, showToast);
+    await new Promise(r => setTimeout(r, 2100));
+    expect(showToast).not.toHaveBeenCalled();
+    handle.stop();
+  });
+
+  it('stops timer when stop is called before toast', async () => {
+    (global.sessionStorage.getItem as ReturnType<typeof vi.fn>).mockReturnValue(null);
+    const waiting = [{ key: 'a', name: 'Session A', since: 1000, agent: ag({ waitingSince: 1000 }) }];
+    const handle = startPinNudge(waiting, document, showToast);
+    handle.stop();
+    await new Promise(r => setTimeout(r, 2100));
+    expect(showToast).not.toHaveBeenCalled();
   });
 });
