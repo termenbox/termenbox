@@ -17,12 +17,12 @@ use tracing::{info, warn};
 use crate::auth::AuthState;
 use crate::rtc::RtcInfo;
 
-/// A claimed server re-announces only when something changed (a new or ended claim) and otherwise once a
-/// week, so the records stay fresh while the directory sees about one request per server per week.
+/// A server re-announces only when something changed (a new or ended claim) and otherwise once a week, so the
+/// records stay fresh while the directory sees about one request per server per week. The address, port and
+/// fingerprint are fixed for the process, so a change of any of them is a restart and announces on start. An
+/// unclaimed server does not poll the directory any more: the installer prints the link, QR and code, and no browser
+/// waits for an announcement (decisions 0126, 0127).
 const KEEPALIVE: Duration = Duration::from_secs(7 * 24 * 3600);
-/// The address, port and fingerprint are fixed for the process, so a change of any of them is a restart
-/// and announces on start.
-const UNCLAIMED_REFRESH: Duration = Duration::from_secs(300);
 
 /// The server's long-lived identity. Its public key is the id clients pin.
 pub struct ServerKey(SigningKey);
@@ -177,14 +177,12 @@ pub async fn run(
             }
         };
 
-        // Wait for the next announcement. A new claim (installer re-run, --claim) is published within
-        // seconds; until an owner exists we also refresh often so the claim window never lapses.
+        // Wait for the next announcement. A new or ended claim (installer re-run, --claim, expiry) is published
+        // within seconds.
         let wait = if !announced {
             let w = backoff;
             backoff = (backoff * 2).min(Duration::from_secs(600));
             w
-        } else if !auth.is_claimed() {
-            UNCLAIMED_REFRESH
         } else {
             KEEPALIVE
         };
