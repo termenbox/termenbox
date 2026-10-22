@@ -145,7 +145,13 @@ try {
   await run(`printf 'TOK-%04d\\n' $(seq 1 ${N})`, 'printed');
   await sleep(500);
   const m1 = meta();
-  await waitFor(async () => tokens(await screen()).includes(N), `the browser to paint TOK-${N}`, 20000);
+  await waitFor(async () => tokens(await screen()).includes(N), `the browser to paint TOK-${N}`, 20000).catch(async (e) => {
+    console.error('DIAG', JSON.stringify(await page.evaluate(() => ({
+      rows: document.querySelectorAll('.xterm-rows > div').length, canvases: document.querySelectorAll('.xterm canvas').length,
+      text: (document.querySelector('.xterm')?.textContent ?? '').slice(0, 300), settings: localStorage.getItem('termenbox_settings'), body: document.body.innerText.slice(0, 300),
+    }))), JSON.stringify(meta()), (await hp.evaluate(() => window.__e2e.output)).slice(-200));
+    throw e;
+  });
   const shown = await screen();
   const seen = tokens(shown);
   R.viewport = { rowsInDom: shown.length, tokenRange: [Math.min(...seen), Math.max(...seen)], tmuxRows: m1.rows, tmuxCols: m1.cols };
