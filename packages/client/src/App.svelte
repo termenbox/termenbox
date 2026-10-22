@@ -19,7 +19,7 @@
   import { SnapshotStore } from './lib/snapshots';
   import { serverAtLeast, NEW_WINDOW_VERSION } from './lib/serverVersion';
   import { loadHidden, openTabs, saveHidden } from './lib/tabs';
-  import { announce, waitingList } from './lib/notify';
+  import { waitingList, startAnnounce, startBrowserNotifications, type AnnounceHandle, type NotificationHandle } from './lib/notify';
   import { attentionToAck } from './lib/agents';
   import { cacheRemaining, expiringSoon } from './lib/cache';
   import { settings, applyTheme, type Skin } from './lib/settings';
@@ -343,7 +343,16 @@
   $: canShell = !!activeSession && ($hubServers.find(h => h.id === activeSession.serverId)?.backends.includes('tmux') ?? false);
   $: tabSessions = openTabs($allSessions, $allAgents, hidden);
   $: waiting = waitingList($allSessions, $allAgents);
-  $: announce(waiting.length);
+  let announceHandle: AnnounceHandle | null = null;
+  $: {
+    announceHandle?.stop();
+    announceHandle = startAnnounce(waiting.length);
+  }
+  let notificationHandle: NotificationHandle | null = null;
+  $: {
+    notificationHandle?.stop();
+    notificationHandle = startBrowserNotifications(waiting, pageVisible);
+  }
   // Looking at a session clears its finished or failed item on the server; a question stays until it is answered.
   let pageVisible = typeof document === 'undefined' || document.visibilityState !== 'hidden';
   const acked = new Set<string>();
