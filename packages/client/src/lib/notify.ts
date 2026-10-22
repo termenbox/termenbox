@@ -25,73 +25,7 @@ export function bannerChoices(a: SessionAgent, now: number): string[] {
   return a.prompt.choices.length > 0 && a.prompt.choices.length <= 3 ? a.prompt.choices : [];
 }
 
-/** Handle returned by startAnnounce to stop the flashing. */
-export interface AnnounceHandle {
-  stop: () => void;
-}
-
-/** Starts flashing the tab title and favicon when count > 0. Returns a handle to stop it. */
-export function startAnnounce(
-  count: number,
-  doc: Document = document,
-  nav: { setAppBadge?: (n?: number) => Promise<void>; clearAppBadge?: () => Promise<void> } = navigator,
-): AnnounceHandle {
-  let stopped = false;
-  let flashTimer: ReturnType<typeof setInterval> | undefined;
-  let originalTitle = doc.title;
-  let originalFavicon: HTMLLinkElement | null = null;
-  let flashState = true;
-
-  // Find the current favicon
-  const faviconLink = doc.querySelector('link[rel="icon"]') as HTMLLinkElement | null;
-  if (faviconLink) {
-    originalFavicon = faviconLink.cloneNode(true) as HTMLLinkElement;
-  }
-
-  function update() {
-    if (stopped) return;
-    if (count > 0) {
-      // Flash title: alternate between attention title and normal
-      doc.title = flashState ? titleFor(count) : 'Termenbox';
-      // Flash favicon: alternate between default and attention (red dot)
-      if (faviconLink) {
-        faviconLink.href = flashState ? '/favicon-attention.svg' : '/favicon.svg';
-      }
-      flashState = !flashState;
-      // Badging API
-      void nav.setAppBadge?.(count)?.catch?.(() => {});
-    } else {
-      doc.title = 'Termenbox';
-      if (faviconLink && originalFavicon) {
-        faviconLink.href = originalFavicon.href;
-      }
-      void nav.clearAppBadge?.()?.catch?.(() => {});
-    }
-  }
-
-  if (count > 0) {
-    flashTimer = setInterval(update, 1000);
-    // Initial update
-    update();
-  } else {
-    update();
-  }
-
-  return {
-    stop: () => {
-      stopped = true;
-      if (flashTimer) clearInterval(flashTimer);
-      // Restore original state
-      doc.title = originalTitle;
-      if (faviconLink && originalFavicon) {
-        faviconLink.href = originalFavicon.href;
-      }
-      void nav.clearAppBadge?.()?.catch?.(() => {});
-    },
-  };
-}
-
-/** Legacy single-call announce (no flashing). Kept for backward compatibility. */
+/** Sets the title and, where the browser has it, the app icon badge. */
 export function announce(count: number, doc: { title: string } = document, nav: { setAppBadge?: (n?: number) => Promise<void>; clearAppBadge?: () => Promise<void> } = navigator) {
   doc.title = titleFor(count);
   try {
@@ -100,66 +34,61 @@ export function announce(count: number, doc: { title: string } = document, nav: 
   } catch { /* Badging is optional. */ }
 }
 
-/** Browser Notifications (non-PWA) — works on desktop Chrome/Edge/Firefox, Android Chrome.
- *  Requires user permission. Does NOT work on iOS Safari unless installed as PWA. */
-export interface NotificationHandle {
-  stop: () => void;
+/** The parts of the page the attention signal touches: the title and the favicon link, when there is one. */
+export interface AttentionPage { title: string; icon: { href: string } | null }
+
+/** The favicon that carries the red dot, next to the normal one. */
+export const attentionIcon = (href: string) => href.replace(/favicon\.svg(?=$|[?#])/, 'favicon-attention.svg');
+
+/**
+ * Makes a tab that needs you noticeable: while the page is hidden the title and favicon alternate between the
+ * attention form and the normal one, and while it is visible they stay still. One controller lives as long as the
+ * page; `update` is cheap to call on every change.
+ */
+export function createAttention(page: AttentionPage, every = 1000) {
+  const home = { title: 'Termenbox', icon: page.icon?.href ?? '' };
+  let count = 0;
+  let hidden = false;
+  let on = true;
+  let timer: ReturnType<typeof setInterval> | undefined;
+
+  function paint() {
+    const lit = count > 0 && (!hidden || on);
+    page.title = lit ? titleFor(count) : home.title;
+    if (page.icon) page.icon.href = lit ? attentionIcon(home.icon) : home.icon;
+  }
+  function update(nextCount: number, nextHidden: boolean) {
+    count = nextCount;
+    hidden = nextHidden;
+    const flashing = count > 0 && hidden;
+    if (flashing && !timer) timer = setInterval(() => { on = !on; paint(); }, every);
+    if (!flashing && timer) { clearInterval(timer); timer = undefined; }
+    on = true;
+    paint();
+  }
+  return { update, stop: () => update(0, false) };
 }
 
-/** Shows a browser notification for the first waiting session when page is hidden.
- *  Returns a handle to stop watching. */
-export function startBrowserNotifications(
-  waiting: Waiting[],
-  pageVisible: boolean,
-  doc: Document = document,
-): NotificationHandle {
-  let stopped = false;
-  let lastNotifiedKey: string | null = null;
-  let pendingKey: string | null = null;
-
-  async function ensurePermission(): Promise<boolean> {
-    if (typeof Notification === 'undefined') return false;
-    if (Notification.permission === 'granted') return true;
-    if (Notification.permission === 'denied') return false;
-    // Request permission on first user gesture (caller should trigger on interaction)
-    const perm = await Notification.requestPermission();
-    return perm === 'granted';
-  }
-
-  function notifyIfNeeded() {
-    if (stopped || pageVisible) return;
-    const first = waiting[0];
-    if (!first) return;
-    if (lastNotifiedKey === first.key || pendingKey === first.key) return; // already notified or pending for this one
-    pendingKey = first.key;
-    ensurePermission().then((granted) => {
-      pendingKey = null;
-      if (!granted || stopped || pageVisible) return;
-      const n = new Notification('Termenbox', {
-        body: `${first.name} needs you`,
-        tag: `termenbox-${first.key}`,
-        icon: '/icons/icon-192.png',
-        badge: '/icons/icon-192.png',
-        data: { sessionKey: first.key },
-        requireInteraction: true, // stay until dismissed/clicked
-      });
-      n.onclick = () => {
-        doc.title = 'Termenbox'; // stop flashing
-        window.focus();
-        n.close();
-      };
-      lastNotifiedKey = first.key;
-    });
-  }
-
-  // Initial check
-  notifyIfNeeded();
-
-  return {
-    stop: () => {
-      stopped = true;
-      lastNotifiedKey = null;
-      pendingKey = null;
-    },
+/**
+ * Raises one browser notification for each session that starts needing you while the page is hidden, for browsers
+ * without Web Push. It never asks for permission (that needs a gesture, and the push toggle already has one) and
+ * stays quiet when this device is subscribed to push, which would notify twice.
+ */
+export function createNotifier(
+  show: (title: string, options: NotificationOptions) => { onclick: ((e: Event) => void) | null; close(): void } | void,
+  permission: () => string,
+  onOpen: (key: string) => void,
+) {
+  const told = new Set<string>();
+  return function update(waiting: Waiting[], hidden: boolean, pushOn: boolean) {
+    const keys = new Set(waiting.map(w => w.key));
+    for (const k of told) if (!keys.has(k)) told.delete(k); // a session that needed you again later is news again
+    if (!hidden || pushOn || permission() !== 'granted') return;
+    for (const w of waiting) {
+      if (told.has(w.key)) continue;
+      told.add(w.key);
+      const n = show('Termenbox', { body: `${w.name} needs you`, tag: `termenbox-${w.key}`, icon: '/icons/icon-192.png' });
+      if (n) n.onclick = () => { onOpen(w.key); n.close(); };
+    }
   };
 }
