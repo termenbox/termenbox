@@ -86,6 +86,14 @@ lint
 - Chrome Android 111+
 - Desktop: Chrome/Firefox/Edge current-2, Safari 16.4+
 
+## Commit Messages
+
+- Subject: `type(scope): summary`, checked by CI over every commit of a PR. `type` is one of feat, fix, docs, chore,
+  ci, test, refactor, perf, build, style, revert. `scope` is optional, one word `[a-z0-9-]+`: no comma, slash or
+  space (`fix(paths)`, not `fix(server,client)`; omit it when a change spans areas).
+- Body: `Why:` then `What:`. No Co-Authored-By or "Generated with" lines. Use the `attribute` skill.
+- A bad subject cannot be amended on a pushed PR branch: it needs a rewrite and a force-push, so check it first.
+
 ## License
 
 MIT (DECISION-0011)
