@@ -9,7 +9,7 @@
 
   const state = new URLSearchParams(location.search).get('s') ?? '';
   const CAUSE: Record<string, Cause> = {
-    expired_link: 'link_expired', bad_link: 'bad_link', not_found: 'server_stopped', udp_closed: 'udp_closed', permission_denied: 'local_network_denied',
+    expired_link: 'link_expired', bad_link: 'bad_link', not_found: 'server_stopped', udp_closed: 'udp_closed', announced_unreachable: 'announced_unreachable', permission_denied: 'local_network_denied',
     wrong_code: 'wrong_code', burned_code: 'code_burned', different_network: 'different_network', guest_isolation: 'guest_isolation',
   };
   const addresses = [

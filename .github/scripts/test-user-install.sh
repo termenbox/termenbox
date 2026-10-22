@@ -10,7 +10,7 @@ SECRET="$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)"
 fail() { echo "FAIL: $*"; exit 1; }
 
 echo "== the installer for the current user refuses to run as root"
-if TERMENBOX_RELEASE_URL=file:///release TERMENBOX_RELEASE_KEYS="$(cat /keys.txt)" sh /install.sh "$SECRET" "$ORIGIN" host-me >/tmp/root.txt 2>&1; then
+if TERMENBOX_RELEASE_URL=file:///release TERMENBOX_RELEASE_KEYS="$(cat /keys.txt)" TERMENBOX_CLAIM="$SECRET" TERMENBOX_CLIENT_URL="$ORIGIN" sh /install.sh host-me >/tmp/root.txt 2>&1; then
   fail "host-me installed as root"
 fi
 grep -q "needs no root" /tmp/root.txt || { cat /tmp/root.txt; fail "the refusal does not say why"; }
@@ -39,12 +39,12 @@ BUNDLED=/home/alice/.local/bin/termenbox-tmux
 
 echo "== a dry run changes nothing"
 before="$(snapshot)"
-as_alice env TERMENBOX_DRY_RUN=1 sh /install.sh "$SECRET" "$ORIGIN" host-me
+as_alice env TERMENBOX_DRY_RUN=1 TERMENBOX_CLAIM="$SECRET" TERMENBOX_CLIENT_URL="$ORIGIN" sh /install.sh host-me
 [ "$(snapshot)" = "$before" ] || fail "the dry run changed the machine"
 
 echo "== install, as alice, with no root"
 before_system="$(ls -A /etc/systemd/system /usr/local/bin /var/lib | sort | md5sum)"
-as_alice sh /install.sh "$SECRET" "$ORIGIN" host-me | tee /tmp/install.txt
+as_alice TERMENBOX_CLAIM="$SECRET" TERMENBOX_CLIENT_URL="$ORIGIN" sh /install.sh host-me | tee /tmp/install.txt
 usr is-active --quiet termenbox || fail "the user service is not active"
 port="$(sed -n 's/^Environment=TERMENBOX_PORT=//p' "$UNITS/termenbox.service")"
 curl -fs "http://127.0.0.1:$port/health" >/dev/null || fail "the server does not answer on its health port"
@@ -97,7 +97,7 @@ echo "== installing again changes nothing"
 entries="$(as_alice "$BIN" --journal-dir "$JOURNAL" --journal-list | wc -l)"
 # An install from before the server picked its own UDP port left this file behind; it must do no harm.
 as_alice sh -c "echo 4443 > '$JOURNAL/udp_port'"
-as_alice sh /install.sh "$SECRET" "$ORIGIN" host-me
+as_alice TERMENBOX_CLAIM="$SECRET" TERMENBOX_CLIENT_URL="$ORIGIN" sh /install.sh host-me
 [ "$(as_alice "$BIN" --journal-dir "$JOURNAL" --journal-list | wc -l)" = "$entries" ] || fail "a second install wrote more journal entries"
 usr is-active --quiet termenbox || fail "the service stopped"
 
@@ -172,11 +172,11 @@ bob_sc() { as_bob systemctl --user "$@"; }
 B_STATE=/home/bob/.config/termenbox
 SECRET2="$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)"
 # The system install first (host-user): one per machine, with its own user, state and unit.
-TERMENBOX_RELEASE_URL=file:///release TERMENBOX_RELEASE_KEYS="$(cat /keys.txt)" TERMENBOX_SKIP_FIREWALL=1 sh /install.sh "$SECRET" "$ORIGIN" host-user >/dev/null
+TERMENBOX_RELEASE_URL=file:///release TERMENBOX_RELEASE_KEYS="$(cat /keys.txt)" TERMENBOX_SKIP_FIREWALL=1 TERMENBOX_CLAIM="$SECRET" TERMENBOX_CLIENT_URL="$ORIGIN" sh /install.sh host-user >/dev/null
 systemctl is-active --quiet termenbox || fail "the system service is not active"
 sys_port="$(sed -n 's/^Environment=TERMENBOX_PORT=//p' /etc/systemd/system/termenbox.service)"
 sys_udp="$(sed -n 's/^Environment=TERMENBOX_UDP_PORT=//p' /etc/systemd/system/termenbox.service)"
-as_bob sh /install.sh "$SECRET2" "$ORIGIN" host-me | tee /tmp/bob.txt
+as_bob TERMENBOX_CLAIM="$SECRET2" TERMENBOX_CLIENT_URL="$ORIGIN" sh /install.sh host-me | tee /tmp/bob.txt
 [ ! -e /tmp/sudo-called ] || fail "bob's install called sudo: $(cat /tmp/sudo-called)"
 grep -q "4443-4542" /tmp/bob.txt || { cat /tmp/bob.txt; fail "bob's install did not print the UDP range note"; }
 ! grep -q "Reusing the server" /tmp/bob.txt || fail "bob's fresh install took over someone else's state"
@@ -262,7 +262,7 @@ as_alice sh /uninstall.sh --yes --force >/dev/null
 
 echo "== a system service that runs as the same user keeps the old route, and says why before asking for sudo"
 sed -i 's/^User=.*/User=bob/' /etc/systemd/system/termenbox.service
-if as_bob sh /install.sh "$SECRET2" "$ORIGIN" host-me >/tmp/legacy.txt 2>&1; then fail "the old route ran without sudo"; fi
+if as_bob TERMENBOX_CLAIM="$SECRET2" TERMENBOX_CLIENT_URL="$ORIGIN" sh /install.sh host-me >/tmp/legacy.txt 2>&1; then fail "the old route ran without sudo"; fi
 grep -q "already installed here as a system service running as bob" /tmp/legacy.txt || { cat /tmp/legacy.txt; fail "no explanation before the sudo step"; }
 grep -q "uninstall.sh | sudo sh -s -- --yes --keep-state" /tmp/legacy.txt || fail "the way to the no-root install is not given"
 sed -i 's/^User=.*/User=termenbox/' /etc/systemd/system/termenbox.service
@@ -273,7 +273,7 @@ sh /uninstall.sh --yes --keep-state >/dev/null
 [ -f /var/lib/termenbox/server_key ] || fail "--keep-state did not keep the state"
 chown -R bob:bob /var/lib/termenbox     # what an earlier host-me install left behind: state owned by the user
 old_key="$(sha256sum /var/lib/termenbox/server_key | cut -d' ' -f1)"
-as_bob sh /install.sh "$SECRET2" "$ORIGIN" host-me | tee /tmp/move.txt
+as_bob TERMENBOX_CLAIM="$SECRET2" TERMENBOX_CLIENT_URL="$ORIGIN" sh /install.sh host-me | tee /tmp/move.txt
 grep -q "Reusing the server" /tmp/move.txt || fail "the old keys were not reused"
 [ "$(sha256sum /home/bob/.config/termenbox/server_key | cut -d' ' -f1)" = "$old_key" ] || fail "the new install has other keys"
 as_bob systemctl --user is-active --quiet termenbox || fail "bob's service is not active after the move"

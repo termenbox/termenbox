@@ -94,7 +94,7 @@ describe('failure causes', () => {
 
   it('gives every cause one primary action, a one-line title and a detail', () => {
     const causes = Object.keys(DIAGNOSES);
-    expect(causes).toEqual(['different_network', 'guest_isolation', 'local_network_denied', 'server_stopped', 'link_expired', 'bad_link', 'udp_closed', 'wrong_code', 'code_burned']);
+    expect(causes).toEqual(['different_network', 'guest_isolation', 'local_network_denied', 'server_stopped', 'link_expired', 'bad_link', 'udp_closed', 'announced_unreachable', 'wrong_code', 'code_burned']);
     for (const d of Object.values(DIAGNOSES)) {
       expect(d.action.label.length).toBeGreaterThan(0);
       expect(d.title.length).toBeLessThan(80);

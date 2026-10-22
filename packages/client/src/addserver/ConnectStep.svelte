@@ -2,7 +2,7 @@
   import type { ActionId, Connect } from '../lib/addServer';
   import Failure from './Failure.svelte';
 
-  /** Step 2 (decision 0127): a live checklist, the camera in place at the top, a paste field for the link or secret. */
+  /** Step 2 (decision 0127): a live checklist, the camera in place at the top, a paste field for the link. */
   export let connect: Connect;
   /** A code, link or secret has been read, so the checklist is past its first line. */
   export let codeRead: boolean;
@@ -22,6 +22,9 @@
   const mark = (i: number, st: number) => (i < st ? '✓' : i === st ? '…' : '·');
 </script>
 
+{#if !codeRead && !connect.diagnosis}
+  <p class="lead" data-testid="connect-lead">The installer printed a QR and a link. Scan the QR or paste the link.</p>
+{/if}
 <div class="scan">
   <video bind:this={video} muted playsinline data-testid="scan-video" style="display: {scanning ? 'block' : 'none'};"></video>
   {#if scanning}
@@ -42,6 +45,9 @@
   <p class="notice" role="status" data-testid="ws-notice">Connected through the WebSocket fallback because UDP did not work. Sessions work but can feel slower.</p>
 {/if}
 
+{#if codeRead && connect.phase === 'looking' && !connect.diagnosis}
+  <p class="hint" role="status" data-testid="connect-hint">Nothing yet? Scan or paste the link the installer printed.</p>
+{/if}
 <ul class="checks" data-testid="checklist" aria-label="Progress">
   {#each PHASES as p, i}
     <li class:active={i === stage && !connect.diagnosis} class:done={i < stage}><span aria-hidden="true">{mark(i, stage)}</span> {WORDS[p]}</li>
@@ -57,9 +63,9 @@
 {/if}
 
 <form on:submit|preventDefault={() => text.trim() && ontext(text.trim())} class="paste">
-  <label for="have-link">Paste the link, or the secret from your command</label>
+  <label for="have-link">Paste the link the installer printed</label>
   <div style="display: flex; gap: 8px;">
-    <input id="have-link" bind:value={text} placeholder="https://… or a code" autocapitalize="off" autocomplete="off" spellcheck="false" style="flex: 1; min-width: 0;" />
+    <input id="have-link" bind:value={text} placeholder="https://…" autocapitalize="off" autocomplete="off" spellcheck="false" style="flex: 1; min-width: 0;" />
     <button type="submit" class="secondary" disabled={!text.trim()}>Add</button>
   </div>
 </form>
@@ -69,6 +75,7 @@
 </label>
 
 <style>
+  .lead, .hint { color: var(--fg-muted); font-size: 0.875rem; margin: 0 0 8px; }
   .scan { margin-bottom: 10px; }
   video { width: 100%; max-height: 220px; object-fit: cover; border-radius: 8px; background: #000; margin-bottom: 8px; }
   .checks { list-style: none; padding: 0; margin: 10px 0; font-size: 0.875rem; color: var(--fg-muted); }

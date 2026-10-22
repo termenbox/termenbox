@@ -105,7 +105,7 @@ async function run(label, srv, extraArgs, freeze, expected) {
   await page.getByRole('dialog').waitFor();
   // Install is step 1; the server announces itself while the command is being run, so go on to Connect.
   await page.getByTestId('install-next').click();
-  // Feed the claim code of the running server (the dialog's own random secret would need a server started with it).
+  // Paste the claim code of the running server, as it would be pasted from the installer's link.
   await page.locator('#have-link').fill(srv.claim);
   await page.getByRole('button', { name: 'Add', exact: true }).first().click();
   const t0 = Date.now();

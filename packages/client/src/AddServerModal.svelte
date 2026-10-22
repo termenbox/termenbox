@@ -2,7 +2,6 @@
   import { onDestroy, onMount, tick } from 'svelte';
   import type { Bundle, ServerListItem } from './lib/protocol';
   import type { DirRecord } from './lib/directory';
-  import { randomClaimSecret } from './lib/directory';
   import { installCommand, parseClaim, parseServerLink, waitForServer, previewClaim, checkReachable, ClaimTimeout, type Reachability, type ClaimPreview, type RunChoice } from './lib/onboard';
   import { connectPaths, DIAGNOSES, diagnose, initialState, reduce, type ActionId, type Diagnosis, type Event } from './lib/addServer';
   import { buildPaths, isTunnel, orderPaths } from './lib/paths';
@@ -32,7 +31,8 @@
   const dispatch = (e: Event) => (s = reduce(s, e));
 
   let name = '';
-  let secret = prefillSecret ?? randomClaimSecret();
+  /** The claim secret of a link that arrived alone; the command carries none, so otherwise there is nothing to wait for. */
+  let secret: string | null = prefillSecret;
   /** Where sessions run: this machine, as the current user, by default (decision 0113). Host choices give this browser a shell on the machine, so they need consent. */
   let where: 'container' | 'host' = 'host';
   type HostAs = 'user' | 'me' | 'root';
@@ -42,7 +42,7 @@
   $: mode = where === 'container' ? 'container' : hostMode[hostAs];
   $: if (where === 'container' || hostAs) consent = false; // each choice of a host mode is agreed to on its own
   $: allowed = mode === 'container' || consent;
-  $: command = installCommand(origin, secret, mode);
+  $: command = installCommand(origin, mode);
 
   let error = '';
   let codeRead = false;
@@ -93,7 +93,7 @@
       blocked = e instanceof Unreachable;
       dispatch({ type: 'address', row: { ...row, state: 'failed', reason: blocked ? 'unreachable' : 'other' } });
       const why = e instanceof Error ? e.message : 'failed';
-      fail(blocked ? { ...DIAGNOSES.udp_closed, action: { id: 'retry', label: 'Try again' }, detail: `${why}. ${DIAGNOSES.udp_closed.detail}` } : { ...DIAGNOSES.server_stopped, title: 'Could not read what this server is.', detail: why });
+      fail(blocked ? { ...DIAGNOSES.announced_unreachable, detail: `${why}. ${DIAGNOSES.announced_unreachable.detail}` } : { ...DIAGNOSES.server_stopped, title: 'Could not read what this server is.', detail: why });
     }
   }
 
@@ -155,7 +155,7 @@
     }
     if (!found) return;
     const record = found;
-    onadd({ server_id: record.server_id, server_name: (claimPreview ? previewName : name).trim(), server_url: '', record, registered_at: Date.now(), claim: secret });
+    onadd({ server_id: record.server_id, server_name: (claimPreview ? previewName : name).trim(), server_url: '', record, registered_at: Date.now(), claim: secret ?? undefined });
     dispatch({ type: 'confirmed' });
     // The server stays added whatever the check says; it only advises (GUARDRAIL connections-warn-never-drop).
     checking = true;
@@ -197,22 +197,22 @@
   function onAction(id: ActionId) {
     switch (id) {
       case 'retry':
-        if (found && !claimPreview) void showPreview(found, secret);
+        if (found && !claimPreview && secret) void showPreview(found, secret);
         else if (pairPrev) void handlePair(`#/pair/${pairPrev.payload}${pairPrev.claim ? `?claim=${pairPrev.claim}` : ''}`);
-        else void begin(secret);
+        else if (secret) void begin(secret);
         break;
       case 'rescan':
         dispatch({ type: 'looking' });
         void startScan();
         break;
       case 'rerun_installer':
-        secret = randomClaimSecret();
+        secret = null;
         found = claimPreview = pairPrev = null;
         codeRead = false;
         dispatch({ type: 'reset' });
-        void begin(secret);
         break;
       case 'edit_code':
+        document.getElementById('have-link')?.scrollIntoView({ block: 'center' });
         document.getElementById('have-link')?.focus();
         break;
       case 'open_settings':
@@ -277,9 +277,9 @@
   }
 
   onMount(() => {
-    // Flow A starts waiting immediately: the secret is already in the command the user is about to paste.
+    // The command carries no secret, so there is nothing to wait for until a link, scan or pasted secret arrives.
     if (start === 'scan') void startScan();
-    else void begin(secret);
+    else if (secret) void begin(secret);
   });
   onDestroy(() => {
     abort?.abort();

@@ -21,7 +21,7 @@ const browser = await chromium.launch({
   ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
   args: ['--no-sandbox'],
 });
-const STATES = ['expired_link', 'bad_link', 'not_found', 'udp_closed', 'udp_closed_no_fallback', 'udp_closed_with_fallback', 'permission_denied', 'wrong_code', 'burned_code', 'different_network', 'guest_isolation'];
+const STATES = ['expired_link', 'bad_link', 'not_found', 'udp_closed', 'announced_unreachable', 'udp_closed_no_fallback', 'udp_closed_with_fallback', 'permission_denied', 'wrong_code', 'burned_code', 'different_network', 'guest_isolation'];
 try {
   const ctx = await browser.newContext({ viewport: { width: 375, height: 667 }, isMobile: true, hasTouch: true });
   const scrolls = [];
