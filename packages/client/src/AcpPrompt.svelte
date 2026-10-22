@@ -158,7 +158,7 @@
     {/snippet}
     {#snippet keys()}
       {#if showKeys}
-        <KeyRow keys={PROMPT_KEYS} label="Prompt keys" onkey={row} onnewline={() => apply({ do: 'insert', text: '\n' })} voiceSupported={!!voice} {listening} onvoice={() => voice?.toggle()} {voiceLang} onvoicelang={cycleLang} />
+        <KeyRow keys={PROMPT_KEYS} label="Prompt keys" onkey={row} onnewline={() => apply({ do: 'insert', text: '\n' })} voiceSupported={!!voice} {listening} onvoice={() => void voice?.toggle()} {voiceLang} onvoicelang={cycleLang} />
       {/if}
     {/snippet}
   </Composer>

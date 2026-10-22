@@ -64,6 +64,8 @@ export function errorMessage(code: string): string | null {
       return 'Microphone is blocked. Allow it in the browser settings to dictate.';
     case 'audio-capture':
       return 'No microphone found.';
+    case 'not-readable':
+      return 'The microphone is in use by another app.';
     case 'network':
       return 'Speech recognition needs a connection in this browser.';
     case 'language-not-supported':
@@ -73,6 +75,47 @@ export function errorMessage(code: string): string | null {
       return null;
     default:
       return `Dictation failed (${code}).`;
+  }
+}
+
+/** The browser pieces the permission check reads; a browser without them is handled below. */
+export interface MicScope {
+  mediaDevices?: Pick<MediaDevices, 'getUserMedia'>;
+}
+
+/**
+ * Asks for the microphone before the recognizer starts, so the browser's own prompt appears on the first tap.
+ * Returns null when dictation may go ahead, or a message for the person. A permission already granted is reused
+ * without a prompt; the device is released at once because the recognizer opens it itself.
+ */
+export async function askMicrophone(
+  scope: MicScope = { mediaDevices: (globalThis as { navigator?: Navigator }).navigator?.mediaDevices },
+): Promise<string | null> {
+  const devices = scope.mediaDevices;
+  if (!devices?.getUserMedia) return null; // no MediaDevices (an old browser): let the recognizer ask its own way
+  try {
+    const stream = await devices.getUserMedia({ audio: true });
+    stream.getTracks().forEach((t) => t.stop());
+    return null;
+  } catch (e) {
+    return errorMessage(micErrorCode(e));
+  }
+}
+
+/** Maps a getUserMedia rejection to the wording `errorMessage` already has. */
+function micErrorCode(e: unknown): string {
+  switch ((e as { name?: string } | null)?.name) {
+    case 'NotAllowedError':
+    case 'SecurityError':
+      return 'not-allowed';
+    case 'NotFoundError':
+    case 'DevicesNotFoundError':
+      return 'audio-capture';
+    case 'NotReadableError':
+    case 'TrackStartError':
+      return 'not-readable';
+    default:
+      return 'not-allowed';
   }
 }
 
@@ -116,24 +159,58 @@ export interface VoiceHandlers {
 export class Voice {
   private rec: Recognizer | null = null;
   private started = false;
+  /** A start is waiting for the browser's permission answer. */
+  private waiting = false;
+  /** The microphone check succeeded; later starts need not open the device again. */
+  private micReady = false;
+  /** Distinguishes a live start from one cancelled by a stop while the prompt was open. */
+  private generation = 0;
 
   constructor(
     private readonly make: RecognizerFactory,
     private readonly lang: () => string,
     private readonly on: VoiceHandlers,
+    private readonly ask: () => Promise<string | null> = askMicrophone,
   ) {}
 
   get listening(): boolean {
     return this.rec !== null;
   }
 
-  toggle(): void {
-    if (this.rec) this.stop();
-    else this.start();
+  toggle(): Promise<void> {
+    if (this.rec) {
+      this.stop();
+      return Promise.resolve();
+    }
+    if (this.waiting) return Promise.resolve(); // the browser prompt is already open
+    return this.start();
   }
 
-  start(): void {
-    if (this.rec) return;
+  async start(): Promise<void> {
+    if (this.rec || this.waiting) return;
+    this.waiting = true;
+    const generation = ++this.generation;
+    if (!this.micReady) {
+      let denied: string | null;
+      try {
+        denied = await this.ask();
+      } catch {
+        denied = 'Microphone permission was not granted.';
+      }
+      if (generation !== this.generation) return; // stopped while the prompt was open
+      if (denied) {
+        this.waiting = false;
+        this.on.onError(denied);
+        this.on.onState(false);
+        return;
+      }
+      this.micReady = true;
+    }
+    this.waiting = false;
+    this.begin();
+  }
+
+  private begin(): void {
     const rec = this.make();
     rec.lang = this.lang();
     rec.continuous = true;
@@ -149,6 +226,18 @@ export class Voice {
       this.on.onInterim(m.interim);
     };
     rec.onerror = (e) => {
+      if (this.rec !== rec) return;
+      // Tear down here too: some browsers report the error without a following `onend`, and a blocked mic must
+      // never leave the key pressed.
+      this.rec = null;
+      this.on.onInterim('');
+      this.on.onState(false);
+      try {
+        rec.stop();
+      } catch { /* already closing */ }
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') {
+        this.micReady = false; // permission may have been revoked: check again on the next tap
+      }
       const msg = errorMessage(e.error);
       if (msg) this.on.onError(msg);
     };
@@ -164,12 +253,19 @@ export class Voice {
       this.on.onState(true);
     } catch {
       this.rec = null;
+      this.on.onState(false);
       this.on.onError('Dictation could not start.');
     }
   }
 
   /** Stops listening; a phrase the recognizer is about to finalize still arrives before `onend`. */
   stop(): void {
-    this.rec?.stop();
+    this.generation++; // a permission prompt still open no longer starts a session
+    this.waiting = false;
+    const rec = this.rec;
+    if (!rec) return;
+    try {
+      rec.stop();
+    } catch { /* already closing */ }
   }
 }
