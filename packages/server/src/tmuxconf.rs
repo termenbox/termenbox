@@ -58,9 +58,7 @@ pub fn render(term: &str, local: Option<&Path>) -> String {
     out.push_str(&format!("set -g default-terminal \"{term}\"\n"));
     // Copying works across the browser: a drag in tmux copies, and tmux and the programs in it put the text on the
     // clipboard of the machine the browser runs on (OSC 52). Shift+drag still makes the browser's own selection.
-    // set-clipboard external: tmux passes OSC 52 through (doesn't intercept), allow-passthrough on lets tmux
-    // strip opencode's DCS wrapper (\ePtmux;...\e\\) and forward plain OSC 52 to the outer terminal (xterm.js).
-    out.push_str("set -g mouse on\nset -g set-clipboard external\nset -gq allow-passthrough on\n");
+    out.push_str("set -g mouse on\nset -g set-clipboard on\nset -gq allow-passthrough on\n");
     if let Some(local) = local {
         out.push_str(&format!("source-file -q \"{}\"\n", local.display()));
     }
@@ -118,7 +116,7 @@ mod tests {
         assert!(c.ends_with("source-file -q \"/c/tmux.local.conf\"\n"));
         // the owner's file comes last, so it can switch any of these off
         assert!(c.find("set -g mouse on").unwrap() < c.find("source-file").unwrap());
-        assert!(c.contains("set -g set-clipboard external\n"));
+        assert!(c.contains("set -g set-clipboard on\n"));
         assert!(!render("xterm-256color", None).contains("source-file"));
     }
 
