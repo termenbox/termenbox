@@ -524,7 +524,10 @@ fn print_registration(args: &Args, auth: &AuthState) -> anyhow::Result<()> {
         if let Some(owner) = auth.owner() {
             println!("This server is registered to @{}.", owner.login);
         }
-        print!("{}", block.render(args.qr || std::io::stdout().is_terminal()));
+        print!(
+            "{}",
+            block.render(args.qr || std::io::stdout().is_terminal())
+        );
         return Ok(());
     }
     if let Some(owner) = auth.owner() {
@@ -1090,7 +1093,10 @@ fn pairing_block(args: &Args, auth: &AuthState) -> anyhow::Result<candidates::Pa
 fn print_pairing(args: &Args, auth: &AuthState) -> anyhow::Result<()> {
     use std::io::IsTerminal;
     let block = pairing_block(args, auth)?;
-    print!("{}", block.render(args.qr || std::io::stdout().is_terminal()));
+    print!(
+        "{}",
+        block.render(args.qr || std::io::stdout().is_terminal())
+    );
     Ok(())
 }
 

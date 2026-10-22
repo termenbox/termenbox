@@ -510,7 +510,9 @@ impl PairingBlock {
         }
         out.push_str("The link carries this server's name, key fingerprint and addresses, signed by the server; the app shows them before it connects.\n");
         if self.claims {
-            out.push_str("The first user to confirm becomes the owner. It works for 15 minutes, once.\n");
+            out.push_str(
+                "The first user to confirm becomes the owner. It works for 15 minutes, once.\n",
+            );
         }
         out
     }
@@ -825,7 +827,8 @@ mod tests {
         });
         let (_, wire) = sign(&key, 1, &fp, "box", false, list).unwrap();
         let claim = "A".repeat(43);
-        let text = PairingBlock::new("https://app.termenbox.dev", &wire, Some(&claim), None).render(true);
+        let text =
+            PairingBlock::new("https://app.termenbox.dev", &wire, Some(&claim), None).render(true);
         let widest = text
             .lines()
             .take_while(|l| !l.starts_with("Scan this"))

@@ -88,6 +88,9 @@ fn a_rerun_on_an_owned_server_shows_the_readd_block() {
         "-",
         &format!("This server is registered to @me.\nQRART\n{OWNED_LINK}\n"),
     );
-    assert!(out.contains("registered to @me") && out.contains(OWNED_LINK), "{out}");
+    assert!(
+        out.contains("registered to @me") && out.contains(OWNED_LINK),
+        "{out}"
+    );
     assert!(!out.contains("claim="));
 }
