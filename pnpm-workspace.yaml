@@ -1,4 +1,2 @@
 packages:
   - packages/client
-allowBuilds:
-  esbuild: true
