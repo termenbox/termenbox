@@ -128,6 +128,8 @@
 0123-connections-are-a-raced-set-of-signed-candidate-paths,"A server is one identity reached over a raced set of signed candidate paths, so every topology connects without a mode choice","transport, network, security, deployment, roadmap, lan",draft
 0124-connection-telemetry-is-opt-out-sampled-and-enum-only,"The hosted client reports connection outcomes as sampled, enum-only events through an IP-stripping proxy, opt-out","privacy, network, client, performance, roadmap",draft
 0125-the-roadmap-has-no-priority-tiers,"The roadmap has no priority tiers; order comes from WSJF chains, dependencies and the paid-lane rule","roadmap, repo",active
+0129-features-land-on-develop-and-master-moves-only-for-a-release,"Features land on develop, the default branch; master moves only by fast-forward for a release","repo, release, ci, git-hooks",active
 | 0126-the-installer-always-prints-one-pairing-link-qr-and-code | The installer prints one pairing link, QR and short code on every run, carrying the claim and the signed candidates | product | active | Sergey Strebulaev | - |
 | 0127-add-server-is-a-four-step-wizard-with-a-standalone-scan | Add Server is a four-step wizard with no fork up front, and Scan QR is a separate path outside it | product | active | Sergey Strebulaev | - |
 | 0128-a-short-pairing-code-is-a-rate-limited-pake-secret | A short pairing code is a mailbox key and a PAKE password, bounded by its life, a stretch and a guess budget | product | active | Sergey Strebulaev | - |
+| 0129-features-land-on-develop-and-master-moves-only-for-a-release | Features land on develop, the default branch; master moves only by fast-forward for a release | process | active | Sergey Strebulaev | - |

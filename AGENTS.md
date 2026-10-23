@@ -69,6 +69,7 @@ lint
 - **Sessions**: server owns tmux/PTY via a SessionBackend trait (DECISION-0054); reconnect = re-attach
 - **Client**: Svelte 5 + xterm.js WebGL; hosted or self-hosted (DECISION-0052)
 - **Deployment**: Docker image (ghcr.io), one command from the client; 512MB RAM, 1 vCPU (FACT-0001)
+- **Branches**: PRs target `develop`, the default branch; `master` moves only for a release (DECISION-0129)
 - **Plan**: docs/plans/termenbox-roadmap.md, tracked in GitHub issues
 
 ## Guardrail Highlights
