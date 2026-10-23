@@ -24,7 +24,10 @@ COPY Cargo.toml Cargo.lock ./
 COPY packages/core ./packages/core
 COPY packages/server ./packages/server
 COPY packages/agent ./packages/agent
-RUN cargo build --release -p termenbox-server && strip target/release/termenbox-server
+# A release sets the full SemVer (0.1.36-nightly.20261022) so the image reports its channel; empty means the crate's.
+ARG TERMENBOX_RELEASE_VERSION=
+RUN if [ -z "$TERMENBOX_RELEASE_VERSION" ]; then unset TERMENBOX_RELEASE_VERSION; fi; \
+    cargo build --release -p termenbox-server && strip target/release/termenbox-server
 
 FROM ${BASE_IMAGE}
 LABEL org.opencontainers.image.source="https://github.com/termenbox/termenbox" \

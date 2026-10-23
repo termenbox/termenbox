@@ -1,13 +1,20 @@
 name: Build & Push Docker Image
 
+# The image tags follow the channels (decision 0130): a stable tag pushes latest, X.Y and X.Y.Z; a beta tag pushes beta
+# and the exact version; a nightly pushes nightly and the exact version. `latest` moves only for a stable tag, never
+# for a push to master, and there is no `edge`. release_plan.py decides, so the tags cannot drift from the release.
 on:
   push:
-    branches: [master]
     tags: ['v*']
-    paths: ['docker/**', 'packages/core/**', 'packages/server/**', 'packages/agent/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/docker-build.yaml']
   # Pull requests build the image (amd64) without pushing, so a broken Dockerfile fails before merge.
   pull_request:
     paths: ['docker/**', 'packages/core/**', 'packages/server/**', 'packages/agent/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/docker-build.yaml']
+  # release-nightly.yaml calls this for its commit: a tag made with the workflow token starts no workflow of its own.
+  workflow_call:
+    inputs:
+      sha: { description: 'commit to build', required: true, type: string }
+      version: { description: 'full SemVer the image reports', required: true, type: string }
+      tags: { description: 'space separated image tags to push', required: true, type: string }
   workflow_dispatch:
     inputs:
       tag:
@@ -27,10 +34,49 @@ env:
   PUSH: ${{ github.event_name != 'pull_request' }}
 
 jobs:
+  # Decides whether this run builds and what it pushes.
+  plan:
+    name: Plan the image tags
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.p.outputs.run }}
+      tags: ${{ steps.p.outputs.tags }}
+      version: ${{ steps.p.outputs.version }}
+      sha: ${{ steps.p.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+      - id: p
+        env:
+          CALL_TAGS: ${{ inputs.tags }}
+          CALL_VERSION: ${{ inputs.version }}
+          DISPATCH_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          tags=""; version=""; run=true
+          if [ -n "$CALL_TAGS" ]; then
+            # called by release-nightly.yaml, whose own event name this workflow sees
+            tags="$CALL_TAGS"; version="$CALL_VERSION"
+          elif [ "$GITHUB_EVENT_NAME" = push ]; then
+            plan="$(python3 .github/scripts/release_plan.py tag "$GITHUB_REF_NAME")"
+            if [ "$(jq -r .channel <<<"$plan")" = none ]; then
+              echo "::notice::$GITHUB_REF_NAME is not a stable or beta tag; no image"; run=false
+            fi
+            tags="$(jq -r '.docker_tags | join(" ")' <<<"$plan")"; version="$(jq -r .version <<<"$plan")"
+          elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            tags="$DISPATCH_TAG"
+          fi
+          {
+            echo "run=$run"; echo "version=$version"; echo "sha=${{ inputs.sha || github.sha }}"
+            echo "tags<<EOF"; for t in $tags; do echo "type=raw,value=$t"; done; echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
   # One native runner per architecture: no QEMU, so the Rust build runs at full speed. Build cache lives in GHCR
   # (the Actions cache has a 10 GB per-repository cap that two architectures' layers were filling).
   build:
     name: Build ${{ matrix.arch }}
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
     strategy:
       fail-fast: true
       matrix:
@@ -42,6 +88,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
       - uses: docker/setup-buildx-action@v3
       - name: Log in to Container Registry
         uses: docker/login-action@v3
@@ -56,7 +104,9 @@ jobs:
           context: .
           file: docker/Dockerfile
           platforms: linux/${{ matrix.arch }}
-          build-args: TERMENBOX_BUILD=${{ github.sha }}
+          build-args: |
+            TERMENBOX_BUILD=${{ needs.plan.outputs.sha }}
+            TERMENBOX_RELEASE_VERSION=${{ needs.plan.outputs.version }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=${{ env.PUSH }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-cache:${{ matrix.arch }}
           cache-to: ${{ env.PUSH == 'true' && format('type=registry,ref={0}/{1}-cache:{2},mode=max', env.REGISTRY, env.IMAGE_NAME, matrix.arch) || '' }}
@@ -91,8 +141,8 @@ jobs:
   # Joins the two single-architecture images into the multi-architecture tags users pull.
   manifest:
     name: Publish manifest
-    if: github.event_name != 'pull_request'
-    needs: build
+    if: github.event_name != 'pull_request' && needs.plan.outputs.run == 'true'
+    needs: [plan, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -111,11 +161,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
-            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+          tags: ${{ needs.plan.outputs.tags }}
       - name: Create manifest list and push
         working-directory: /tmp/digests
         run: |

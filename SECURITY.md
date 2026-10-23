@@ -24,7 +24,7 @@ directory records, and the release pipeline. See `docs/facts/0023-threat-model.m
 
 ## Release signing (native binaries)
 
-Each release (`v<version>` tag, `.github/workflows/release.yaml`) publishes the static binaries and a
+Each release (`v<version>` tag, `.github/workflows/release-stable.yaml`, built by `release-build.yaml`) publishes the static binaries and a
 `manifest.json` that lists their SHA-256 hashes. The manifest is signed with an Ed25519 **release key** in the
 OpenSSH signature format (namespace `termenbox-release`), so anyone can check it with
 `ssh-keygen -Y verify`, and the server checks it with the public keys built into the binary
@@ -43,6 +43,11 @@ Hosts never trust the download location: the installer and the updater verify th
 - **What a manifest may contain:** only download URLs under this project's GitHub releases; anything else is
   refused even when correctly signed. The installer and the updater download exactly the addresses the verified
   manifest names (decision 0132), never one built from the release address or a tag.
+- **Per-channel pipelines (decision 0133):** `release-stable.yaml` (tags `vX.Y.Z` on `master`), `release-beta.yaml`
+  (`vX.Y.Z-rc.N`, `-beta.N`) and `release-nightly.yaml` (the head of a green CI run on `develop`, once a day) call
+  `release-build.yaml`, which signs in the GitHub Environment `stable`, `beta` or `nightly`. Each environment holds
+  its own `RELEASE_SIGNING_KEY`; the signature must verify against that channel's key (`r1`, `b1`, `n1`) in
+  `release-keys.txt` or nothing is published.
 - **Channels:** a manifest names its channel (`stable`, `beta`, `nightly`) and each channel has its own key, listed
   with `channel=...` in `release-keys.txt` (decision 0130). A server follows only the channels in its own
   `update.toml` policy (decision 0131); a key signs only its channel.
