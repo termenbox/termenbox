@@ -441,6 +441,8 @@ pub struct EventHub {
     history: Option<Arc<crate::history::History>>,
     /// Where each Claude Code session's token counts are read from (U13).
     usage: Arc<crate::transcript::UsageTracker>,
+    /// Sender to cancel push escalation ladders when Attention clears.
+    ladder_cancel: Option<broadcast::Sender<String>>,
 }
 
 impl EventHub {
@@ -458,7 +460,14 @@ impl EventHub {
             status_tx: broadcast::channel(256).0,
             history: None,
             usage: Arc::default(),
+            ladder_cancel: None,
         }
+    }
+
+    /// Sets the sender for cancelling push escalation ladders.
+    pub fn with_ladder_cancel(mut self, tx: broadcast::Sender<String>) -> Self {
+        self.ladder_cancel = Some(tx);
+        self
     }
 
     /// Records the tasks this hub sees end (U12).
@@ -949,15 +958,33 @@ impl EventHub {
         let _ = self.status_tx.send(StatusChange::Attention(snapshot));
     }
 
+    /// Test helper: raises an attention item directly.
+    #[cfg(test)]
+    pub fn raise_attention_for_test(&self, session: &str, kind: AttentionKind, now: u64) {
+        self.raise(session, kind, Source::Hook, now);
+    }
+
     fn clear_where(&self, session: &str, pred: impl Fn(&Attention) -> bool) {
         let mut list = self.attention.lock().unwrap();
         let before = list.len();
+        // Collect IDs of items being removed to cancel their ladders
+        let removed_ids: Vec<String> = list
+            .iter()
+            .filter(|a| a.session == session && pred(a))
+            .map(|a| a.id.clone())
+            .collect();
         list.retain(|a| !(a.session == session && pred(a)));
         if list.len() != before {
             let snapshot = list.clone();
             drop(list);
             tracing::info!(target: "audit", event = "attention_cleared", session = %session, by = "fact");
             let _ = self.status_tx.send(StatusChange::Attention(snapshot));
+            // Cancel ladders for removed items
+            if let Some(tx) = &self.ladder_cancel {
+                for id in removed_ids {
+                    let _ = tx.send(id);
+                }
+            }
         }
     }
 
@@ -976,6 +1003,10 @@ impl EventHub {
         drop(list);
         tracing::info!(target: "audit", event = "attention_cleared", session = %gone.session, by = "ack");
         let _ = self.status_tx.send(StatusChange::Attention(snapshot));
+        // Cancel the ladder for this item
+        if let Some(tx) = &self.ladder_cancel {
+            let _ = tx.send(attention_id.to_string());
+        }
         true
     }
 
@@ -1097,6 +1128,11 @@ impl EventHub {
         if agents.get(session).map(String::as_str) != Some(agent) {
             agents.insert(session.to_string(), agent.to_string());
         }
+    }
+
+    /// Returns the agent name for a session, if known.
+    pub fn agent(&self, session: &str) -> Option<String> {
+        self.agents.lock().unwrap().get(session).cloned()
     }
 
     pub fn snapshot(&self) -> Vec<SessionAgentState> {

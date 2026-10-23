@@ -7,9 +7,11 @@
   import { setShortcuts, shortcutsOn, SHORTCUTS, isMac } from '../lib/palette';
   /** The Settings destination: where the account, the servers and the app's own switches live. Preferences that exist
    *  today (theme, skin, cache, renderer) stay in the menu until they move here. */
-  let { user, serverVersion = '', hooks = [], onhook, onservers, onmenu, onshortcuts, onreport, onlogout, ondeletedata, historyServers, ondeletehistory }: {
+  let { user, serverVersion = '', hooks = [], onhook, onservers, onmenu, onshortcuts, onreport, onlogout, ondeletedata, historyServers, ondeletehistory, pushSettings, onPushSettingsChange }: {
     user: string; serverVersion?: string; hooks?: HookRow[]; onhook?: (choice: 'preview' | 'enable' | 'remove' | 'again', row: HookRow) => void; onservers: () => void; onmenu: () => void; onshortcuts: () => void; onreport: () => void; onlogout: () => void; ondeletedata: () => Promise<number>;
     historyServers: number; ondeletehistory: () => Promise<HistoryDeletion>;
+    pushSettings?: { initial_wait_secs: number; max_interval_secs: number; multiplier: number; quiet_hours?: string; muted_agents: string[] };
+    onPushSettingsChange?: (settings: { initial_wait_secs: number; max_interval_secs: number; multiplier: number; quiet_hours?: string; muted_agents: string[] }) => void;
   } = $props();
   let privacy = $state(false);
   const row = 'flex h-14 w-full items-center justify-between gap-3 rounded-card border border-line bg-panel px-4 text-left text-base text-fg';
@@ -18,6 +20,52 @@
   const idOf = (h: HookRow) => `${h.serverId}|${h.agent}`;
   const btn = 'min-h-11 rounded-card px-4 text-base font-semibold disabled:opacity-60';
   const key = isMac() ? SHORTCUTS[0].mac : SHORTCUTS[0].other;
+  let saving = $state(false);
+  let mutedAgentsInput = $state('');
+  let allAgents: string[] = [];
+  // Local copies of push settings for binding
+  let localInitialWait = $state(600);
+  let localMaxInterval = $state(3600);
+  let localMultiplier = $state(2);
+  let localQuietHours = $state('');
+  
+  // Sync local state with props
+  $effect.pre(() => {
+    if (pushSettings) {
+      localInitialWait = pushSettings.initial_wait_secs;
+      localMaxInterval = pushSettings.max_interval_secs;
+      localMultiplier = pushSettings.multiplier;
+      localQuietHours = pushSettings.quiet_hours ?? '';
+    }
+  });
+  
+  // Collect all known agents from hooks
+  if (hooks) {
+    for (const h of hooks) {
+      if (!allAgents.includes(h.agent)) allAgents.push(h.agent);
+    }
+  }
+  
+  // Initialize mutedAgentsInput from pushSettings
+  $effect.pre(() => {
+    if (pushSettings?.muted_agents) {
+      mutedAgentsInput = pushSettings.muted_agents.join(', ');
+    }
+  });
+  
+  async function savePushSettings() {
+    if (!onPushSettingsChange) return;
+    saving = true;
+    const muted = mutedAgentsInput.split(',').map(s => s.trim()).filter(Boolean);
+    onPushSettingsChange({
+      initial_wait_secs: Math.max(60, localInitialWait),
+      max_interval_secs: Math.max(60, localMaxInterval),
+      multiplier: Math.max(1.1, Math.min(10, localMultiplier)),
+      quiet_hours: localQuietHours || undefined,
+      muted_agents: muted,
+    });
+    saving = false;
+  }
 </script>
 
 {#if privacy}
@@ -55,7 +103,46 @@
       {/each}
     </section>
   {/if}
-  <button type="button" class={row} onclick={onservers}><span>Servers</span><span aria-hidden="true" class="text-soft">›</span></button>
+    <section class="flex flex-col gap-2" aria-label="Push notifications" data-settings-push>
+      <h2 class="text-sm font-semibold text-soft">Push notifications</h2>
+      <div class="flex flex-col gap-3 rounded-card border border-line bg-panel p-4">
+        <div class="grid grid-cols-2 gap-3">
+          <div class="flex flex-col gap-1">
+            <label class="text-sm text-soft">Re-notify after (minutes)</label>
+            <input type="number" min="1" max="1440" step="1" class="input" bind:value={localInitialWait} onblur={() => localInitialWait = Math.max(60, localInitialWait)} />
+          </div>
+          <div class="flex flex-col gap-1">
+            <label class="text-sm text-soft">Max interval (minutes)</label>
+            <input type="number" min="1" max="10080" step="1" class="input" bind:value={localMaxInterval} onblur={() => localMaxInterval = Math.max(60, localMaxInterval)} />
+          </div>
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-sm text-soft">Multiplier</label>
+          <input type="number" min="1.1" max="10" step="0.1" class="input" bind:value={localMultiplier} onblur={() => localMultiplier = Math.max(1.1, Math.min(10, localMultiplier))} />
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-sm text-soft">Quiet hours (HH:MM-HH:MM, 24h, empty = none)</label>
+          <input type="text" placeholder="22:00-07:00" class="input" bind:value={localQuietHours} />
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-sm text-soft">Muted agents (comma-separated)</label>
+          <input type="text" placeholder="claude,opencode" class="input" bind:value={mutedAgentsInput} />
+          <div class="flex flex-wrap gap-1 text-xs text-soft">
+            {#each allAgents as a}
+              <button type="button" class="px-2 py-1 rounded bg-raised hover:bg-muted" onclick={() => {
+                const arr = mutedAgentsInput.split(',').map(s => s.trim()).filter(Boolean);
+                if (arr.includes(a)) mutedAgentsInput = arr.filter(x => x !== a).join(', ');
+                else mutedAgentsInput = [...arr, a].join(', ');
+              }}>{a}</button>
+            {/each}
+          </div>
+        </div>
+        <button type="button" class={btn} bg-accent text-on-accent self-start disabled={saving} onclick={savePushSettings}>
+          {saving ? 'Saving…' : 'Save push settings'}
+        </button>
+      </div>
+    </section>
+    <button type="button" class={row} onclick={onservers}><span>Servers</span><span aria-hidden="true" class="text-soft">›</span></button>
   <button type="button" class={row} onclick={onmenu}><span>Appearance, notifications and more</span><span aria-hidden="true" class="text-soft">›</span></button>
   <div class={row}>
     <label id="shortcuts-label" for="shortcuts-switch"><span class="block">Keyboard shortcuts</span><span class="block text-sm text-soft">{key} opens the command palette. Off gives every key to the terminal.</span></label>

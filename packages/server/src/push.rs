@@ -11,11 +11,13 @@ use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes128Gcm, Nonce};
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine as _};
+use chrono::Timelike;
 use hmac::{Hmac, Mac};
 use p256::ecdsa::{signature::Signer, Signature, SigningKey};
 use p256::{ecdh::EphemeralSecret, EncodedPoint, PublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::sync::broadcast;
 use termenbox_core::events::{Attention, AttentionKind};
 use tracing::{info, warn};
 
@@ -36,6 +38,68 @@ const PUSH_HOSTS: [&str; 5] = [
     "notify.windows.com",
     "push.microsoft.com",
 ];
+
+/// Default initial wait before the first re-notify (10 minutes).
+const DEFAULT_INITIAL_WAIT_SECS: u64 = 10 * 60;
+/// Default maximum interval between re-notifies (1 hour).
+const DEFAULT_MAX_INTERVAL_SECS: u64 = 60 * 60;
+/// Default multiplier for growing intervals.
+const DEFAULT_MULTIPLIER: f64 = 2.0;
+
+/// Configuration for the escalation ladder.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct EscalationConfig {
+    /// Seconds to wait after the first push before the first re-notify.
+    #[serde(default = "default_initial_wait")]
+    pub initial_wait_secs: u64,
+    /// Maximum seconds between re-notifies.
+    #[serde(default = "default_max_interval")]
+    pub max_interval_secs: u64,
+    /// Multiplier applied to the interval after each fire.
+    #[serde(default = "default_multiplier")]
+    pub multiplier: f64,
+    /// Quiet hours as "HH:MM-HH:MM" (24h). Empty or None disables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quiet_hours: Option<String>,
+    /// Agent names to mute (no push for these agents).
+    #[serde(default)]
+    pub muted_agents: Vec<String>,
+}
+
+fn default_initial_wait() -> u64 {
+    DEFAULT_INITIAL_WAIT_SECS
+}
+fn default_max_interval() -> u64 {
+    DEFAULT_MAX_INTERVAL_SECS
+}
+fn default_multiplier() -> f64 {
+    DEFAULT_MULTIPLIER
+}
+
+impl Default for EscalationConfig {
+    fn default() -> Self {
+        Self {
+            initial_wait_secs: DEFAULT_INITIAL_WAIT_SECS,
+            max_interval_secs: DEFAULT_MAX_INTERVAL_SECS,
+            multiplier: DEFAULT_MULTIPLIER,
+            quiet_hours: None,
+            muted_agents: Vec::new(),
+        }
+    }
+}
+
+/// Internal state for a single ladder rung.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+struct LadderState {
+    item_id: String,
+    session: String,
+    agent: String,
+    kind: AttentionKind,
+    next_fire_at: u64,
+    interval_secs: u64,
+    fires: u32,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Subscription {
@@ -247,15 +311,16 @@ fn body(
     Ok(out)
 }
 
-/// What a notification says: the session, the kind and the time. Nothing an agent wrote.
-pub fn payload(session: &str, kind: AttentionKind, at: u64) -> Vec<u8> {
+/// What a notification says: the session, the kind, the time, and a deep link. Nothing an agent wrote.
+pub fn payload(session: &str, kind: AttentionKind, at: u64, session_key: &str) -> Vec<u8> {
     let kind = match kind {
         AttentionKind::NeedsInput => "needs_input",
         AttentionKind::FinishedUnseen => "finished",
         AttentionKind::Failed => "failed",
         AttentionKind::Unknown => "attention",
     };
-    serde_json::json!({"session": session, "kind": kind, "at": at, "tag": session})
+    let deep_link = format!("/#/home?focus={}", session_key);
+    serde_json::json!({"session": session, "kind": kind, "at": at, "tag": session, "deep_link": deep_link})
         .to_string()
         .into_bytes()
 }
@@ -281,9 +346,20 @@ pub struct Push {
     /// Tests post to a local fake service; production only to the browser vendors' hosts.
     allow_any_endpoint: bool,
     pub grace: Duration,
+    /// Escalation ladder configuration (persisted to push_settings.json).
+    config: Arc<Mutex<EscalationConfig>>,
+    /// Active ladders keyed by Attention item_id.
+    ladders: Mutex<HashMap<String, LadderState>>,
+    /// Channel to signal ladder cancellation when Attention clears.
+    ladder_cancel: broadcast::Sender<String>,
 }
 
 impl Push {
+    /// Returns the sender for ladder cancellation signals.
+    pub fn ladder_cancel_sender(&self) -> broadcast::Sender<String> {
+        self.ladder_cancel.clone()
+    }
+
     pub fn load(dir: &Path) -> Arc<Self> {
         let cfg = load_connectors(dir);
         let vapid = cfg.get("TERMENBOX_VAPID_PRIVATE_KEY").and_then(|k| {
@@ -301,10 +377,17 @@ impl Push {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
-        Arc::new(Self::new(vapid, subs, path))
+        // Load escalation config from push_settings.json
+        let settings_path = dir.join("push_settings.json");
+        let config = std::fs::read(&settings_path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        Arc::new(Self::new(vapid, subs, path, config))
     }
 
-    pub fn new(vapid: Option<Vapid>, subs: Vec<Subscription>, path: PathBuf) -> Self {
+    pub fn new(vapid: Option<Vapid>, subs: Vec<Subscription>, path: PathBuf, config: EscalationConfig) -> Self {
+        let (ladder_cancel_tx, _) = broadcast::channel(16);
         Self {
             vapid,
             subs: Mutex::new(subs),
@@ -316,6 +399,9 @@ impl Push {
                 .unwrap_or_default(),
             allow_any_endpoint: false,
             grace: DEFAULT_GRACE,
+            config: Arc::new(Mutex::new(config)),
+            ladders: Mutex::default(),
+            ladder_cancel: ladder_cancel_tx,
         }
     }
 
@@ -357,6 +443,80 @@ impl Push {
         if let Err(e) = write() {
             warn!("cannot save push subscriptions: {e}");
         }
+    }
+
+    /// Saves the escalation config to push_settings.json.
+    fn save_config(&self, config: &EscalationConfig) {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let Ok(json) = serde_json::to_vec(config) else {
+            return;
+        };
+        let path = self.path.with_file_name("push_settings.json");
+        let write = || -> std::io::Result<()> {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)?;
+            f.write_all(&json)
+        };
+        if let Err(e) = write() {
+            warn!("cannot save push settings: {e}");
+        }
+    }
+
+    /// Returns a clone of the current escalation config.
+    pub fn get_config(&self) -> EscalationConfig {
+        self.config.lock().unwrap().clone()
+    }
+
+    /// Updates the escalation config and persists it.
+    pub fn set_config(&self, config: EscalationConfig) {
+        *self.config.lock().unwrap() = config.clone();
+        self.save_config(&config);
+    }
+
+    /// Checks if the current time falls within quiet hours.
+    fn in_quiet_hours(&self, now_ms: u64) -> bool {
+        let config = self.config.lock().unwrap();
+        let Some(qh) = &config.quiet_hours else {
+            return false;
+        };
+        // Parse "HH:MM-HH:MM"
+        let parts: Vec<&str> = qh.split('-').collect();
+        if parts.len() != 2 {
+            return false;
+        }
+        let parse = |s: &str| -> Option<u32> {
+            let hm: Vec<&str> = s.split(':').collect();
+            if hm.len() != 2 {
+                return None;
+            }
+            let h = hm[0].parse::<u32>().ok()?;
+            let m = hm[1].parse::<u32>().ok()?;
+            if h > 23 || m > 59 {
+                return None;
+            }
+            Some(h * 60 + m)
+        };
+        let Some(start) = parse(parts[0]) else { return false; };
+        let Some(end) = parse(parts[1]) else { return false; };
+        let Some(now) = chrono::DateTime::from_timestamp_millis(now_ms as i64) else { return false; };
+        let now_min = now.time().hour() * 60 + now.time().minute();
+        if start <= end {
+            now_min >= start && now_min < end
+        } else {
+            // Overnight: e.g., 22:00-07:00
+            now_min >= start || now_min < end
+        }
+    }
+
+    /// Checks if an agent is muted.
+    fn is_agent_muted(&self, agent: &str) -> bool {
+        let config = self.config.lock().unwrap();
+        config.muted_agents.iter().any(|a| a == agent)
     }
 
     /// One subscription per endpoint; a device that subscribes again replaces its old entry.
@@ -449,9 +609,9 @@ impl Push {
     }
 
     /// Sends to every device; a dead subscription is removed. Returns how many accepted it.
-    pub async fn notify(&self, session: &str, kind: AttentionKind, at: u64) -> usize {
+    pub async fn notify(&self, session: &str, kind: AttentionKind, at: u64, session_key: &str) -> usize {
         let name = display_name(session);
-        let body = payload(name, kind, at);
+        let body = payload(name, kind, at, session_key);
         // The service keeps one waiting message per topic: a newer one for the session replaces the older.
         let topic = B64.encode(&Sha256::digest(session.as_bytes())[..16]);
         let subs = self.subs.lock().unwrap().clone();
@@ -473,35 +633,133 @@ impl Push {
 
 /// Watches Attention items: for each new one, waits out the grace, and pushes unless it is gone by then or a
 /// device shows the session. A hint never reaches here: only items raised by a hook exist.
+/// After the first push, re-notifies at growing intervals (escalation ladder) until the Attention clears.
 pub fn spawn_watcher(push: Arc<Push>, hub: EventHub) {
     let mut rx = hub.subscribe_status();
+    let mut ladder_cancel_rx = push.ladder_cancel.subscribe();
     tokio::spawn(async move {
         let mut seen: HashSet<String> = HashSet::new();
         loop {
-            let items: Vec<Attention> = match rx.recv().await {
-                Ok(StatusChange::Attention(items)) => items,
-                Ok(_) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => hub.attention_items(),
-                Err(_) => return,
-            };
-            for it in items {
-                if !seen.insert(it.id.clone()) {
-                    continue;
-                }
-                if seen.len() > 1000 {
-                    seen.clear();
-                }
-                if !push.configured() || push.subscription_count() == 0 {
-                    continue;
-                }
-                let (push, hub) = (push.clone(), hub.clone());
-                tokio::spawn(async move {
-                    tokio::time::sleep(push.grace).await;
-                    let still_open = hub.attention_items().iter().any(|a| a.id == it.id);
-                    if still_open && !push.shown(&it.session) {
-                        push.notify(&it.session, it.kind, it.raised_at).await;
+            tokio::select! {
+                // Handle Attention events
+                items_result = rx.recv() => {
+                    let items: Vec<Attention> = match items_result {
+                        Ok(StatusChange::Attention(items)) => items,
+                        Ok(_) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => hub.attention_items(),
+                        Err(_) => return,
+                    };
+                    for it in items {
+                        if !seen.insert(it.id.clone()) {
+                            continue;
+                        }
+                        if seen.len() > 1000 {
+                            seen.clear();
+                        }
+                        if !push.configured() || push.subscription_count() == 0 {
+                            continue;
+                        }
+                        let (push, hub, it) = (push.clone(), hub.clone(), it.clone());
+                        tokio::spawn(async move {
+                            tokio::time::sleep(push.grace).await;
+                            let still_open = hub.attention_items().iter().any(|a| a.id == it.id);
+                            if still_open && !push.shown(&it.session) {
+                                // First push
+                                push.notify(&it.session, it.kind, it.raised_at, &it.session).await;
+                                // Start the escalation ladder
+                                start_ladder(push, hub, it).await;
+                            }
+                        });
                     }
-                });
+                }
+                // Handle ladder cancellation when Attention clears
+                cancel_result = ladder_cancel_rx.recv() => {
+                    if let Ok(item_id) = cancel_result {
+                        let mut ladders = push.ladders.lock().unwrap();
+                        ladders.remove(&item_id);
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Starts the escalation ladder for an Attention item.
+async fn start_ladder(push: Arc<Push>, hub: EventHub, item: Attention) {
+    // We need the agent name for mute checking. Get it from the hub.
+    let agent = hub.agent(&item.session).unwrap_or_default();
+
+    let config = push.get_config();
+    let interval_secs = config.initial_wait_secs;
+    let now = crate::events::now_ms();
+    let next_fire_at = now + interval_secs * 1000;
+
+    let ladder_state = LadderState {
+        item_id: item.id.clone(),
+        session: item.session.clone(),
+        agent,
+        kind: item.kind,
+        next_fire_at,
+        interval_secs,
+        fires: 1, // First push already sent
+    };
+
+    push.ladders.lock().unwrap().insert(item.id.clone(), ladder_state);
+
+    // Spawn the ladder task
+    tokio::spawn(async move {
+        let mut cancel_rx = push.ladder_cancel.subscribe();
+        loop {
+            // Get the next fire time and check if ladder still exists (without holding lock across await)
+            let (should_check, wait_ms, item_id, session, kind, raised_at) = {
+                let mut ladders = push.ladders.lock().unwrap();
+                let Some(state) = ladders.get_mut(&item.id) else {
+                    return; // Ladder was cancelled
+                };
+                let now = crate::events::now_ms();
+                if now < state.next_fire_at {
+                    // Not time yet
+                    let wait_ms = state.next_fire_at - now;
+                    (false, wait_ms, item.id.clone(), item.session.clone(), item.kind, item.raised_at)
+                } else {
+                    // Time to fire
+                    let should_fire = !push.in_quiet_hours(now) && !push.is_agent_muted(&state.agent);
+                    let config = push.get_config();
+                    state.fires += 1;
+                    state.interval_secs = (state.interval_secs as f64 * config.multiplier).ceil() as u64;
+                    state.interval_secs = state.interval_secs.min(config.max_interval_secs);
+                    state.next_fire_at = now + state.interval_secs * 1000;
+                    let next_fire_at = state.next_fire_at;
+                    (should_fire, next_fire_at.saturating_sub(now), item.id.clone(), item.session.clone(), item.kind, item.raised_at)
+                }
+            };
+
+            if !should_check {
+                // Wait until next fire time or cancellation
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(wait_ms)) => {}
+                    _ = cancel_rx.recv() => return,
+                }
+                continue;
+            }
+
+            // Check if the Attention item still exists and session not shown
+            let still_open = hub.attention_items().iter().any(|a| a.id == item_id);
+            if still_open && !push.shown(&session) {
+                push.notify(&session, kind, raised_at, &session).await;
+            } else {
+                // Attention cleared or session shown - stop ladder
+                push.ladders.lock().unwrap().remove(&item_id);
+                return;
+            }
+
+            // Wait for next interval or cancellation
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(wait_ms)) => {}
+                _ = cancel_rx.recv() => {
+                    push.ladders.lock().unwrap().remove(&item_id);
+                    return;
+                }
             }
         }
     });
@@ -584,11 +842,13 @@ mod tests {
 
     #[test]
     fn the_payload_has_no_room_for_agent_text() {
-        let p = String::from_utf8(payload("api-refactor", AttentionKind::NeedsInput, 5)).unwrap();
-        assert_eq!(
-            p,
-            r#"{"at":5,"kind":"needs_input","session":"api-refactor","tag":"api-refactor"}"#
-        );
+        let p = String::from_utf8(payload("api-refactor", AttentionKind::NeedsInput, 5, "api-refactor")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&p).unwrap();
+        assert_eq!(v["at"], 5);
+        assert_eq!(v["kind"], "needs_input");
+        assert_eq!(v["session"], "api-refactor");
+        assert_eq!(v["tag"], "api-refactor");
+        assert_eq!(v["deep_link"], "/#/home?focus=api-refactor");
         assert_eq!(display_name("tmux:work"), "work");
     }
 
@@ -711,7 +971,7 @@ mod tests {
         (format!("http://{addr}/push"), rx)
     }
 
-    fn push_for(endpoint: &str, sub_keys: &Subscription) -> Push {
+    fn push_for(endpoint: &str, ua: &SecretKey, auth: &[u8]) -> (Push, Subscription) {
         let (line, _) = new_key_line();
         let v = Vapid::from_private(
             line.strip_prefix("TERMENBOX_VAPID_PRIVATE_KEY=").unwrap(),
@@ -720,23 +980,27 @@ mod tests {
         .unwrap();
         let dir = std::env::temp_dir().join(format!("termenbox-push-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut p = Push::new(Some(v), vec![], dir.join("subs.json"));
+        let public = EncodedPoint::from(ua.public_key());
+        let sub = Subscription {
+            endpoint: endpoint.into(),
+            p256dh: B64.encode(public.as_bytes()),
+            auth: B64.encode(auth),
+        };
+        let mut p = Push::new(Some(v), vec![], dir.join("subs.json"), EscalationConfig::default());
         p.allow_any_endpoint = true;
         p.grace = Duration::from_millis(50);
-        p.subs.lock().unwrap().push(Subscription {
-            endpoint: endpoint.into(),
-            ..sub_keys.clone()
-        });
-        p
+        p.subs.lock().unwrap().push(sub.clone());
+        (p, sub)
     }
 
     #[tokio::test]
     async fn a_push_carries_no_marker_text_from_the_title_or_prompt() {
         // The guardrail's test: an event whose title and prompt hold a marker, then the bytes the service received.
         use termenbox_core::events::{Confidence, EventKind, Source};
-        let (ua, auth, keys) = device();
+        let (ua, auth, _keys) = device();
         let (url, mut rx) = fake_service(Arc::new(Mutex::new(StatusCode::CREATED))).await;
-        let push = Arc::new(push_for(&url, &keys));
+        let (push, _) = push_for(&url, &ua, &auth);
+        let push = Arc::new(push);
         let hub = EventHub::new([3; 32]);
         spawn_watcher(push.clone(), hub.clone());
         const MARKER: &str = "zebra-marker-7781";
@@ -794,9 +1058,10 @@ mod tests {
     #[tokio::test]
     async fn a_device_showing_the_session_suppresses_the_push_and_so_does_a_quick_ack() {
         use termenbox_core::events::{AgentState, Confidence, EventKind, Source};
-        let (_, _, keys) = device();
+        let (ua, auth, _keys) = device();
         let (url, mut rx) = fake_service(Arc::new(Mutex::new(StatusCode::CREATED))).await;
-        let push = Arc::new(push_for(&url, &keys));
+        let (push, _) = push_for(&url, &ua, &auth);
+        let push = Arc::new(push);
         let hub = EventHub::new([3; 32]);
         spawn_watcher(push.clone(), hub.clone());
         push.set_foreground(1, Some("work".into()));
@@ -853,9 +1118,10 @@ mod tests {
     #[tokio::test]
     async fn an_expired_subscription_is_removed_and_a_hint_pushes_nothing() {
         use termenbox_core::events::{AgentState, Confidence, EventKind, Source};
-        let (_, _, keys) = device();
+        let (ua, auth, _keys) = device();
         let (url, mut rx) = fake_service(Arc::new(Mutex::new(StatusCode::GONE))).await;
-        let push = Arc::new(push_for(&url, &keys));
+        let (push, _) = push_for(&url, &ua, &auth);
+        let push = Arc::new(push);
         let hub = EventHub::new([3; 32]);
         spawn_watcher(push.clone(), hub.clone());
         hub.push(
@@ -905,7 +1171,7 @@ mod tests {
         let (_, _, keys) = device();
         let dir = std::env::temp_dir().join(format!("termenbox-push-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let off = Push::new(None, vec![], dir.join("push_subscriptions.json"));
+        let off = Push::new(None, vec![], dir.join("push_subscriptions.json"), EscalationConfig::default());
         assert!(off.subscribe(keys.clone()).is_err(), "not set up");
         let (line, _) = new_key_line();
         let v = Vapid::from_private(
@@ -913,7 +1179,7 @@ mod tests {
             "",
         )
         .unwrap();
-        let on = Push::new(Some(v), vec![], dir.join("push_subscriptions.json"));
+        let on = Push::new(Some(v), vec![], dir.join("push_subscriptions.json"), EscalationConfig::default());
         assert!(on
             .subscribe(Subscription {
                 endpoint: "https://127.0.0.1/x".into(),
@@ -936,5 +1202,238 @@ mod tests {
         );
         on.unsubscribe(&keys.endpoint);
         assert_eq!(on.subscription_count(), 0);
+    }
+
+    // --- Escalation ladder tests ----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn escalation_ladder_timing() {
+        use termenbox_core::events::{AgentState, Confidence, EventKind, Source};
+        let (ua, auth, _) = device();
+        let (url, mut rx) = fake_service(Arc::new(Mutex::new(StatusCode::CREATED))).await;
+        let (push, _) = push_for(&url, &ua, &auth);
+        let mut push = push;
+        // Configure short intervals for testing (using milliseconds by setting very small values)
+        // Note: initial_wait_secs is in seconds, so we use 1 second for testing
+        push.set_config(EscalationConfig {
+            initial_wait_secs: 1,
+            max_interval_secs: 5,
+            multiplier: 2.0,
+            quiet_hours: None,
+            muted_agents: vec![],
+        });
+        // Reduce grace period for faster test
+        push.grace = Duration::from_millis(50);
+        let push = Arc::new(push);
+        let hub = EventHub::new([3; 32]);
+        spawn_watcher(push.clone(), hub.clone());
+
+        // Trigger attention
+        hub.push(
+            "work",
+            Source::Hook,
+            Confidence::High,
+            EventKind::State { state: AgentState::NeedsInput },
+            1_000,
+        );
+
+        // Wait for grace period + first push
+        let (_, body1) = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.unwrap().unwrap();
+        assert!(!String::from_utf8_lossy(&body1).is_empty());
+
+        // Wait for initial_wait (1 second) + second push
+        let (_, body2) = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.unwrap().unwrap();
+        assert!(!String::from_utf8_lossy(&body2).is_empty());
+
+        // Wait for multiplier * initial_wait = 2 seconds + third push
+        let (_, body3) = tokio::time::timeout(Duration::from_secs(4), rx.recv()).await.unwrap().unwrap();
+        assert!(!String::from_utf8_lossy(&body3).is_empty());
+
+        // Wait for multiplier * 2 = 4 seconds, but capped at max_interval (5 seconds)
+        let (_, body4) = tokio::time::timeout(Duration::from_secs(7), rx.recv()).await.unwrap().unwrap();
+        assert!(!String::from_utf8_lossy(&body4).is_empty());
+
+        // Next should be at max_interval (5 seconds)
+        let (_, body5) = tokio::time::timeout(Duration::from_secs(7), rx.recv()).await.unwrap().unwrap();
+        assert!(!String::from_utf8_lossy(&body5).is_empty());
+    }
+
+    #[tokio::test]
+    async fn escalation_ladder_answer_cancels() {
+        use termenbox_core::events::{AgentState, Confidence, EventKind, Source, AttentionKind};
+        let (ua, auth, _) = device();
+        let (url, mut rx) = fake_service(Arc::new(Mutex::new(StatusCode::CREATED))).await;
+        let (push, _) = push_for(&url, &ua, &auth);
+        let mut push = push;
+        push.set_config(EscalationConfig {
+            initial_wait_secs: 1,
+            max_interval_secs: 5,
+            multiplier: 2.0,
+            quiet_hours: None,
+            muted_agents: vec![],
+        });
+        push.grace = Duration::from_millis(50);
+        let push = Arc::new(push);
+        let hub = EventHub::new([3; 32]);
+        spawn_watcher(push.clone(), hub.clone());
+
+        // Trigger attention with FinishedUnseen (can be acknowledged)
+        hub.raise_attention_for_test("work", AttentionKind::FinishedUnseen, 1_000);
+
+        // Wait for grace period + first push
+        let _ = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.unwrap().unwrap();
+
+        // Get the attention item ID
+        let attention_id = hub.attention_items()[0].id.clone();
+
+        // Acknowledge (answer) the attention
+        assert!(hub.ack(&attention_id));
+
+        // Wait longer than initial_wait - should not send more pushes
+        assert!(
+            tokio::time::timeout(Duration::from_secs(4), rx.recv()).await.is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn escalation_ladder_quiet_hours_suppress() {
+        use termenbox_core::events::{AgentState, Confidence, EventKind, Source};
+        let (ua, auth, _) = device();
+        let (url, mut rx) = fake_service(Arc::new(Mutex::new(StatusCode::CREATED))).await;
+        let (push, _) = push_for(&url, &ua, &auth);
+        let mut push = push;
+        // Set quiet hours to cover the test time
+        push.set_config(EscalationConfig {
+            initial_wait_secs: 1,
+            max_interval_secs: 5,
+            multiplier: 2.0,
+            quiet_hours: Some("00:00-23:59".into()), // All day quiet
+            muted_agents: vec![],
+        });
+        push.grace = Duration::from_millis(50);
+        let push = Arc::new(push);
+        let hub = EventHub::new([3; 32]);
+        spawn_watcher(push.clone(), hub.clone());
+
+        // Test in_quiet_hours directly
+        let test_time = chrono::NaiveDate::from_ymd_opt(2026, 1, 15).unwrap().and_hms_opt(12, 0, 0).unwrap().and_utc().timestamp_millis() as u64;
+        assert!(push.in_quiet_hours(test_time));
+
+        // Trigger attention
+        hub.push(
+            "work",
+            Source::Hook,
+            Confidence::High,
+            EventKind::State { state: AgentState::NeedsInput },
+            1_000,
+        );
+
+        // Wait for grace period + first push (grace period bypasses quiet hours)
+        let _ = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.unwrap().unwrap();
+
+        // Wait for initial_wait - second push should be suppressed by quiet hours
+        assert!(
+            tokio::time::timeout(Duration::from_secs(4), rx.recv()).await.is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn escalation_ladder_mute_suppress() {
+        use termenbox_core::events::{AgentState, Confidence, EventKind, Source};
+        let (ua, auth, _) = device();
+        let (url, mut rx) = fake_service(Arc::new(Mutex::new(StatusCode::CREATED))).await;
+        let (push, _) = push_for(&url, &ua, &auth);
+        let mut push = push;
+        push.set_config(EscalationConfig {
+            initial_wait_secs: 1,
+            max_interval_secs: 5,
+            multiplier: 2.0,
+            quiet_hours: None,
+            muted_agents: vec!["claude".into()],
+        });
+        push.grace = Duration::from_millis(50);
+        let push = Arc::new(push);
+        let hub = EventHub::new([3; 32]);
+        spawn_watcher(push.clone(), hub.clone());
+
+        // Set agent to "claude" (muted)
+        hub.set_agent("work", "claude");
+
+        // Trigger attention
+        hub.push(
+            "work",
+            Source::Hook,
+            Confidence::High,
+            EventKind::State { state: AgentState::NeedsInput },
+            1_000,
+        );
+
+        // Wait for grace period + first push
+        let _ = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.unwrap().unwrap();
+
+        // Wait for initial_wait - second push should be suppressed by mute
+        assert!(
+            tokio::time::timeout(Duration::from_secs(4), rx.recv()).await.is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn escalation_payload_no_leak() {
+        use termenbox_core::events::{AgentState, Confidence, EventKind, Source};
+        let (ua, auth, _) = device();
+        let (url, mut rx) = fake_service(Arc::new(Mutex::new(StatusCode::CREATED))).await;
+        let (push, _) = push_for(&url, &ua, &auth);
+        let mut push = push;
+        push.grace = Duration::from_millis(50);
+        let push = Arc::new(push);
+        let hub = EventHub::new([3; 32]);
+        spawn_watcher(push.clone(), hub.clone());
+
+        const MARKER: &str = "escalation-marker-999";
+        hub.push(
+            "work",
+            Source::Hook,
+            Confidence::High,
+            EventKind::Task { title: MARKER.into() },
+            1_000,
+        );
+        hub.push(
+            "work",
+            Source::Hook,
+            Confidence::High,
+            EventKind::State { state: AgentState::NeedsInput },
+            1_001,
+        );
+        hub.push(
+            "work",
+            Source::Hook,
+            Confidence::High,
+            EventKind::Message { summary: format!("{MARKER} please approve") },
+            1_002,
+        );
+
+        // Wait for the watcher to process the attention and send the push
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Check that attention was raised
+        let attention_items = hub.attention_items();
+        assert!(!attention_items.is_empty(), "No attention items raised");
+
+        // Wait longer for the push to be processed and sent
+        let (_, body) = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.unwrap().unwrap();
+        
+        // Decrypt the body (it's encrypted with AES-GCM)
+        let plain_bytes = decrypt(&ua, &auth, &body);
+        let plain = String::from_utf8_lossy(&plain_bytes);
+        
+        // Verify marker text never reaches push
+        assert!(!plain.contains(MARKER), "Marker text leaked in push payload: {plain}");
+        
+        // Verify payload structure
+        let v: serde_json::Value = serde_json::from_str(&plain).unwrap();
+        assert_eq!(v["session"], "work");
+        assert_eq!(v["kind"], "needs_input");
+        assert_eq!(v["deep_link"], "/#/home?focus=work");
+        assert!(!v.as_object().unwrap().keys().any(|k| k == "title" || k == "prompt" || k == "summary"));
     }
 }

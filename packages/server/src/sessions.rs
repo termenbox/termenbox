@@ -157,6 +157,11 @@ impl SessionManager {
         &self.tmux_version
     }
 
+    /// Returns the push instance if configured.
+    pub fn push(&self) -> Option<&Arc<crate::push::Push>> {
+        self.push.as_ref()
+    }
+
     /// Enables remote uninstall: `server_name` is what the owner must type, `on_uninstalled` stops the server.
     pub fn with_uninstall(
         mut self,

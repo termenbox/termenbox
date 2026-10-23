@@ -6,7 +6,7 @@ use axum::{
     extract::{ws::WebSocketUpgrade, State},
     http::HeaderMap,
     response::Response,
-    routing::get,
+    routing::{get, put},
     Router,
 };
 use clap::Parser;
@@ -744,7 +744,10 @@ async fn main() -> anyhow::Result<()> {
             None
         }
     };
-    let mut hub = events::EventHub::load_or_create(&args.config_dir)?;
+    // Load push first so we can wire its ladder_cancel into the hub.
+    let push = push::Push::load(&args.config_dir);
+    let mut hub = events::EventHub::load_or_create(&args.config_dir)?
+        .with_ladder_cancel(push.ladder_cancel_sender());
     if let Some(history) = &history {
         hub = hub.with_history(history.clone());
     }
@@ -757,7 +760,6 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
-    let push = push::Push::load(&args.config_dir);
     push::spawn_watcher(push.clone(), hub.clone());
     // A `working` signal that goes quiet decays to `unknown` without any event to trigger it.
     tokio::spawn({
@@ -1107,7 +1109,9 @@ fn print_pairing(args: &Args, auth: &AuthState) -> anyhow::Result<()> {
 fn router(state: AppState, dev_info: bool) -> Router {
     let mut app = Router::new()
         .route("/health", get(|| async { "OK" }))
-        .route("/ws", get(ws_handler));
+        .route("/ws", get(ws_handler))
+        .route("/api/push/settings", get(get_push_settings))
+        .route("/api/push/settings", put(put_push_settings));
     if dev_info {
         app = app.route("/rtc-info", get(rtc_info));
     }
@@ -1131,6 +1135,58 @@ async fn ws_handler(
     headers: HeaderMap,
 ) -> Response {
     ws.on_upgrade(|socket| handle_websocket(socket, State(state), headers))
+}
+
+/// GET /api/push/settings - Returns the current push escalation settings.
+async fn get_push_settings(
+    State(state): State<AppState>,
+) -> axum::response::Result<axum::Json<push::EscalationConfig>> {
+    // Only allow if server has an owner (single-owner model).
+    if state.auth.owner().is_none() {
+        return Err(axum::http::StatusCode::FORBIDDEN.into());
+    }
+    let push = state.sessions.push().ok_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    let config = push.get_config();
+    Ok(axum::Json(config))
+}
+
+/// PUT /api/push/settings - Updates the push escalation settings.
+async fn put_push_settings(
+    State(state): State<AppState>,
+    axum::Json(config): axum::Json<push::EscalationConfig>,
+) -> axum::response::Result<axum::Json<push::EscalationConfig>> {
+    // Only allow if server has an owner (single-owner model).
+    if state.auth.owner().is_none() {
+        return Err(axum::http::StatusCode::FORBIDDEN.into());
+    }
+    // Validate config
+    if config.initial_wait_secs == 0 || config.max_interval_secs == 0 || config.multiplier <= 1.0 {
+        return Err(axum::http::StatusCode::BAD_REQUEST.into());
+    }
+    if config.initial_wait_secs > config.max_interval_secs {
+        return Err(axum::http::StatusCode::BAD_REQUEST.into());
+    }
+    // Validate quiet_hours format if present
+    if let Some(qh) = &config.quiet_hours {
+        let parts: Vec<&str> = qh.split('-').collect();
+        if parts.len() != 2 {
+            return Err(axum::http::StatusCode::BAD_REQUEST.into());
+        }
+        let parse = |s: &str| -> Option<u32> {
+            let hm: Vec<&str> = s.split(':').collect();
+            if hm.len() != 2 { return None; }
+            let h = hm[0].parse::<u32>().ok()?;
+            let m = hm[1].parse::<u32>().ok()?;
+            if h > 23 || m > 59 { return None; }
+            Some(h * 60 + m)
+        };
+        if parse(parts[0]).is_none() || parse(parts[1]).is_none() {
+            return Err(axum::http::StatusCode::BAD_REQUEST.into());
+        }
+    }
+    let push = state.sessions.push().ok_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    push.set_config(config.clone());
+    Ok(axum::Json(config))
 }
 
 /// Decides which tmux server the sessions live on and, for termenbox's own, writes its config (decision 0120).

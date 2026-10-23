@@ -274,6 +274,30 @@
     configured: pushInfos[pushServerId].configured, on: pushOn,
     denied: typeof Notification !== 'undefined' && Notification.permission === 'denied',
   } : null;
+  let pushSettings: { initial_wait_secs: number; max_interval_secs: number; multiplier: number; quiet_hours?: string; muted_agents: string[] } | null = null;
+  async function fetchPushSettings() {
+    if (!pushServerId) return;
+    try {
+      const res = await fetchJson<{ initial_wait_secs: number; max_interval_secs: number; multiplier: number; quiet_hours?: string; muted_agents: string[] }>(
+        `/api/push/settings`, { method: 'GET' }, pushServerId
+      );
+      pushSettings = res;
+      // Initialize mutedAgentsInput from muted_agents
+      if (res?.muted_agents) {
+        // This will be picked up by the SettingsView's reactive logic
+      }
+    } catch (e) {
+      console.error('Failed to fetch push settings:', e);
+    }
+  }
+  function handlePushSettingsChange(settings: { initial_wait_secs: number; max_interval_secs: number; multiplier: number; quiet_hours?: string; muted_agents: string[] }) {
+    pushSettings = { ...settings };
+    if (!pushServerId) return;
+    fetchJson(`/api/push/settings`, { method: 'PUT', body: JSON.stringify(settings) }, pushServerId).catch(e => {
+      showToast('Failed to save push settings', 'error');
+      console.error(e);
+    });
+  }
   async function togglePush(enable: boolean) {
     const id = pushServerId;
     if (!id) return;
@@ -298,6 +322,7 @@
     reportedFg = next;
   }
   $: activeKey, away, pageVisible, reportForeground();
+  $: $destination === 'settings' && pushServerId && fetchPushSettings();
   let actionKey: string | null = null;
   let cardExpanded = false;
   $: actionSession = $allSessions.find(s => s.key === actionKey);
@@ -524,6 +549,32 @@
     const result = await sendServerLink(serverLink(location.origin, server.server_id), server.server_name, serverCode(server.server_id));
     if (result === 'copied') showToast('Link and code copied. Open the link on your other device, or paste the code in Add Server in the app, and sign in with the same GitHub account.');
     else if (result === 'failed') showToast('Could not share the link', 'error');
+  }
+
+  /** Handles deep link from push notification: navigates to home and scrolls to the session card. */
+  async function handleDeepLinkFocus(sessionKey: string) {
+    // If app is locked, store the focus and handle after unlock
+    if ($settings.appLock && !$settings.appLockUnlocked) {
+      sessionStorage.setItem('termenbox_pending_focus', sessionKey);
+      return;
+    }
+    // Navigate to home first
+    navigate('home');
+    await tick();
+    // Find the session and attach if needed
+    const session = $allSessions.find(s => s.key === sessionKey);
+    if (session) {
+      // Ensure the server is connected
+      const server = $hubServers.find(s => s.id === session.serverId);
+      if (server?.state !== 'connected') {
+        showToast('Server is reconnecting, please try again', 'error');
+        return;
+      }
+      // Attach to the session to show it
+      await attach(sessionKey);
+    } else {
+      showToast('Session not found', 'error');
+    }
   }
 
   const LAST_KEY = 'termenbox_last_session';
@@ -779,7 +830,13 @@
       const claim = parseClaim(window.location.hash);
       const serverId = parseServerLink(window.location.hash);
       const pair = parsePairLink(window.location.hash);
-      if (!claim && !serverId && !pair) return;
+      // Deep link from push notification: /#/home?focus=<session_key>
+      const focusMatch = window.location.hash.match(/[?&]focus=([^&]+)/);
+      if (focusMatch) {
+        const sessionKey = decodeURIComponent(focusMatch[1]);
+        handleDeepLinkFocus(sessionKey);
+      }
+      if (!claim && !serverId && !pair && !focusMatch) return;
       window.history.replaceState({}, '', window.location.pathname);
       if (pair) {
         if (!user) sessionStorage.setItem('termenbox_pending_pair', `#/pair/${pair.payload}${pair.claim ? `?claim=${pair.claim}` : ''}`);
@@ -825,6 +882,14 @@
     if (window.location.pathname === '/callback') authed = await handleOAuthCallback();
     else authed = checkAuth();
     if (!authed) return;
+
+    // Handle pending focus from push notification deep link
+    const pendingFocus = sessionStorage.getItem('termenbox_pending_focus');
+    if (pendingFocus) {
+      sessionStorage.removeItem('termenbox_pending_focus');
+      // Defer until hub is ready
+      setTimeout(() => handleDeepLinkFocus(pendingFocus), 500);
+    }
 
     loadServers();
     hub.start(servers);
@@ -902,7 +967,7 @@
       {:else if $destination === 'activity'}
         <ActivityView servers={$hubServers} history={historyMap} {now} onask={askHistory} caches={warmCaches} ttlMs={$settings.cacheTtlMs} health={healthMap} onhealth={askHealth} rttOf={(id) => hub.rtt(id)} />
       {:else if $destination === 'settings'}
-        <SettingsView user={user ?? ''} {serverVersion} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} onmenu={() => { titleTapped(); menuOpen = true; }} onshortcuts={() => (helpOpen = true)} onreport={openReport} onlogout={logout} ondeletedata={deleteData} historyServers={$connectedCount} ondeletehistory={deleteHistory} />
+        <SettingsView user={user ?? ''} {serverVersion} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} onmenu={() => { titleTapped(); menuOpen = true; }} onshortcuts={() => (helpOpen = true)} onreport={openReport} onlogout={logout} ondeletedata={deleteData} historyServers={$connectedCount} ondeletehistory={deleteHistory} pushSettings={pushSettings ?? undefined} onPushSettingsChange={handlePushSettingsChange} />
       {:else}
         <div class="workspace" class:mobile={narrow}>
           <div class="terminal-pane">
