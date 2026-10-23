@@ -63,7 +63,7 @@ fn signed_release(dir: &Path, manifest: &str) -> Option<String> {
     ))
 }
 
-const MANIFEST: &str = r#"{"version":"9.9.9","freeze":false,"notes":"","binaries":{"x86_64":{"url":"https://github.com/termenbox/termenbox/releases/download/v9.9.9/termenbox-server-x86_64-linux","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}}}"#;
+const MANIFEST: &str = r#"{"version":"9.9.9","channel":"stable","freeze":false,"notes":"","binaries":{"x86_64":{"url":"https://github.com/termenbox/termenbox/releases/download/v9.9.9/termenbox-server-x86_64-linux","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}}}"#;
 
 #[test]
 fn a_signed_manifest_prints_its_fields_and_a_changed_one_is_refused() {

@@ -110,7 +110,7 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Write the manifest
-        run: python3 .github/scripts/make_manifest.py "${{ steps.v.outputs.version }}" dist dist/manifest.json
+        run: python3 .github/scripts/make_manifest.py "${{ steps.v.outputs.version }}" dist dist/manifest.json --channel stable
 
       - name: The manifest lists tmux for both architectures, with its notices
         run: |

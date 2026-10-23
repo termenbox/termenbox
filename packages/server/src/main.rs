@@ -312,12 +312,14 @@ pub struct AppState {
     pub paths: Arc<std::sync::OnceLock<Arc<candidates::PathHub>>>,
 }
 
-/// `0.1.0+abc1234`: the crate version and, in the Docker image, the commit it was built from.
+/// `0.1.0+abc1234`: the version and, in the Docker image, the commit it was built from. The version is the crate's,
+/// unless a release build sets `TERMENBOX_RELEASE_VERSION` to the full SemVer (`0.1.36-nightly.20261022`), so a
+/// prerelease needs no change to `Cargo.toml`.
 pub fn version() -> String {
     let build = std::env::var("TERMENBOX_BUILD").unwrap_or_else(|_| "dev".into());
     format!(
         "{}+{}",
-        env!("CARGO_PKG_VERSION"),
+        option_env!("TERMENBOX_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
         build.chars().take(7).collect::<String>()
     )
 }
@@ -389,6 +391,7 @@ fn run_release_command(args: &Args) -> anyhow::Result<bool> {
         &std::fs::read_to_string(sig_path)?,
         &keys,
         release::URL_PREFIX,
+        release::Channel::of_version(&version()),
     )?;
     println!("kid={kid}");
     println!("version={}", manifest.version);

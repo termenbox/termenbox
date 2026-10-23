@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
 use crate::journal::{Change, Journal};
-use crate::release::{Manifest, ReleaseKeys};
+use crate::release::{Channel, Manifest, ReleaseKeys};
 
 #[async_trait]
 pub trait Fetch: Send + Sync {
@@ -194,8 +194,13 @@ impl Updater<'_> {
         let signature =
             String::from_utf8(self.fetch.get(&format!("{base}/manifest.json.sig")).await?)?;
         // Nothing in the manifest is used before its signature has been checked.
-        let (manifest, _kid) =
-            Manifest::verify(&manifest_bytes, &signature, self.keys, &self.url_prefix)?;
+        let (manifest, _kid) = Manifest::verify(
+            &manifest_bytes,
+            &signature,
+            self.keys,
+            &self.url_prefix,
+            Channel::of_version(&self.current),
+        )?;
         if manifest.freeze {
             return Ok(Outcome::Frozen);
         }
@@ -486,7 +491,7 @@ mod tests {
             )
         });
         let manifest = format!(
-            r#"{{"version":"{version}","freeze":{freeze},"notes":"","binaries":{{"x86_64":{{"url":"{BASE}/termenbox-server-x86_64-linux","sha256":"{}"}}}}{tmux_entry}}}"#,
+            r#"{{"version":"{version}","channel":"stable","freeze":{freeze},"notes":"","binaries":{{"x86_64":{{"url":"{BASE}/termenbox-server-x86_64-linux","sha256":"{}"}}}}{tmux_entry}}}"#,
             hex(&Sha256::digest(new_binary))
         );
         let key = dir.join("key");
