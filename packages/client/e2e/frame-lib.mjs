@@ -1,8 +1,9 @@
 // Shared by appshell.mjs (phone, 390 px) and desktop.mjs (1280 px): serves e2e/dist, opens the frame probe in real
-// Chrome, and holds the checks both widths make. The probe is the real AppFrame, bottom bar, sidebar, palette, NavigationBar,
+// Chrome, Firefox, WebKit and holds the checks all widths make. The probe is the real AppFrame, bottom bar, sidebar, palette, NavigationBar,
 // SessionSheet and SessionStrip on the real ServerHub with two fake servers; the terminal is a stand-in textarea, so this
 // proves what the page does with a key, not what xterm or a shell does with it.
-import { chromium } from 'playwright-core';
+import { chromium, firefox, webkit } from 'playwright-core';
+import { getBrowser, BROWSER_ENGINES } from './browser-config.mjs';
 import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, extname } from 'node:path';
@@ -17,10 +18,9 @@ export async function start(contextOptions) {
     res.writeHead(200, { 'Content-Type': mime[extname(f)] ?? 'application/octet-stream' }).end(readFileSync(f));
   });
   await new Promise((r) => srv.listen(0, '127.0.0.1', r));
-  const browser = await chromium.launch({
-    ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
-    args: ['--no-sandbox'],
-  });
+  const engine = process.env.E2E_ENGINE ?? 'chromium';
+  if (!BROWSER_ENGINES.includes(engine)) throw new Error(`Unknown E2E_ENGINE: ${engine}`);
+  const browser = await getBrowser(engine);
   const ctx = await browser.newContext(contextOptions);
   const page = await ctx.newPage();
   if (process.env.E2E_CPU_THROTTLE) await (await ctx.newCDPSession(page)).send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.E2E_CPU_THROTTLE) });
