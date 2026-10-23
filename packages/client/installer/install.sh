@@ -17,6 +17,12 @@
 #   host        directly on this machine as root, as a systemd service
 # The host modes give the owner's browser a shell on the machine itself and need no Docker.
 #
+# Options, before or after the word (decision 0131): --channel stable|beta|nightly picks the release stream (default
+# stable; the container uses that channel's image tag), --auto-update lets the server install updates by itself. The
+# default is automatic, except on nightly, which only notifies. The choice is written to update.toml beside the journal;
+# run the installer again with the option, or edit that file, to change it.
+#   curl -fsSL https://app.termenbox.dev/i | sh -s -- --channel beta
+#
 # It starts the server and prints the pairing block. The UDP port is picked once, from the reserved range 4443-4542
 # (DECISION-0118), and then stays: the server uses that port or stops with a message, it never moves to another. To
 # choose the port yourself, set TERMENBOX_UDP_PORT=<port> in front of `sh` (needed when the range has no free port;
@@ -35,18 +41,56 @@ set -eu
 
 SECRET="${TERMENBOX_CLAIM:--}"
 ORIGIN="${TERMENBOX_CLIENT_URL:-https://app.termenbox.dev}" # client-origin: the client build bakes its own address here
-MODE="${1:-host-me}"
-IMAGE="${TERMENBOX_IMAGE:-ghcr.io/termenbox/termenbox:latest}"
 NAME="${TERMENBOX_CONTAINER:-termenbox}"
 ROOT="${TERMENBOX_DATA:-/opt/termenbox}"
 
-# The public keys that sign releases: `kid ssh-ed25519 key` lines, the same as packages/server/release-keys.txt.
-# TERMENBOX_RELEASE_KEYS and TERMENBOX_RELEASE_URL exist for the installer's own tests; on a real install they are unset.
+# The public keys that sign releases: `kid ssh-ed25519 key [channel=...]` lines, the same as packages/server/release-keys.txt.
+# A key without `channel=` is a stable key; a key signs only the channel it is bound to (decision 0130).
+# TERMENBOX_RELEASE_KEYS and TERMENBOX_RELEASE_URL exist for the installer's own tests and for forks; on a real install they are unset.
 RELEASE_KEYS="${TERMENBOX_RELEASE_KEYS:-r1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDNH6+yZgMpZl+tW8C/D+9Ga0bN39vXzIIJMKmHB6auf}"
-RELEASE_URL="${TERMENBOX_RELEASE_URL:-https://github.com/termenbox/termenbox/releases/latest/download}"
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'termenbox: %s\n' "$*" >&2; exit 1; }
+
+# Options (decision 0131), before or after the mode word:
+#   --channel stable|beta|nightly   which release stream this server follows (default stable); also TERMENBOX_CHANNEL
+#   --auto-update                   install updates by themselves; the default, except on nightly, which only notifies
+#                                   (an unattended daily restart on a server that wanted to try nightly is a surprise)
+CHANNEL="${TERMENBOX_CHANNEL:-}"
+AUTO_UPDATE="${TERMENBOX_AUTO_UPDATE:-}"
+_mode=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --channel) [ "$#" -ge 2 ] || die "--channel needs stable, beta or nightly"; CHANNEL="$2"; shift 2 ;;
+    --channel=*) CHANNEL="${1#--channel=}"; shift ;;
+    --auto-update) AUTO_UPDATE=1; shift ;;
+    -*) die "unknown option \"$1\" (use --channel stable|beta|nightly, --auto-update)" ;;
+    *) [ -z "$_mode" ] || die "one mode only (got \"$_mode\" and \"$1\")"; _mode="$1"; shift ;;
+  esac
+done
+set -- ${_mode:+"$_mode"}
+MODE="${1:-host-me}"
+# Given on purpose (flag or environment) means: write it, also over an existing install. Otherwise the install keeps its own.
+CHANNEL_GIVEN="$CHANNEL$AUTO_UPDATE"
+CHANNEL="${CHANNEL:-stable}"
+case "$CHANNEL" in
+  stable|beta|nightly) ;;
+  *) die "unknown channel \"$CHANNEL\" (use stable, beta or nightly)" ;;
+esac
+if [ "$CHANNEL" = nightly ] && [ -z "$AUTO_UPDATE" ]; then UPDATE_MODE=notify; else UPDATE_MODE=auto; fi
+
+# Where this channel's manifest lives. `latest` is the newest stable release; the others are rolling alias releases that
+# hold only a manifest (decision 0132): every asset URL comes from the signed manifest, never from this address.
+case "$CHANNEL" in
+  stable) CHANNEL_URL=https://github.com/termenbox/termenbox/releases/latest/download; CHANNEL_TAG=latest ;;
+  beta) CHANNEL_URL=https://github.com/termenbox/termenbox/releases/download/channel-beta; CHANNEL_TAG=beta ;;
+  nightly) CHANNEL_URL=https://github.com/termenbox/termenbox/releases/download/channel-nightly; CHANNEL_TAG=nightly ;;
+esac
+RELEASE_URL="${TERMENBOX_RELEASE_URL:-$CHANNEL_URL}"
+case "$RELEASE_URL" in
+  *[!A-Za-z0-9._~:/@+=-]*) die "the release address has characters the installer does not handle" ;;
+esac
+IMAGE="${TERMENBOX_IMAGE:-ghcr.io/termenbox/termenbox:$CHANNEL_TAG}"
 
 # The server saves its UDP port when it starts; until then --register can only print the bare claim link, so ask again
 # for a few seconds until the output carries the signed bundle.
@@ -115,6 +159,7 @@ else
   if [ "$(id -u)" -ne 0 ]; then
     command -v sudo >/dev/null 2>&1 || die "run this as root (or install sudo)"
     exec sudo env TERMENBOX_IMAGE="$IMAGE" TERMENBOX_CONTAINER="$NAME" TERMENBOX_DATA="$ROOT" \
+      TERMENBOX_CHANNEL="${CHANNEL_GIVEN:+$CHANNEL}" TERMENBOX_AUTO_UPDATE="$AUTO_UPDATE" \
       TERMENBOX_SKIP_FIREWALL="${TERMENBOX_SKIP_FIREWALL:-}" TERMENBOX_DRY_RUN="${TERMENBOX_DRY_RUN:-}" \
       TERMENBOX_FORCE="${TERMENBOX_FORCE:-}" TERMENBOX_UDP_PORT="${TERMENBOX_UDP_PORT:-}" TERMENBOX_RELEASE_URL="${TERMENBOX_RELEASE_URL:-}" TERMENBOX_RELEASE_KEYS="${TERMENBOX_RELEASE_KEYS:-}" \
       TERMENBOX_CLAIM="$SECRET" TERMENBOX_CLIENT_URL="$ORIGIN" \
@@ -282,6 +327,41 @@ apply_udp_pin() {
   systemctl $_flag daemon-reload && systemctl $_flag restart termenbox.service || die "could not restart the service; see: journalctl $_flag -u termenbox"
 }
 
+# The server's update policy (decision 0131), next to the journal: root-owned on a system install, the user's own on a
+# user install, never writable by the server. Written on a fresh install, and again when --channel or --auto-update is
+# given to an existing one (the way to change channel later; it is a host-level act, not a web action). An existing
+# maintenance_window is kept. Needs $TMP, $JOURNAL and the journal helpers.
+write_update_config() {
+  _win="$(sed -n 's/^\(maintenance_window *=.*\)$/\1/p' "$JOURNAL/update.toml" 2>/dev/null | head -n 1)"
+  {
+    echo "# How this server updates (decision 0131). Edit it on this machine; nothing in the app changes it."
+    echo "# channel: stable | beta | nightly      mode: auto (install daily) | notify (say so, install on request) | hold"
+    echo "# maintenance_window = \"03:00-04:00\"    local time; limits the automatic install"
+    echo "[update]"
+    echo "channel = \"$CHANNEL\""
+    echo "mode = \"$UPDATE_MODE\""
+    [ -z "$_win" ] || echo "$_win"
+  } > "$TMP/update.toml"
+  put_file "$TMP/update.toml" "$JOURNAL/update.toml" 0600
+}
+
+# Points the updater units at this channel's manifest (the helper reads TERMENBOX_RELEASE_URL). For units that exist.
+set_release_env() { # <unit file>...
+  for _u in "$@"; do
+    [ -f "$_u" ] || continue
+    awk -v v="$RELEASE_URL" '/^Environment=TERMENBOX_RELEASE_URL=/ { next } { print } /^\[Service\]/ { print "Environment=TERMENBOX_RELEASE_URL=" v }' "$_u" > "$_u.new" \
+      && cat "$_u.new" > "$_u" && rm -f "$_u.new" || die "could not write the release address into $_u"
+  done
+}
+
+# One line about the policy, for the summary of what will be installed.
+update_policy_note() {
+  case "$UPDATE_MODE" in
+    notify) say "  - updates     channel $CHANNEL, notify only: a new release is installed when you ask for it (--auto-update installs by itself)" ;;
+    *) say "  - updates     channel $CHANNEL, installed automatically (change with --channel, or edit update.toml in the journal directory)" ;;
+  esac
+}
+
 # The service must be up before a claim link is shown for it. On failure the server's own message is printed.
 # service_up <user|system> <unit file>
 service_up() {
@@ -411,6 +491,13 @@ install_helper_units() {
     chmod 700 "$STATE/requests"
   fi
   _added=""
+  # The policy file and the channel's manifest address: on a fresh install, an install from before they existed, or
+  # when the owner gave --channel / --auto-update.
+  if [ ! -f "$JOURNAL/update.toml" ] || [ -n "$CHANNEL_GIVEN" ]; then
+    write_update_config
+    set_release_env /etc/systemd/system/termenbox-update.service /etc/systemd/system/termenbox-request.service
+    _added=1
+  fi
   add_unit() { # name, content
     [ -f "/etc/systemd/system/$1" ] && return 0
     journal unit_installed "name=$1" "path=/etc/systemd/system/$1"
@@ -422,6 +509,7 @@ Description=Termenbox updater
 
 [Service]
 Type=oneshot
+Environment=TERMENBOX_RELEASE_URL=$RELEASE_URL
 ExecStart=$BIN --root-helper update --journal-dir $JOURNAL"
   add_unit termenbox-update.timer "[Unit]
 Description=Check for a new Termenbox release every day
@@ -438,6 +526,7 @@ Description=Termenbox root helper (requests from the server)
 
 [Service]
 Type=oneshot
+Environment=TERMENBOX_RELEASE_URL=$RELEASE_URL
 ExecStart=$BIN --root-helper requests --journal-dir $JOURNAL --requests-dir $STATE/requests"
   add_unit termenbox-request.path "[Unit]
 Description=Watch for requests from the Termenbox server
@@ -458,18 +547,33 @@ fetch_release() {
   say "Checking the latest release..."
   curl -fsSL --retry 3 -o "$TMP/manifest.json" "$RELEASE_URL/manifest.json" || die "could not download the release manifest"
   curl -fsSL --retry 3 -o "$TMP/manifest.json.sig" "$RELEASE_URL/manifest.json.sig" || die "could not download the release signature"
-  printf '%s\n' "$RELEASE_KEYS" | awk 'NF >= 3 { print "termenbox-release " $2 " " $3 }' > "$TMP/allowed_signers"
-  ssh-keygen -Y verify -f "$TMP/allowed_signers" -I termenbox-release -n termenbox-release \
+  # The manifest names its channel (none: stable). It is read before the check only to choose which keys may sign it;
+  # a changed channel breaks the signature. A key signs only its own channel, and this server follows only its own
+  # channel: stable follows stable, beta follows beta and stable (the beta alias can hold a stable release), nightly
+  # follows nightly (decision 0130).
+  MCHAN="$(sed -n 's/.*"channel": *"\([a-z]*\)".*/\1/p' "$TMP/manifest.json" | head -1)"
+  MCHAN="${MCHAN:-stable}"
+  case "$CHANNEL:$MCHAN" in
+    stable:stable|beta:beta|beta:stable|nightly:nightly) ;;
+    *) die "the latest release is a $MCHAN release, which the $CHANNEL channel does not follow, so nothing was installed" ;;
+  esac
+  printf '%s\n' "$RELEASE_KEYS" | awk -v ch="$MCHAN" \
+    'NF >= 3 { c = "stable"; if ($4 ~ /^channel=/) c = substr($4, 9); if (c == ch) print "termenbox-release-" ch " " $2 " " $3 }' > "$TMP/allowed_signers"
+  ssh-keygen -Y verify -f "$TMP/allowed_signers" -I "termenbox-release-$MCHAN" -n termenbox-release \
     -s "$TMP/manifest.json.sig" < "$TMP/manifest.json" >/dev/null 2>&1 \
-    || die "the release signature is not valid, so nothing was installed"
+    || die "the release signature is not valid for the $MCHAN channel, so nothing was installed"
   grep -q '"freeze": *true' "$TMP/manifest.json" && die "new installs are paused by the maintainers (a signed freeze); try again later"
-  VERSION="$(sed -n 's/.*"version": *"\([0-9.]*\)".*/\1/p' "$TMP/manifest.json" | head -1)"
-  SHA="$(manifest_sha binaries "$ARCH")"
+  # The full SemVer, prerelease included (0.2.0-rc.1, 0.1.36-nightly.20261022), not just X.Y.Z.
+  VERSION="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$TMP/manifest.json" | head -1)"
+  printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$' \
+    || die "the release has no valid version, so nothing was installed"
+  SHA="$(manifest_attr binaries "$ARCH" sha256)"
   case "$SHA" in
     *[!0-9a-f]*|"") die "the release has no $ARCH binary" ;;
   esac
   [ "${#SHA}" -eq 64 ] || die "the release has no valid $ARCH hash"
-  curl -fsSL --retry 3 -o "$TMP/termenbox-server" "$RELEASE_URL/termenbox-server-$ARCH-linux" || die "could not download the server"
+  # The signed manifest, not the address it came from, names where each file is (decision 0132).
+  fetch_asset "$(manifest_attr binaries "$ARCH" url)" "$TMP/termenbox-server" "the server"
   echo "$SHA  $TMP/termenbox-server" | sha256sum -c - >/dev/null 2>&1 || die "the downloaded server does not match the signed hash, so nothing was installed"
   chmod 755 "$TMP/termenbox-server"
   "$TMP/termenbox-server" --help >/dev/null 2>&1 || die "the downloaded server does not run on this machine"
@@ -477,13 +581,31 @@ fetch_release() {
   fetch_tmux
 }
 
-# manifest_sha SECTION KEY  prints the SHA-256 of manifest.json[SECTION][KEY] (the manifest is written with one key per line).
-manifest_sha() {
-  awk -v sec="$1" -v key="$2" '
+# manifest_attr SECTION KEY ATTR  prints manifest.json[SECTION][KEY][ATTR], ATTR being sha256 or url (the manifest is
+# written with one key per line).
+manifest_attr() {
+  awk -v sec="$1" -v key="$2" -v attr="$3" '
     function nm(l) { sub(/^[^"]*"/, "", l); sub(/".*/, "", l); return l }
     /[{][ \t]*$/ { depth++; if (depth == 2) s = nm($0); else if (depth == 3) k = nm($0); next }
     /^[ \t]*[}]/ { depth--; next }
-    depth == 3 && s == sec && k == key && /"sha256":/ { v = $0; sub(/.*"sha256": *"/, "", v); sub(/".*/, "", v); print v; exit }' "$TMP/manifest.json"
+    depth == 3 && s == sec && k == key && $0 ~ "\"" attr "\":" { v = $0; sub(".*\"" attr "\": *\"", "", v); sub(/".*/, "", v); print v; exit }' "$TMP/manifest.json"
+}
+
+# fetch_asset URL DEST WHAT  downloads a file the signed manifest names. Its address must be on this project's GitHub
+# releases (or, in the installer's own tests with a file:// release address, under that address) and have no "..";
+# the caller then checks the signed hash, so the download host is still not trusted.
+fetch_asset() {
+  case "$RELEASE_URL" in
+    file://*) _prefix="${RELEASE_URL%/}/" ;;
+    *) _prefix=https://github.com/termenbox/termenbox/releases/download/ ;;
+  esac
+  case "$1" in
+    "") die "the release does not name where to download $3, so nothing was installed" ;;
+    *..*) die "the release names a suspicious address for $3, so nothing was installed" ;;
+    "$_prefix"*) ;;
+    *) die "the release names an address for $3 that is not this project's releases, so nothing was installed" ;;
+  esac
+  curl -fsSL --retry 3 -o "$2" "$1" || die "could not download $3"
 }
 
 # The bundled tmux and its licence notices (decision 0119), checked against the signed manifest like the server.
@@ -492,17 +614,17 @@ TMUX_NOTICE_NAMES="tmux-COPYING tmux-libevent-LICENSE tmux-ncurses-COPYING"
 fetch_tmux() {
   TMUX_SHA=""
   TMUX_NOTICES=""
-  _t="$(manifest_sha tmux "$ARCH")"
+  _t="$(manifest_attr tmux "$ARCH" sha256)"
   [ -n "$_t" ] || return 0
   [ "${#_t}" -eq 64 ] && [ -z "$(printf '%s' "$_t" | tr -d '0-9a-f')" ] || die "the release has no valid $ARCH tmux hash"
-  curl -fsSL --retry 3 -o "$TMP/termenbox-tmux" "$RELEASE_URL/tmux-$ARCH-linux" || die "could not download tmux"
+  fetch_asset "$(manifest_attr tmux "$ARCH" url)" "$TMP/termenbox-tmux" "tmux"
   echo "$_t  $TMP/termenbox-tmux" | sha256sum -c - >/dev/null 2>&1 || die "the downloaded tmux does not match the signed hash, so nothing was installed"
   chmod 755 "$TMP/termenbox-tmux"
   "$TMP/termenbox-tmux" -V 2>/dev/null | grep -q '^tmux ' || die "the downloaded tmux does not run on this machine"
   for _n in $TMUX_NOTICE_NAMES; do
-    _h="$(manifest_sha tmux_notices "$_n")"
+    _h="$(manifest_attr tmux_notices "$_n" sha256)"
     [ -n "$_h" ] || continue
-    curl -fsSL --retry 3 -o "$TMP/$_n" "$RELEASE_URL/$_n" || die "could not download $_n"
+    fetch_asset "$(manifest_attr tmux_notices "$_n" url)" "$TMP/$_n" "$_n"
     echo "$_h  $TMP/$_n" | sha256sum -c - >/dev/null 2>&1 || die "the downloaded $_n does not match the signed hash, so nothing was installed"
     TMUX_NOTICES="$TMUX_NOTICES $_n"
   done
@@ -609,6 +731,7 @@ install_native() {
   fi
   say "  - state       $STATE"
   say "  - a service   $UNIT_NAME (starts at boot), and a daily update check (root-owned, signed releases only)"
+  update_policy_note
   say "  - UDP port    $PORT (opened in the firewall if one is active)"
   say "Every change is recorded in $JOURNAL; undo them with: termenbox-server --revert --dry-run, then --revert"
   say ""
@@ -805,6 +928,7 @@ install_user() {
   [ -z "$TMUX_SHA" ] || say "  - tmux        $(dirname "$BIN")/termenbox-tmux (a pinned static build, used before any tmux on PATH)"
   say "  - state       $STATE"
   say "  - a user service $SERVICE, and a daily update check (signed releases only), in $UNIT_DIR"
+  update_policy_note
   if [ -n "$UDP_PIN" ]; then say "  - UDP port    $UDP_PIN (your choice)"; else say "  - UDP port    the server picks a free one from 4443-4542 on its first start and keeps it"; fi
   say "Every change is recorded in $JOURNAL; undo them with: termenbox-server --journal-dir $JOURNAL --revert --dry-run, then --revert"
   say ""
@@ -896,6 +1020,11 @@ install_user_helper_units() {
     chmod 700 "$STATE/requests"
   fi
   _added=""
+  if [ ! -f "$JOURNAL/update.toml" ] || [ -n "$CHANNEL_GIVEN" ]; then
+    write_update_config
+    set_release_env "$UNIT_DIR/termenbox-update.service" "$UNIT_DIR/termenbox-request.service"
+    _added=1
+  fi
   add_user_unit() { # name, content
     [ -f "$UNIT_DIR/$1" ] && return 0
     journal unit_installed "name=$1" "path=$UNIT_DIR/$1"
@@ -907,6 +1036,7 @@ Description=Termenbox updater
 
 [Service]
 Type=oneshot
+Environment=TERMENBOX_RELEASE_URL=$RELEASE_URL
 Environment=TERMENBOX_BINARY=$BIN
 ExecStart=$BIN --root-helper update --user-helper --journal-dir $JOURNAL"
   add_user_unit termenbox-update.timer "[Unit]
@@ -924,6 +1054,7 @@ Description=Termenbox helper (requests from the server)
 
 [Service]
 Type=oneshot
+Environment=TERMENBOX_RELEASE_URL=$RELEASE_URL
 Environment=TERMENBOX_BINARY=$BIN
 ExecStart=$BIN --root-helper requests --user-helper --journal-dir $JOURNAL --requests-dir $STATE/requests"
   add_user_unit termenbox-request.path "[Unit]

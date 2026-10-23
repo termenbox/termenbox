@@ -4,10 +4,10 @@
 # TMUX_DIR is what .github/scripts/build-tmux.sh writes (tmux plus the three licence texts). Every release carries
 # that tmux as the bundled one (decision 0119). Without it a stub that only answers `tmux -V` stands in, which is
 # enough to test the install and the update but not a session.
-# OUT_DIR gets: release (the binary as the first install), release2 (9.0.1, a different binary that works),
-# release3 (9.0.2, a binary that starts but never serves, so the update must roll back), release4 (9.0.3, frozen),
-# key / key.pub and keys.txt (the public key in release-keys format). The update releases use versions far above
-# the crate's own so they stay "newer" whichever version is being built.
+# OUT_DIR gets: release (the binary as the first install), release2 (0.99.1, a different binary that works),
+# release3 (0.99.2, a binary that starts but never serves, so the update must roll back), release4 (0.99.3, frozen),
+# key / key.pub and keys.txt (the public key in release-keys format). The update releases use versions above
+# the crate's own but in the same major (0.99.x), because the updater holds a major bump back for the owner.
 set -eu
 BIN="$1"
 OUT="$2"
@@ -34,7 +34,8 @@ release() { # dir version [--freeze]  (binary at $dir/termenbox-server-x86_64-li
   [ -f "$dir/tmux-x86_64-linux" ] || cp "$OUT/tmux/tmux" "$dir/tmux-x86_64-linux"
   cp "$dir/tmux-x86_64-linux" "$dir/tmux-aarch64-linux"
   for n in tmux-COPYING tmux-libevent-LICENSE tmux-ncurses-COPYING; do cp "$OUT/tmux/$n" "$dir/$n"; done
-  python3 "$HERE/make_manifest.py" "$version" "$dir" "$dir/manifest.json" "$@" >/dev/null
+  # The assets are named by the signed manifest, so it must point at where the test machine mounts this directory.
+  python3 "$HERE/make_manifest.py" "$version" "$dir" "$dir/manifest.json" --base-url "file:///$(basename "$dir")" "$@" >/dev/null
   ssh-keygen -Y sign -n termenbox-release -f "$OUT/key" "$dir/manifest.json" >/dev/null 2>&1
 }
 
@@ -43,15 +44,15 @@ cp "$BIN" "$OUT/release/termenbox-server-x86_64-linux"
 release "$OUT/release" 0.1.0
 
 cp "$BIN" "$OUT/release2/termenbox-server-x86_64-linux"
-printf '\n# 9.0.1\n' >> "$OUT/release2/termenbox-server-x86_64-linux"   # trailing bytes: a different file that still runs
+printf '\n# 0.99.1\n' >> "$OUT/release2/termenbox-server-x86_64-linux"   # trailing bytes: a different file that still runs
 cp "$OUT/tmux/tmux" "$OUT/release2/tmux-x86_64-linux"
-printf '\n# 9.0.1\n' >> "$OUT/release2/tmux-x86_64-linux"                 # the same for tmux: the update must carry it too
-release "$OUT/release2" 9.0.1
+printf '\n# 0.99.1\n' >> "$OUT/release2/tmux-x86_64-linux"                 # the same for tmux: the update must carry it too
+release "$OUT/release2" 0.99.1
 
 printf '#!/bin/sh\nif [ "$1" = "--help" ]; then exit 0; fi\nexec sleep 3600\n' > "$OUT/release3/termenbox-server-x86_64-linux"
 chmod +x "$OUT/release3/termenbox-server-x86_64-linux"
-release "$OUT/release3" 9.0.2
+release "$OUT/release3" 0.99.2
 
 cp "$BIN" "$OUT/release4/termenbox-server-x86_64-linux"
-printf '\n# 9.0.3\n' >> "$OUT/release4/termenbox-server-x86_64-linux"
-release "$OUT/release4" 9.0.3 --freeze
+printf '\n# 0.99.3\n' >> "$OUT/release4/termenbox-server-x86_64-linux"
+release "$OUT/release4" 0.99.3 --freeze

@@ -46,3 +46,14 @@ An install made for your own user needs no `sudo` to remove: run the same comman
 It handles both install kinds. For the container it removes the container and `/opt/termenbox`. On the machine itself it stops the service and the updater, deletes the server's state and undoes every journaled change (binary, units, firewall rule, and the `termenbox` user and tmux only if the installer added them). It never touches your repositories, or the home of the user your sessions run as. Add `--keep-state` to keep the server's keys and owner, `--delete-home` to also delete the home of a `termenbox` user the installer created. Running tmux sessions are left alone. Then use **Remove server** in the app to drop it from your list; you can also uninstall from there while connected.
 
 Updates: the container updates when you run the install command again. On the machine itself a timer (root-owned, or your own for the no-root install) checks for a new signed release every day; if the new server does not come up healthy the old one is put back. Check now: `sudo termenbox-server --root-helper update`.
+
+Release channels and update policy (decisions 0130-0132): `--channel stable|beta|nightly` picks the release stream (default stable), for example `curl -fsSL https://app.termenbox.dev/i | sh -s -- --channel beta`. A stable server never installs a beta or nightly; a beta server installs beta and stable releases; a nightly server installs only nightlies. The container uses the image tag of the channel. The choice is written to `update.toml` in the journal directory (`/var/lib/termenbox-root`, or `~/.local/state/termenbox` for the no-root install), which only the host can change; run the installer again with `--channel`, or edit the file:
+
+```toml
+[update]
+channel = "stable"             # stable | beta | nightly
+mode = "auto"                  # auto: install daily | notify: record it, install when asked | hold: do nothing
+maintenance_window = "03:00-04:00"   # optional, local time; limits the automatic install
+```
+
+`auto` is the default, except on nightly, which defaults to `notify` (an unattended daily restart is a surprise on a server that wanted to try nightly); `--auto-update` turns it on. In `notify` the daily check records the available version in `update-status.json` in the server's state directory, and "update now" from the app installs it. `hold` does nothing, even when asked. An automatic update never crosses a major version: it is recorded, and installing it is your call. A file that does not parse stops the updater, so fix the typo and the check resumes.

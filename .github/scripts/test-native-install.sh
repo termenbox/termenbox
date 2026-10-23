@@ -10,7 +10,7 @@ ORIGIN=https://app.termenbox.dev
 SECRET="$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)"
 RUN_USER=termenbox
 [ "$MODE" = host ] && RUN_USER=root
-# /release (first install), /release2 (9.0.1 works), /release3 (9.0.2 starts but never serves), /release4 (9.0.3 is frozen)
+# /release (first install), /release2 (0.99.1 works), /release3 (0.99.2 starts but never serves), /release4 (0.99.3 is frozen)
 export TERMENBOX_RELEASE_URL=file:///release
 TERMENBOX_RELEASE_KEYS="$(cat /keys.txt)"
 export TERMENBOX_RELEASE_KEYS
@@ -77,7 +77,7 @@ helper /release4 | grep -q "paused" || fail "a frozen release was not reported"
 [ "$(sha /usr/local/bin/termenbox-server)" = "$before_sha" ] || fail "a frozen release changed the binary"
 
 echo "== a newer release is installed, the old binary is kept, the service comes back"
-helper /release2 | grep -q "updated .* -> 9.0.1" || fail "the update did not report success"
+helper /release2 | grep -q "updated .* -> 0.99.1" || fail "the update did not report success"
 [ "$(sha /usr/local/bin/termenbox-server)" = "$(sha /release2/termenbox-server-x86_64-linux)" ] || fail "the new binary is not in place"
 [ -f /usr/local/bin/termenbox-server.prev ] || fail "the previous binary was not kept"
 [ "$(sha "$BUNDLED")" = "$(sha /release2/tmux-x86_64-linux)" ] || fail "the update did not carry the new tmux"
@@ -101,6 +101,11 @@ for i in 1 2 3 4 5 6 7 8 9 10; do curl -fs "http://127.0.0.1:$port/health" >/dev
 curl -fs "http://127.0.0.1:$port/health" >/dev/null || fail "the restored server does not answer"
 
 echo "== a request from the server reaches the root helper, and junk does not"
+# The unit now names the release address (the channel's manifest, here /release), so it needs the test release key too;
+# on a real install the built-in keys are the ones that sign it.
+mkdir -p /etc/systemd/system/termenbox-request.service.d
+printf '[Service]\nEnvironment="TERMENBOX_RELEASE_KEYS=%s"\n' "$TERMENBOX_RELEASE_KEYS" > /etc/systemd/system/termenbox-request.service.d/test-keys.conf
+systemctl daemon-reload
 requests=/var/lib/termenbox/requests
 printf '{"action":"update-now"}' > $requests/r1.json
 printf '{"action":"rm","path":"/"}' > $requests/r2.json
@@ -117,6 +122,8 @@ until journalctl -u termenbox-request --no-pager | grep -q "up to date\|updated"
   [ $i -lt 30 ] || { journalctl -u termenbox-request --no-pager | tail; fail "the helper did not act on the update request"; }
   sleep 1
 done
+rm -rf /etc/systemd/system/termenbox-request.service.d
+systemctl daemon-reload
 
 echo "== a changed release is refused"
 cp /release/manifest.json /tmp/manifest.good

@@ -14,7 +14,127 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
 use crate::journal::{Change, Journal};
-use crate::release::{Channel, Manifest, ReleaseKeys};
+use crate::release::{Channel, ChannelNotFollowed, Manifest, ReleaseKeys};
+
+/// How a server treats a newer release (`[update] mode`, decision 0131).
+#[derive(Debug, Clone, Copy, Default, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    /// The daily check installs it (inside the maintenance window, and not across a major version).
+    #[default]
+    Auto,
+    /// The daily check only records that it exists; the owner's `UpdateNow` installs it.
+    Notify,
+    /// Nothing happens, whoever asks.
+    Hold,
+}
+
+/// A daily window in local time, `HH:MM-HH:MM`, which may wrap midnight (`23:00-01:00`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Window {
+    start: u32,
+    end: u32,
+}
+
+impl Window {
+    pub fn parse(s: &str) -> Result<Self> {
+        let bad = || anyhow!("maintenance_window `{s}` is not like 03:00-04:00");
+        let minutes = |t: &str| -> Result<u32> {
+            let (h, m) = t.trim().split_once(':').ok_or_else(bad)?;
+            let (h, m): (u32, u32) = (h.parse().map_err(|_| bad())?, m.parse().map_err(|_| bad())?);
+            if h > 23 || m > 59 {
+                return Err(bad());
+            }
+            Ok(h * 60 + m)
+        };
+        let (a, b) = s.split_once('-').ok_or_else(bad)?;
+        let (start, end) = (minutes(a)?, minutes(b)?);
+        if start == end {
+            return Err(bad());
+        }
+        Ok(Self { start, end })
+    }
+
+    /// Whether `minute` (minutes since local midnight) falls inside; the end is exclusive.
+    pub fn contains(&self, minute: u32) -> bool {
+        if self.start < self.end {
+            (self.start..self.end).contains(&minute)
+        } else {
+            minute >= self.start || minute < self.end
+        }
+    }
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateSection {
+    channel: Option<Channel>,
+    mode: Option<Mode>,
+    maintenance_window: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct PolicyFile {
+    #[serde(default)]
+    update: UpdateSection,
+}
+
+/// The per-server update policy: root-owned, written by the installer (`update.toml` beside the journal), changed only
+/// on the host. A file that does not parse is an error and the updater does nothing: a typo must never read as `auto`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdatePolicy {
+    pub channel: Channel,
+    pub mode: Mode,
+    pub window: Option<Window>,
+}
+
+impl UpdatePolicy {
+    /// Without a `channel` the server follows the channel of the version it runs (stable for a release build).
+    pub fn parse(text: &str, running_version: &str) -> Result<Self> {
+        let file: PolicyFile =
+            toml::from_str(text).map_err(|e| anyhow!("bad update config: {e}"))?;
+        Ok(Self {
+            channel: file
+                .update
+                .channel
+                .unwrap_or_else(|| Channel::of_version(running_version)),
+            mode: file.update.mode.unwrap_or_default(),
+            window: file
+                .update
+                .maintenance_window
+                .as_deref()
+                .map(Window::parse)
+                .transpose()?,
+        })
+    }
+
+    /// A missing file is the defaults (`stable`, `auto`, no window); an unreadable or invalid one is an error.
+    pub fn load(path: &Path, running_version: &str) -> Result<Self> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => Self::parse(&text, running_version),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::parse("", running_version),
+            Err(e) => Err(anyhow!("{}: {e}", path.display())),
+        }
+    }
+}
+
+/// What started this run: the daily timer, or the owner's `Request::UpdateNow`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    Timer,
+    UpdateNow,
+}
+
+/// Minutes since local midnight, for the maintenance window.
+pub fn local_minute_of_day() -> u32 {
+    // SAFETY: `time` accepts a null pointer; `localtime_r` writes only into the struct we own.
+    unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&now, &mut tm);
+        (tm.tm_hour * 60 + tm.tm_min) as u32
+    }
+}
 
 #[async_trait]
 pub trait Fetch: Send + Sync {
@@ -44,6 +164,16 @@ pub enum Outcome {
         to: String,
         reason: String,
     },
+    /// `mode = hold`: nothing was fetched or changed.
+    Held,
+    /// A validly signed manifest of a channel this server does not follow (a stable server and the beta alias).
+    OtherChannel,
+    /// A newer release exists and was recorded in the status file, but not installed: `notify` mode, outside the
+    /// maintenance window, or a major version that needs the owner.
+    Available {
+        version: String,
+        reason: &'static str,
+    },
 }
 
 pub struct Updater<'a> {
@@ -53,9 +183,16 @@ pub struct Updater<'a> {
     pub binary: PathBuf,
     /// The root-only directory with the journal (`/var/lib/termenbox-root`).
     pub root_dir: PathBuf,
-    /// Where releases are published; assets are fetched from here, only the hash comes from the manifest.
+    /// Where the manifest and its signature are fetched from (`<release_url>/manifest.json`). Never used to build an
+    /// asset URL: the signed manifest names every asset (decision 0132).
     pub release_url: String,
     pub url_prefix: String,
+    pub policy: UpdatePolicy,
+    pub trigger: Trigger,
+    /// Local time as minutes since midnight, for the maintenance window.
+    pub now_minute: u32,
+    /// The directory the server reads its state from; `update-status.json` goes here. None: nothing is recorded.
+    pub status_dir: Option<PathBuf>,
     /// The running version, as `crate::version()` reports it.
     pub current: String,
     pub arch: String,
@@ -114,9 +251,9 @@ impl Updater<'_> {
     /// (an older manifest leaves what is installed alone). An install made before tmux was bundled gets one here:
     /// termenbox always runs its own tmux (decision 0120), and a running tmux server on the same socket speaks the same
     /// protocol. The tmux is run once before anything is changed. On any error nothing is left staged.
-    async fn stage_tmux(&self, manifest: &Manifest, base: &str) -> Result<Vec<StagedFile>> {
+    async fn stage_tmux(&self, manifest: &Manifest) -> Result<Vec<StagedFile>> {
         let mut staged: Vec<StagedFile> = Vec::new();
-        let result = self.stage_tmux_into(manifest, base, &mut staged).await;
+        let result = self.stage_tmux_into(manifest, &mut staged).await;
         if result.is_err() {
             for f in &staged {
                 let _ = std::fs::remove_file(&f.staged);
@@ -125,12 +262,7 @@ impl Updater<'_> {
         result.map(|()| staged)
     }
 
-    async fn stage_tmux_into(
-        &self,
-        manifest: &Manifest,
-        base: &str,
-        out: &mut Vec<StagedFile>,
-    ) -> Result<()> {
+    async fn stage_tmux_into(&self, manifest: &Manifest, out: &mut Vec<StagedFile>) -> Result<()> {
         let Some(entry) = manifest.tmux(&self.arch) else {
             return Ok(());
         };
@@ -138,10 +270,7 @@ impl Updater<'_> {
         let expected = entry.sha256.to_ascii_lowercase();
         let existed = path.is_file();
         if !existed || crate::journal::hash_file(&path)? != expected {
-            let bytes = self
-                .fetch
-                .get(&format!("{base}/tmux-{}-linux", self.arch))
-                .await?;
+            let bytes = self.fetch.get(&entry.url).await?;
             if hex(&Sha256::digest(&bytes)) != expected {
                 bail!("the downloaded tmux does not match the signed hash; nothing was changed");
             }
@@ -172,7 +301,7 @@ impl Updater<'_> {
             if existed && crate::journal::hash_file(&path)? == expected {
                 continue;
             }
-            let bytes = self.fetch.get(&format!("{base}/{name}")).await?;
+            let bytes = self.fetch.get(&notice.url).await?;
             if hex(&Sha256::digest(&bytes)) != expected {
                 bail!("the downloaded {name} does not match the signed hash; nothing was changed");
             }
@@ -188,30 +317,84 @@ impl Updater<'_> {
         Ok(())
     }
 
+    /// The status file the server reads: the newest release this server could install but has not, or no file.
+    fn record_available(&self, version: Option<&str>) -> Result<()> {
+        let Some(dir) = &self.status_dir else {
+            return Ok(());
+        };
+        let path = dir.join("update-status.json");
+        match version {
+            Some(v) => {
+                let body = serde_json::json!({
+                    "available": v,
+                    "channel": format!("{:?}", self.policy.channel).to_ascii_lowercase(),
+                    "mode": format!("{:?}", self.policy.mode).to_ascii_lowercase(),
+                });
+                std::fs::write(&path, serde_json::to_vec(&body)?)?;
+            }
+            None => {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+        Ok(())
+    }
+
     pub async fn run(&self) -> Result<Outcome> {
+        if self.policy.mode == Mode::Hold {
+            return Ok(Outcome::Held);
+        }
+        // Only the manifest and its signature come from `release_url`; every asset URL comes from the verified manifest.
         let base = self.release_url.trim_end_matches('/');
         let manifest_bytes = self.fetch.get(&format!("{base}/manifest.json")).await?;
         let signature =
             String::from_utf8(self.fetch.get(&format!("{base}/manifest.json.sig")).await?)?;
-        // Nothing in the manifest is used before its signature has been checked.
-        let (manifest, _kid) = Manifest::verify(
+        // Nothing in the manifest is used before its signature has been checked. The channel the owner configured
+        // decides which manifests count (a stable server never follows beta or nightly, decision 0130).
+        let (manifest, _kid) = match Manifest::verify(
             &manifest_bytes,
             &signature,
             self.keys,
             &self.url_prefix,
-            Channel::of_version(&self.current),
-        )?;
+            self.policy.channel,
+        ) {
+            Ok(v) => v,
+            Err(e) if e.downcast_ref::<ChannelNotFollowed>().is_some() => {
+                return Ok(Outcome::OtherChannel)
+            }
+            Err(e) => return Err(e),
+        };
         if manifest.freeze {
             return Ok(Outcome::Frozen);
         }
         if !manifest.is_newer_than(&self.current)? {
+            self.record_available(None)?;
             return Ok(Outcome::UpToDate);
         }
-        let expected = manifest.binary(&self.arch)?.sha256.to_ascii_lowercase();
-        let bytes = self
-            .fetch
-            .get(&format!("{base}/termenbox-server-{}-linux", self.arch))
-            .await?;
+        if self.trigger == Trigger::Timer {
+            let hold_back = if self.policy.mode == Mode::Notify {
+                Some("notify mode: the owner installs it")
+            } else if manifest.is_major_bump_from(&self.current)? {
+                Some("a new major version needs the owner's confirmation")
+            } else if self
+                .policy
+                .window
+                .is_some_and(|w| !w.contains(self.now_minute))
+            {
+                Some("outside the maintenance window")
+            } else {
+                None
+            };
+            if let Some(reason) = hold_back {
+                self.record_available(Some(&manifest.version))?;
+                return Ok(Outcome::Available {
+                    version: manifest.version,
+                    reason,
+                });
+            }
+        }
+        let binary = manifest.binary(&self.arch)?;
+        let expected = binary.sha256.to_ascii_lowercase();
+        let bytes = self.fetch.get(&binary.url).await?;
         if hex(&Sha256::digest(&bytes)) != expected {
             bail!("the downloaded server does not match the signed hash; nothing was changed");
         }
@@ -223,7 +406,7 @@ impl Updater<'_> {
             bail!("the new server does not run on this machine; nothing was changed");
         }
         // The bundled tmux and its notices go with the server: all are swapped, all are put back together.
-        let tmux = match self.stage_tmux(&manifest, base).await {
+        let tmux = match self.stage_tmux(&manifest).await {
             Ok(t) => t,
             Err(e) => {
                 let _ = std::fs::remove_file(&staged);
@@ -285,6 +468,7 @@ impl Updater<'_> {
 
         self.service.restart().await?;
         if self.wait_healthy().await {
+            let _ = self.record_available(None);
             return Ok(Outcome::Updated {
                 from: core_version(&self.current).to_string(),
                 to: manifest.version,
@@ -481,6 +665,17 @@ mod tests {
         new_binary: &[u8],
         new_tmux: Option<&[u8]>,
     ) -> Option<World> {
+        world_in("stable", version, freeze, new_binary, new_tmux)
+    }
+
+    /// Like `world_with_tmux`, for a manifest of `channel`, signed by a key bound to that channel.
+    fn world_in(
+        channel: &str,
+        version: &str,
+        freeze: bool,
+        new_binary: &[u8],
+        new_tmux: Option<&[u8]>,
+    ) -> Option<World> {
         let dir = std::env::temp_dir().join(format!("termenbox-updater-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).ok()?;
         let tmux_entry = new_tmux.map_or(String::new(), |t| {
@@ -491,7 +686,7 @@ mod tests {
             )
         });
         let manifest = format!(
-            r#"{{"version":"{version}","channel":"stable","freeze":{freeze},"notes":"","binaries":{{"x86_64":{{"url":"{BASE}/termenbox-server-x86_64-linux","sha256":"{}"}}}}{tmux_entry}}}"#,
+            r#"{{"version":"{version}","channel":"{channel}","freeze":{freeze},"notes":"","binaries":{{"x86_64":{{"url":"{BASE}/termenbox-server-x86_64-linux","sha256":"{}"}}}}{tmux_entry}}}"#,
             hex(&Sha256::digest(new_binary))
         );
         let key = dir.join("key");
@@ -518,7 +713,7 @@ mod tests {
         }
         let public = std::fs::read_to_string(dir.join("key.pub")).ok()?;
         let keys = ReleaseKeys::parse(&format!(
-            "r1 {}",
+            "k1 {} channel={channel}",
             public
                 .split_whitespace()
                 .take(2)
@@ -535,16 +730,14 @@ mod tests {
             "https://rel/manifest.json.sig".to_string(),
             std::fs::read(dir.join("manifest.json.sig")).ok()?,
         );
+        // Assets live where the manifest says (BASE), not beside the manifest (https://rel).
         files.insert(
-            "https://rel/termenbox-server-x86_64-linux".to_string(),
+            format!("{BASE}/termenbox-server-x86_64-linux"),
             new_binary.to_vec(),
         );
         if let Some(t) = new_tmux {
-            files.insert("https://rel/tmux-x86_64-linux".to_string(), t.to_vec());
-            files.insert(
-                "https://rel/tmux-COPYING".to_string(),
-                b"new notice".to_vec(),
-            );
+            files.insert(format!("{BASE}/tmux-x86_64-linux"), t.to_vec());
+            files.insert(format!("{BASE}/tmux-COPYING"), b"new notice".to_vec());
             std::fs::write(dir.join("termenbox-tmux"), b"old tmux").ok()?;
             std::fs::write(dir.join("termenbox-tmux-COPYING"), b"old notice").ok()?;
         }
@@ -567,6 +760,16 @@ mod tests {
             root_dir: w.dir.join("root"),
             release_url: "https://rel".into(),
             url_prefix: BASE.rsplit_once('/').unwrap().0.to_string() + "/",
+            // Defaults for the install tests: an owner-requested update on the stable channel, which asks for no window
+            // and no confirmation. The policy tests below set their own.
+            policy: UpdatePolicy {
+                channel: Channel::Stable,
+                mode: Mode::Auto,
+                window: None,
+            },
+            trigger: Trigger::UpdateNow,
+            now_minute: 3 * 60 + 30,
+            status_dir: Some(w.dir.clone()),
             current: current.into(),
             arch: "x86_64".into(),
             health_wait: Duration::from_millis(50),
@@ -752,7 +955,7 @@ mod tests {
         // a binary that is not what the manifest says
         let mut swapped = fake(&w);
         swapped.files.insert(
-            "https://rel/termenbox-server-x86_64-linux".into(),
+            format!("{BASE}/termenbox-server-x86_64-linux"),
             b"evil".to_vec(),
         );
         assert!(updater(&w, &swapped, &s, "0.1.0")
@@ -838,7 +1041,7 @@ mod tests {
         let mut swapped = fake(&w);
         swapped
             .files
-            .insert("https://rel/tmux-x86_64-linux".into(), b"evil".to_vec());
+            .insert(format!("{BASE}/tmux-x86_64-linux"), b"evil".to_vec());
         let s = svc(&w, 1, true);
         let err = updater(&w, &swapped, &s, "0.1.0").run().await.unwrap_err();
         assert!(err.to_string().contains("signed hash"), "{err}");
@@ -863,7 +1066,7 @@ mod tests {
         let mut bad_notice = fake(&w);
         bad_notice
             .files
-            .insert("https://rel/tmux-COPYING".into(), b"evil".to_vec());
+            .insert(format!("{BASE}/tmux-COPYING"), b"evil".to_vec());
         let err = updater(&w, &bad_notice, &s, "0.1.0")
             .run()
             .await
@@ -957,6 +1160,333 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    // --- the update policy (decision 0131) ---------------------------------------------------------------------
+
+    fn with_policy<'a>(
+        mut u: Updater<'a>,
+        channel: Channel,
+        mode: Mode,
+        trigger: Trigger,
+    ) -> Updater<'a> {
+        u.policy.channel = channel;
+        u.policy.mode = mode;
+        u.trigger = trigger;
+        u
+    }
+
+    #[tokio::test]
+    async fn assets_come_from_the_manifest_never_from_release_url() {
+        let Some(w) = world_with_tmux("9.9.9", false, b"new binary", Some(b"new tmux")) else {
+            return;
+        };
+        let (f, s) = (fake(&w), svc(&w, 1, true));
+        let mut u = updater(&w, &f, &s, "0.1.0");
+        // an alias that holds only the manifest, like `channel-beta`
+        u.release_url = "https://rel/alias/".into();
+        let mut f2 = fake(&w);
+        let m = f2.files.remove("https://rel/manifest.json").unwrap();
+        let sig = f2.files.remove("https://rel/manifest.json.sig").unwrap();
+        f2.files.insert("https://rel/alias/manifest.json".into(), m);
+        f2.files
+            .insert("https://rel/alias/manifest.json.sig".into(), sig);
+        let u = Updater { fetch: &f2, ..u };
+        let out = u.run().await.unwrap();
+        assert!(matches!(out, Outcome::Updated { .. }), "{out:?}");
+        for url in f2.fetched.lock().unwrap().iter() {
+            assert!(
+                url.starts_with(BASE) || url.starts_with("https://rel/alias/manifest.json"),
+                "{url} was not named by the manifest"
+            );
+        }
+        assert_eq!(
+            std::fs::read(w.dir.join("termenbox-tmux")).unwrap(),
+            b"new tmux"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stable_server_ignores_a_beta_or_nightly_manifest() {
+        for channel in ["beta", "nightly"] {
+            let Some(w) = world_in(channel, "9.9.9-x.1", false, b"new binary", None) else {
+                return;
+            };
+            let (f, s) = (fake(&w), svc(&w, 1, true));
+            let u = with_policy(
+                updater(&w, &f, &s, "0.1.0"),
+                Channel::Stable,
+                Mode::Auto,
+                Trigger::Timer,
+            );
+            assert_eq!(u.run().await.unwrap(), Outcome::OtherChannel, "{channel}");
+            assert_eq!(std::fs::read(&w.binary).unwrap(), b"old binary");
+            assert_eq!(*s.restarts.lock().unwrap(), 0);
+            assert!(!f
+                .fetched
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|u| u.contains("x86_64-linux")));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_beta_server_installs_a_stable_release_from_the_alias_and_a_beta_one() {
+        // `channel-beta` can point at a stable release: 0.2.0, signed by the stable key.
+        let Some(w) = world_in("stable", "0.2.0", false, b"new binary", None) else {
+            return;
+        };
+        let (f, s) = (fake(&w), svc(&w, 1, true));
+        let u = with_policy(
+            updater(&w, &f, &s, "0.1.36-beta.2"),
+            Channel::Beta,
+            Mode::Auto,
+            Trigger::Timer,
+        );
+        let out = u.run().await.unwrap();
+        assert!(
+            matches!(&out, Outcome::Updated { to, .. } if to == "0.2.0"),
+            "{out:?}"
+        );
+        assert_eq!(std::fs::read(&w.binary).unwrap(), b"new binary");
+        // or a beta of its own
+        let Some(w) = world_in("beta", "0.2.0-rc.1", false, b"rc binary", None) else {
+            return;
+        };
+        let (f, s) = (fake(&w), svc(&w, 1, true));
+        let u = with_policy(
+            updater(&w, &f, &s, "0.1.36-beta.2"),
+            Channel::Beta,
+            Mode::Auto,
+            Trigger::Timer,
+        );
+        let out = u.run().await.unwrap();
+        assert!(
+            matches!(&out, Outcome::Updated { to, .. } if to == "0.2.0-rc.1"),
+            "{out:?}"
+        );
+        // but never a nightly
+        let Some(w) = world_in("nightly", "0.2.0-nightly.20261023", false, b"n", None) else {
+            return;
+        };
+        let (f, s) = (fake(&w), svc(&w, 1, true));
+        let u = with_policy(
+            updater(&w, &f, &s, "0.1.36-beta.2"),
+            Channel::Beta,
+            Mode::Auto,
+            Trigger::Timer,
+        );
+        assert_eq!(u.run().await.unwrap(), Outcome::OtherChannel);
+    }
+
+    #[tokio::test]
+    async fn a_nightly_server_sees_only_nightly() {
+        let Some(w) = world_in("stable", "0.2.0", false, b"new binary", None) else {
+            return;
+        };
+        let (f, s) = (fake(&w), svc(&w, 1, true));
+        let u = with_policy(
+            updater(&w, &f, &s, "0.1.36-nightly.20261022"),
+            Channel::Nightly,
+            Mode::Auto,
+            Trigger::Timer,
+        );
+        assert_eq!(u.run().await.unwrap(), Outcome::OtherChannel);
+        assert_eq!(*s.restarts.lock().unwrap(), 0);
+        let Some(w) = world_in("beta", "0.2.0-rc.1", false, b"new binary", None) else {
+            return;
+        };
+        let (f, s) = (fake(&w), svc(&w, 1, true));
+        let u = with_policy(
+            updater(&w, &f, &s, "0.1.36-nightly.20261022"),
+            Channel::Nightly,
+            Mode::Auto,
+            Trigger::Timer,
+        );
+        assert_eq!(u.run().await.unwrap(), Outcome::OtherChannel);
+        let Some(w) = world_in("nightly", "0.1.36-nightly.20261023", false, b"night", None) else {
+            return;
+        };
+        let (f, s) = (fake(&w), svc(&w, 1, true));
+        let u = with_policy(
+            updater(&w, &f, &s, "0.1.36-nightly.20261022"),
+            Channel::Nightly,
+            Mode::Auto,
+            Trigger::Timer,
+        );
+        let out = u.run().await.unwrap();
+        assert!(
+            matches!(&out, Outcome::Updated { to, .. } if to == "0.1.36-nightly.20261023"),
+            "{out:?}"
+        );
+        // yesterday's nightly is not an update
+        let (f, s) = (fake(&w), svc(&w, 1, true));
+        let u = with_policy(
+            updater(&w, &f, &s, "0.1.36-nightly.20261023"),
+            Channel::Nightly,
+            Mode::Auto,
+            Trigger::Timer,
+        );
+        assert_eq!(u.run().await.unwrap(), Outcome::UpToDate);
+    }
+
+    #[tokio::test]
+    async fn notify_records_the_version_and_installs_nothing_until_update_now() {
+        let Some(w) = world("0.2.0", false, b"new binary") else {
+            return;
+        };
+        let (f, s) = (fake(&w), svc(&w, 1, true));
+        let u = with_policy(
+            updater(&w, &f, &s, "0.1.36"),
+            Channel::Stable,
+            Mode::Notify,
+            Trigger::Timer,
+        );
+        let out = u.run().await.unwrap();
+        assert!(
+            matches!(&out, Outcome::Available { version, .. } if version == "0.2.0"),
+            "{out:?}"
+        );
+        assert_eq!(std::fs::read(&w.binary).unwrap(), b"old binary");
+        assert_eq!(*s.restarts.lock().unwrap(), 0);
+        assert!(!f
+            .fetched
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|u| u.contains("x86_64-linux")));
+        let status: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(w.dir.join("update-status.json")).unwrap())
+                .unwrap();
+        assert_eq!(status["available"], "0.2.0");
+        // the owner asks
+        let u = with_policy(
+            updater(&w, &f, &s, "0.1.36"),
+            Channel::Stable,
+            Mode::Notify,
+            Trigger::UpdateNow,
+        );
+        let out = u.run().await.unwrap();
+        assert!(matches!(out, Outcome::Updated { .. }), "{out:?}");
+        assert_eq!(std::fs::read(&w.binary).unwrap(), b"new binary");
+        assert!(
+            !w.dir.join("update-status.json").exists(),
+            "nothing is pending any more"
+        );
+    }
+
+    #[tokio::test]
+    async fn hold_does_nothing_even_when_asked() {
+        let Some(w) = world("0.2.0", false, b"new binary") else {
+            return;
+        };
+        for trigger in [Trigger::Timer, Trigger::UpdateNow] {
+            let (f, s) = (fake(&w), svc(&w, 1, true));
+            let u = with_policy(
+                updater(&w, &f, &s, "0.1.36"),
+                Channel::Stable,
+                Mode::Hold,
+                trigger,
+            );
+            assert_eq!(u.run().await.unwrap(), Outcome::Held);
+            assert!(
+                f.fetched.lock().unwrap().is_empty(),
+                "not even the manifest is fetched"
+            );
+            assert_eq!(std::fs::read(&w.binary).unwrap(), b"old binary");
+        }
+        assert!(!w.dir.join("update-status.json").exists());
+    }
+
+    #[tokio::test]
+    async fn a_major_bump_or_a_closed_window_holds_back_the_automatic_update_only() {
+        let Some(w) = world("1.0.0", false, b"new binary") else {
+            return;
+        };
+        let (f, s) = (fake(&w), svc(&w, 1, true));
+        let u = with_policy(
+            updater(&w, &f, &s, "0.9.0"),
+            Channel::Stable,
+            Mode::Auto,
+            Trigger::Timer,
+        );
+        let out = u.run().await.unwrap();
+        assert!(
+            matches!(&out, Outcome::Available { version, .. } if version == "1.0.0"),
+            "{out:?}"
+        );
+        assert_eq!(std::fs::read(&w.binary).unwrap(), b"old binary");
+        // the owner confirms by asking
+        let u = with_policy(
+            updater(&w, &f, &s, "0.9.0"),
+            Channel::Stable,
+            Mode::Auto,
+            Trigger::UpdateNow,
+        );
+        assert!(matches!(u.run().await.unwrap(), Outcome::Updated { .. }));
+
+        // a minor bump inside the window installs; outside it waits
+        let Some(w) = world("0.10.0", false, b"new binary") else {
+            return;
+        };
+        let (f, s) = (fake(&w), svc(&w, 1, true));
+        let mut u = with_policy(
+            updater(&w, &f, &s, "0.9.0"),
+            Channel::Stable,
+            Mode::Auto,
+            Trigger::Timer,
+        );
+        u.policy.window = Some(Window::parse("03:00-04:00").unwrap());
+        u.now_minute = 12 * 60;
+        let out = u.run().await.unwrap();
+        assert!(
+            matches!(&out, Outcome::Available { reason, .. } if reason.contains("window")),
+            "{out:?}"
+        );
+        assert_eq!(std::fs::read(&w.binary).unwrap(), b"old binary");
+        u.now_minute = 3 * 60 + 30;
+        assert!(matches!(u.run().await.unwrap(), Outcome::Updated { .. }));
+    }
+
+    #[test]
+    fn the_policy_file_has_safe_defaults_and_refuses_typos() {
+        let d = UpdatePolicy::parse("", "0.1.36").unwrap();
+        assert_eq!(
+            (d.channel, d.mode, d.window),
+            (Channel::Stable, Mode::Auto, None)
+        );
+        let d = UpdatePolicy::parse("", "0.1.36-nightly.20261022").unwrap();
+        assert_eq!(
+            d.channel,
+            Channel::Nightly,
+            "no channel: the one the binary runs"
+        );
+        let p = UpdatePolicy::parse(
+            "[update]\nchannel = \"nightly\"\nmode = \"notify\"\nmaintenance_window = \"23:00-01:00\"\n",
+            "0.1.36",
+        )
+        .unwrap();
+        assert_eq!((p.channel, p.mode), (Channel::Nightly, Mode::Notify));
+        let w = p.window.unwrap();
+        assert!(
+            w.contains(23 * 60 + 30) && w.contains(30) && !w.contains(12 * 60),
+            "wraps midnight"
+        );
+        for bad in [
+            "[update]\nmode = \"atuo\"\n",
+            "[update]\nmod = \"hold\"\n",
+            "[update]\nchannel = \"edge\"\n",
+            "[update]\nmaintenance_window = \"3am-4am\"\n",
+            "[update]\nmaintenance_window = \"25:00-26:00\"\n",
+        ] {
+            assert!(UpdatePolicy::parse(bad, "0.1.36").is_err(), "{bad}");
+        }
+        let missing = std::env::temp_dir().join(format!("tb-nope-{}", uuid::Uuid::new_v4()));
+        assert_eq!(
+            UpdatePolicy::load(&missing, "0.1.36").unwrap().mode,
+            Mode::Auto
         );
     }
 

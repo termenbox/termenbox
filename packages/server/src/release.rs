@@ -56,6 +56,19 @@ impl Channel {
     }
 }
 
+/// A validly signed manifest of a channel this binary does not follow. The updater treats it as "nothing for me
+/// here" (a stable server pointed at a beta alias), not as a broken release.
+#[derive(Debug)]
+pub struct ChannelNotFollowed(pub Channel);
+
+impl std::fmt::Display for ChannelNotFollowed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "this binary does not follow the {:?} channel", self.0)
+    }
+}
+
+impl std::error::Error for ChannelNotFollowed {}
+
 /// The trusted release public keys: `kid ssh-ed25519 <base64 blob> [channel=<stable|beta|nightly>]` per line. A line
 /// without a channel is the stable key, so a list written before channels existed keeps its meaning.
 #[derive(Clone, Default)]
@@ -248,10 +261,7 @@ impl Manifest {
             bail!("key {kid} may not sign a {:?} release", manifest.channel);
         }
         if !running.trusts(manifest.channel) {
-            bail!(
-                "this binary does not follow the {:?} channel",
-                manifest.channel
-            );
+            return Err(ChannelNotFollowed(manifest.channel).into());
         }
         let all = manifest
             .binaries
@@ -284,6 +294,11 @@ impl Manifest {
     /// The bundled tmux for `arch`, when this release carries one.
     pub fn tmux(&self, arch: &str) -> Option<&Binary> {
         self.tmux.get(arch)
+    }
+
+    /// Whether this release has a higher major version than `current` (a breaking change an owner must confirm).
+    pub fn is_major_bump_from(&self, current: &str) -> Result<bool> {
+        Ok(parse_version(&self.version)?.major > parse_version(current)?.major)
     }
 
     /// Whether this release is newer than the running `current` version.
