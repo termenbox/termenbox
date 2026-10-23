@@ -509,6 +509,7 @@
     // ^C. With nothing selected, Ctrl+C stays the interrupt. Ctrl+Shift+C keeps working where the browser delivers it.
     // Cut: Ctrl+X (Cmd+X) with a selection copies it and clears the highlight (the text lives on the server, so nothing is
     // deleted). With nothing selected Ctrl+X stays ^X, which nano, emacs and tmux use.
+    // Select all: Ctrl+Shift+A and Cmd+A. Plain Ctrl+A stays ^A (readline's start of line, and the tmux prefix for many).
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== 'keydown' || ev.altKey) return true;
       // The physical key too: on a Cyrillic (or any non-Latin) layout Ctrl+C arrives as key "с", and only `code` says KeyC.
@@ -516,12 +517,18 @@
       const isV = ev.code === 'KeyV' || key === 'v';
       const isC = ev.code === 'KeyC' || key === 'c';
       const isX = ev.code === 'KeyX' || key === 'x';
+      const isA = ev.code === 'KeyA' || key === 'a';
       if (ev.ctrlKey && isV) return false;
       if ((ev.ctrlKey || ev.metaKey) && isC) {
         const text = term?.getSelection();
         if (!text) return !(ev.ctrlKey && ev.shiftKey); // Ctrl+Shift+C with no selection is not the program's key
         ev.preventDefault(); // no browser copy command, no inspector, and no ^C
         void copyText(text);
+        return false;
+      }
+      if (isA && (ev.metaKey || (ev.ctrlKey && ev.shiftKey))) {
+        ev.preventDefault();
+        term?.selectAll();
         return false;
       }
       if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && isX) {
