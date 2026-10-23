@@ -92,3 +92,31 @@ export function createNotifier(
     }
   };
 }
+
+/** How long after it was raised a waiting item still counts as having just landed (covers clock skew and a slow link). */
+export const FRESH_MS = 30_000;
+/** The vibration pattern for a session that needs you: two short pulses. */
+export const VIBRATE_PATTERN = [200, 100, 200];
+
+/**
+ * Sound and vibration for a session that starts needing you. Each session alerts once per wait, and only when the
+ * item is fresh, so opening the app on a queue that was already waiting stays quiet. `play` and `vibrate` are the
+ * browser's, injected so this stays testable; each runs only when its setting is on.
+ */
+export function createAlerter(play: () => boolean, vibrate: (pattern: number[]) => boolean, now: () => number = Date.now) {
+  const told = new Set<string>();
+  return function update(waiting: Waiting[], opts: { sound: boolean; vibrate: boolean }) {
+    const keys = new Set(waiting.map(w => w.key));
+    for (const k of told) if (!keys.has(k)) told.delete(k);
+    let fresh = false;
+    for (const w of waiting) {
+      if (told.has(w.key)) continue;
+      told.add(w.key);
+      // `since` is on the server's clock; clockOffset is server minus this device.
+      if (now() - (w.since - (w.agent.clockOffset ?? 0)) <= FRESH_MS) fresh = true;
+    }
+    if (!fresh) return;
+    if (opts.sound) play();
+    if (opts.vibrate) vibrate(VIBRATE_PATTERN);
+  };
+}

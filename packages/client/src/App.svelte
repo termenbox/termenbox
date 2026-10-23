@@ -18,8 +18,10 @@
   import NewSessionSheet from './NewSessionSheet.svelte';
   import { SnapshotStore } from './lib/snapshots';
   import { serverAtLeast, NEW_WINDOW_VERSION } from './lib/serverVersion';
-  import { loadHidden, openTabs, saveHidden } from './lib/tabs';
-  import { announce, waitingList, createAttention, createNotifier } from './lib/notify';
+  import { loadHidden, needsYou, openTabs, saveHidden } from './lib/tabs';
+  import { windowToOpen } from './lib/windows';
+  import { beep, installAudioUnlock } from './lib/bell';
+  import { announce, waitingList, createAttention, createNotifier, createAlerter } from './lib/notify';
   import { attentionToAck } from './lib/agents';
   import { cacheRemaining, expiringSoon } from './lib/cache';
   import { settings, applyTheme, type Skin } from './lib/settings';
@@ -352,9 +354,11 @@
   const notifyWaiting = typeof Notification === 'undefined' ? null : createNotifier(
     (title, o) => new Notification(title, o),
     () => Notification.permission,
-    (key) => { window.focus(); void attach(key); },
+    (key) => { window.focus(); void openWaiting(key); },
   );
   $: notifyWaiting?.(waiting, !pageVisible, pushOn);
+  const alertWaiting = createAlerter(beep, (pattern) => typeof navigator.vibrate === 'function' && navigator.vibrate(pattern));
+  $: alertWaiting(waiting, { sound: $settings.alertSound, vibrate: $settings.alertVibrate });
   // Looking at a session clears its finished or failed item on the server; a question stays until it is answered.
   let pageVisible = typeof document === 'undefined' || document.visibilityState !== 'hidden';
   const acked = new Set<string>();
@@ -530,6 +534,15 @@
   // The app opens on Home; its Continue card offers the session last used (decision 0100). Nothing attaches by itself.
   let lastKey: string | null = localStorage.getItem(LAST_KEY);
   function forget(key: string) { if (localStorage.getItem(LAST_KEY) === key) { localStorage.removeItem(LAST_KEY); lastKey = null; } }
+
+  /** Opens a session that needs you on the window the need is in: the tab's window (the agent window used last), not
+   *  whichever one tmux has current. Chosen before the attach, so the terminal comes up on it. */
+  async function openWaiting(key: string) {
+    const session = hub.findSession(key);
+    const index = session && needsYou($allAgents[key]) && backendOf(session) === 'tmux' ? windowToOpen($allWindows[key]) : null;
+    if (index !== null) hub.sendToSession(key, { type: 'select_window', session: key, index });
+    await attach(key);
+  }
 
   async function attach(key: string) {
     const session = hub.findSession(key);
@@ -714,7 +727,7 @@
     else if (id === 'focus-composer') { const c = visibleComposer(); if (c) c.focus(); else showToast('No reply field is open here.'); }
     else if (id === 'next-needs-you') {
       const next = nextNeedsYou($allSessions, (k) => fleetOf($allAgents[k]) === 'needs-you', (k) => $allAgents[k]?.waitingSince ?? $allAgents[k]?.ts ?? 0, activeKey);
-      if (next) void attach(next.key); else showToast('Nothing else needs you.');
+      if (next) void openWaiting(next.key); else showToast('Nothing else needs you.');
     }
   }
 
@@ -727,6 +740,7 @@
     mq.addEventListener('change', media);
     watchForUpdates();
     const stopRouter = startRouter();
+    const stopAudioUnlock = installAudioUnlock(); // the needs-you sound plays only once a tap has unlocked audio
     const clock = setInterval(() => {
       now = Date.now();
       const c = connection;
@@ -757,7 +771,7 @@
     window.addEventListener('unhandledrejection', report);
     return () => {
       clearInterval(clock);
-      stopRouter();
+      stopRouter(); stopAudioUnlock();
       document.removeEventListener("visibilitychange", visible);
       vv?.removeEventListener('resize', kb);
       stopTheme();
@@ -871,7 +885,7 @@
     <NavigationBar sessions={tabSessions} agents={$allAgents} servers={$hubServers} windows={$allWindows} {expiring} {link} {activeKey} held={!!actionSession || !!menuSession || cardExpanded || sheetHeld} onopen={attach} onpeek={peek} ontabmenu={openWindowMenu} onactions={(key) => { actionConfirm = false; actionKey = key; }}
       onlink={() => link && showToast(link.text, link.ok ? 'success' : 'error')} onmenu={() => { titleTapped(); menuOpen = true; }} expanded={wide ? $layout.sidebarOpen : sheetHeight !== 'closed'} controls={wide && $layout.sidebarOpen ? 'workspace-sidebar' : undefined} onsessions={() => { if (wide) { toggleSidebar(); return; } crumb('sessions sheet toggled'); showWorkspace(); sheetHeight = sheetHeight === 'closed' ? 'half' : 'closed'; }} />
     {/if}
-    <NeedsYouBanner {waiting} {now} collapsed={keyboardOpen} onopen={attach} onhome={() => go('home')} ondismiss={(key, id) => sendAttention(key, { type: 'dismiss', attention_id: id })} onanswer={(key, choice, prompt) => sendSession({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })} />
+    <NeedsYouBanner {waiting} {now} collapsed={keyboardOpen} onopen={openWaiting} onhome={() => go('home')} ondismiss={(key, id) => sendAttention(key, { type: 'dismiss', attention_id: id })} onanswer={(key, choice, prompt) => sendSession({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })} />
 
     {#if iosHint && !selectedServer}
       <div style="display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--bg-secondary); border-bottom: 1px solid var(--border); font-size: 0.85rem;">
@@ -896,7 +910,7 @@
         {#if servers.length > 0}<button class="secondary" on:click={showWorkspace}>← Sessions</button>{/if}
         <ServerList {servers} states={$hubServers} onpause={(id) => { hub.pause(id); }} onresume={(id) => hub.resume(id)} onretry={(id) => hub.retry(id)} onadd={() => { addPrefill = null; addStart = 'install'; showAddServer = true; }} onscan={() => { addPrefill = null; addStart = 'scan'; showAddServer = true; }} onremove={removeServer} onshare={shareServer} />
       {:else if $destination === 'home'}
-        <Home sessions={$allSessions} agents={$allAgents} servers={$hubServers} {now} {lastKey} offer={hookOffer} onhook={homeHook} onopen={attach} onservers={leaveServer} onnew={newSession}
+        <Home sessions={$allSessions} agents={$allAgents} servers={$hubServers} {now} {lastKey} offer={hookOffer} onhook={homeHook} onopen={openWaiting} onservers={leaveServer} onnew={newSession}
           onanswer={(key, choice, prompt) => sendSession({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })}
           onreply={(key, text) => sendSession({ type: 'reply', session: key, text })} />
       {:else if $destination === 'activity'}
@@ -959,7 +973,7 @@
   {/if}
 
   {#if menuOpen && user}<MenuSheet {user} {avatar} {serverVersion} onservers={leaveServer} onreport={openReport} onlogout={logout} onclose={() => menuOpen = false} unread={unreadCount($inbox)} oninbox={() => inboxOpen = true} push={pushView} onpush={togglePush} />{/if}
-  {#if inboxOpen}<InboxSheet items={$inbox} {now} agents={$allAgents} onanswer={(key, choice, prompt) => sendSession({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })} onreply={(key, text) => sendSession({ type: 'reply', session: key, text })} onopen={attach} onhome={() => go('home')} onread={() => inbox.update(markAllRead)} onclear={() => inbox.set([])} onclose={() => { inboxOpen = false; inbox.update(markAllRead); }} />{/if}
+  {#if inboxOpen}<InboxSheet items={$inbox} {now} agents={$allAgents} onanswer={(key, choice, prompt) => sendSession({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })} onreply={(key, text) => sendSession({ type: 'reply', session: key, text })} onopen={openWaiting} onhome={() => go('home')} onread={() => inbox.update(markAllRead)} onclear={() => inbox.set([])} onclose={() => { inboxOpen = false; inbox.update(markAllRead); }} />{/if}
   {#if actionSession}<SessionActions session={actionSession} canClose={['tmux', 'acp'].includes(backendOf(actionSession))} confirmFirst={actionConfirm} ondetach={() => detach(actionSession.key)} onclosesession={() => closeSession(actionSession.key)} onclose={() => actionKey = null} />{/if}
   {#if menuSession && menuKey}
     <WindowMenu session={menuSession} data={$allWindows[menuSession.key]} supported={backendOf(menuSession) === 'tmux'}
