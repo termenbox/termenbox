@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Writes manifest.json for a release (decision 0076).
 
-usage: make_manifest.py VERSION ASSET_DIR OUT [--freeze] [--notes TEXT] [--no-tmux]
+usage: make_manifest.py VERSION ASSET_DIR OUT [--channel stable|beta|nightly] [--tag TAG] [--freeze] [--notes TEXT] [--no-tmux]
+
+VERSION is the manifest version, full SemVer with an optional prerelease (1.2.3, 1.2.3-beta.1,
+1.2.3-nightly.20261022). --tag names the release the assets are downloaded from (default v<VERSION>), because a
+nightly alias such as v2026.10.22-nightly is not the version. --channel (default stable) is signed into the manifest.
 
 ASSET_DIR holds one file per architecture named termenbox-server-<arch>-linux (x86_64, aarch64). The manifest
 lists each with its download URL under this project's GitHub releases and its SHA-256. CI signs the exact bytes
@@ -19,14 +23,19 @@ from pathlib import Path
 
 BASE = "https://github.com/termenbox/termenbox/releases/download"
 ARCHES = ("x86_64", "aarch64")
+CHANNELS = ("stable", "beta", "nightly")
+SEMVER = re.compile(
+    r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+    r"(-((0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?"
+)
 TMUX_NOTICES = ("tmux-COPYING", "tmux-libevent-LICENSE", "tmux-ncurses-COPYING")
 
 
-def entry(version, path):
+def entry(tag, path):
     if not path.is_file():
         sys.exit(f"missing {path}")
     return {
-        "url": f"{BASE}/v{version}/{path.name}",
+        "url": f"{BASE}/{tag}/{path.name}",
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
     }
 
@@ -35,22 +44,33 @@ def main(argv):
     args = [a for a in argv[1:] if not a.startswith("--")]
     freeze = "--freeze" in argv
     with_tmux = "--no-tmux" not in argv
-    notes = ""
-    if "--notes" in argv:
-        notes = argv[argv.index("--notes") + 1]
-        args = [a for a in args if a != notes]
+
+    def option(name, default):
+        nonlocal args
+        if name not in argv:
+            return default
+        value = argv[argv.index(name) + 1]
+        args = [a for a in args if a != value]
+        return value
+
+    notes = option("--notes", "")
+    channel = option("--channel", "stable")
+    tag = option("--tag", None)
     if len(args) != 3:
         sys.exit(__doc__)
     version, asset_dir, out = args[0], Path(args[1]), Path(args[2])
-    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
-        sys.exit(f"version must look like 1.2.3, got {version!r}")
-    binaries = {arch: entry(version, asset_dir / f"termenbox-server-{arch}-linux") for arch in ARCHES}
-    manifest = {"version": version, "freeze": freeze, "notes": notes, "binaries": binaries}
+    if not SEMVER.fullmatch(version):
+        sys.exit(f"version must look like 1.2.3 or 1.2.3-beta.1, got {version!r}")
+    if channel not in CHANNELS:
+        sys.exit(f"channel must be one of {', '.join(CHANNELS)}, got {channel!r}")
+    tag = tag or f"v{version}"
+    binaries = {arch: entry(tag, asset_dir / f"termenbox-server-{arch}-linux") for arch in ARCHES}
+    manifest = {"version": version, "channel": channel, "freeze": freeze, "notes": notes, "binaries": binaries}
     if with_tmux:
-        manifest["tmux"] = {arch: entry(version, asset_dir / f"tmux-{arch}-linux") for arch in ARCHES}
-        manifest["tmux_notices"] = {name: entry(version, asset_dir / name) for name in TMUX_NOTICES}
+        manifest["tmux"] = {arch: entry(tag, asset_dir / f"tmux-{arch}-linux") for arch in ARCHES}
+        manifest["tmux_notices"] = {name: entry(tag, asset_dir / name) for name in TMUX_NOTICES}
     out.write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
-    print(f"wrote {out} for {version}")
+    print(f"wrote {out} for {version} ({channel}, tag {tag})")
 
 
 if __name__ == "__main__":
