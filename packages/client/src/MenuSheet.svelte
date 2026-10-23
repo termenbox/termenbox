@@ -23,6 +23,8 @@
   export let onclose: () => void;
   let dialog: HTMLDialogElement;
   let showSettings = false;
+  /** iOS Safari has no vibration API: the switch is not offered where it would do nothing. */
+  const canVibrate = typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function';
   const initialRenderer = $settings.renderer;
   let broken = false;
   const restoreFocus = rememberFocus(); // before the dialog opens: closing it must not leave the terminal blurred
@@ -50,6 +52,8 @@
     {#if showSettings}
       <label>Cache TTL <NativeSelect value={$settings.cacheTtlMs} onchange={(e) => changeSettings({ cacheTtlMs: Number(e.currentTarget.value) as 300000 | 3600000 })}><option value="300000">5 minutes</option><option value="3600000">1 hour</option></NativeSelect></label>
       <label>Keep warm text <input value={$settings.keepWarm} placeholder="empty hides the button" maxlength="200" autocapitalize="off" on:change={(e) => changeSettings({ keepWarm: e.currentTarget.value })} /></label>
+      <label class="check"><input type="checkbox" checked={$settings.alertSound} on:change={(e) => changeSettings({ alertSound: e.currentTarget.checked })} /> Play a sound when a session needs you</label>
+      {#if canVibrate}<label class="check"><input type="checkbox" checked={$settings.alertVibrate} on:change={(e) => changeSettings({ alertVibrate: e.currentTarget.checked })} /> Vibrate when a session needs you</label>{/if}
       <label>Theme <NativeSelect value={$settings.theme} onchange={(e) => changeSettings({ theme: e.currentTarget.value as 'dark' | 'light' | 'system' })}><option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option></NativeSelect></label>
       <label>Skin <NativeSelect value={$settings.skin} onchange={(e) => changeSettings({ skin: e.currentTarget.value as Skin })}>{#each SKINS as skin}<option value={skin}>{skin[0].toUpperCase() + skin.slice(1)}</option>{/each}</NativeSelect></label>
       <label>Terminal renderer <NativeSelect value={$settings.renderer} onchange={(e) => changeSettings({ renderer: e.currentTarget.value as 'webgl' | 'dom' })}><option value="webgl">WebGL (fast)</option><option value="dom">Plain (if the screen flickers or goes blank)</option></NativeSelect></label>
@@ -73,6 +77,7 @@
   .menu { padding: 16px; display: flex; flex-direction: column; gap: 8px; }
   .row { display: flex; justify-content: space-between; align-items: center; }
   button { min-height: 44px; min-width: 44px; }
+  .check { display: flex; align-items: center; gap: 8px; min-height: 44px; }
   button { text-align: left; }
   label { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   p { font-size: 0.8rem; color: var(--fg-muted); }

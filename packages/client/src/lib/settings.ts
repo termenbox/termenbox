@@ -2,9 +2,9 @@ import { writable } from 'svelte/store';
 
 export const SKINS = ['navy', 'graphite', 'teal'] as const;
 export type Skin = (typeof SKINS)[number];
-export interface Settings { theme: 'dark' | 'light' | 'system'; /** The palette (decision 0110); the theme picks its dark or light variant. */ skin: Skin; cacheTtlMs: 300000 | 3600000; /** What Keep warm sends; empty hides the button. */ keepWarm: string; /** WebGL is fast; the DOM renderer is the plain fallback to try when the screen flickers or goes blank. */ renderer: 'webgl' | 'dom' }
+export interface Settings { theme: 'dark' | 'light' | 'system'; /** The palette (decision 0110); the theme picks its dark or light variant. */ skin: Skin; cacheTtlMs: 300000 | 3600000; /** What Keep warm sends; empty hides the button. */ keepWarm: string; /** WebGL is fast; the DOM renderer is the plain fallback to try when the screen flickers or goes blank. */ renderer: 'webgl' | 'dom'; /** Play a short sound when a session starts needing you. */ alertSound: boolean; /** Vibrate (where the browser can) when a session starts needing you. */ alertVibrate: boolean }
 const KEY = 'termenbox_settings';
-const DEFAULT: Settings = { theme: 'dark', skin: 'navy', cacheTtlMs: 300000, keepWarm: '', renderer: 'webgl' };
+const DEFAULT: Settings = { theme: 'dark', skin: 'navy', cacheTtlMs: 300000, keepWarm: '', renderer: 'webgl', alertSound: true, alertVibrate: true };
 const storage = () => typeof localStorage === 'undefined' ? undefined : localStorage;
 export function loadSettings(store: Pick<Storage, 'getItem'> | undefined = storage()): Settings {
   try {
@@ -13,7 +13,9 @@ export function loadSettings(store: Pick<Storage, 'getItem'> | undefined = stora
       skin: (SKINS as readonly string[]).includes(saved?.skin) ? saved.skin : DEFAULT.skin,
       cacheTtlMs: saved?.cacheTtlMs === 3600000 ? 3600000 : 300000,
       keepWarm: typeof saved?.keepWarm === 'string' ? saved.keepWarm.replace(/[\r\n]+/g, ' ').slice(0, 200) : '',
-      renderer: saved?.renderer === 'dom' ? 'dom' : 'webgl' };
+      renderer: saved?.renderer === 'dom' ? 'dom' : 'webgl',
+      alertSound: saved?.alertSound !== false,
+      alertVibrate: saved?.alertVibrate !== false };
   } catch { return { ...DEFAULT }; }
 }
 export function saveSettings(value: Settings, store: Pick<Storage, 'setItem'> | undefined = storage()) {

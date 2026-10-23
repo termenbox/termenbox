@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { announce, attentionIcon, bannerChoices, bannerText, createAttention, createNotifier, titleFor, waitingList } from './notify';
+import { announce, attentionIcon, bannerChoices, bannerText, createAlerter, createAttention, createNotifier, VIBRATE_PATTERN, titleFor, waitingList } from './notify';
 import type { AgentMap, SessionAgent } from './agents';
 
 const ag = (patch: Partial<SessionAgent>): SessionAgent => ({ state: 'needs_input', seq: 1, stale: false, ts: 1000, ...patch });
@@ -127,5 +127,63 @@ describe('browser notifications', () => {
     notes[0].onclick?.();
     expect(opened).toEqual(['a']);
     expect(notes[0].close).toHaveBeenCalled();
+  });
+});
+
+describe('sound and vibration when a session starts needing you', () => {
+  const w = (key: string, since: number, clockOffset?: number) => ({ key, name: key, since, agent: ag({ clockOffset }) });
+  const both = { sound: true, vibrate: true };
+  const setup = (now = 100_000) => {
+    const play = vi.fn(() => true);
+    const vibrate = vi.fn(() => true);
+    return { play, vibrate, update: createAlerter(play, vibrate, () => now) };
+  };
+
+  it('alerts once for a fresh item, with the pattern, and not again while it waits', () => {
+    const { play, vibrate, update } = setup();
+    update([w('a', 95_000)], both);
+    update([w('a', 95_000)], both);
+    expect(play).toHaveBeenCalledTimes(1);
+    expect(vibrate).toHaveBeenCalledWith(VIBRATE_PATTERN);
+    expect(vibrate).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays quiet for a queue that was already waiting when the page opened', () => {
+    const { play, vibrate, update } = setup();
+    update([w('a', 10_000)], both);
+    expect(play).not.toHaveBeenCalled();
+    expect(vibrate).not.toHaveBeenCalled();
+  });
+
+  it('alerts again when a session needs you again after being answered', () => {
+    const { play, update } = setup();
+    update([w('a', 99_000)], both);
+    update([], both);
+    update([w('a', 99_500)], both);
+    expect(play).toHaveBeenCalledTimes(2);
+  });
+
+  it('rings once for several items landing together', () => {
+    const { play, update } = setup();
+    update([w('a', 99_000), w('b', 99_100)], both);
+    expect(play).toHaveBeenCalledTimes(1);
+  });
+
+  it('honours each setting on its own', () => {
+    const a = setup();
+    a.update([w('a', 99_000)], { sound: false, vibrate: true });
+    expect(a.play).not.toHaveBeenCalled();
+    expect(a.vibrate).toHaveBeenCalledTimes(1);
+    const b = setup();
+    b.update([w('a', 99_000)], { sound: true, vibrate: false });
+    expect(b.play).toHaveBeenCalledTimes(1);
+    expect(b.vibrate).not.toHaveBeenCalled();
+  });
+
+  it('reads the item on this device clock, using the offset of the server clock', () => {
+    // the server's clock is 60 s ahead: its 160 000 is 100 000 here, just now
+    const { play, update } = setup(100_000);
+    update([w('a', 160_000, 60_000)], both);
+    expect(play).toHaveBeenCalledTimes(1);
   });
 });

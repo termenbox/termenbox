@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyWindowList, forgetWindows, representativeWindow, shortPath, tabTexts } from './windows';
+import { applyWindowList, forgetWindows, representativeWindow, shortPath, tabTexts, windowToOpen } from './windows';
 import type { WindowInfo } from './protocol';
 
 const w = (index: number, path: string, extra: Partial<WindowInfo> = {}): WindowInfo => ({ index, name: 'n', command: 'bash', path, active: false, ...extra });
@@ -45,5 +45,15 @@ describe('tab text', () => {
     expect(t['s/c'].label).toBe('/srv/other');
     expect(t['s/c'].hint).toBe('/srv/other');
     expect(t['s/d'].label).toBe('d');
+  });
+});
+
+describe('opening a session that needs you', () => {
+  it('goes to the agent window when another one is current, and leaves the current one alone otherwise', () => {
+    const list = [w(0, '/a', { active: true }), w(2, '/b', { agent: 'claude' })];
+    expect(windowToOpen({ windows: list, representative: 2 })).toBe(2);
+    expect(windowToOpen({ windows: list, representative: 0 })).toBeNull();
+    expect(windowToOpen({ windows: list, representative: null })).toBeNull();
+    expect(windowToOpen(undefined)).toBeNull();
   });
 });

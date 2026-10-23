@@ -24,6 +24,13 @@ export function representativeWindow(w: SessionWindows | undefined): WindowInfo 
   return w.windows.find(x => x.index === w.representative) ?? w.windows.find(x => x.active) ?? w.windows[0];
 }
 
+/** The window to switch to before opening a session that needs you: the one its tab speaks for, when it is not already
+ *  the current one. Null leaves tmux's current window alone (no window list, or it is already there). */
+export function windowToOpen(w: SessionWindows | undefined): number | null {
+  const rep = representativeWindow(w);
+  return rep && !rep.active ? rep.index : null;
+}
+
 /** `/home/u/projects/app` → `~/projects/app`; a deeper path keeps its last two segments (`…/b/c`). */
 export function shortPath(path: string, maxSegments = 2): string {
   if (!path) return '';
