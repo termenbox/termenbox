@@ -133,14 +133,14 @@ jobs:
         working-directory: packages/client
         env:
           TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
-          E2E_ENGINE: ${{ matrix.engine }}
+          E2E_ENGINES: ${{ matrix.engine }}
         run: node e2e/run.mjs
 
       - name: Touch gestures and session cards in the browser
         working-directory: packages/client
         env:
           TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
-          E2E_ENGINE: ${{ matrix.engine }}
+          E2E_ENGINES: ${{ matrix.engine }}
         run: |
           node e2e/touch.mjs
           node e2e/cards.mjs
@@ -205,7 +205,7 @@ jobs:
         working-directory: packages/client
         env:
           TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
-          E2E_ENGINE: ${{ matrix.engine }}
+          E2E_ENGINES: ${{ matrix.engine }}
           E2E_FULL_MATRIX: '1'
         run: node e2e/run.mjs
   # The native host mode (decision 0075) ships one static musl binary per architecture: no glibc, no OpenSSL,
@@ -304,7 +304,7 @@ jobs:
         working-directory: packages/client
         env:
           TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
-          E2E_ENGINE: ${{ matrix.engine }}
+          E2E_ENGINES: ${{ matrix.engine }}
         run: node e2e/run.mjs
 
   # Full browser matrix (chromium, firefox, webkit) for static binary on schedule and manual trigger
@@ -352,7 +352,7 @@ jobs:
         working-directory: packages/client
         env:
           TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
-          E2E_ENGINE: ${{ matrix.engine }}
+          E2E_ENGINES: ${{ matrix.engine }}
           E2E_FULL_MATRIX: '1'
         run: node e2e/run.mjs
 
