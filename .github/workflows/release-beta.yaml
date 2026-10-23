@@ -1,0 +1,79 @@
+name: Release (beta)
+
+# A tag vX.Y.Z-rc.N or vX.Y.Z-beta.N on master publishes a beta prerelease (decision 0130), signed by the beta key `b1`
+# from the `beta` environment, and moves channel-beta to it when it is the newest. It is never GitHub's "latest"
+# release, so the stable address releases/latest/download is untouched. The Docker tags come from docker-build.yaml.
+# Run by hand it does everything but publish, so the pipeline can be tested.
+
+on:
+  push:
+    tags: ['v*-rc.*', 'v*-beta.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'X.Y.Z-rc.N or X.Y.Z-beta.N for a dry run (nothing is published)'
+        default: '0.0.0-rc.0'
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.g.outputs.run }}
+      version: ${{ steps.g.outputs.version }}
+      tag: ${{ steps.g.outputs.tag }}
+      aliases: ${{ steps.g.outputs.aliases }}
+      publish: ${{ steps.g.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: g
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            tag="$GITHUB_REF_NAME"; publish=true
+          else
+            tag="v$DISPATCH_VERSION"; publish=false
+          fi
+          plan="$(python3 .github/scripts/release_plan.py tag "$tag")"
+          channel="$(jq -r .channel <<<"$plan")"
+          if [ "$channel" != beta ]; then
+            echo "::notice::$tag is not a beta tag; nothing to do"
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          crate="$(grep -m1 '^version' packages/server/Cargo.toml | cut -d'"' -f2)"
+          core="$(jq -r .core <<<"$plan")"
+          if [ "$publish" = true ]; then
+            [ "$core" = "$crate" ] || { echo "tag $tag has core $core but packages/server/Cargo.toml says $crate"; exit 1; }
+            git fetch -q origin master
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/master || { echo "$tag is not on master (decision 0129): a beta comes only from master"; exit 1; }
+          fi
+          {
+            echo "run=true"; echo "publish=$publish"; echo "tag=$tag"
+            echo "version=$(jq -r .version <<<"$plan")"
+            echo "aliases=$(jq -r '.aliases | join(" ")' <<<"$plan")"
+          } >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Release
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-build.yaml
+    secrets: inherit
+    with:
+      channel: beta
+      kid: b1
+      version: ${{ needs.gate.outputs.version }}
+      tag: ${{ needs.gate.outputs.tag }}
+      sha: ${{ github.sha }}
+      publish: ${{ needs.gate.outputs.publish == 'true' }}
+      prerelease: true
+      latest: false
+      aliases: ${{ needs.gate.outputs.aliases }}

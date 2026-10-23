@@ -137,3 +137,4 @@
 | 0130-releases-have-three-channels-each-with-its-own-signing-key | Releases have three channels, a manifest names its channel, and each channel has its own signing key | product | active | Sergey Strebulaev | - |
 | 0131-nightly-installs-notify-and-do-not-update-themselves-by-default | Each server has an update policy, and a nightly install notifies instead of updating itself by default | product | active | Sergey Strebulaev | - |
 | 0132-the-signed-manifest-names-the-assets-not-the-release-tag | The signed manifest names where each asset is; an address and a tag never do | product | active | Sergey Strebulaev | - |
+| 0133-each-channel-has-its-own-release-workflow-and-the-aliases-only-move-forward | Each channel has its own release workflow and environment, rolling aliases only move forward, and the image tags follow the channel | product | active | Sergey Strebulaev | - |

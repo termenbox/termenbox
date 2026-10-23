@@ -1,17 +1,24 @@
-name: Release
+name: Release build
 
-# A tag v<version> builds the static server binaries and the bundled tmux (decision 0119), writes a manifest of their hashes, signs it with the release key
-# (decision 0076) and publishes both as a GitHub Release. Run by hand (workflow_dispatch) it does everything but
-# publish, with a throwaway key when the real one is not configured, so the pipeline can be tested.
+# The build, manifest, signature and publish steps of every channel (decision 0130). The wrappers release-stable.yaml,
+# release-beta.yaml and release-nightly.yaml decide when a release is allowed and what it is called; this workflow does
+# the work and holds nothing channel-specific except the environment (and so the signing key) it runs in.
+# publish=false does everything but publish, with a throwaway key when the real one is not configured, so the
+# pipeline can be tested.
 
 on:
-  push:
-    tags: ['v*']
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      version:
-        description: 'Version for a dry run (nothing is published)'
-        default: '0.0.0'
+      channel: { description: 'stable, beta or nightly; also the GitHub Environment that holds the signing key', required: true, type: string }
+      kid: { description: 'id of the channel signing key in release-keys.txt (r1, b1, n1)', required: true, type: string }
+      version: { description: 'manifest version, full SemVer', required: true, type: string }
+      tag: { description: 'release tag the assets are published under', required: true, type: string }
+      sha: { description: 'commit to build', required: true, type: string }
+      publish: { description: 'create the release and move the aliases', required: true, type: boolean }
+      prerelease: { required: true, type: boolean }
+      latest: { description: 'GitHub marks it as the latest release (only stable)', required: true, type: boolean }
+      aliases: { description: 'space separated rolling releases that may point at it', required: false, type: string, default: '' }
+      notes: { description: 'text put before the generated release notes', required: false, type: string, default: '' }
 
 permissions:
   contents: read
@@ -28,13 +35,16 @@ jobs:
           - { arch: aarch64, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
 
-      - name: The tag matches the version in Cargo.toml
-        if: github.ref_type == 'tag'
+      - name: The version has the Cargo.toml version as its core
         run: |
-          tag="${GITHUB_REF_NAME#v}"
           crate="$(grep -m1 '^version' packages/server/Cargo.toml | cut -d'"' -f2)"
-          if [ "$tag" != "$crate" ]; then echo "tag $GITHUB_REF_NAME does not match packages/server/Cargo.toml version $crate"; exit 1; fi
+          case "${{ inputs.version }}" in
+            "$crate"|"$crate"-*) ;;
+            *) echo "version ${{ inputs.version }} does not start from packages/server/Cargo.toml version $crate"; exit 1 ;;
+          esac
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -49,7 +59,9 @@ jobs:
           RUSTFLAGS: -C target-feature=+crt-static
           CC_x86_64_unknown_linux_musl: musl-gcc
           CC_aarch64_unknown_linux_musl: musl-gcc
-          TERMENBOX_BUILD: ${{ github.sha }}
+          TERMENBOX_BUILD: ${{ inputs.sha }}
+          # the binary reports the full SemVer, and so knows its own channel (decision 0130)
+          TERMENBOX_RELEASE_VERSION: ${{ inputs.version }}
         run: cargo build --release --locked -p termenbox-server --target ${{ matrix.target }}
 
       - name: Gate - the binary is fully static
@@ -92,10 +104,15 @@ jobs:
     name: Manifest, signature and publish
     needs: build
     runs-on: ubuntu-latest
+    # The signing key is the secret RELEASE_SIGNING_KEY of this environment, so a channel's key is only ever
+    # available to a run of that channel (the build jobs above never see it).
+    environment: ${{ inputs.channel }}
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -103,14 +120,8 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Version
-        id: v
-        run: |
-          if [ "${{ github.ref_type }}" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v="${{ inputs.version }}"; fi
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-
       - name: Write the manifest
-        run: python3 .github/scripts/make_manifest.py "${{ steps.v.outputs.version }}" dist dist/manifest.json --channel stable
+        run: python3 .github/scripts/make_manifest.py "${{ inputs.version }}" dist dist/manifest.json --channel "${{ inputs.channel }}" --tag "${{ inputs.tag }}"
 
       - name: The manifest lists tmux for both architectures, with its notices
         run: |
@@ -132,25 +143,31 @@ jobs:
           if [ -n "$RELEASE_SIGNING_KEY" ]; then
             printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/release_key"
             cp packages/server/release-keys.txt "$RUNNER_TEMP/release-keys.txt"
-          elif [ "${{ github.ref_type }}" = tag ]; then
-            echo "RELEASE_SIGNING_KEY is not set: refusing to publish an unsigned release"; exit 1
+          elif [ "${{ inputs.publish }}" = true ]; then
+            echo "RELEASE_SIGNING_KEY is not set in the ${{ inputs.channel }} environment: refusing to publish an unsigned release"; exit 1
           else
             echo "::warning::RELEASE_SIGNING_KEY is not set; signing the dry run with a throwaway key"
             ssh-keygen -q -t ed25519 -N '' -C throwaway -f "$RUNNER_TEMP/release_key"
-            echo "r1 $(cut -d' ' -f1,2 "$RUNNER_TEMP/release_key.pub")" > "$RUNNER_TEMP/release-keys.txt"
+            bound=""; [ "${{ inputs.channel }}" = stable ] || bound=" channel=${{ inputs.channel }}"
+            echo "${{ inputs.kid }} $(cut -d' ' -f1,2 "$RUNNER_TEMP/release_key.pub")$bound" > "$RUNNER_TEMP/release-keys.txt"
           fi
           ssh-keygen -Y sign -n termenbox-release -f "$RUNNER_TEMP/release_key" dist/manifest.json
           rm -f "$RUNNER_TEMP/release_key"
           # the same check the installer makes with plain ssh-keygen
-          grep -v '^#' "$RUNNER_TEMP/release-keys.txt" | awk 'NF >= 3 { print "termenbox-release " $2 " " $3 }' > "$RUNNER_TEMP/allowed_signers"
+          # only the channel's own key counts: a key of another channel (the stable key in a beta environment) is refused here
+          grep -v '^#' "$RUNNER_TEMP/release-keys.txt" | awk -v kid="${{ inputs.kid }}" '$1 == kid && NF >= 3 { print "termenbox-release " $2 " " $3 }' > "$RUNNER_TEMP/allowed_signers"
+          [ -s "$RUNNER_TEMP/allowed_signers" ] || { echo "release-keys.txt has no key ${{ inputs.kid }}: add its public half (owner work, decision 0130)"; exit 1; }
           ssh-keygen -Y verify -f "$RUNNER_TEMP/allowed_signers" -I termenbox-release -n termenbox-release -s dist/manifest.json.sig < dist/manifest.json
           echo "TERMENBOX_RELEASE_KEYS_FILE=$RUNNER_TEMP/release-keys.txt" >> "$GITHUB_ENV"
 
       - name: The server binary accepts what was just signed
         run: |
           chmod +x dist/termenbox-server-x86_64-linux
+          # this binary was built with the release version, so it follows the channel being released
           TERMENBOX_RELEASE_KEYS="$(cat "$TERMENBOX_RELEASE_KEYS_FILE")" dist/termenbox-server-x86_64-linux \
-            --verify-release dist/manifest.json --release-sig dist/manifest.json.sig --release-arch aarch64
+            --verify-release dist/manifest.json --release-sig dist/manifest.json.sig --release-arch aarch64 | tee "$RUNNER_TEMP/verify.txt"
+          grep -qx "kid=${{ inputs.kid }}" "$RUNNER_TEMP/verify.txt"
+          grep -qx "version=${{ inputs.version }}" "$RUNNER_TEMP/verify.txt"
           # and refuses a changed manifest
           cp dist/manifest.json "$RUNNER_TEMP/changed.json" && echo ' ' >> "$RUNNER_TEMP/changed.json"
           if TERMENBOX_RELEASE_KEYS="$(cat "$TERMENBOX_RELEASE_KEYS_FILE")" dist/termenbox-server-x86_64-linux \
@@ -165,11 +182,32 @@ jobs:
           retention-days: 7
 
       - name: Publish
-        if: github.ref_type == 'tag'
+        if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          SHA: ${{ inputs.sha }}
+          NOTES: ${{ inputs.notes }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          LATEST: ${{ inputs.latest }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes \
+          args=(--target "$SHA" --generate-notes)
+          if [ "$PRERELEASE" = true ]; then args+=(--prerelease); fi
+          if [ "$LATEST" = true ]; then args+=(--latest); else args+=(--latest=false); fi
+          if [ -n "$NOTES" ]; then args+=(--notes "$NOTES"); fi
+          gh release create "$TAG" --title "$TAG" "${args[@]}" \
             dist/termenbox-server-x86_64-linux dist/termenbox-server-aarch64-linux \
             dist/tmux-x86_64-linux dist/tmux-aarch64-linux dist/tmux-COPYING dist/tmux-libevent-LICENSE dist/tmux-ncurses-COPYING \
             dist/manifest.json dist/manifest.json.sig
+
+      # The rolling releases only ever move forward (a stable release moves channel-beta when it is newer than the
+      # last beta); they hold a copy of the manifest and nothing else, the assets stay under the tag above.
+      - name: Move the aliases
+        if: inputs.publish && inputs.aliases != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ALIASES: ${{ inputs.aliases }}
+        run: |
+          for alias in $ALIASES; do
+            sh .github/scripts/update_alias.sh "$alias" dist/manifest.json dist/manifest.json.sig
+          done

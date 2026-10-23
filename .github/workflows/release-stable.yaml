@@ -1,0 +1,80 @@
+name: Release (stable)
+
+# A tag vX.Y.Z on master publishes the stable release (decision 0130): binaries, tmux, a manifest signed by the stable key
+# `r1` from the `stable` environment, and the GitHub "latest" release. It also moves channel-beta when this release is newer
+# than the last beta, because a beta server follows the stable line too. The Docker tags come from docker-build.yaml.
+# Run by hand it does everything but publish, so the pipeline can be tested.
+
+on:
+  push:
+    # GitHub tag globs are not regexes: this one also matches v0.2.0-rc.1 and v2026.10.22-nightly, so the second line
+    # excludes anything with a prerelease part, and the gate job checks the exact shape again (release_plan.py).
+    tags: ['v[0-9]*.[0-9]*.[0-9]*', '!v*-*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'X.Y.Z for a dry run (nothing is published)'
+        default: '0.0.0'
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.g.outputs.run }}
+      version: ${{ steps.g.outputs.version }}
+      tag: ${{ steps.g.outputs.tag }}
+      aliases: ${{ steps.g.outputs.aliases }}
+      publish: ${{ steps.g.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: g
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            tag="$GITHUB_REF_NAME"; publish=true
+          else
+            tag="v$DISPATCH_VERSION"; publish=false
+          fi
+          plan="$(python3 .github/scripts/release_plan.py tag "$tag")"
+          channel="$(jq -r .channel <<<"$plan")"
+          if [ "$channel" != stable ]; then
+            echo "::notice::$tag is not a stable tag; nothing to do"
+            echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          crate="$(grep -m1 '^version' packages/server/Cargo.toml | cut -d'"' -f2)"
+          version="$(jq -r .version <<<"$plan")"
+          if [ "$publish" = true ]; then
+            [ "$version" = "$crate" ] || { echo "tag $tag does not match packages/server/Cargo.toml version $crate"; exit 1; }
+            git fetch -q origin master
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/master || { echo "$tag is not on master (decision 0129): a stable release comes only from master"; exit 1; }
+          fi
+          {
+            echo "run=true"; echo "publish=$publish"; echo "version=$version"; echo "tag=$tag"
+            echo "aliases=$(jq -r '.aliases | join(" ")' <<<"$plan")"
+          } >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Release
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-build.yaml
+    secrets: inherit
+    with:
+      channel: stable
+      kid: r1
+      version: ${{ needs.gate.outputs.version }}
+      tag: ${{ needs.gate.outputs.tag }}
+      sha: ${{ github.sha }}
+      publish: ${{ needs.gate.outputs.publish == 'true' }}
+      prerelease: false
+      latest: true
+      aliases: ${{ needs.gate.outputs.aliases }}

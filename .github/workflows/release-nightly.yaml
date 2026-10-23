@@ -1,0 +1,138 @@
+name: Release (nightly)
+
+# One nightly a day from a develop commit whose CI is green (decisions 0129, 0130). It runs when CI finishes green on
+# develop (the first green commit of a UTC day becomes that day's nightly) and at 00:00 UTC as a fallback, which
+# builds the newest green develop commit. It never builds a red head: the commit comes from a successful CI run,
+# not from the branch tip. Tag vYYYY.MM.DD-nightly, manifest version X.Y.Z-nightly.YYYYMMDD, signed by the
+# nightly key `n1` from the `nightly` environment. Keeps 14 days of nightlies, never the one channel-nightly
+# points at. Run by hand it is a dry run unless `publish` is ticked.
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [develop]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the release (otherwise a dry run that publishes nothing)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Two triggers can overlap (CI finishing at midnight); a second run waits and then sees today's release.
+concurrency:
+  group: release-nightly
+  cancel-in-progress: false
+
+jobs:
+  select:
+    name: Select the commit
+    # a workflow_run fires for every CI run on a branch named develop, including a failed one and a pull request's
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      run: ${{ steps.s.outputs.run }}
+      sha: ${{ steps.s.outputs.sha }}
+      tag: ${{ steps.s.outputs.tag }}
+      version: ${{ steps.s.outputs.version }}
+      aliases: ${{ steps.s.outputs.aliases }}
+      docker_tags: ${{ steps.s.outputs.docker_tags }}
+      publish: ${{ steps.s.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: s
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          DISPATCH_PUBLISH: ${{ inputs.publish }}
+        run: |
+          git fetch -q origin develop
+          if [ "$EVENT" = workflow_run ]; then
+            sha="$RUN_SHA"
+          else
+            sha="$(gh run list --workflow ci.yaml --branch develop --event push --status success --limit 1 --json headSha -q '.[0].headSha')"
+          fi
+          [ -n "$sha" ] || { echo "::notice::no green CI run on develop; nothing to release"; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          git merge-base --is-ancestor "$sha" origin/develop || { echo "::notice::$sha is not on develop; nothing to release"; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          publish=true
+          if [ "$EVENT" = workflow_dispatch ] && [ "$DISPATCH_PUBLISH" != true ]; then publish=false; fi
+
+          core="$(git show "$sha:packages/server/Cargo.toml" | grep -m1 '^version' | cut -d'"' -f2)"
+          plan="$(python3 .github/scripts/release_plan.py nightly "$core" "$(date -u +%Y%m%d)")"
+          tag="$(jq -r .tag <<<"$plan")"
+
+          if [ "$publish" = true ]; then
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "::notice::$tag already exists; one nightly a day"; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            last="$(git tag --list 'v????.??.??-nightly' | sort | tail -1)"
+            if [ -n "$last" ] && [ "$(git rev-list -n1 "$last")" = "$sha" ]; then
+              echo "::notice::$last was built from this commit; nothing changed"; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          fi
+          {
+            echo "run=true"; echo "sha=$sha"; echo "publish=$publish"; echo "tag=$tag"
+            echo "version=$(jq -r .version <<<"$plan")"
+            echo "aliases=$(jq -r '.aliases | join(" ")' <<<"$plan")"
+            echo "docker_tags=$(jq -r '.docker_tags | join(" ")' <<<"$plan")"
+          } >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Release
+    needs: select
+    if: needs.select.outputs.run == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-build.yaml
+    secrets: inherit
+    with:
+      channel: nightly
+      kid: n1
+      version: ${{ needs.select.outputs.version }}
+      tag: ${{ needs.select.outputs.tag }}
+      sha: ${{ needs.select.outputs.sha }}
+      publish: ${{ needs.select.outputs.publish == 'true' }}
+      prerelease: true
+      latest: false
+      aliases: ${{ needs.select.outputs.aliases }}
+      notes: 'Nightly build of develop at ${{ needs.select.outputs.sha }}. Not a supported release: it is for trying what is coming.'
+
+  # GitHub does not start a workflow for a tag its own token created, so the image is built by calling the workflow.
+  image:
+    name: Image
+    needs: [select, release]
+    if: needs.select.outputs.publish == 'true'
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/docker-build.yaml
+    with:
+      sha: ${{ needs.select.outputs.sha }}
+      version: ${{ needs.select.outputs.version }}
+      tags: ${{ needs.select.outputs.docker_tags }}
+
+  prune:
+    name: Prune old nightlies
+    needs: [select, release]
+    if: needs.select.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Delete nightlies older than 14 days (never the alias target)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh .github/scripts/prune_nightlies.sh 14
