@@ -185,6 +185,8 @@ Run it on the VPS. See the [install guide](guide/install.md) for what it does, f
 - Docker image built for amd64 and arm64 and pushed to `ghcr.io/<owner>/termenbox:latest` (pull requests build it without pushing).
 - Client, Pages Functions (OAuth exchange, directory) and the installer (`/i`) deployed to Cloudflare Pages; D1 migrations applied.
 
+Each release channel deploys its own client (stable `app.`, beta `beta.app.`, nightly `nightly.app.`, Pages projects `termenbox`, `termenbox-beta`, `termenbox-nightly`) from its release workflow, never from a push to a branch. Create the GitHub Environments `stable`, `beta` and `nightly`; each holds its own `TERMENBOX_GITHUB_CLIENT_ID` and `TERMENBOX_GITHUB_CLIENT_SECRET` (one GitHub OAuth app per origin) and a `TERMENBOX_CLIENT_ORIGIN` variable naming its address, the rest stays repository-level.
+
 Required repository settings: secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `TERMENBOX_GITHUB_CLIENT_ID`, `TERMENBOX_GITHUB_CLIENT_SECRET`, `TERMENBOX_CERT_SIGNING_KEY`, `TERMENBOX_DIRECTORY_SALT` (the last four are synced to the Pages Function on each deploy); variables `TERMENBOX_PAGES_PROJECT_NAME`, `TERMENBOX_D1_DATABASE_ID`. Terraform sets most of them.
 
 **Manual Terraform:**

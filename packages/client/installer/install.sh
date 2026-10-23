@@ -21,7 +21,9 @@
 # stable; the container uses that channel's image tag), --auto-update lets the server install updates by itself. The
 # default is automatic, except on nightly, which only notifies. The choice is written to update.toml beside the journal;
 # run the installer again with the option, or edit that file, to change it.
-#   curl -fsSL https://app.termenbox.dev/i | sh -s -- --channel beta
+#   curl -fsSL https://beta.app.termenbox.dev/i | sh
+# Each channel's app serves its own copy: it defaults to that channel and trusts only that channel's release keys
+# (stable: r1; beta: r1 and b1, as the beta alias can hold a stable release; nightly: n1; decision 0134).
 #
 # It starts the server and prints the pairing block. The UDP port is picked once, from the reserved range 4443-4542
 # (DECISION-0118), and then stays: the server uses that port or stops with a message, it never moves to another. To
@@ -47,7 +49,9 @@ ROOT="${TERMENBOX_DATA:-/opt/termenbox}"
 # The public keys that sign releases: `kid ssh-ed25519 key [channel=...]` lines, the same as packages/server/release-keys.txt.
 # A key without `channel=` is a stable key; a key signs only the channel it is bound to (decision 0130).
 # TERMENBOX_RELEASE_KEYS and TERMENBOX_RELEASE_URL exist for the installer's own tests and for forks; on a real install they are unset.
-RELEASE_KEYS="${TERMENBOX_RELEASE_KEYS:-r1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDNH6+yZgMpZl+tW8C/D+9Ga0bN39vXzIIJMKmHB6auf}"
+RELEASE_KEYS="${TERMENBOX_RELEASE_KEYS:-r1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDNH6+yZgMpZl+tW8C/D+9Ga0bN39vXzIIJMKmHB6auf}" # release-keys: the client build bakes its channel's keys here
+# The channel this copy of the installer defaults to: the stable app serves stable, the beta app beta, the nightly app nightly.
+DEFAULT_CHANNEL="stable" # default-channel: the client build bakes its channel here
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'termenbox: %s\n' "$*" >&2; exit 1; }
@@ -72,7 +76,7 @@ set -- ${_mode:+"$_mode"}
 MODE="${1:-host-me}"
 # Given on purpose (flag or environment) means: write it, also over an existing install. Otherwise the install keeps its own.
 CHANNEL_GIVEN="$CHANNEL$AUTO_UPDATE"
-CHANNEL="${CHANNEL:-stable}"
+CHANNEL="${CHANNEL:-$DEFAULT_CHANNEL}"
 case "$CHANNEL" in
   stable|beta|nightly) ;;
   *) die "unknown channel \"$CHANNEL\" (use stable, beta or nightly)" ;;
@@ -559,6 +563,7 @@ fetch_release() {
   esac
   printf '%s\n' "$RELEASE_KEYS" | awk -v ch="$MCHAN" \
     'NF >= 3 { c = "stable"; if ($4 ~ /^channel=/) c = substr($4, 9); if (c == ch) print "termenbox-release-" ch " " $2 " " $3 }' > "$TMP/allowed_signers"
+  [ -s "$TMP/allowed_signers" ] || die "this installer trusts no $MCHAN release key, so nothing was installed (each channel's app serves its own installer: use the one from that channel's address)"
   ssh-keygen -Y verify -f "$TMP/allowed_signers" -I "termenbox-release-$MCHAN" -n termenbox-release \
     -s "$TMP/manifest.json.sig" < "$TMP/manifest.json" >/dev/null 2>&1 \
     || die "the release signature is not valid for the $MCHAN channel, so nothing was installed"

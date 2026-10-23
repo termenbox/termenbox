@@ -138,3 +138,4 @@
 | 0131-nightly-installs-notify-and-do-not-update-themselves-by-default | Each server has an update policy, and a nightly install notifies instead of updating itself by default | product | active | Sergey Strebulaev | - |
 | 0132-the-signed-manifest-names-the-assets-not-the-release-tag | The signed manifest names where each asset is; an address and a tag never do | product | active | Sergey Strebulaev | - |
 | 0133-each-channel-has-its-own-release-workflow-and-the-aliases-only-move-forward | Each channel has its own release workflow and environment, rolling aliases only move forward, and the image tags follow the channel | product | active | Sergey Strebulaev | - |
+| 0134-each-channel-has-its-own-pages-deployment-on-its-own-origin | Each release channel has its own Cloudflare Pages deployment on its own origin, deployed by its release workflow, and its installer trusts only its keys | product | draft | - | - |
