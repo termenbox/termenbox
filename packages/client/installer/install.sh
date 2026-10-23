@@ -563,10 +563,9 @@ fetch_release() {
   esac
   printf '%s\n' "$RELEASE_KEYS" | awk -v ch="$MCHAN" \
     'NF >= 3 { c = "stable"; if ($4 ~ /^channel=/) c = substr($4, 9); if (c == ch) print "termenbox-release-" ch " " $2 " " $3 }' > "$TMP/allowed_signers"
-  [ -s "$TMP/allowed_signers" ] || die "this installer trusts no $MCHAN release key, so nothing was installed (each channel's app serves its own installer: use the one from that channel's address)"
   ssh-keygen -Y verify -f "$TMP/allowed_signers" -I "termenbox-release-$MCHAN" -n termenbox-release \
     -s "$TMP/manifest.json.sig" < "$TMP/manifest.json" >/dev/null 2>&1 \
-    || die "the release signature is not valid for the $MCHAN channel, so nothing was installed"
+    || die "the release signature is not valid for the $MCHAN channel, so nothing was installed$([ -s "$TMP/allowed_signers" ] || echo " (this installer trusts no $MCHAN key: each channel's app serves its own installer)")"
   grep -q '"freeze": *true' "$TMP/manifest.json" && die "new installs are paused by the maintainers (a signed freeze); try again later"
   # The full SemVer, prerelease included (0.2.0-rc.1, 0.1.36-nightly.20261022), not just X.Y.Z.
   VERSION="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$TMP/manifest.json" | head -1)"
