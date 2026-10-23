@@ -71,6 +71,43 @@ resource "cloudflare_record" "app" {
   ttl     = 1
 }
 
+# The beta and nightly clients (decision 0134): a service worker, its caches, localStorage and the OAuth callback are bound
+# to an origin, so each channel has its own Pages project and its own host, never a /beta/ path. Built and uploaded
+# by deploy-pages.yaml from the release workflow of the channel; they share the D1 database, the signing key and the salt
+# of the stable project, and each has its own GitHub OAuth app (set by hand). Free-plan budget: fact 0022.
+locals {
+  preview_channels = toset(["beta", "nightly"])
+}
+
+resource "cloudflare_pages_project" "channel" {
+  for_each          = local.preview_channels
+  account_id        = var.cloudflare_account_id
+  name              = "${local.pages_project_name}-${each.key}"
+  production_branch = "master"
+
+  # No build_config and no source, like the stable project.
+
+  deployment_configs {
+  }
+}
+
+resource "cloudflare_pages_domain" "channel" {
+  for_each     = local.preview_channels
+  account_id   = var.cloudflare_account_id
+  project_name = cloudflare_pages_project.channel[each.key].name
+  domain       = "${each.key}.app.${local.dns_prefix}${var.cloudflare_zone_name}"
+}
+
+resource "cloudflare_record" "channel" {
+  for_each = local.preview_channels
+  zone_id  = data.cloudflare_zone.main.id
+  name     = "${each.key}.app${local.dns_name_prefix}"
+  type     = "CNAME"
+  content  = "${local.pages_project_name}-${each.key}.pages.dev"
+  proxied  = true
+  ttl      = 1
+}
+
 # Landing site (packages/site): static, built nowhere, uploaded by deploy-site.yaml. The apex is canonical; www is
 # redirected to it at the edge (a Pages _redirects file cannot match a host).
 locals {
@@ -147,4 +184,11 @@ output "site_url" {
 
 output "client_url" {
   value = "https://app.${local.dns_prefix}${var.cloudflare_zone_name}"
+}
+
+output "channel_urls" {
+  value = merge(
+    { stable = "https://app.${local.dns_prefix}${var.cloudflare_zone_name}" },
+    { for c in local.preview_channels : c => "https://${c}.app.${local.dns_prefix}${var.cloudflare_zone_name}" },
+  )
 }
