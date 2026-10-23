@@ -2522,7 +2522,7 @@ dependencies = [
 
 [[package]]
 name = "termenbox-server"
-version = "0.1.46"
+version = "0.1.47"
 dependencies = [
  "aes-gcm",
  "anyhow",
