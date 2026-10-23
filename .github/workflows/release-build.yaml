@@ -142,13 +142,14 @@ jobs:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: |
           umask 077
-          if [ -n "$RELEASE_SIGNING_KEY" ]; then
+          # A dry run never touches the real key, so it also works for a channel whose key is not set up yet.
+          if [ -n "$RELEASE_SIGNING_KEY" ] && [ "${{ inputs.publish }}" = true ]; then
             printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/release_key"
             cp packages/server/release-keys.txt "$RUNNER_TEMP/release-keys.txt"
           elif [ "${{ inputs.publish }}" = true ]; then
             echo "RELEASE_SIGNING_KEY is not set in the ${{ inputs.channel }} environment: refusing to publish an unsigned release"; exit 1
           else
-            echo "::warning::RELEASE_SIGNING_KEY is not set; signing the dry run with a throwaway key"
+            echo "::warning::dry run: signing with a throwaway key"
             ssh-keygen -q -t ed25519 -N '' -C throwaway -f "$RUNNER_TEMP/release_key"
             bound=""; [ "${{ inputs.channel }}" = stable ] || bound=" channel=${{ inputs.channel }}"
             echo "${{ inputs.kid }} $(cut -d' ' -f1,2 "$RUNNER_TEMP/release_key.pub")$bound" > "$RUNNER_TEMP/release-keys.txt"
