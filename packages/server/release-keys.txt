@@ -1,6 +1,7 @@
 # Public keys that sign Termenbox releases (kid, key type, key). The private half is the GitHub Actions secret RELEASE_SIGNING_KEY.
 # A rotation adds a second line; see SECURITY.md and decision 0076.
 # An optional fourth field `channel=stable|beta|nightly` binds a key to one release stream (decision 0130); a line
-# without it is a stable key. The beta key `b1` and the nightly key `n1` are added with their public halves once the
-# owner has created the private keys (R66 notes); until then only stable releases verify.
+# without it is a stable key. The beta key `b1` and the nightly key `n1` sign only their own channel.
 r1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDNH6+yZgMpZl+tW8C/D+9Ga0bN39vXzIIJMKmHB6auf
+b1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ/4PLp0W+UDvNYrvMSXvZ9y+UwHM872rfW59vxHLUNY channel=beta
+n1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAiR65Qe8MlgX9blFTGZM+PLwqFXaG1JWwSLUheg17gU channel=nightly
