@@ -41,4 +41,8 @@ Hosts never trust the download location: the installer and the updater verify th
   by the leaked key.
 - **Freeze:** a manifest with `"freeze": true` tells every updater to stop; it is signed like any manifest.
 - **What a manifest may contain:** only download URLs under this project's GitHub releases; anything else is
-  refused even when correctly signed.
+  refused even when correctly signed. The installer and the updater download exactly the addresses the verified
+  manifest names (decision 0132), never one built from the release address or a tag.
+- **Channels:** a manifest names its channel (`stable`, `beta`, `nightly`) and each channel has its own key, listed
+  with `channel=...` in `release-keys.txt` (decision 0130). A server follows only the channels in its own
+  `update.toml` policy (decision 0131); a key signs only its channel.

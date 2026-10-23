@@ -38,6 +38,13 @@ class MakeManifest(unittest.TestCase):
         for entry in (*m["binaries"].values(), *m["tmux"].values(), *m["tmux_notices"].values()):
             self.assertIn("/releases/download/v2026.10.22-nightly/", entry["url"])
 
+    def test_a_base_url_replaces_the_download_address_for_test_releases(self):
+        run, m = build("9.0.1", "--base-url", "file:///release2/")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        for entry in (*m["binaries"].values(), *m["tmux"].values(), *m["tmux_notices"].values()):
+            self.assertTrue(entry["url"].startswith("file:///release2/"), entry["url"])
+        self.assertEqual(m["binaries"]["x86_64"]["url"], "file:///release2/termenbox-server-x86_64-linux")
+
     def test_prereleases_validate_and_junk_is_refused(self):
         self.assertEqual(build("0.1.36-beta.2", "--channel", "beta")[0].returncode, 0)
         for bad in ("1.2", "v1.2.3", "01.2.3", "1.2.3-", "one"):

@@ -57,3 +57,4 @@ ux-acceptance-targets,"Every UX screen meets the acceptance targets for taps, gl
 a-phone-check-names-its-platform,"A phone check names the platform it ran on, and an emulator is never reported as a phone","client, mobile, android",active
 | errors-fit-one-screen | An error state fits one phone screen with one cause and one action | 0127 | ux-acceptance-targets,connections-warn-never-drop | active |
 | pairing-code-guesses-are-bounded | The short pairing code is stretched and short-lived, and its guesses are budgeted | 0128 | 0021,0022,0117,0123 | active |
+| manifest-url-resolution | Asset URLs come from the verified manifest and stay on the project's releases | 0132 | 0063,0076,0130 | active |

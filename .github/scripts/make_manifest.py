@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Writes manifest.json for a release (decision 0076).
 
-usage: make_manifest.py VERSION ASSET_DIR OUT [--channel stable|beta|nightly] [--tag TAG] [--freeze] [--notes TEXT] [--no-tmux]
+usage: make_manifest.py VERSION ASSET_DIR OUT [--channel stable|beta|nightly] [--tag TAG] [--base-url URL] [--freeze] [--notes TEXT] [--no-tmux]
 
 VERSION is the manifest version, full SemVer with an optional prerelease (1.2.3, 1.2.3-beta.1,
 1.2.3-nightly.20261022). --tag names the release the assets are downloaded from (default v<VERSION>), because a
-nightly alias such as v2026.10.22-nightly is not the version. --channel (default stable) is signed into the manifest.
+nightly alias such as v2026.10.22-nightly is not the version. --base-url (installer tests only) replaces
+the whole GitHub download address with URL, so a test release can be fetched from a file:// directory. --channel (default stable) is signed into the manifest.
 
 ASSET_DIR holds one file per architecture named termenbox-server-<arch>-linux (x86_64, aarch64). The manifest
 lists each with its download URL under this project's GitHub releases and its SHA-256. CI signs the exact bytes
@@ -31,11 +32,11 @@ SEMVER = re.compile(
 TMUX_NOTICES = ("tmux-COPYING", "tmux-libevent-LICENSE", "tmux-ncurses-COPYING")
 
 
-def entry(tag, path):
+def entry(base, path):
     if not path.is_file():
         sys.exit(f"missing {path}")
     return {
-        "url": f"{BASE}/{tag}/{path.name}",
+        "url": f"{base}/{path.name}",
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
     }
 
@@ -56,6 +57,7 @@ def main(argv):
     notes = option("--notes", "")
     channel = option("--channel", "stable")
     tag = option("--tag", None)
+    base_url = option("--base-url", None)
     if len(args) != 3:
         sys.exit(__doc__)
     version, asset_dir, out = args[0], Path(args[1]), Path(args[2])
@@ -64,11 +66,12 @@ def main(argv):
     if channel not in CHANNELS:
         sys.exit(f"channel must be one of {', '.join(CHANNELS)}, got {channel!r}")
     tag = tag or f"v{version}"
-    binaries = {arch: entry(tag, asset_dir / f"termenbox-server-{arch}-linux") for arch in ARCHES}
+    base = base_url.rstrip("/") if base_url else f"{BASE}/{tag}"
+    binaries = {arch: entry(base, asset_dir / f"termenbox-server-{arch}-linux") for arch in ARCHES}
     manifest = {"version": version, "channel": channel, "freeze": freeze, "notes": notes, "binaries": binaries}
     if with_tmux:
-        manifest["tmux"] = {arch: entry(tag, asset_dir / f"tmux-{arch}-linux") for arch in ARCHES}
-        manifest["tmux_notices"] = {name: entry(tag, asset_dir / name) for name in TMUX_NOTICES}
+        manifest["tmux"] = {arch: entry(base, asset_dir / f"tmux-{arch}-linux") for arch in ARCHES}
+        manifest["tmux_notices"] = {name: entry(base, asset_dir / name) for name in TMUX_NOTICES}
     out.write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
     print(f"wrote {out} for {version} ({channel}, tag {tag})")
 

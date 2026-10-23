@@ -34,7 +34,8 @@ release() { # dir version [--freeze]  (binary at $dir/termenbox-server-x86_64-li
   [ -f "$dir/tmux-x86_64-linux" ] || cp "$OUT/tmux/tmux" "$dir/tmux-x86_64-linux"
   cp "$dir/tmux-x86_64-linux" "$dir/tmux-aarch64-linux"
   for n in tmux-COPYING tmux-libevent-LICENSE tmux-ncurses-COPYING; do cp "$OUT/tmux/$n" "$dir/$n"; done
-  python3 "$HERE/make_manifest.py" "$version" "$dir" "$dir/manifest.json" "$@" >/dev/null
+  # The assets are named by the signed manifest, so it must point at where the test machine mounts this directory.
+  python3 "$HERE/make_manifest.py" "$version" "$dir" "$dir/manifest.json" --base-url "file:///$(basename "$dir")" "$@" >/dev/null
   ssh-keygen -Y sign -n termenbox-release -f "$OUT/key" "$dir/manifest.json" >/dev/null 2>&1
 }
 

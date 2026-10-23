@@ -135,3 +135,5 @@
 | 0128-a-short-pairing-code-is-a-rate-limited-pake-secret | A short pairing code is a mailbox key and a PAKE password, bounded by its life, a stretch and a guess budget | product | active | Sergey Strebulaev | - |
 | 0129-features-land-on-develop-and-master-moves-only-for-a-release | Features land on develop, the default branch; master moves only by fast-forward for a release | process | active | Sergey Strebulaev | - |
 | 0130-releases-have-three-channels-each-with-its-own-signing-key | Releases have three channels, a manifest names its channel, and each channel has its own signing key | product | active | Sergey Strebulaev | - |
+| 0131-nightly-installs-notify-and-do-not-update-themselves-by-default | Each server has an update policy, and a nightly install notifies instead of updating itself by default | product | active | Sergey Strebulaev | - |
+| 0132-the-signed-manifest-names-the-assets-not-the-release-tag | The signed manifest names where each asset is; an address and a tag never do | product | active | Sergey Strebulaev | - |

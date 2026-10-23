@@ -9,7 +9,7 @@ use tracing::info;
 
 use crate::release::{ReleaseKeys, URL_PREFIX};
 use crate::requests::{take_requests, Request};
-use crate::updater::{HttpFetch, Outcome, Systemd, Updater};
+use crate::updater::{HttpFetch, Outcome, Systemd, Trigger, UpdatePolicy, Updater};
 
 pub const DEFAULT_RELEASE_URL: &str =
     "https://github.com/termenbox/termenbox/releases/latest/download";
@@ -37,7 +37,7 @@ pub async fn run(action: &str, setup: &Setup) -> Result<i32> {
         bail!("the root helper must run as root");
     }
     match action {
-        "update" => update(setup).await,
+        "update" => update(setup, Trigger::Timer).await,
         "requests" => {
             let mut status = 0;
             for request in take_requests(&setup.requests_dir) {
@@ -51,7 +51,7 @@ pub async fn run(action: &str, setup: &Setup) -> Result<i32> {
 
 async fn handle(request: Request, setup: &Setup) -> Result<i32> {
     match request {
-        Request::UpdateNow {} => update(setup).await,
+        Request::UpdateNow {} => update(setup, Trigger::UpdateNow).await,
         Request::Uninstall { .. } => {
             info!(target: "audit", event = "helper_uninstall_not_available");
             println!("uninstall through the helper is not available in this version");
@@ -60,7 +60,7 @@ async fn handle(request: Request, setup: &Setup) -> Result<i32> {
     }
 }
 
-async fn update(setup: &Setup) -> Result<i32> {
+async fn update(setup: &Setup, trigger: Trigger) -> Result<i32> {
     let keys = ReleaseKeys::from_env()?;
     anyhow::ensure!(!keys.is_empty(), "no release keys configured");
     let port = std::fs::read_to_string(setup.root_dir.join("http_port")).map_err(|_| {
@@ -83,18 +83,29 @@ async fn update(setup: &Setup) -> Result<i32> {
     let binary: PathBuf = std::env::var_os("TERMENBOX_BINARY")
         .map(PathBuf::from)
         .map_or_else(std::env::current_exe, Ok)?;
+    // Where the manifest lives: the channel's address, set in the unit by the installer (stable: `latest`, beta and
+    // nightly: their rolling alias releases). It names no asset; the signed manifest does (decision 0132).
+    let release_url = std::env::var("TERMENBOX_RELEASE_URL")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| DEFAULT_RELEASE_URL.into());
+    let current = crate::version();
+    // Root-owned, beside the journal; a file that does not parse stops the run (a typo must not read as `auto`).
+    let policy = UpdatePolicy::load(&setup.root_dir.join("update.toml"), &current)?;
     let updater = Updater {
         fetch: &fetch,
         service: &service,
         keys: &keys,
         binary: strip_deleted(&binary),
         root_dir: setup.root_dir.clone(),
-        release_url: std::env::var("TERMENBOX_RELEASE_URL")
-            .ok()
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| DEFAULT_RELEASE_URL.into()),
-        url_prefix: URL_PREFIX.into(),
-        current: crate::version(),
+        release_url: release_url.clone(),
+        url_prefix: asset_prefix(&release_url),
+        policy,
+        trigger,
+        now_minute: crate::updater::local_minute_of_day(),
+        // The server's state directory is the parent of its requests directory.
+        status_dir: setup.requests_dir.parent().map(Path::to_path_buf),
+        current,
         arch: std::env::consts::ARCH.into(),
         health_wait: Duration::from_secs(30),
     };
@@ -103,6 +114,13 @@ async fn update(setup: &Setup) -> Result<i32> {
     match outcome {
         Outcome::UpToDate => println!("already up to date"),
         Outcome::Frozen => println!("updates are paused by the maintainers (a signed freeze)"),
+        Outcome::Held => println!("updates are on hold (update.toml: mode = \"hold\")"),
+        Outcome::OtherChannel => {
+            println!("the latest release is of a channel this server does not follow")
+        }
+        Outcome::Available { version, reason } => {
+            println!("{version} is available and was not installed ({reason})")
+        }
         Outcome::Updated { from, to } => println!("updated {from} -> {to}"),
         Outcome::RolledBack { to, reason } => {
             println!("update to {to} was rolled back: {reason}");
@@ -110,6 +128,16 @@ async fn update(setup: &Setup) -> Result<i32> {
         }
     }
     Ok(0)
+}
+
+/// Where assets named by the manifest must live: this project's GitHub releases. Only the installer's own tests, with a
+/// `file://` release address (the helper's environment is trusted, see `HttpFetch`), keep assets under that address.
+fn asset_prefix(release_url: &str) -> String {
+    if release_url.starts_with("file://") {
+        format!("{}/", release_url.trim_end_matches('/'))
+    } else {
+        URL_PREFIX.into()
+    }
 }
 
 /// `current_exe` can end in " (deleted)" after the file was replaced while the process runs.
@@ -123,6 +151,18 @@ fn strip_deleted(p: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assets_must_live_on_github_unless_a_test_release_is_a_file_url() {
+        assert_eq!(asset_prefix(DEFAULT_RELEASE_URL), URL_PREFIX);
+        assert_eq!(
+            asset_prefix("https://github.com/termenbox/termenbox/releases/download/channel-beta"),
+            URL_PREFIX,
+            "an alias holds only a manifest; its assets are under the release tags"
+        );
+        assert_eq!(asset_prefix("https://evil.example/x"), URL_PREFIX);
+        assert_eq!(asset_prefix("file:///release2/"), "file:///release2/");
+    }
 
     #[test]
     fn a_replaced_binary_path_is_cleaned() {
