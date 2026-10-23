@@ -65,32 +65,32 @@ Was: where it came from
 Columns: **WSJF** is the step's own score; **Chain** is the score the sort uses (its own, or the best bundle of the free steps it unlocks).
 
 <!-- order:start -->
-Next ready step: [R59](roadmap/R59.md).
+Next ready step: [R36](roadmap/R36.md).
 
 | # | Step | Title | Area | Platform | Status | WSJF | Chain | Preds |
 |---|---|---|---|---|---|---|---|---|
 | 1 | [R03](roadmap/R03.md) | Real-iPhone checklist and two-real-server e2e (G.10, H.11) | ux | mobile | blocked (owner's iPhone checklist, docs/skills/mobile-ui-device-check.md) | 10.5 | 10.5 | - |
-| 2 | [R59](roadmap/R59.md) | Spike: search tmux history and local terminal text | terminal | both | pending | 5.3 | 5.3 | - |
-| 3 | [R36](roadmap/R36.md) | Desktop browser regression matrix and WebKit in CI | ci | both | pending | 2.5 | 3.7 | - |
-| 4 | [U11](roadmap/U11.md) | Escalation ladder | server | both | pending | 2.2 | 3.7 | - |
-| 5 | [U16](roadmap/U16.md) | Real-device gate and the free gate | ux | mobile | pending | 5.0 | 5.0 | U11, R03, R36 |
-| 6 | [R21](roadmap/R21.md) | Verify the Codex adapter against a real Codex (P.5) | agents | n/a | blocked (needs a machine with Codex and an account) | 4.7 | 4.7 | - |
-| 7 | [R07](roadmap/R07.md) | Request-budget alarm (C.5) | cloud | n/a | pending | 4.3 | 4.3 | - |
-| 8 | [R66](roadmap/R66.md) | Release channels 1: channel-bound manifests, SemVer ordering and the compile-time version | release | n/a | pending | 4.2 | 4.2 | - |
-| 9 | [R25](roadmap/R25.md) | Server settings screen: name, mode, re-claim (B.3) | server | both | pending | 3.7 | 3.7 | - |
-| 10 | [R26](roadmap/R26.md) | Directory deregistration (D.2) | cloud | n/a | pending | 3.7 | 3.7 | - |
-| 11 | [R61](roadmap/R61.md) | Open terminal web links with a desktop pointer | terminal | desktop | pending | 3.7 | 3.7 | - |
-| 12 | [R10](roadmap/R10.md) | Spike: connector payload and abuse review (O.1) | connectors | n/a | pending | 3.5 | 3.5 | - |
-| 13 | [R09](roadmap/R09.md) | Directory abuse controls and degraded mode (S.4) | cloud | n/a | pending | 3.4 | 3.4 | - |
-| 14 | [R68](roadmap/R68.md) | Release channels 3: stable, beta and nightly workflows, alias releases and Docker tags | ci | n/a | pending | 2.2 | 2.9 | R66 |
-| 15 | [R19](roadmap/R19.md) | Cache event and Claude status-line forwarder (G.8) | agents | n/a | pending | 2.8 | 2.8 | - |
-| 16 | [R22](roadmap/R22.md) | Badge, stats sheet and Say thanks (T.2) | ux | both | pending | 2.7 | 2.7 | - |
-| 17 | [R70](roadmap/R70.md) | Release channels 5: the client shows a newer release for the selected channel | ux | both | pending | 2.7 | 2.7 | R68 |
-| 18 | [R32](roadmap/R32.md) | Key rotation and incident runbook (S.8) | security | n/a | pending | 2.6 | 2.6 | - |
-| 19 | [R64](roadmap/R64.md) | Server reachability self-check and automatic port opening | server | n/a | pending | 2.6 | 2.6 | - |
-| 20 | [R27](roadmap/R27.md) | Remote uninstall on the native host (N.6) | server | n/a | pending | 2.2 | 2.5 | - |
-| 21 | [R62](roadmap/R62.md) | Candidate paths: signed bundle, LAN and pairing, raced connect, seamless re-attach | server | both | pending | 2.1 | 2.2 | - |
-| 22 | [R63](roadmap/R63.md) | Connection telemetry: sampled, enum-only, opt-out on the hosted client | cloud | both | pending | 2.4 | 2.4 | R62 |
+| 2 | [R36](roadmap/R36.md) | Desktop browser regression matrix and WebKit in CI | ci | both | pending | 2.5 | 3.7 | - |
+| 3 | [U11](roadmap/U11.md) | Escalation ladder | server | both | pending | 2.2 | 3.7 | - |
+| 4 | [U16](roadmap/U16.md) | Real-device gate and the free gate | ux | mobile | pending | 5.0 | 5.0 | U11, R03, R36 |
+| 5 | [R21](roadmap/R21.md) | Verify the Codex adapter against a real Codex (P.5) | agents | n/a | blocked (needs a machine with Codex and an account) | 4.7 | 4.7 | - |
+| 6 | [R07](roadmap/R07.md) | Request-budget alarm (C.5) | cloud | n/a | pending | 4.3 | 4.3 | - |
+| 7 | [R66](roadmap/R66.md) | Release channels 1: channel-bound manifests, SemVer ordering and the compile-time version | release | n/a | pending | 4.2 | 4.2 | - |
+| 8 | [R25](roadmap/R25.md) | Server settings screen: name, mode, re-claim (B.3) | server | both | pending | 3.7 | 3.7 | - |
+| 9 | [R26](roadmap/R26.md) | Directory deregistration (D.2) | cloud | n/a | pending | 3.7 | 3.7 | - |
+| 10 | [R61](roadmap/R61.md) | Open terminal web links with a desktop pointer | terminal | desktop | pending | 3.7 | 3.7 | - |
+| 11 | [R10](roadmap/R10.md) | Spike: connector payload and abuse review (O.1) | connectors | n/a | pending | 3.5 | 3.5 | - |
+| 12 | [R09](roadmap/R09.md) | Directory abuse controls and degraded mode (S.4) | cloud | n/a | pending | 3.4 | 3.4 | - |
+| 13 | [R68](roadmap/R68.md) | Release channels 3: stable, beta and nightly workflows, alias releases and Docker tags | ci | n/a | pending | 2.2 | 2.9 | R66 |
+| 14 | [R19](roadmap/R19.md) | Cache event and Claude status-line forwarder (G.8) | agents | n/a | pending | 2.8 | 2.8 | - |
+| 15 | [R22](roadmap/R22.md) | Badge, stats sheet and Say thanks (T.2) | ux | both | pending | 2.7 | 2.7 | - |
+| 16 | [R70](roadmap/R70.md) | Release channels 5: the client shows a newer release for the selected channel | ux | both | pending | 2.7 | 2.7 | R68 |
+| 17 | [R32](roadmap/R32.md) | Key rotation and incident runbook (S.8) | security | n/a | pending | 2.6 | 2.6 | - |
+| 18 | [R64](roadmap/R64.md) | Server reachability self-check and automatic port opening | server | n/a | pending | 2.6 | 2.6 | - |
+| 19 | [R27](roadmap/R27.md) | Remote uninstall on the native host (N.6) | server | n/a | pending | 2.2 | 2.5 | - |
+| 20 | [R62](roadmap/R62.md) | Candidate paths: signed bundle, LAN and pairing, raced connect, seamless re-attach | server | both | pending | 2.1 | 2.2 | - |
+| 21 | [R63](roadmap/R63.md) | Connection telemetry: sampled, enum-only, opt-out on the hosted client | cloud | both | pending | 2.4 | 2.4 | R62 |
+| 22 | [R72](roadmap/R72.md) | Find in terminal: bounded tmux history snapshot searched in the browser | terminal | both | pending | 2.4 | 2.4 | - |
 | 23 | [R67](roadmap/R67.md) | Release channels 2: the updater follows the manifest, and the server update policy | server | n/a | pending | 2.2 | 2.4 | R66 |
 | 24 | [R34](roadmap/R34.md) | Self-hosted client docs (rest of 5.1) | docs | n/a | pending | 2.3 | 2.3 | - |
 | 25 | [R31](roadmap/R31.md) | Passkey step-up for root sessions and device revocation (S.2) | security | both | pending | 2.1 | 2.1 | - |
@@ -121,7 +121,7 @@ Next ready step: [R59](roadmap/R59.md).
 | 50 | [R44](roadmap/R44.md) | Pro: reliable push and inbox retention (P.5) | paid | both | blocked (R40, the free gate) | 1.2 | 1.2 | R43 |
 | 51 | [R45](roadmap/R45.md) | Pro: fleet view and usage reports (P.6) | paid | both | blocked (R40, the free gate) | 1.2 | 1.2 | R43 |
 
-51 open steps. 30 done and 9 superseded or folded steps are in `roadmap/archive/` (their text is kept; `grep -h '^Status' roadmap/archive/*.md`).
+51 open steps. 31 done and 9 superseded or folded steps are in `roadmap/archive/` (their text is kept; `grep -h '^Status' roadmap/archive/*.md`).
 <!-- order:end -->
 
 ## Product tiers (free, Pro, Team, Enterprise)
