@@ -22,7 +22,6 @@ on:
         description: 'Version the app shows (default: packages/server/Cargo.toml)'
         type: string
         default: ''
-    secrets: inherit
   workflow_dispatch:
     inputs:
       channel:
