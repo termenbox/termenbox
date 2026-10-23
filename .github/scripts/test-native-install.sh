@@ -101,6 +101,11 @@ for i in 1 2 3 4 5 6 7 8 9 10; do curl -fs "http://127.0.0.1:$port/health" >/dev
 curl -fs "http://127.0.0.1:$port/health" >/dev/null || fail "the restored server does not answer"
 
 echo "== a request from the server reaches the root helper, and junk does not"
+# The unit now names the release address (the channel's manifest, here /release), so it needs the test release key too;
+# on a real install the built-in keys are the ones that sign it.
+mkdir -p /etc/systemd/system/termenbox-request.service.d
+printf '[Service]\nEnvironment="TERMENBOX_RELEASE_KEYS=%s"\n' "$TERMENBOX_RELEASE_KEYS" > /etc/systemd/system/termenbox-request.service.d/test-keys.conf
+systemctl daemon-reload
 requests=/var/lib/termenbox/requests
 printf '{"action":"update-now"}' > $requests/r1.json
 printf '{"action":"rm","path":"/"}' > $requests/r2.json
@@ -117,6 +122,8 @@ until journalctl -u termenbox-request --no-pager | grep -q "up to date\|updated"
   [ $i -lt 30 ] || { journalctl -u termenbox-request --no-pager | tail; fail "the helper did not act on the update request"; }
   sleep 1
 done
+rm -rf /etc/systemd/system/termenbox-request.service.d
+systemctl daemon-reload
 
 echo "== a changed release is refused"
 cp /release/manifest.json /tmp/manifest.good
