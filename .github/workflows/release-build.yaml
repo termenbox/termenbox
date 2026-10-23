@@ -38,7 +38,9 @@ jobs:
         with:
           ref: ${{ inputs.sha }}
 
+      # A dry run may use any version (the default is 0.0.0); the gates of the wrappers hold a published one to the tag.
       - name: The version has the Cargo.toml version as its core
+        if: inputs.publish
         run: |
           crate="$(grep -m1 '^version' packages/server/Cargo.toml | cut -d'"' -f2)"
           case "${{ inputs.version }}" in
