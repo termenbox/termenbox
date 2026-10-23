@@ -10,7 +10,7 @@ ORIGIN=https://app.termenbox.dev
 SECRET="$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)"
 RUN_USER=termenbox
 [ "$MODE" = host ] && RUN_USER=root
-# /release (first install), /release2 (9.0.1 works), /release3 (9.0.2 starts but never serves), /release4 (9.0.3 is frozen)
+# /release (first install), /release2 (0.99.1 works), /release3 (0.99.2 starts but never serves), /release4 (0.99.3 is frozen)
 export TERMENBOX_RELEASE_URL=file:///release
 TERMENBOX_RELEASE_KEYS="$(cat /keys.txt)"
 export TERMENBOX_RELEASE_KEYS
@@ -77,7 +77,7 @@ helper /release4 | grep -q "paused" || fail "a frozen release was not reported"
 [ "$(sha /usr/local/bin/termenbox-server)" = "$before_sha" ] || fail "a frozen release changed the binary"
 
 echo "== a newer release is installed, the old binary is kept, the service comes back"
-helper /release2 | grep -q "updated .* -> 9.0.1" || fail "the update did not report success"
+helper /release2 | grep -q "updated .* -> 0.99.1" || fail "the update did not report success"
 [ "$(sha /usr/local/bin/termenbox-server)" = "$(sha /release2/termenbox-server-x86_64-linux)" ] || fail "the new binary is not in place"
 [ -f /usr/local/bin/termenbox-server.prev ] || fail "the previous binary was not kept"
 [ "$(sha "$BUNDLED")" = "$(sha /release2/tmux-x86_64-linux)" ] || fail "the update did not carry the new tmux"
