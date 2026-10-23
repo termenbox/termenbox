@@ -19,9 +19,10 @@ pub const URL_PREFIX: &str = "https://github.com/termenbox/termenbox/releases/do
 const DEFAULT_KEYS: &str = include_str!("../release-keys.txt");
 
 /// A release stream. A key signs one channel, and a binary trusts the channels in `trusts`.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Channel {
+    #[default]
     Stable,
     Beta,
     Nightly,
@@ -209,7 +210,9 @@ pub struct Binary {
 pub struct Manifest {
     /// Full SemVer: `0.1.36`, `0.1.36-beta.2`, `0.1.36-nightly.20261022`.
     pub version: String,
-    /// The stream this release belongs to; the signing key must be bound to it.
+    /// The stream this release belongs to; the signing key must be bound to it. A manifest from before channels
+    /// existed has none and is stable, which only a stable key may sign, so the default grants nothing.
+    #[serde(default)]
     pub channel: Channel,
     /// A signed stop sign: while true no host updates or installs this release line (decision 0063).
     #[serde(default)]
@@ -618,16 +621,22 @@ mod tests {
     }
 
     #[test]
-    fn a_manifest_without_a_channel_is_refused() {
+    fn a_manifest_without_a_channel_is_stable_and_only_a_stable_key_may_sign_it() {
         let m =
             manifest_json("1.0.0", &format!("{PREFIX}v1/x")).replace(r#""channel":"stable","#, "");
         let Some((keys, sig)) = sign_with_ssh_keygen(&m, NAMESPACE) else {
             return;
         };
-        let err = Manifest::verify(m.as_bytes(), &sig, &keys, PREFIX, Channel::Stable)
+        let (manifest, _) =
+            Manifest::verify(m.as_bytes(), &sig, &keys, PREFIX, Channel::Stable).unwrap();
+        assert_eq!(manifest.channel, Channel::Stable);
+        let Some((keys, sig)) = signed_by(&m, "n1", "nightly") else {
+            return;
+        };
+        let err = Manifest::verify(m.as_bytes(), &sig, &keys, PREFIX, Channel::Nightly)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("channel"), "{err}");
+        assert!(err.contains("may not sign"), "{err}");
     }
 
     #[test]
