@@ -8,7 +8,7 @@ History: written 2026-10-14 from plans v1-v10 and session-tabs (now in `docs/pla
 
 - **Code**: Rust server `packages/server`; shared wire types `packages/core/src/protocol.rs` (mirrored by hand in `packages/client/src/lib/protocol.ts`); Svelte 5 client `packages/client/src` (`npx --yes pnpm@9`); directory Pages Functions `packages/client/functions/api`.
 - **Knowledge base**: `docs/{facts,decisions,guardrails,skills}`. Read `CLAUDE.md` first.
-- **Change flow**: one squashed pull request per step from its own branch off master, green CI, merge only on the owner's "merge" (guardrails `changes-land-as-one-squashed-pull-request`, `no-commits-on-the-default-branch`). Docs-only changes may go straight to master when the owner says so. The pre-push hook wants the commit subject `type(scope): ...` with a one-word scope.
+- **Change flow**: one squashed pull request per step from its own branch off `develop` (the default branch, decision 0129; `master` moves only for a release), green CI, merge only on the owner's "merge" (guardrails `changes-land-as-one-squashed-pull-request`, `no-commits-on-the-default-branch`). Docs-only changes may go straight to `develop` when the owner says so. The pre-push hook wants the commit subject `type(scope): ...` with a one-word scope.
 - **Constraints**: 512 MB RAM, 1 vCPU, no paid services in the required stack, secrets never logged. No check runs locally (decision 0108): CI is the judge.
 - **Devices**: the owner tests on an iPhone; Android has never had a real-device check (fact 0039). Label every phone check by platform and never call an emulator a phone (guardrail `a-phone-check-names-its-platform`).
 - **Hands off**: the owner's own `termenbox.service` (read its journal only).

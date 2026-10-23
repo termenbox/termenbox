@@ -11,7 +11,7 @@ go-getter:
   enforcement:
     - tier: 3
       check: The current branch, or the pull request head in CI, matches the pattern
-      run: builtin:branch-name pattern="^(feat|fix|docs|chore|ci|test|refactor|perf|build|style|revert)/[a-z0-9][a-z0-9._-]*$" allow="main,master"
+      run: builtin:branch-name pattern="^(feat|fix|docs|chore|ci|test|refactor|perf|build|style|revert)/[a-z0-9][a-z0-9._-]*$" allow="main,master,develop"
     - tier: 1
       check: Name a new branch `type/slug` before the first commit
   generated-by: git-workflow@0.1.1
