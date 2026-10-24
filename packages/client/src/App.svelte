@@ -973,7 +973,7 @@
       {:else if $destination === 'activity'}
         <ActivityView servers={$hubServers} history={historyMap} {now} onask={askHistory} caches={warmCaches} ttlMs={$settings.cacheTtlMs} health={healthMap} onhealth={askHealth} rttOf={(id) => hub.rtt(id)} />
       {:else if $destination === 'settings'}
-        <SettingsView user={user ?? ''} {serverVersion} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} onmenu={() => { titleTapped(); menuOpen = true; }} onshortcuts={() => (helpOpen = true)} onreport={openReport} onlogout={logout} ondeletedata={deleteData} historyServers={$connectedCount} ondeletehistory={deleteHistory} pushSettings={pushServerId ? pushSettings[pushServerId] : undefined} {pushSaving} onpushsettings={savePushSettings} />
+        <SettingsView user={user ?? ''} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} push={pushView} onpush={togglePush} onshortcuts={() => (helpOpen = true)} onreport={openReport} onlogout={logout} ondeletedata={deleteData} historyServers={$connectedCount} ondeletehistory={deleteHistory} pushSettings={pushServerId ? pushSettings[pushServerId] : undefined} {pushSaving} onpushsettings={savePushSettings} />
       {:else}
         <div class="workspace" class:mobile={narrow}>
           <div class="terminal-pane">
@@ -1029,7 +1029,7 @@
     </AppFrame>
   {/if}
 
-  {#if menuOpen && user}<MenuSheet {user} {avatar} {serverVersion} onservers={leaveServer} onreport={openReport} onlogout={logout} onclose={() => menuOpen = false} unread={unreadCount($inbox)} oninbox={() => inboxOpen = true} push={pushView} onpush={togglePush} />{/if}
+  {#if menuOpen && user}<MenuSheet {user} {avatar} onservers={leaveServer} onsettings={() => go('settings')} onreport={openReport} onlogout={logout} onclose={() => menuOpen = false} unread={unreadCount($inbox)} oninbox={() => inboxOpen = true} />{/if}
   {#if inboxOpen}<InboxSheet items={$inbox} {now} agents={$allAgents} onanswer={(key, choice, prompt) => sendSession({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })} onreply={(key, text) => sendSession({ type: 'reply', session: key, text })} onopen={openWaiting} onhome={() => go('home')} onread={() => inbox.update(markAllRead)} onclear={() => inbox.set([])} onclose={() => { inboxOpen = false; inbox.update(markAllRead); }} />{/if}
   {#if actionSession}<SessionActions session={actionSession} canClose={['tmux', 'acp'].includes(backendOf(actionSession))} confirmFirst={actionConfirm} ondetach={() => detach(actionSession.key)} onclosesession={() => closeSession(actionSession.key)} onclose={() => actionKey = null} />{/if}
   {#if menuSession && menuKey}
