@@ -139,3 +139,4 @@
 | 0132-the-signed-manifest-names-the-assets-not-the-release-tag | The signed manifest names where each asset is; an address and a tag never do | product | active | Sergey Strebulaev | - |
 | 0133-each-channel-has-its-own-release-workflow-and-the-aliases-only-move-forward | Each channel has its own release workflow and environment, rolling aliases only move forward, and the image tags follow the channel | product | active | Sergey Strebulaev | - |
 | 0134-each-channel-has-its-own-pages-deployment-on-its-own-origin | Each release channel has its own Cloudflare Pages deployment on its own origin, deployed by its release workflow, and its installer trusts only its keys | product | draft | - | - |
+| 0135-ux-assessment-and-feature-videos-share-one-ci-scenario-set | UX assessment and feature videos are rendered from one set of scripted scenarios in a CI job; hard rules block, the rest is advisory | process | active | Sergey Strebulaev | - |
