@@ -8,11 +8,11 @@ tags: [client, browser-support, compatibility, procedural]
 
 # Procedure: Check browser support, and say which kind of check it was
 
-The CI job "Browser matrix" runs the built client in Chromium, Firefox and WebKit. A Playwright engine is not the browser people install, so it does not prove the support floor (fact 0003, decision 0112). Use this list to see what each kind of check proves and what stays manual.
+The CI jobs "Browser matrix" and "Browser matrix, real server" run the built client in Chromium, Firefox and WebKit. A Playwright engine is not the browser people install, so it does not prove the support floor (fact 0003, decision 0112). Use this list to see what each kind of check proves and what stays manual.
 
 | Kind | What runs it | Proves | Does not prove |
 |---|---|---|---|
-| Engine automation | CI `browsers` job: `e2e/suite.mjs desktop` on Chromium, Firefox and WebKit at 1024x768 @1x and 1440x900 @2x, `e2e/suite.mjs phone` on WebKit at 390 px @3x | Layout, keys, sidebar, palette, resize, copy and the clipboard fallback behave the same in each engine's current build | The minimum version, Edge, Safari's own UI and policies, a real soft keyboard, safe areas, gestures |
+| Engine automation | CI `browsers` job: `e2e/suite.mjs desktop` on Chromium, Firefox and WebKit at 1024x768 @1x and 1440x900 @2x, `e2e/suite.mjs phone` on WebKit at 390 px @3x; the `browsers-real` job runs the same engines and sizes against the real server and tmux (`e2e/suite.mjs realserver`: attach, reconnect, keys, selection, mouse reporting, resize, the 720 px switch) | Layout, keys, sidebar, palette, resize, copy and the clipboard fallback behave the same in each engine's current build | The minimum version, Edge, Safari's own UI and policies, a real soft keyboard, safe areas, gestures |
 | Real desktop browser | A person, by hand, once per release and after a change to input, layout or the terminal | The real Chrome, Edge, Firefox and macOS Safari the app supports | Anything on a phone |
 | Real iPhone | The owner, with `mobile-ui-device-check` | iOS Safari and the installed PWA | Android |
 
@@ -22,4 +22,4 @@ The CI job "Browser matrix" runs the built client in Chromium, Firefox and WebKi
 4. Record the results in the pull request, one line per browser and version. Label every Chromium-, Firefox- or WebKit-engine result as engine automation, per `a-phone-check-names-its-platform`; only a real browser or phone counts as a device check.
 5. Run `mobile-ui-device-check` for the iPhone and Android parts; this list does not replace it.
 
-Not in the matrix: the throughput and resource gates and the WebRTC scenarios run once, on Chromium, in the server suite (`e2e/suite.mjs server`).
+Not in the matrix: the WebRTC path, the throughput and resource gates run once, on Chromium, in the server suite (`e2e/suite.mjs server`).

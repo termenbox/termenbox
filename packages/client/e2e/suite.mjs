@@ -1,5 +1,5 @@
 // Runs a named list of e2e scripts one after another, keeps going after a failure, and lists what failed.
-// Usage: node e2e/suite.mjs <server|desktop|phone>    (after: pnpm run e2e:build; the scripts read E2E_ENGINE, E2E_VIEWPORT, E2E_DPR)
+// Usage: node e2e/suite.mjs <server|desktop|phone|realserver>    (after: pnpm run e2e:build; the scripts read E2E_ENGINE, E2E_VIEWPORT, E2E_DPR)
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 
@@ -10,6 +10,8 @@ const suites = {
   // The built client against scripted servers, no binary: the browser matrix runs these per engine (R36).
   desktop: ['desktop'],
   phone: ['appshell', 'cards', 'windows', 'app'],
+  // The built client against the real server binary and real tmux (R36): attach, switch, reconnect, keys, selection, mouse reporting, resize.
+  realserver: ['realserver'],
 };
 
 const name = process.argv[2];
