@@ -159,8 +159,9 @@ async function runContext(browser, label) {
     check((await sidebar.count()) === (phone ? 0 : 1), `sidebar presence is wrong for ${label}`);
     check((await bottom.count()) === (phone ? 1 : 0), `bottom bar presence is wrong for ${label}`);
     const nav = phone ? bottom : sidebar;
+    const press = (locator) => (phone ? tap(locator) : locator.click()); // a desktop context has no touch
     for (const [id, heading] of [['activity', 'Activity'], ['settings', 'Settings'], ['home', 'Home']]) {
-      await tap(nav.locator(`[data-destination=${id}]`));
+      await press(nav.locator(`[data-destination=${id}]`));
       await page.getByRole('heading', { name: heading, exact: true }).waitFor();
       { const o = await sideways(page); check(!o.scrollable, `${id} scrolls sideways (${o.px}px, ${o.culprit})`); }
     }
