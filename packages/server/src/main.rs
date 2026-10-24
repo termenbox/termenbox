@@ -799,6 +799,8 @@ async fn main() -> anyhow::Result<()> {
     for k in &kinds {
         match k.as_str() {
             "tmux" => {
+                // A tmux server that outlived the last upgrade still has the old config.
+                mode.runner().reload_tmux_config().await;
                 agentwatch::spawn_tmux_scan(hub.clone(), mode.runner(), prefix_of(k));
                 owners.attach(mode.runner(), prefix_of(k));
                 // Control mode needs tmux 3.2; an older one keeps the scan and says so (plan H.3).

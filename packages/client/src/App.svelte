@@ -634,7 +634,7 @@
   /** The name clients show; the session's id, and so its tabs, layout and events, stay as they were. */
   function renameSession(key: string, name: string) {
     crumb('rename session');
-    hub.sendToSession(key, { type: 'rename_session', session: key, name });
+    hub.rename(key, name);
   }
 
   /** The sidebar's close button: the dialog asks first where the manager can close, and offers only Detach where it cannot. */

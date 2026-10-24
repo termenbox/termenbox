@@ -108,6 +108,16 @@ export class ServerHub {
       : 'session_id' in message ? { ...message, session_id: session.id } : message;
     this.send(session.serverId, wire);
   }
+  /** Shows the new name at once and asks the server. The server's list confirms it for every device; a refusal is
+   *  put right by asking for the list again, which brings the old name back. */
+  rename(key: string, name: string) {
+    const found = this.findSession(key);
+    if (!found) return;
+    const e = this.entries.get(found.serverId);
+    if (e) { e.sessions = e.sessions.map(s => (s.id === found.id ? { ...s, name } : s)); this.publish(); }
+    this.sendToSession(key, { type: 'rename_session', session: key, name });
+    setTimeout(() => this.send(found.serverId, { type: 'list_sessions' }), 2000);
+  }
   findSession(key: string): HubSession | undefined {
     for (const e of this.entries.values()) {
       if (e.state === 'paused') continue;
