@@ -48,8 +48,23 @@ export type ClientMessage =
   | { type: 'acp_mode'; session: string; mode: string }
   /** U12: the tasks that ended in [from, to) (ms since the epoch) and those still running. Older servers do not answer. */
   | { type: 'history'; from: number; to: number }
+  /** U11: ask for the server's push escalation settings. */
+  | { type: 'push_settings_get' }
+  /** U11: replace the push escalation settings. */
+  | { type: 'push_settings_set'; settings: PushSettings }
   /** Forgets the server's whole history. */
   | { type: 'history_delete' };
+
+/** U11: push escalation settings (seconds, not minutes). */
+export interface PushSettings {
+  initial_wait_secs: number;
+  max_interval_secs: number;
+  multiplier: number;
+  quiet_hours?: string;
+  /** Minutes the owner's local time is ahead of UTC (the browser's), so quiet hours are local. */
+  utc_offset_minutes: number;
+  muted_agents: string[];
+}
 
 export type ServerMessage =
   | { type: 'challenge'; nonce: string; server_id: string }
@@ -73,7 +88,9 @@ export type ServerMessage =
   | { type: 'attention'; items: Attention[] }
   | SessionViewMessage
   | AcpViewMessage
-  | { type: 'push_info'; configured: boolean; public_key: string; devices: number; subscribed: boolean }
+  | { type: 'push_info'; configured: boolean; public_key: string; devices: number; subscribed: boolean; settings?: boolean }
+  | { type: 'push_settings'; settings: PushSettings }
+  | { type: 'push_settings_rejected'; reason: string }
   | { type: 'agent_event'; event: AgentEventType; agent: string; session_id: string }
   | { type: 'agent_hooks'; agent: string; action: string; state: 'connected' | 'not_connected' | 'unsupported' | 'unavailable' | string; preview?: string; error?: string }
   | ({ type: 'server_health' } & ServerHealth)

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 const suites = {
   // Real server binary (TERMENBOX_BIN) and tmux. Chromium only: WebRTC flags and the resource gates are measured once.
   server: ['run', 'touch', 'cards', 'decision', 'activity', 'windows', 'two-servers', 'appshell', 'desktop', 'app', 'pane', 'acp',
-    'hookoffer', 'add-server', 'pair', 'failures', 'wizard', 'search'],
+    'hookoffer', 'add-server', 'pair', 'failures', 'wizard', 'search', 'push-link'],
   // The built client against scripted servers, no binary: the browser matrix runs these per engine (R36).
   desktop: ['desktop'],
   phone: ['appshell', 'cards', 'windows', 'app'],
