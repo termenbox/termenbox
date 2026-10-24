@@ -67,6 +67,9 @@ async function sidebarAt(shared, width) {
   t.check((await num(sep, 'aria-valuenow')) === Math.round((await side.boundingBox()).width), `${width}: aria-valuenow is not the width`);
   const hit = await sep.boundingBox();
   t.check(hit.width >= 44 && hit.height >= 200, `${width}: separator target ${hit.width}x${hit.height}`);
+  // A mouse reaches only the middle of it: a drag that starts on the first terminal column selects text.
+  const beside = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.getAttribute('role'), [hit.x + hit.width / 2 + 14, hit.y + 300]);
+  t.check(beside !== 'separator', `${width}: the divider takes a mouse 14 px from its line`);
   t.check((await sep.evaluate((e) => parseFloat(getComputedStyle(e, '::after').width))) <= 4, `${width}: the line is not thin`);
   t.check((await sep.getAttribute('tabindex')) === '0', `${width}: separator not focusable`);
 
