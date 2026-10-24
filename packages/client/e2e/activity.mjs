@@ -1,7 +1,7 @@
 // U12: the real Activity view in Chrome at 360 px (a small phone) and at 1280 px, over a fake server that answers from a fixture.
 // The clock is fixed to the fixture's day. Desktop Chromium with mobile emulation: not an iPhone or Android check.
 // Usage: node e2e/activity.mjs   (needs the e2e harness built: pnpm e2e:build; CHROME_PATH for the browser)
-import { chromium } from 'playwright-core';
+import { launch } from './browser.mjs';
 import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, extname } from 'node:path';
@@ -17,10 +17,7 @@ const srv = createServer((req, res) => {
 });
 await new Promise((r) => srv.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${srv.address().port}`;
-const browser = await chromium.launch({
-  ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
-  args: ['--no-sandbox'],
-});
+const browser = await launch();
 const NOW = new Date(2026, 9, 14, 18, 0);
 const overflow = (page) => page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
 const small = (page) => page.$$eval('[data-activity] button, [data-activity] [role=radio]', (els) => els.filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && (r.height < 43.5 || r.width < 43.5); }).map((e) => e.getAttribute('aria-label') || e.textContent.trim()));

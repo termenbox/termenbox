@@ -6,18 +6,20 @@
 //   Part 2 (U15): the REAL app (real hub, connection, xterm, session view, decision card) against a scripted server:
 //   sidebar toggle/resize/keyboard/reload at 721, 1024, 1440 and 1920 px, crossing 720 px, the live terminal beside the
 //   structured view, the shortcuts, and no key reaching the terminal from the composer. See app-lib.mjs for its limits.
-// Usage: node e2e/desktop.mjs (after: pnpm run e2e:build, and the app's own: pnpm build)
+// Usage: node e2e/desktop.mjs (after: pnpm run e2e:build, and the app's own: pnpm build). Browser, viewport and pixel ratio
+// come from browser.mjs: E2E_ENGINE, E2E_VIEWPORT (the shell probe), E2E_DPR (both parts).
 import { start } from './frame-lib.mjs';
+import { viewport } from './browser.mjs';
 import { realApp } from './desktop-app.mjs';
 
-const t = await start({ viewport: { width: 1280, height: 800 }, isMobile: false, hasTouch: false });
+const t = await start({ viewport: viewport('1280x800'), isMobile: false, hasTouch: false });
 const failures = [];
 const { page } = t;
 await t.open();
 
 // 1. Sidebar, not a bottom bar; every destination reachable; 20 sessions on two servers, each with a state word.
 const side = page.locator('[data-shell=sidebar]');
-t.check(await side.isVisible(), 'no sidebar at 1280 px');
+t.check(await side.isVisible(), `no sidebar at ${t.page.viewportSize().width} px`);
 t.check((await page.locator('[data-shell=bottom-bar]').count()) === 0, 'the bottom bar is on the desktop');
 for (const [id, heading] of [['home', 'Home'], ['activity', 'Activity'], ['settings', 'Settings'], ['sessions', null]]) {
   await side.locator(`[data-destination=${id}]`).click();

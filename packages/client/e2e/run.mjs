@@ -2,7 +2,7 @@
 // only the hosted function that issues certificates is a stand-in (here: a key pair made in this script). Usage: node e2e/run.mjs   (needs a built server, a built harness, and Chrome)
 //   TERMENBOX_BIN   server binary          (default ../../target/release/termenbox-server)
 //   CHROME_PATH    Chrome/Chromium binary (default: Playwright's "chrome" channel)
-import { chromium } from 'playwright-core';
+import { launch } from './browser.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
@@ -109,10 +109,7 @@ try {
   const record = { ip: info.ip, udp_port: info.port, fingerprint: info.fingerprint };
   const serverId = serverIdOf(join(home, 'config'));
 
-  browser = await chromium.launch({
-    ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
-    args: ['--no-sandbox', '--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection'],
-  });
+  browser = await launch(['--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection']);
   const open = async (who, claimSecret, pinnedId = serverId) => {
     const page = await (await browser.newContext()).newPage();
     page.on('pageerror', (e) => fail(`page error: ${e.message}`));

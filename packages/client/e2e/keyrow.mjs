@@ -5,7 +5,7 @@
 // editor changes, persists and resets the row; removed keys stay reachable in More; at 320 px nothing shrinks below the minimum
 // and the rest goes to More. At 1024 px with a fine pointer the Auto row is compact (gains height), and Full restores the row.
 // Usage: node e2e/keyrow.mjs   (needs `pnpm e2e:build`; SHOTS=dir for screenshots, CHROME_PATH for the browser)
-import { chromium } from 'playwright-core';
+import { launch } from './browser.mjs';
 import { createServer } from 'node:http';
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, extname } from 'node:path';
@@ -25,7 +25,7 @@ const base = `http://127.0.0.1:${server.address().port}/keyrow.html`;
 const problems = [];
 const fail = (m) => { problems.push(m); console.error("FAIL " + m); };
 const check = (ok, m) => { if (!ok) fail(m); };
-const browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {});
+const browser = await launch();
 mkdirSync(SHOTS, { recursive: true });
 
 const PHONES = {

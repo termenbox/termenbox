@@ -120,35 +120,77 @@ jobs:
 
       - run: pnpm --filter termenbox-client run e2e:build
 
-      - name: Run the browser end-to-end test
+      - name: Browser end-to-end scripts and resource gates (e2e/suite.mjs lists them)
         working-directory: packages/client
         env:
           TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
-        run: node e2e/run.mjs
+          E2E_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
+        run: node e2e/suite.mjs server
 
-      - name: Touch gestures and session cards in the browser
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-failure-chromium-server
+          path: ${{ runner.temp }}/e2e-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # R36: the built client against scripted servers, no server binary, on every engine we support. Desktop runs at two
+  # sizes and pixel ratios; the phone scripts run on WebKit (Chromium's run in the job above). A failure leaves a
+  # screenshot and a Playwright trace named after the engine; the engine and version are in the job summary.
+  browsers:
+    name: Browser matrix (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { suite: desktop, engine: chromium, size: 1024x768, dpr: 1, label: 'desktop chromium 1024x768 @1x' }
+          - { suite: desktop, engine: chromium, size: 1440x900, dpr: 2, label: 'desktop chromium 1440x900 @2x' }
+          - { suite: desktop, engine: firefox, size: 1024x768, dpr: 1, label: 'desktop firefox 1024x768 @1x' }
+          - { suite: desktop, engine: firefox, size: 1440x900, dpr: 2, label: 'desktop firefox 1440x900 @2x' }
+          - { suite: desktop, engine: webkit, size: 1024x768, dpr: 1, label: 'desktop webkit 1024x768 @1x' }
+          - { suite: desktop, engine: webkit, size: 1440x900, dpr: 2, label: 'desktop webkit 1440x900 @2x' }
+          - { suite: phone, engine: webkit, size: 390x844, dpr: 3, label: 'phone webkit @3x' }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm --filter termenbox-client run e2e:build
+
+      # Chromium is the runner's Chrome; Firefox and WebKit are Playwright's own builds.
+      - name: Install the browser
+        if: matrix.engine != 'chromium'
+        working-directory: packages/client
+        run: pnpm exec playwright-core install --with-deps ${{ matrix.engine }}
+
+      - name: Run the ${{ matrix.suite }} scripts
         working-directory: packages/client
         env:
-          TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
-        run: |
-          node e2e/touch.mjs
-          node e2e/cards.mjs
-          node e2e/decision.mjs
-          node e2e/activity.mjs
-          node e2e/windows.mjs
-          node e2e/two-servers.mjs
-          node e2e/appshell.mjs
-          node e2e/desktop.mjs
-          node e2e/app.mjs
-          node e2e/pane.mjs
-          node e2e/acp.mjs
-          node e2e/hookoffer.mjs
-          node e2e/push-link.mjs
-          node e2e/add-server.mjs
-          node e2e/pair.mjs
-          node e2e/failures.mjs
-          node e2e/wizard.mjs
-          node e2e/search.mjs
+          E2E_ENGINE: ${{ matrix.engine }}
+          E2E_VIEWPORT: ${{ matrix.size }}
+          E2E_DPR: ${{ matrix.dpr }}
+          E2E_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
+        run: node e2e/suite.mjs ${{ matrix.suite }}
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-failure-${{ matrix.suite }}-${{ matrix.engine }}-${{ matrix.size }}-${{ matrix.dpr }}x
+          path: ${{ runner.temp }}/e2e-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
+
   # The native host mode (decision 0075) ships one static musl binary per architecture: no glibc, no OpenSSL,
   # nothing to install. Build both on the native runners and fail if anything is linked dynamically.
   static:

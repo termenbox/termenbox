@@ -2,7 +2,7 @@
 // from docs/plans/assets/ux/DESIGN-PRINCIPLES.md that apply to components (DR1 target size, DR2 spacing, DR5 type scale,
 // DR8 contrast, DR15 overflow, DR9 state words), and a screenshot per skin and mode.
 // Usage: node e2e/gallery.mjs   (needs `pnpm e2e:build`; SHOTS=dir for screenshots, CHROME_PATH for the browser)
-import { chromium } from 'playwright-core';
+import { launch } from './browser.mjs';
 import { createServer } from 'node:http';
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, extname, resolve } from 'node:path';
@@ -56,7 +56,7 @@ function probe() {
     stateWords: ['Needs you', 'Working', 'Failed', 'Finished', 'Idle'].filter((w) => !document.body.textContent.includes(w)) };
 }
 
-const browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {});
+const browser = await launch();
 const page = await browser.newPage({ viewport: { width: 390, height: 1800 }, deviceScaleFactor: 2, hasTouch: true });
 const consoleErrors = [];
 page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });

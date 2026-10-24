@@ -4,7 +4,7 @@
 // being true. It builds nothing for production: the "snapshot" is `capture-pane` run through `termenbox-server tmux`.
 // Usage: node e2e/search.mjs   (needs a built server, `pnpm run build` and `pnpm run e2e:build`, tmux, and Chrome)
 //   SEARCH_RESULTS=path   also writes the measurements as JSON
-import { chromium } from 'playwright-core';
+import { launch } from './browser.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, statSync } from 'node:fs';
@@ -74,10 +74,7 @@ try {
   const info = await (await fetch(`http://127.0.0.1:${httpPort}/rtc-info`)).json();
   const record = { ip: info.ip, udp_port: info.port, fingerprint: info.fingerprint };
   const serverId = serverIdOf(join(home, 'config'));
-  browser = await chromium.launch({
-    ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
-    args: ['--no-sandbox', '--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection'],
-  });
+  browser = await launch(['--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection']);
 
   // The harness page types into the session, as an agent's shell would receive it.
   const hp = await (await browser.newContext()).newPage();

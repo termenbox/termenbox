@@ -2,7 +2,7 @@
 // not reachable: no server binary is needed. Checks that the four destinations, the Servers page (part of Settings), the
 // palette and the address bar work in the whole app, at a phone and a desktop width, without a page error.
 // Usage: node e2e/app.mjs (after: pnpm run e2e:build)
-import { chromium } from 'playwright-core';
+import { launch, contextOptions } from './browser.mjs';
 import { createServer } from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
@@ -16,7 +16,7 @@ const srv = createServer((req, res) => {
 });
 await new Promise((r) => srv.listen(0, '127.0.0.1', r));
 const origin = `http://127.0.0.1:${srv.address().port}/`;
-const browser = await chromium.launch({ ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }), args: ['--no-sandbox'] });
+const browser = await launch();
 let failed = false;
 const fail = (m) => { failed = true; console.error(`FAIL: ${m}`); };
 const check = (c, m) => { if (!c) fail(m); };
@@ -24,10 +24,10 @@ const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64').replace(/\+
 const cert = `${b64({ exp: Math.floor(Date.now() / 1000) + 86400, sub: 1 })}.sig`;
 
 for (const [name, opts] of [['phone 360', { viewport: { width: 360, height: 740 }, isMobile: true, hasTouch: true }], ['phone 390', { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }], ['desktop 1280', { viewport: { width: 1280, height: 800 }, isMobile: false, hasTouch: false }]]) {
- const ctx = await browser.newContext(opts);
+ const ctx = await browser.newContext(contextOptions(opts));
  await ctx.addInitScript(([c]) => {
    localStorage.setItem('termenbox_auth', JSON.stringify({ cert: c, login: 'tester' }));
-   localStorage.setItem('termenbox_servers', JSON.stringify([{ server_id: 'one', server_name: 'one', server_url: 'ws://127.0.0.1:9/ws', registered_at: 0 }]));
+   localStorage.setItem('termenbox_servers', JSON.stringify([{ server_id: 'one', server_name: 'one', server_url: 'ws://127.0.0.1:59999/ws', registered_at: 0 }])); // an unused port: WebKit throws at once for the blocked low ports (9), Chromium fails later
    localStorage.setItem('termenbox_ios_hint', '1');
  }, [cert]);
  const page = await ctx.newPage();

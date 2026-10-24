@@ -8,3 +8,4 @@ prioritise-the-roadmap-by-wsjf,"Order the roadmap by WSJF and dependencies","roa
 add-an-agent-profile,"Add a T2 screen profile for an agent","agents, client, procedural",active
 probe-an-agent-over-acp,"Measure what an agent sends and accepts over ACP","agents, protocol, procedural",active
 walk-the-add-server-paths,"Walk every Add Server path on real devices before a release","client, mobile, ios, lan, procedural",active
+browser-support-check,"Tell engine automation from real-browser and real-iPhone checks","client, browser-support, compatibility, procedural",active

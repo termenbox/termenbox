@@ -4,7 +4,7 @@
 //   TERMENBOX_BIN   server binary          (default ../../target/release/termenbox-server)
 //   CHROME_PATH    Chrome/Chromium binary (default: Playwright's "chrome" channel)
 // Not covered here (checked in e2e/navigation.mjs with injected states): the tab label frozen while a finger is down.
-import { chromium } from 'playwright-core';
+import { launch } from './browser.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
@@ -120,10 +120,7 @@ const appPort = await listen(appServer);
 let browser;
 try {
   const [a, b] = [await startServer('alpha'), await startServer('beta')];
-  browser = await chromium.launch({
-    ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
-    args: ['--no-sandbox', '--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection'],
-  });
+  browser = await launch(['--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection']);
 
   // The first connection to each server carries its claim secret and creates the sessions, with a real agent window.
   const createSessions = async (server, names) => {

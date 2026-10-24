@@ -5,7 +5,7 @@
 // place when switching sessions, streaming that does not move the reader, the keyboard guardrail, and a 360 px phone.
 // Desktop Chromium with mobile emulation: this is NOT an iPhone or an Android check (guardrail a-phone-check-names-its-platform).
 // Usage: node e2e/acp.mjs   (needs a built server, `pnpm run build` and `pnpm run e2e:build`, node, tmux, and Chrome)
-import { chromium } from 'playwright-core';
+import { launch } from './browser.mjs';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, statSync } from 'node:fs';
@@ -81,10 +81,7 @@ try {
   const info = await (await fetch(`http://127.0.0.1:${httpPort}/rtc-info`)).json();
   const record = { ip: info.ip, udp_port: info.port, fingerprint: info.fingerprint };
   const serverId = serverIdOf(configDir);
-  browser = await chromium.launch({
-    ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
-    args: ['--no-sandbox', '--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection'],
-  });
+  browser = await launch(['--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection']);
 
   // The harness page is a second device of the owner: it makes the sessions and sends prompts the phone then shows.
   const hp = await (await browser.newContext()).newPage();

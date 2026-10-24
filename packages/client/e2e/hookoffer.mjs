@@ -3,7 +3,7 @@
 // and removing it, and the session reaching T1 once the hook entry that was written is run. A stand-in `claude` (a copy of
 // `sleep` under that name) is what the server's process scan detects; the settings file lives in a private HOME.
 // Usage: node e2e/hookoffer.mjs   (needs a built server, `pnpm run build` and `pnpm run e2e:build`, and Chrome)
-import { chromium } from 'playwright-core';
+import { launch } from './browser.mjs';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, existsSync, rmSync, mkdirSync, copyFileSync, statSync, writeFileSync } from 'node:fs';
@@ -89,10 +89,7 @@ try {
   const info = await (await fetch(`http://127.0.0.1:${httpPort}/rtc-info`)).json();
   const record = { ip: info.ip, udp_port: info.port, fingerprint: info.fingerprint };
   const serverId = serverIdOf(configDir);
-  browser = await chromium.launch({
-    ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
-    args: ['--no-sandbox', '--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection'],
-  });
+  browser = await launch(['--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection']);
 
   // The harness page plays the agent's shell: window 0 is a shell, window 1 runs the stand-in `claude`.
   const hp = await (await browser.newContext()).newPage();

@@ -3,7 +3,7 @@
 // reachability check ends in "can reach it" when the UDP port answers and in "could not reach it" when it does not
 // (decision 0118). The server signs its own record; the directory lives in this script.
 // Usage: node e2e/add-server.mjs   (needs a built server, `pnpm run build`, and Chrome)
-import { chromium } from 'playwright-core';
+import { launch } from './browser.mjs';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
@@ -78,10 +78,7 @@ async function startServer(label) {
 }
 
 async function run(label, srv, extraArgs, freeze, expected) {
-  const browser = await chromium.launch({
-    ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
-    args: ['--no-sandbox', ...extraArgs],
-  });
+  const browser = await launch([...extraArgs]);
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const page = await ctx.newPage();
   const errors = [];

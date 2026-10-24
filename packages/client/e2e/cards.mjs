@@ -1,7 +1,7 @@
 // The session list on a fake event stream, in real Chrome at phone width: every state has a word, answers carry the
 // prompt they were read from, quick replies go to the chosen session, and the order holds still under a finger.
 // Usage: node e2e/cards.mjs   (needs the e2e harness built: vite build -c e2e/vite.config.ts)
-import { chromium } from 'playwright-core';
+import { launch, contextOptions, tap } from './browser.mjs';
 import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, extname } from 'node:path';
@@ -15,12 +15,9 @@ const srv = createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': mime[extname(f)] ?? 'application/octet-stream' }).end(readFileSync(f));
 });
 await new Promise((r) => srv.listen(0, '127.0.0.1', r));
-const browser = await chromium.launch({
-  ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
-  args: ['--no-sandbox'],
-});
+const browser = await launch();
 try {
-  const ctx = await browser.newContext({ viewport: { width: 390, height: 900 }, isMobile: true, hasTouch: true });
+  const ctx = await browser.newContext(contextOptions({ viewport: { width: 390, height: 900 }, isMobile: true, hasTouch: true }));
   await ctx.addInitScript(() => {
     const vv = Object.assign(new EventTarget(), { height: innerHeight, width: innerWidth, offsetTop: 0, offsetLeft: 0, scale: 1 });
     Object.defineProperty(window, 'visualViewport', { value: vv });
@@ -276,13 +273,13 @@ try {
   // One tap on the primary option answers the prompt it was read from.
   await home.evaluate(() => { window.__home.answers.length = 0; });
   const primary = home.getByRole('region', { name: 'Decision' }).locator('[data-hero-options] button').first();
-  await primary.tap();
+  await tap(primary);
   const answers = await home.evaluate(() => window.__home.answers);
   if (JSON.stringify(answers) !== JSON.stringify([{ type: 'answer', session: 'alpha/s4', prompt_id: 'p4', seq: 11, choice: 0 }])) fail(`hero answer: ${JSON.stringify(answers)}`);
   console.log('ok  Home: the hero is answered with one tap, carrying its prompt id and event number');
 
   // A state tile filters.
-  await home.locator('[data-home-tiles] button', { hasText: 'Failed' }).tap();
+  await tap(home.locator('[data-home-tiles] button', { hasText: 'Failed' }));
   await home.locator('[data-home-filter]').waitFor();
   if ((await home.locator('[data-home-filter] > button').count()) !== 2) fail('the Failed tile did not filter to its 2 sessions');
   console.log('ok  Home: a state tile filters the list');

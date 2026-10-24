@@ -2,7 +2,7 @@
 // real termenbox-server and tmux. A Claude Code hook is simulated by running the server's own `--hook claude` command
 // inside the session, with a transcript made from the recorded fixture under a private Claude config directory.
 // Usage: node e2e/pane.mjs   (needs a built server, `pnpm run build` and `pnpm run e2e:build`, and Chrome)
-import { chromium } from 'playwright-core';
+import { launch } from './browser.mjs';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, existsSync, rmSync, mkdirSync, copyFileSync, statSync } from 'node:fs';
@@ -75,10 +75,7 @@ try {
   const info = await (await fetch(`http://127.0.0.1:${httpPort}/rtc-info`)).json();
   const record = { ip: info.ip, udp_port: info.port, fingerprint: info.fingerprint };
   const serverId = serverIdOf(join(home, 'config'));
-  browser = await chromium.launch({
-    ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
-    args: ['--no-sandbox', '--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection'],
-  });
+  browser = await launch(['--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection']);
 
   // The harness page owns the server and types into the session (it plays the agent's shell).
   const hp = await (await browser.newContext()).newPage();

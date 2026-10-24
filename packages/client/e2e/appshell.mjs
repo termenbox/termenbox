@@ -2,6 +2,7 @@
 // by the bottom bar, the bar hidden under the soft keyboard in a session, the palette, the strip by keyboard, nothing moving
 // under a touch, swipe-back. Usage: node e2e/appshell.mjs (after: pnpm run e2e:build)
 import { start } from './frame-lib.mjs';
+import { ENGINE } from './browser.mjs';
 
 const t = await start({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
 const { page } = t;
@@ -57,33 +58,38 @@ await t.escapeRestoresFocus();
 await t.inSessionTabSwitch();
 await t.stripKeyboard();
 
-// 6. Nothing moves under a touch: a finger is down on a session card, a status update arrives, no control moves.
-await t.api('sheet', 'half');
-const sheet = page.locator('.session-sheet[data-height=half]');
-await sheet.waitFor();
-await t.api('setState', 'alpha', 'svc-9', 'idle'); // a known baseline
-await page.waitForTimeout(2300);
-const cards = '.session-sheet .content button';
-const before = await t.rects(cards);
-const first = await page.locator(cards).first().boundingBox();
-const cdp = await page.context().newCDPSession(page);
-await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: Math.round(first.x + first.width / 2), y: Math.round(first.y + first.height / 2), id: 1 }] });
-await t.api('setState', 'alpha', 'svc-9', 'needs_input'); // would sort to the top of its group
-await page.waitForTimeout(500);
-const during = await t.rects(cards);
-t.check(before.length > 5 && JSON.stringify(before) === JSON.stringify(during), 'a control moved while a touch was down and a status update arrived');
-await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-t.ok('no control moves when a status update arrives while a touch is down (session cards)');
+// Steps 6 and 7 send raw touch events through CDP, which only Chromium has.
+if (ENGINE === 'chromium') {
+  // 6. Nothing moves under a touch: a finger is down on a session card, a status update arrives, no control moves.
+  await t.api('sheet', 'half');
+  const sheet = page.locator('.session-sheet[data-height=half]');
+  await sheet.waitFor();
+  await t.api('setState', 'alpha', 'svc-9', 'idle'); // a known baseline
+  await page.waitForTimeout(2300);
+  const cards = '.session-sheet .content button';
+  const before = await t.rects(cards);
+  const first = await page.locator(cards).first().boundingBox();
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: Math.round(first.x + first.width / 2), y: Math.round(first.y + first.height / 2), id: 1 }] });
+  await t.api('setState', 'alpha', 'svc-9', 'needs_input'); // would sort to the top of its group
+  await page.waitForTimeout(500);
+  const during = await t.rects(cards);
+  t.check(before.length > 5 && JSON.stringify(before) === JSON.stringify(during), 'a control moved while a touch was down and a status update arrived');
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  t.ok('no control moves when a status update arrives while a touch is down (session cards)');
 
-// 7. Swipe-back from the left edge in a session opens the session list (emulated touch events, not a device).
-await t.api('sheet', 'closed');
-await page.locator('[role=tab][data-key="alpha/svc-5"]').click();
-await page.locator('[data-shell=edge]').waitFor({ state: 'attached' });
-await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 4, y: 400, id: 2 }] });
-await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 90, y: 404, id: 2 }] });
-await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-await page.locator('.session-sheet[data-height=half]').waitFor({ timeout: 3000 }).catch(() => {});
-t.check((await page.locator('.session-sheet[data-height=half]').count()) === 1, 'a swipe from the left edge did not open the session list');
-t.ok('a swipe from the left edge of a session opens the session list');
+  // 7. Swipe-back from the left edge in a session opens the session list (emulated touch events, not a device).
+  await t.api('sheet', 'closed');
+  await page.locator('[role=tab][data-key="alpha/svc-5"]').click();
+  await page.locator('[data-shell=edge]').waitFor({ state: 'attached' });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 4, y: 400, id: 2 }] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 90, y: 404, id: 2 }] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await page.locator('.session-sheet[data-height=half]').waitFor({ timeout: 3000 }).catch(() => {});
+  t.check((await page.locator('.session-sheet[data-height=half]').count()) === 1, 'a swipe from the left edge did not open the session list');
+  t.ok('a swipe from the left edge of a session opens the session list');
+} else {
+  t.ok(`skipped on ${ENGINE}: the held touch and the edge swipe need CDP touch events; Chromium covers them`);
+}
 
 await t.finish();

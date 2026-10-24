@@ -3,7 +3,7 @@
 // the LAN candidate, and a corrupted link that never previews. The stand-in web server counts every directory request,
 // from the page and from the server: LAN-only must make none.
 // Usage: node e2e/pair.mjs   (needs a built server, `pnpm run e2e:build`, and Chrome)
-import { chromium } from 'playwright-core';
+import { launch } from './browser.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -81,10 +81,7 @@ function y4mOf(text, file) {
 const ownedPairing = () => /(http:\/\/127\.0\.0\.1:\d+\/#\/pair\/\S+)/.exec(spawnSync(BIN, ['--print-pairing'], { env, encoding: 'utf8' }).stdout)?.[1];
 
 const camera = join(root, 'qr.y4m');
-const browser = await chromium.launch({
-  ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
-  args: ['--no-sandbox', '--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-video-capture=${camera}`],
-});
+const browser = await launch(['--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-video-capture=${camera}`]);
 // The fake camera is read when the browser starts, so the QR file must exist now: the link of a server that is not yet owned has
 // the same shape as the one printed after it is, and the second scan below is of the owned link.
 y4mOf(link, camera);
