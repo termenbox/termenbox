@@ -7,6 +7,7 @@
     "jsx": "preserve",
     "strict": true,
     "noEmit": true,
+    "skipLibCheck": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "esModuleInterop": true,

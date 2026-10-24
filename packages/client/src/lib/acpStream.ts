@@ -13,7 +13,8 @@ export interface Option { id: string; kind: string; name: string }
 export type Entry =
   | { id: number; rev: number; kind: 'user'; text: string }
   /** `truncated`: the reply was longer than the server keeps and the rest is not shown. */
-  | { id: number; rev: number; kind: 'message' | 'thought'; text: string; truncated: boolean }
+  | { id: number; rev: number; kind: 'message'; text: string; truncated: boolean }
+  | { id: number; rev: number; kind: 'thought'; text: string; truncated: boolean }
   | { id: number; rev: number; kind: 'tool'; toolId: string; title: string; toolKind: string; status: string; diffs: Diff[]; locations: AcpLocation[] }
   | { id: number; rev: number; kind: 'plan'; items: { text: string; status: string }[] }
   | { id: number; rev: number; kind: 'permission'; promptId: string; toolId: string; title: string; toolKind: string; options: Option[]; diffs: Diff[]; plan?: string; state: 'open' | 'answered' | 'cancelled'; chosen?: string }

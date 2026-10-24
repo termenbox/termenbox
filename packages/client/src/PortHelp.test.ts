@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { render } from 'svelte/server';
 import PortHelp from './PortHelp.svelte';
 
-const html = (port: number | null) => render(PortHelp as never, { props: { port } }).body;
+const html = (port: number | null) => (render as unknown as (c: unknown, o: { props: { port: number | null } }) => { body: string })(PortHelp, { props: { port } }).body;
 
 describe('the help for a blocked port', () => {
   it('names the server\'s own port in both firewall commands and the cloud firewall', () => {

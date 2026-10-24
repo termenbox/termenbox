@@ -52,7 +52,7 @@ describe('typed reply', () => {
 
 describe('the decision panel', () => {
   const props = (over = {}) => ({ decision: decisionFor(sess, waiting(), 20), now: 65_000, onpick: () => {}, onreply: () => {}, ...over });
-  const html = (p: Record<string, unknown>) => render(DecisionPanel, { props: p }).body;
+  const html = (p: Record<string, unknown>) => (render as unknown as (c: unknown, o: { props: Record<string, unknown> }) => { body: string })(DecisionPanel, { props: p }).body;
   it('shows the question, task, wait, tier label, hook step, options and a reply field', () => {
     const out = html(props());
     for (const t of ['Allow the edit?', 'Fix login', 'Waiting 1 min', 'Structured', 'The agent is about to use Edit', 'src/auth.ts +12 -3', 'Yes, always', 'aria-label="Write a reply"']) expect(out).toContain(t);

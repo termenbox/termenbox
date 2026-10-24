@@ -16,7 +16,7 @@ import { applyView, emptyStream, entryFrom, type Entry, type StreamState } from 
 import { parseBlocks } from './lib/markdown';
 import type { AcpEntryWire, AcpViewMessage } from './lib/protocol';
 
-const html = (c: unknown, props: Record<string, unknown>) => render(c as never, { props }).body;
+const html = (c: unknown, props: Record<string, unknown>) => (render as unknown as (c: unknown, o: { props: Record<string, unknown> }) => { body: string })(c, { props }).body;
 const wire = (e: Record<string, unknown>) => entryFrom(e as AcpEntryWire) as Entry;
 const base = { opened: new Set<string>(), ontoggle: () => {}, onanswer: () => {}, sessionKey: 'srv/acp:work', name: 'work', agent: 'claude', now: 0 };
 

@@ -81,6 +81,9 @@ jobs:
       - name: Check the landing site (metadata, structured data, assets, the install command)
         run: node scripts/check-site.mjs
 
+      - name: Typecheck the client (svelte-check)
+        run: pnpm --filter termenbox-client run check
+
       - run: pnpm --filter termenbox-client run build
 
       - run: pnpm --filter termenbox-client run test

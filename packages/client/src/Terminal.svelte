@@ -663,8 +663,8 @@
       on:pointercancel={onPointerUp}
     ></div>
     {#if sel && !sel.dragging}
-      {@const a = (sel, touch.handlePosition('a'))}
-      {@const b = (sel, touch.handlePosition('b'))}
+      {@const a = (void sel, touch.handlePosition('a'))}
+      {@const b = (void sel, touch.handlePosition('b'))}
       <div class="selbar">
         <button type="button" on:mousedown|preventDefault on:click={copySelection}>Copy</button>
         <button type="button" class="secondary" on:mousedown|preventDefault on:click={() => touch.clear()}>Done</button>

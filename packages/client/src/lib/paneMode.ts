@@ -12,7 +12,7 @@ export function loadPaneModes(storage = store()): Record<string, PaneMode> {
   try {
     const raw = JSON.parse(storage?.getItem(PANE_KEY) ?? '{}');
     if (!raw || typeof raw !== 'object') return {};
-    return Object.fromEntries(Object.entries(raw).filter(([, v]) => v === 'decision'));
+    return Object.fromEntries(Object.entries(raw).filter(([, v]) => v === 'decision')) as Record<string, PaneMode>;
   } catch { return {}; }
 }
 
