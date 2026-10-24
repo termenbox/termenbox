@@ -787,13 +787,15 @@ impl SessionManager {
                 // A scan of the file: off the async threads.
                 let answer =
                     tokio::task::spawn_blocking(move || history.query(lo, to, now)).await?;
+                // One message must fit what the direct transport carries; the newest runs that do are sent.
+                let (runs, cut) = crate::history::fit(answer.runs, crate::history::REPLY_BYTES);
                 send_r(
                     tx,
                     &ServerMessage::History {
                         from,
                         to,
-                        runs: answer.runs,
-                        truncated: answer.truncated,
+                        runs,
+                        truncated: answer.truncated || cut,
                         keep_days: limits.keep_days,
                         max_bytes: limits.max_bytes,
                     },
