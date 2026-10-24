@@ -712,6 +712,13 @@
     sheetHeight = 'closed';
   }
 
+  /** A repeat tap on Sessions in the bottom bar, while in a session, brings the list back: the sheet on a phone, the sidebar when wide. */
+  function sessionsAgain() {
+    if (serversPage || servers.length === 0) return;
+    if (wide) toggleSidebar();
+    else sheetHeight = sheetHeight === 'closed' ? 'half' : 'closed';
+  }
+
   function go(dest: Destination) {
     if (dest !== 'settings') serversPage = false;
     navigate(dest);
@@ -936,7 +943,7 @@
       </div>
     </div>
   {:else}
-    <AppFrame current={$destination} onnavigate={go} servers={$hubServers} sessions={$allSessions} agents={$allAgents} {activeKey} chrome={servers.length > 0} inSession={!!activeKey && !away} {keyboardOpen}
+    <AppFrame current={$destination} onnavigate={go} onrepeat={sessionsAgain} servers={$hubServers} sessions={$allSessions} agents={$allAgents} {activeKey} chrome={servers.length > 0} inSession={!!activeKey && !away} {keyboardOpen}
       canCreate={sessionDestinations($hubServers, selected).length > 0} bind:wide bind:helpOpen onopen={attach} onserver={openServer} onrename={renameSession} onclosesession={askCloseSession} onaction={runAction} onshortcut={handleShortcut}
       onback={() => { showWorkspace(); sheetHeight = 'half'; }}>
     {#if $destination === 'sessions' || servers.length === 0}
