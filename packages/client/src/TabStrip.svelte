@@ -94,7 +94,7 @@
   <div class="strip" bind:this={strip} role="tablist" aria-label="Sessions across servers" on:scroll={() => { frozen.scrolled(Date.now()); cancelPress(); edges(); }}>
     {#each shown as session (session.key)}
       {@const agent = agents[session.key]}
-      {@const chip = agent ? chipFor(agent, now) : { icon: '·', label: 'No status' }}
+      {@const chip = agent ? chipFor(agent, now) : { icon: '·', label: 'No status', tone: 'none' }}
       {@const server = servers.find(s => s.id === session.serverId)}
       {@const rep = representativeWindow(shownWindows[session.key])}
       {@const text = texts[session.key] ?? { label: session.name, hint: session.name }}

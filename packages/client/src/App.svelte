@@ -203,8 +203,8 @@
   const hookOffers = new HookOffers();
   let hookMap: HookMap = {};
   let offerTick = 0;
-  $: hookOffer = (offerTick, now, pendingOffer($hubServers, $allSessions, $allAgents, hookMap, hookOffers));
-  $: hookSettings = (offerTick, hookRows($hubServers, hookMap, hookOffers));
+  $: hookOffer = (void offerTick, void now, pendingOffer($hubServers, $allSessions, $allAgents, hookMap, hookOffers));
+  $: hookSettings = (void offerTick, hookRows($hubServers, hookMap, hookOffers));
   function enableHooks(serverId: string, agent: string) {
     hookOffers.clear(serverId, agent);
     hookMap = markBusy(hookMap, serverId, agent, 'apply');
@@ -656,7 +656,7 @@
   }
 
   function sendSession(m: import('./lib/protocol').ClientMessage) {
-    if ('session' in m) hub.sendToSession(m.session, m);
+    if ('session' in m && m.session) hub.sendToSession(m.session, m);
   }
 
   function removeServer(index: number) {

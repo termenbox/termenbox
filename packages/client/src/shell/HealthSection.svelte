@@ -35,7 +35,7 @@
         <ChartFrame title={nameOf(s)}><p class="text-sm text-soft" role="status">{nameOf(s)} has just started. Its first sample arrives within 10 seconds.</p></ChartFrame>
       {:else}
         {@const metrics = METRICS.map((id) => metricView(answer, id, now))}
-        {@const rtt = (now, rttOf(s.id))}
+        {@const rtt = (void now, rttOf(s.id))}
         {@const secs = answer.confirm * answer.interval_s}
         <ChartFrame title={nameOf(s)} caption={v?.healthy === false ? `${unhealthyText(v.unhealthy)}, held for ${secs} seconds. It counts as healthy again once ${v.unhealthy.length > 1 ? 'they have' : 'it has'} stayed at or below the lower level for ${secs} seconds.` : `Healthy: nothing has stayed at its level for ${secs} seconds.`}>
           {#snippet legend()}<span data-health-verdict={v?.healthy === false ? 'unhealthy' : 'healthy'}><StatusChip state={v?.healthy === false ? 'failed' : 'finished'} label={v?.healthy === false ? 'Unhealthy' : 'Healthy'} /></span>{/snippet}

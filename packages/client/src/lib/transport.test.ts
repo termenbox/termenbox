@@ -61,7 +61,7 @@ describe('openTransport', () => {
 describe('openTransport over a candidate bundle (decision 0123)', () => {
   const FP = 'sha-256 ' + Array(32).fill('AB').join(':');
   const bundle = {
-    server_id: 'A'.repeat(43), seq: 1, expires: 9e9, fingerprint: FP, name: 'box',
+    server_id: 'A'.repeat(43), seq: 1, expires: 9e9, published: true, fingerprint: FP, name: 'box',
     candidates: [{ kind: 'lan' as const, addr: '192.168.1.20', port: 4443 }, { kind: 'wan4' as const, addr: '8.8.8.8', port: 50000 }],
   };
 

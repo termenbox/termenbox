@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-// @ts-expect-error plain ESM shared with vite.config.ts
 import { bakeInstaller, channelKeys } from '../../installer/bake.mjs';
 
 const source = readFileSync(new URL('../../installer/install.sh', import.meta.url), 'utf8');

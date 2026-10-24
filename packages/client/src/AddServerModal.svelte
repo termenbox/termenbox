@@ -245,7 +245,7 @@
     scanning = false;
   }
 
-  async function onFile(e: Event) {
+  async function onFile(e: globalThis.Event) {
     const file = (e.target as HTMLInputElement).files?.[0];
     if (!file) return;
     error = '';

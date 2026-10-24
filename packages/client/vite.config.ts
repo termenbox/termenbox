@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
 import { readFileSync } from 'node:fs';
@@ -18,7 +18,7 @@ const releaseKeys = readFileSync(new URL('../server/release-keys.txt', import.me
 
 // /i is the installer with this client's address baked in as its default (TERMENBOX_CLIENT_ORIGIN; unset keeps the hosted one),
 // and the channel and release keys of this deployment (a build without VITE_CHANNEL is stable, as before).
-const installer = () => ({
+const installer = (): Plugin => ({
   name: 'termenbox-installer',
   generateBundle() {
     const source = readFileSync(new URL('./installer/install.sh', import.meta.url), 'utf8');

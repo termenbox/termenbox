@@ -4,10 +4,10 @@ import NewSessionSheet from './NewSessionSheet.svelte';
 import type { HubServer } from './lib/hub';
 
 const server = (id: string, name: string): HubServer => ({
-  id, state: 'connected', reason: '', version: '0.1.23+dev', backends: ['tmux'], controlMode: true, tmuxVersion: '3.6', prefix: 'C-b',
+  id, state: 'connected', reason: '', version: '0.1.23+dev', backends: ['tmux'], acpAgents: [], controlMode: true, tmuxVersion: '3.6', prefix: 'C-b',
   server: { server_url: '', server_id: id, server_name: name, registered_at: 0, record: { ip: '127.0.0.1', udp_port: 1, fingerprint: '' } } as HubServer['server'],
 });
-const html = (props: Record<string, unknown>) => render(NewSessionSheet, { props: { sessions: [], windows: {}, oncreate: () => {}, onclose: () => {}, ...props } }).body;
+const html = (props: Record<string, unknown>) => (render as unknown as (c: unknown, o: { props: Record<string, unknown> }) => { body: string })(NewSessionSheet, { props: { sessions: [], windows: {}, oncreate: () => {}, onclose: () => {}, ...props } }).body;
 
 describe('the new session sheet', () => {
   const two = [server('a', 'alpha'), server('b', 'beta')];

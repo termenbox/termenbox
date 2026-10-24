@@ -7,7 +7,8 @@
 export type Inline =
   | { t: 'text'; text: string; parts?: Part[] }
   | { t: 'code'; text: string; parts?: Part[] }
-  | { t: 'b' | 'i'; inl: Inline[] }
+  | { t: 'b'; inl: Inline[] }
+  | { t: 'i'; inl: Inline[] }
   | { t: 'link'; text: string; href: string; parts?: Part[] };
 
 /** A run of text with its search hits marked (see `decorate`). */
@@ -16,7 +17,8 @@ export interface Part { text: string; hit: boolean; current: boolean }
 export type Block =
   | { t: 'p'; inl: Inline[] }
   | { t: 'h'; level: number; inl: Inline[] }
-  | { t: 'ul' | 'ol'; items: Block[][]; start?: number }
+  | { t: 'ul'; items: Block[][]; start?: number }
+  | { t: 'ol'; items: Block[][]; start?: number }
   | { t: 'quote'; blocks: Block[] }
   | { t: 'code'; lang: string; text: string; parts?: Part[] }
   | { t: 'hr' };

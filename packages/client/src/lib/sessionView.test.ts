@@ -6,7 +6,7 @@ import { cleanText, viewFrom, merge, answerFor, requestView, TAIL_LINES, LINE_CH
 import type { SessionViewMessage } from './protocol';
 
 const msg = (over: Partial<SessionViewMessage> = {}): SessionViewMessage => ({ type: 'session_view', session: 's', tier: 't3', tail: ['$ make', 'done'], hash: 'h1', ...over });
-const html = (props: Record<string, unknown>) => render(SessionView, { props }).body;
+const html = (props: Record<string, unknown>) => (render as unknown as (c: unknown, o: { props: Record<string, unknown> }) => { body: string })(SessionView, { props }).body;
 
 describe('untrusted terminal text', () => {
   it('drops escape sequences, controls, bidi and zero-width characters', () => {

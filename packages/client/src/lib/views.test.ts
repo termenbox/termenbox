@@ -62,7 +62,7 @@ describe('session view presets', () => {
   });
   it('a server group header carries that server’s state and reason for Retry', () => {
     const groups = applyView(sessions, agents, presetView('server'), 10000);
-    const status = { id: 'b', server: { server_id: 'b', server_name: 'Host b', server_url: '', registered_at: 0 }, state: 'unreachable' as const, reason: 'No route', version: '', backends: [] };
+    const status = { id: 'b', server: { server_id: 'b', server_name: 'Host b', server_url: '', registered_at: 0 }, state: 'unreachable' as const, reason: 'No route', version: '', backends: [], acpAgents: [], controlMode: false, tmuxVersion: '', prefix: '' };
     expect(withServerStatus(groups, [status])[0].server).toEqual(status);
     expect(withServerStatus(groups, [status])[1].server).toBeUndefined();
   });
