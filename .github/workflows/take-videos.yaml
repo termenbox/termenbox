@@ -1,0 +1,170 @@
+name: Take E2E Videos
+
+on:
+  workflow_dispatch:
+    # Allow manual trigger from the Actions UI
+    inputs:
+      mode:
+        description: 'Run mode: "suite" for functional tests, "video-*" for video capture scenarios'
+        required: false
+        default: 'suite'
+      suite:
+        description: 'Test suite to run (server/desktop/phone/phone-real/realserver)'
+        required: false
+        default: 'server'
+      engine:
+        description: 'Browser engine (chromium/firefox/webkit)'
+        required: false
+        default: 'chromium'
+      viewport:
+        description: 'Viewport size (WxH, e.g. 390x800)'
+        required: false
+        default: '390x800'
+
+jobs:
+  record-videos:
+    name: Record E2E Videos
+    runs-on: ubuntu-latest
+    env:
+      E2E_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
+      E2E_ENGINE: ${{ github.event.inputs.engine || 'chromium' }}
+      E2E_VIEWPORT: ${{ github.event.inputs.viewport || '390x800' }}
+      E2E_DPR: '1'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install tmux (end-to-end tests drive real sessions)
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Download server binary artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: termenbox-server
+          path: bin
+
+      - run: chmod +x bin/termenbox-server
+
+      - run: pnpm --filter termenbox-client run e2e:build
+
+      # Install the selected browser engine if needed
+      - name: Install browser
+        if: ${{ env.E2E_ENGINE != 'chromium' }}
+        working-directory: packages/client
+        run: pnpm exec playwright-core install --with-deps ${{ env.E2E_ENGINE }}
+
+      - name: Run video capture or e2e suite
+        working-directory: packages/client
+        env:
+          TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
+          E2E_ENGINE: ${{ env.E2E_ENGINE }}
+          E2E_VIEWPORT: ${{ env.E2E_VIEWPORT }}
+          E2E_DPR: ${{ env.E2E_DPR }}
+          E2E_ARTIFACTS: ${{ env.E2E_ARTIFACTS }}
+          # Mode: "suite" runs the existing functional test suite
+          # Mode: "video-*" runs dedicated video capture scenarios
+          RUN_MODE: ${{ github.event.inputs.mode }}
+        run: |
+          if [ "${{ github.event.inputs.mode }}" = "suite" ]; then
+            # Original functional test suite behavior
+            node e2e/suite.mjs "${{ github.event.inputs.suite }}"
+          else
+            # Video capture mode - run the specified video scenario
+            SCENARIO="${{ github.event.inputs.mode }}"
+            echo "▶ Running video capture scenario: $SCENARIO"
+            echo "   Artifacts will be captured in E2E_ARTIFACTS for user documentation"
+            # Run the video scenario script
+            node "e2e/${SCENARIO}.mjs"
+          fi
+
+      - name: Archive trace artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-${{ github.event.inputs.mode }}-${{ env.E2E_ENGINE }}-${{ env.E2E_VIEWPORT }}
+          path: ${{ env.E2E_ARTIFACTS }}
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Publish scenario summary
+        if: always()
+        run: |
+          echo "## E2E Video Capture Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "*Mode: *${{ github.event.inputs.mode }}" >> $GITHUB_STEP_SUMMARY
+          echo "*Engine: *${{ env.E2E_ENGINE}}" >> $GITHUB_STEP_SUMMARY
+          echo "*Viewport: *${{ env.E2E_VIEWPORT }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -d "${{ env.E2E_ARTIFACTS }}" ]; then
+            artifact_count=$(find ${{ env.E2E_ARTIFACTS }} -name '*.zip' -o -name '*.png' 2>/dev/null | wc -l)
+            echo "**Artifacts captured: $artifact_count** file(s)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            # List what was captured based on the mode
+            case "${{ github.event.inputs.mode }}" in
+              suite)
+                echo "**Functional test suite ran:**" >> $GITHUB_STEP_SUMMARY
+                echo "- All scripts in the selected suite executed" >> $GITHUB_STEP_SUMMARY
+                echo "- Trace artifacts contain functional test execution data" >> $GITHUB_STEP_SUMMARY
+                echo "- Passing/failing status per script" >> $GITHUB_STEP_SUMMARY
+                ;;
+              video-connect)
+                echo "**Video capture scenario: Connect & Claim** ran:**" >> $GITHUB_STEP_SUMMARY
+                echo "- Server connection & GitHub claim over WebRTC" >> $GITHUB_STEP_SUMMARY
+                echo "- Session creation and first command execution" >> $GITHUB_STEP_SUMMARY
+                echo "- Transport drop and reconnection with screen replay" >> $GITHUB_STEP_SUMMARY
+                echo "- Full onboarding flow for user documentation" >> $GITHUB_STEP_SUMMARY
+                ;;
+              video-type)
+                echo "**Video capture scenario: Type Command & Output** ran:**" >> $GITHUB_STEP_SUMMARY
+                echo "- Typing a command into the terminal" >> $GITHUB_STEP_SUMMARY
+                echo "- Command execution and output display" >> $GITHUB_STEP_SUMMARY
+                echo "- Command recall and history functionality" >> $GITHUB_STEP_SUMMARY
+                ;;
+              video-reconnect)
+                echo "**Video capture scenario: Transport Drop & Reconnect** ran:**" >> $GITHUB_STEP_SUMMARY
+                echo "- Transport drop simulation" >> $GITHUB_STEP_SUMMARY
+                echo "- Client reconnection over WebRTC" >> $GITHUB_STEP_SUMMARY
+                echo "- Screen replay (earlier content preserved)" >> $GITHUB_STEP_SUMMARY
+                echo "- Session resilience demonstration" >> $GITHUB_STEP_SUMMARY
+                ;;
+              video-mobile)
+                echo "**Video capture scenario: Mobile Touch Keyboard** ran:**" >> $GITHUB_STEP_SUMMARY
+                echo "- Touch keyboard interaction on iPhone-sized viewport" >> $GITHUB_STEP_SUMMARY
+                echo "- Keyboard shows/hides naturally" >> $GITHUB_STEP_SUMMARY
+                echo "- Viewport shrinks/panS when keyboard appears" >> $GITHUB_STEP_SUMMARY
+                echo "- Tap-to-focus and keyboard dismissal" >> $GITHUB_STEP_SUMMARY
+                ;;
+              video-switch)
+                echo "**Video capture scenario: Switch Servers & List** ran:**" >> $GITHUB_STEP_SUMMARY
+                echo "- Add new server from server list" >> $GITHUB_STEP_SUMMARY
+                echo "- Switch between multiple servers" >> $GITHUB_STEP_SUMMARY
+                echo "- Return to server list overview" >> $GITHUB_STEP_SUMMARY
+                echo "- Server management workflow" >> $GITHUB_STEP_SUMMARY
+                ;;
+              *)
+                echo "Video scenario: $SCENARIO (custom mode)" >> $GITHUB_STEP_SUMMARY
+                ;;
+            esac
+          else
+            echo "**No artifacts directory found**" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "*How to use these videos for documentation:*" >> $GITHUB_STEP_SUMMARY
+          echo "- Download the artifact bundle from this workflow run" >> $GITHUB_STEP_SUMMARY
+          echo "- Extract .zip files to view screencast images" >> $GITHUB_STEP_SUMMARY
+          echo "- Review sequentially to understand each user flow" >> $GITHUB_STEP_SUMMARY
+          echo "- Use Playwright Trace Viewer (playwright.dev/traces) for interactive playback" >> $GITHUB_STEP_SUMMARY
+          echo "- Screenshots can be extracted and included in user guides, README, or tutorials" >> $GITHUB_STEP_SUMMARY
