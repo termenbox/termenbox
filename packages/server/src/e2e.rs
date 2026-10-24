@@ -103,6 +103,7 @@ async fn fixture() -> Fixture {
     tokio::spawn(crate::events::serve_socket(
         hub.clone(),
         events_socket.clone(),
+        std::sync::Arc::new(crate::owner::Resolver::default()),
     ));
     let env = crate::events::EventEnv {
         hub: hub.clone(),

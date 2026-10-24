@@ -135,7 +135,9 @@ export default {
             toolName = tools.get(toolKey(data));
             if (event.type !== "session.tool.called") tools.delete(toolKey(data));
           }
-          if (FORWARD.has(event.type)) send({ type: event.type, data: compact(event.type, data, toolName) });
+          // One OpenCode service can serve several TUIs, so the frame says which conversation it is about; the server
+          // places the conversation in the tmux session whose TUI it is.
+          if (FORWARD.has(event.type)) send({ type: event.type, sessionID: typeof data.sessionID === "string" ? data.sessionID : undefined, data: compact(event.type, data, toolName) });
         }
       } catch {
         // A closed subscription is an OpenCode shutdown, not an error to report.
@@ -340,6 +342,20 @@ pub struct Target {
 /// Only OpenCode's plugin surface is installed here.
 pub fn supported(agent: &str) -> bool {
     agent == "opencode"
+}
+
+/// Brings a plugin the owner already connected up to the current template. The owner agreed to the plugin when they
+/// connected it; a server upgrade keeps it working the way `--connect-opencode` would write it. Nothing is written
+/// when OpenCode has no plugin of ours, or when it is current.
+pub fn refresh(t: &Target) -> Option<Outcome> {
+    let plugin = if t.auto { default_plugin_path() } else { t.plugin.clone() };
+    if !is_connected(&plugin) {
+        return None;
+    }
+    if std::fs::read_to_string(&plugin).is_ok_and(|text| text == plugin_source(&t.binary)) {
+        return None;
+    }
+    connect(&plugin, &t.binary, &t.state_dir, true).ok()
 }
 
 /// Handles one `status`, `preview`, `apply` or `remove` for `agent`. File contents never leave this function

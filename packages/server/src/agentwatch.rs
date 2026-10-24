@@ -94,7 +94,7 @@ pub async fn scan_tmux_once(
         "list-panes",
         "-a",
         "-F",
-        "#{session_name}|#{pane_current_command}|#{window_activity}",
+        "#{session_name}|#{pane_current_command}|#{window_activity}|#{pane_id}|#{window_active}|#{pane_active}",
     ]
     .map(String::from);
     let Ok(out) = runner.run("tmux", &args).await else {
@@ -121,16 +121,29 @@ pub async fn scan_tmux_once(
     let live: HashSet<String> = panes.iter().map(|p| p.session.clone()).collect();
     hub.forget_except(prefix, &live.iter().cloned().collect::<Vec<_>>());
     tracker.retain(&live);
-    let mut seen = HashSet::new();
-    for p in panes
-        .iter()
-        .filter(|p| adapters::agent_name(&p.command).is_some())
-    {
+    // One agent pane speaks for a session, and it is the one the session shows (the active pane of its active
+    // window), so the process, the screen and the state all come from the same pane. Without an active agent pane
+    // the first one is used, as before.
+    let mut chosen: Vec<&adapters::PaneScan> = Vec::new();
+    for p in panes.iter().filter(|p| adapters::agent_name(&p.command).is_some()) {
+        match chosen.iter().position(|c| c.session == p.session) {
+            None => chosen.push(p),
+            Some(i) if p.active && !chosen[i].active => chosen[i] = p,
+            Some(_) => {}
+        }
+    }
+    for p in chosen {
         let tmux_name = names[&p.session].clone();
-        if !seen.insert(p.session.clone()) || !crate::backend::valid_name(&tmux_name) {
+        if !crate::backend::valid_name(&tmux_name) {
             continue;
         }
-        let capture = ["capture-pane", "-p", "-t", &format!("={tmux_name}:")].map(String::from);
+        // The pane itself when tmux named it (`%12`); the session's active pane otherwise.
+        let target = if p.pane_id.starts_with('%') && p.pane_id[1..].chars().all(|c| c.is_ascii_digit()) && p.pane_id.len() > 1 {
+            p.pane_id.clone()
+        } else {
+            format!("={tmux_name}:")
+        };
+        let capture = ["capture-pane", "-p", "-t", &target].map(String::from);
         let screen = match runner.run("tmux", &capture).await {
             Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
             _ => String::new(),
