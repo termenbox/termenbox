@@ -2,7 +2,7 @@
 // action and its detail behind a fold that starts closed. The states are the real step components in the real Dialog.
 // Desktop Chromium with mobile emulation: not an iPhone or Android check.
 // Usage: node e2e/failures.mjs   (needs the e2e harness built: pnpm e2e:build; CHROME_PATH for the browser)
-import { chromium } from 'playwright-core';
+import { launch } from './browser.mjs';
 import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, extname } from 'node:path';
@@ -17,10 +17,7 @@ const srv = createServer((req, res) => {
 });
 await new Promise((r) => srv.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${srv.address().port}`;
-const browser = await chromium.launch({
-  ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
-  args: ['--no-sandbox'],
-});
+const browser = await launch();
 const STATES = ['expired_link', 'bad_link', 'not_found', 'udp_closed', 'announced_unreachable', 'udp_closed_no_fallback', 'udp_closed_with_fallback', 'permission_denied', 'wrong_code', 'burned_code', 'different_network', 'guest_isolation'];
 try {
   const ctx = await browser.newContext({ viewport: { width: 375, height: 667 }, isMobile: true, hasTouch: true });

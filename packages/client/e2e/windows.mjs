@@ -1,6 +1,6 @@
 // Tabs that speak for a window, the windows dropdown, Detach vs Close, and the needs-you banner, in real Chrome at
 // phone width on the fake-server harness. Usage: node e2e/windows.mjs (after: pnpm run e2e:build)
-import { chromium } from 'playwright-core';
+import { launch, contextOptions } from './browser.mjs';
 import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, extname } from 'node:path';
@@ -14,12 +14,9 @@ const srv = createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': mime[extname(f)] ?? 'application/octet-stream' }).end(readFileSync(f));
 });
 await new Promise((r) => srv.listen(0, '127.0.0.1', r));
-const browser = await chromium.launch({
-  ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
-  args: ['--no-sandbox'],
-});
+const browser = await launch();
 try {
-  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const ctx = await browser.newContext(contextOptions({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }));
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));

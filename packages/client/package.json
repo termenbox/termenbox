@@ -9,6 +9,7 @@
     "test": "vitest run",
     "e2e:build": "vite build && vite build -c e2e/vite.config.ts",
     "e2e": "node e2e/run.mjs",
+    "e2e:suite": "node e2e/suite.mjs",
     "e2e:gallery": "node e2e/gallery.mjs",
     "e2e:keyrow": "node e2e/keyrow.mjs",
     "check:bundle": "node e2e/check-bundle.mjs"

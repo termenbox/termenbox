@@ -2,6 +2,7 @@
 // structured view, crossing 720 px, and the keyboard shortcuts. Runs from desktop.mjs; see app-lib.mjs for what the
 // scripted server stands in for.
 import { startShared, startApp, CLAUDE_PROMPT } from './app-lib.mjs';
+import { DPR } from './browser.mjs';
 
 const WORKSPACE = 'termenbox_workspace';
 const WIDTHS = [721, 1024, 1440, 1920];
@@ -476,8 +477,8 @@ async function copySelectionWithMouseMode(shared) {
   const box = await page.locator('.xterm-rows > div').filter({ hasText: LINE }).first().boundingBox();
   const y = box.y + box.height / 2;
   const rects = () => page.evaluate(() => document.querySelectorAll('.xterm-selection div').length);
-  const clipboard = () => page.evaluate(() => navigator.clipboard.readText());
-  const clearClipboard = () => page.evaluate(() => navigator.clipboard.writeText(''));
+  const clipboard = () => t.clipboard();
+  const clearClipboard = () => t.setClipboard('');
 
   t.check((await page.evaluate(() => document.querySelector('.xterm').classList.contains('enable-mouse-events'))), 'mouse mode: the terminal did not take the mouse reporting');
 
@@ -514,13 +515,13 @@ async function copySelectionWithMouseMode(shared) {
 async function copyFromServer(shared) {
   const t = await startApp(shared, { viewport: { width: 1280, height: 800 }, clipboard: true });
   const { page, server } = t;
-  const clipboard = () => page.evaluate(() => navigator.clipboard.readText());
+  const clipboard = () => t.clipboard();
   await t.open();
   await t.openSession('s1');
-  await page.evaluate(() => navigator.clipboard.writeText('BEFORE'));
+  await t.setClipboard('BEFORE');
   const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
   server.output(`\u001b]52;c;${b64('FROM-TMUX Привет 😀')}\u0007`);
-  await page.waitForFunction(() => navigator.clipboard.readText().then((x) => x.includes('FROM-TMUX')), null, { timeout: 3000 }).catch(() => {});
+  await t.waitClipboard('FROM-TMUX');
   t.check((await clipboard()) === 'FROM-TMUX Привет 😀', `osc52: the clipboard holds ${JSON.stringify(await clipboard())}, not what the program set`);
 
   // A program asking to read the clipboard gets nothing, and the clipboard is left alone.
@@ -552,11 +553,11 @@ async function copySelection(shared) {
     await page.mouse.dblclick(box.x + 60, box.y + box.height / 2);
     await page.locator('.xterm-helper-textarea').focus();
   };
-  const clearClipboard = () => page.evaluate(() => navigator.clipboard.writeText(''));
+  const clearClipboard = () => t.setClipboard('');
   const onClipboard = async (want) => {
     const deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
-      const text = await page.evaluate(() => navigator.clipboard.readText()).catch(() => '');
+      const text = await t.clipboard().catch(() => '');
       if (text.includes(want)) return true;
       await page.waitForTimeout(50);
     }
@@ -594,6 +595,64 @@ async function copySelection(shared) {
   return ok;
 }
 
+/** A resize while a session is active: the same xterm refits, the server is told the new size, nothing spills out of the pane. */
+async function resizeWhileActive(shared) {
+  const t = await startApp(shared, { viewport: { width: 1280, height: 800 } });
+  const { page } = t;
+  await t.open();
+  await t.openSession('s1');
+  t.check((await page.evaluate(() => devicePixelRatio)) === DPR, `resize: the pixel ratio is not ${DPR}`);
+  await page.evaluate(() => { window.__xterm = document.querySelector('.xterm'); });
+  const inside = () => page.evaluate(() => {
+    const screen = document.querySelector('.xterm-screen').getBoundingClientRect();
+    const pane = document.querySelector('[data-pane-body]').getBoundingClientRect();
+    return screen.right <= pane.right + 1 && screen.bottom <= pane.bottom + 1 && document.querySelector('.xterm') === window.__xterm;
+  });
+  await nextSize(t, 0, 'at 1280x800 ');
+  const got = {};
+  for (const [width, height] of [[1024, 800], [1440, 900], [1024, 600]]) {
+    const since = t.server.of('resize').length;
+    await page.setViewportSize({ width, height });
+    const size = await nextSize(t, since, `at ${width}x${height} `);
+    await page.waitForTimeout(500);
+    got[`${width}x${height}`] = size;
+    t.check(await inside(), `resize: ${width}x${height} left the terminal outside its pane, or rebuilt it`);
+    t.check((await t.overflow()) <= 0, `resize: ${width}x${height} overflows sideways`);
+  }
+  t.check(got['1440x900'].cols > got['1024x800'].cols, `resize: 1440 px gave ${got['1440x900'].cols} columns, no more than 1024 px (${got['1024x800'].cols})`);
+  t.check(got['1024x600'].rows < got['1024x800'].rows, 'resize: a shorter window did not give fewer rows');
+  const sizes = Object.entries(got).map(([vp, m]) => `${vp}: ${m.cols}x${m.rows}`);
+  const ok = await t.end();
+  if (ok) t.ok(`a resize while a session is active refits the same xterm and tells the server (${sizes.join(', ')}, pixel ratio ${DPR})`);
+  return ok;
+}
+
+/** The clipboard refuses a write: copying falls back to the older way and the page raises no error. */
+async function clipboardDenied(shared) {
+  const t = await startApp(shared, { viewport: { width: 1280, height: 800 } });
+  const { page, server } = t;
+  await page.addInitScript(() => {
+    window.__execCopies = [];
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: () => Promise.reject(new DOMException('denied', 'NotAllowedError')), readText: () => Promise.reject(new DOMException('denied', 'NotAllowedError')) }, configurable: true });
+    const exec = document.execCommand.bind(document);
+    document.execCommand = (cmd, ...rest) => { if (cmd === 'copy') window.__execCopies.push(document.getSelection()?.toString() || document.activeElement?.value || ''); return exec(cmd, ...rest); };
+  });
+  const LINE = 'DENIED-TARGET-777';
+  await t.open();
+  await t.openSession('s1');
+  server.output(`${LINE}\r\n`);
+  await page.waitForFunction((want) => [...document.querySelectorAll('.xterm-rows > div')].some((d) => d.textContent.includes(want)), LINE);
+  const box = await page.locator('.xterm-rows > div').filter({ hasText: LINE }).first().boundingBox();
+  await page.mouse.dblclick(box.x + 60, box.y + box.height / 2);
+  await page.locator('.xterm-helper-textarea').focus();
+  await page.keyboard.press('Control+Shift+C');
+  await page.waitForTimeout(300);
+  t.check((await page.evaluate(() => window.__execCopies)).some((x) => x.includes(LINE)), 'denied clipboard: copying did not fall back to the older way');
+  const ok = await t.end(); // also fails on any console or page error
+  if (ok) t.ok('a refused clipboard write falls back to the older copy and raises no error');
+  return ok;
+}
+
 export async function realApp() {
   const shared = await startShared();
   const results = [];
@@ -606,6 +665,8 @@ export async function realApp() {
     results.push(await copySelection(shared));
     results.push(await copySelectionWithMouseMode(shared));
     results.push(await copyFromServer(shared));
+    results.push(await resizeWhileActive(shared));
+    results.push(await clipboardDenied(shared));
     results.push(await phone(shared));
   } finally {
     await shared.stop();

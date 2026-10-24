@@ -3,7 +3,7 @@
 // the LAN candidate, and a corrupted link that never previews. The stand-in web server counts every directory request,
 // from the page and from the server: LAN-only must make none.
 // Usage: node e2e/pair.mjs   (needs a built server, `pnpm run e2e:build`, and Chrome)
-import { chromium } from 'playwright-core';
+import { launch } from './browser.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
@@ -63,10 +63,7 @@ const payload = link.split('/#/pair/')[1].split('?')[0];
 // Flip a character in the middle of the signed payload: the signature no longer matches.
 const corrupted = link.replace(payload, payload.slice(0, 60) + (payload[60] === 'A' ? 'B' : 'A') + payload.slice(61));
 
-const browser = await chromium.launch({
-  ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
-  args: ['--no-sandbox', '--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection'],
-});
+const browser = await launch(['--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection']);
 const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
 const page = await ctx.newPage();
 const errors = [];

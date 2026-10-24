@@ -2,10 +2,10 @@
 // over a WebSocket that Playwright answers (page.routeWebSocket), so the real hub, connection, terminal and session view
 // run end to end without a server binary. What this does not prove: a real tmux, the real server's resize handling and
 // the real agent hooks (e2e/run.mjs covers the server; the decision text here is what the protocol carries, not captured).
-import { chromium } from 'playwright-core';
+import { launch, contextOptions, trace, keepIfFailed, ENGINE } from './browser.mjs';
 import { createServer } from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
-import { join, extname } from 'node:path';
+import { join, extname, basename } from 'node:path';
 
 const dist = join(import.meta.dirname, '../dist');
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.png': 'image/png', '.woff2': 'font/woff2' };
@@ -86,16 +86,19 @@ export class ScriptedServer {
   clear() { this.received.length = 0; }
 }
 
-/** One static server and one Chrome for every scenario; each scenario gets its own context (own storage). */
+/** One static server and one browser (browser.mjs) for every scenario; each scenario gets its own context (own storage). */
 export async function startShared() {
   const { srv, origin } = await serveDist();
-  const browser = await chromium.launch({ ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }), args: ['--no-sandbox'] });
+  const browser = await launch();
   return { origin, browser, stop: async () => { await browser.close(); srv.close(); } };
 }
 
+let scenarios = 0;
+
 export async function startApp(shared, { viewport, storage = {}, blockedStorage = false, clipboard = false, server = new ScriptedServer() } = {}) {
   const { origin, browser } = shared;
-  const ctx = await browser.newContext({ viewport, isMobile: false, hasTouch: false, ...(clipboard ? { permissions: ['clipboard-read', 'clipboard-write'] } : {}) });
+  const ctx = await browser.newContext(contextOptions({ viewport, isMobile: false, hasTouch: false, ...(clipboard && ENGINE === 'chromium' ? { permissions: ['clipboard-read', 'clipboard-write'] } : {}) }));
+  await trace(ctx);
   const seed = { termenbox_auth: JSON.stringify({ cert, login: 'tester' }), termenbox_ios_hint: '1',
     termenbox_servers: JSON.stringify([{ server_id: 'one', server_name: 'one', server_url: 'ws://127.0.0.1:9/ws', registered_at: 0 }]),
     termenbox_settings: JSON.stringify({ renderer: 'dom' }), ...storage };
@@ -114,6 +117,14 @@ export async function startApp(shared, { viewport, storage = {}, blockedStorage 
     const set = Storage.prototype.setItem;
     Storage.prototype.setItem = function (k, v) { window.__writes.push(k); return set.call(this, k, v); };
   }, [seed, blockedStorage]);
+  // Only Chromium lets a test grant and read the real clipboard. Elsewhere the page's writes are recorded as they are made,
+  // which proves what the app hands the clipboard API but not that the browser accepts it.
+  if (clipboard && ENGINE !== 'chromium') {
+    await ctx.addInitScript(() => {
+      window.__clip = [];
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (x) => { window.__clip.push(String(x)); } }, configurable: true });
+    });
+  }
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
@@ -124,6 +135,7 @@ export async function startApp(shared, { viewport, storage = {}, blockedStorage 
     ws.onClose(() => server.sockets.delete(ws));
   });
   let failed = false;
+  const label = `${basename(process.argv[1], '.mjs')}-${++scenarios}`;
   const t = {
     page, server, errors, ctx,
     fail: (m) => { failed = true; console.error(`FAIL: ${m}`); },
@@ -154,12 +166,17 @@ export async function startApp(shared, { viewport, storage = {}, blockedStorage 
       while (Date.now() < deadline) { if (server.of('resize').length > sinceCount) return server.of('resize').at(-1); await page.waitForTimeout(50); }
       return null;
     },
+    /** The clipboard text: the real one on Chromium, the last write the page made elsewhere. */
+    clipboard: () => ENGINE === 'chromium' ? page.evaluate(() => navigator.clipboard.readText()) : page.evaluate(() => window.__clip.at(-1) ?? ''),
+    setClipboard: (text) => ENGINE === 'chromium' ? page.evaluate((x) => navigator.clipboard.writeText(x), text) : page.evaluate((x) => { window.__clip.push(x); }, text),
+    waitClipboard: (text) => page.waitForFunction(([e, want]) => (e === 'chromium' ? navigator.clipboard.readText() : Promise.resolve(window.__clip.at(-1) ?? '')).then((x) => x.includes(want)), [ENGINE, text], { timeout: 3000 }).catch(() => {}),
     box: async (sel) => (await page.locator(sel).first().boundingBox()),
     /** The text xterm's DOM renderer shows. */
     screen: () => page.evaluate(() => [...document.querySelectorAll('.xterm-rows > div')].map((d) => d.textContent).join('\n')),
     /** Ends the scenario; true when it passed. */
     async end() {
       t.check(errors.length === 0, `console/page errors: ${errors.slice(0, 3).join(' | ')}`);
+      await keepIfFailed(ctx, label, failed);
       await ctx.close();
       return !failed;
     },

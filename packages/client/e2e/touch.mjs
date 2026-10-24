@@ -1,7 +1,7 @@
 // Touch behaviour of the terminal against real tmux (alternate screen, with a mouse-reporting stand-in): a tap reaches
 // a mouse-aware app as a click, and a one-finger drag scrolls. Real Chrome with touch emulation, real server.
 // Usage: node e2e/touch.mjs   (needs the built client and the e2e harness)
-import { chromium } from 'playwright-core';
+import { launch } from './browser.mjs';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
@@ -55,10 +55,7 @@ try {
   await waitFor(() => fetch(`http://127.0.0.1:${httpPort}/health`).then((r) => r.ok, () => false), 'server health');
   const info = await (await fetch(`http://127.0.0.1:${httpPort}/rtc-info`)).json();
   const record = { ip: info.ip, udp_port: info.port, fingerprint: info.fingerprint };
-  browser = await chromium.launch({
-    ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
-    args: ['--no-sandbox', '--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection'],
-  });
+  browser = await launch(['--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection']);
   const ctx = await browser.newContext({ viewport: { width: 390, height: 780 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
   // No WebGL: xterm falls back to its DOM renderer, whose rows can be read back as text.
   await ctx.addInitScript(() => {

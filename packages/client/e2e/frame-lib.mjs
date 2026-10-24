@@ -1,34 +1,33 @@
-// Shared by appshell.mjs (phone, 390 px) and desktop.mjs (1280 px): serves e2e/dist, opens the frame probe in real
-// Chrome, Firefox, WebKit and holds the checks all widths make. The probe is the real AppFrame, bottom bar, sidebar, palette, NavigationBar,
+// Shared by appshell.mjs (phone, 390 px) and desktop.mjs (1280 px): serves e2e/dist, opens the frame probe in
+// the selected browser (browser.mjs), and holds the checks both widths make. The probe is the real AppFrame, bottom bar, sidebar, palette, NavigationBar,
 // SessionSheet and SessionStrip on the real ServerHub with two fake servers; the terminal is a stand-in textarea, so this
 // proves what the page does with a key, not what xterm or a shell does with it.
-import { chromium, firefox, webkit } from 'playwright-core';
-import { getBrowser, BROWSER_ENGINES } from './browser-config.mjs';
+import { launch, contextOptions, trace, keepIfFailed, ENGINE } from './browser.mjs';
 import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
-import { join, extname } from 'node:path';
+import { join, extname, basename } from 'node:path';
 
 const dist = join(import.meta.dirname, 'dist');
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
 
-export async function start(contextOptions) {
+export async function start(options) {
   const srv = createServer((req, res) => {
     const f = join(dist, req.url.split('?')[0]);
     if (!f.startsWith(dist) || !existsSync(f)) return res.writeHead(404).end();
     res.writeHead(200, { 'Content-Type': mime[extname(f)] ?? 'application/octet-stream' }).end(readFileSync(f));
   });
   await new Promise((r) => srv.listen(0, '127.0.0.1', r));
-  const engine = process.env.E2E_ENGINE ?? 'chromium';
-  if (!BROWSER_ENGINES.includes(engine)) throw new Error(`Unknown E2E_ENGINE: ${engine}`);
-  const browser = await getBrowser(engine);
-  const ctx = await browser.newContext(contextOptions);
+  const browser = await launch();
+  const ctx = await browser.newContext(contextOptions(options));
+  await trace(ctx);
   const page = await ctx.newPage();
-  if (process.env.E2E_CPU_THROTTLE) await (await ctx.newCDPSession(page)).send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.E2E_CPU_THROTTLE) });
+  if (process.env.E2E_CPU_THROTTLE && ENGINE === 'chromium') await (await ctx.newCDPSession(page)).send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.E2E_CPU_THROTTLE) });
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   const url = `http://127.0.0.1:${srv.address().port}/frame.html`;
   let failed = false;
+  const label = basename(process.argv[1], '.mjs');
   const t = {
     page, errors, url,
     fail: (m) => { failed = true; console.error(`FAIL: ${m}`); },
@@ -148,11 +147,13 @@ export async function start(contextOptions) {
     /** Closes the browser and says whether every check passed; for a script that runs more after this one. */
     async end() {
       t.check(errors.length === 0, `console/page errors: ${errors.slice(0, 3).join(' | ')}`);
+      await keepIfFailed(ctx, label, failed);
       await browser.close(); srv.close();
       return !failed;
     },
     async finish() {
       t.check(errors.length === 0, `console/page errors: ${errors.slice(0, 3).join(' | ')}`);
+      await keepIfFailed(ctx, label, failed);
       await browser.close(); srv.close();
       if (failed) process.exit(1);
       console.log('PASS');

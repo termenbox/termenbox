@@ -1,7 +1,7 @@
 // The session list on a fake event stream, in real Chrome at phone width: every state has a word, answers carry the
 // prompt they were read from, quick replies go to the chosen session, and the order holds still under a finger.
 // Usage: node e2e/cards.mjs   (needs the e2e harness built: vite build -c e2e/vite.config.ts)
-import { chromium } from 'playwright-core';
+import { launch, contextOptions } from './browser.mjs';
 import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, extname } from 'node:path';
@@ -15,12 +15,9 @@ const srv = createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': mime[extname(f)] ?? 'application/octet-stream' }).end(readFileSync(f));
 });
 await new Promise((r) => srv.listen(0, '127.0.0.1', r));
-const browser = await chromium.launch({
-  ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
-  args: ['--no-sandbox'],
-});
+const browser = await launch();
 try {
-  const ctx = await browser.newContext({ viewport: { width: 390, height: 900 }, isMobile: true, hasTouch: true });
+  const ctx = await browser.newContext(contextOptions({ viewport: { width: 390, height: 900 }, isMobile: true, hasTouch: true }));
   await ctx.addInitScript(() => {
     const vv = Object.assign(new EventTarget(), { height: innerHeight, width: innerWidth, offsetTop: 0, offsetLeft: 0, scale: 1 });
     Object.defineProperty(window, 'visualViewport', { value: vv });

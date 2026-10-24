@@ -88,16 +88,12 @@ jobs:
       - name: Gate - client bundle size
         run: pnpm --filter termenbox-client run check:bundle
 
-  # Real Chrome/Firefox/WebKit against the real server binary: login and claim over WebRTC, typing, reconnect with screen replay,
+  # Real Chrome against the real server binary: login and claim over WebRTC, typing, reconnect with screen replay,
   # plus the resource gates (server RSS with 10 sessions, CPU while output streams). Only GitHub is a stand-in.
   e2e:
     name: Browser end-to-end and resource gates
     needs: rust
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        engine: [chromium]  # default: chromium only; full matrix on schedule/manual
     steps:
       - uses: actions/checkout@v4
 
@@ -124,52 +120,38 @@ jobs:
 
       - run: pnpm --filter termenbox-client run e2e:build
 
-      - name: Install browsers
-        run: |
-          npx playwright install ${{ matrix.engine }}
-          npx playwright install-deps ${{ matrix.engine }} || true
-
-      - name: Run the browser end-to-end test
+      - name: Browser end-to-end scripts and resource gates (e2e/suite.mjs lists them)
         working-directory: packages/client
         env:
           TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
-          E2E_ENGINES: ${{ matrix.engine }}
-        run: node e2e/run.mjs
+          E2E_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
+        run: node e2e/suite.mjs server
 
-      - name: Touch gestures and session cards in the browser
-        working-directory: packages/client
-        env:
-          TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
-          E2E_ENGINES: ${{ matrix.engine }}
-        run: |
-          node e2e/touch.mjs
-          node e2e/cards.mjs
-          node e2e/decision.mjs
-          node e2e/activity.mjs
-          node e2e/windows.mjs
-          node e2e/two-servers.mjs
-          node e2e/appshell.mjs
-          node e2e/desktop.mjs
-          node e2e/app.mjs
-          node e2e/pane.mjs
-          node e2e/acp.mjs
-          node e2e/hookoffer.mjs
-          node e2e/add-server.mjs
-          node e2e/pair.mjs
-          node e2e/failures.mjs
-          node e2e/wizard.mjs
-          node e2e/search.mjs
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-failure-chromium-server
+          path: ${{ runner.temp }}/e2e-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
 
-  # Full browser matrix (chromium, firefox, webkit) on schedule and manual trigger
-  e2e-full-matrix:
-    name: Browser end-to-end (full matrix)
-    needs: rust
+  # R36: the built client against scripted servers, no server binary, on every engine we support. Desktop runs at two
+  # sizes and pixel ratios; the phone scripts run on WebKit (Chromium's run in the job above). A failure leaves a
+  # screenshot and a Playwright trace named after the engine; the engine and version are in the job summary.
+  browsers:
+    name: Browser matrix (${{ matrix.label }})
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
-        engine: [chromium, firefox, webkit]
+        include:
+          - { suite: desktop, engine: chromium, size: 1024x768, dpr: 1, label: 'desktop chromium 1024x768 @1x' }
+          - { suite: desktop, engine: chromium, size: 1440x900, dpr: 2, label: 'desktop chromium 1440x900 @2x' }
+          - { suite: desktop, engine: firefox, size: 1024x768, dpr: 1, label: 'desktop firefox 1024x768 @1x' }
+          - { suite: desktop, engine: firefox, size: 1440x900, dpr: 2, label: 'desktop firefox 1440x900 @2x' }
+          - { suite: desktop, engine: webkit, size: 1024x768, dpr: 1, label: 'desktop webkit 1024x768 @1x' }
+          - { suite: desktop, engine: webkit, size: 1440x900, dpr: 2, label: 'desktop webkit 1440x900 @2x' }
+          - { suite: phone, engine: webkit, size: 390x844, dpr: 3, label: 'phone webkit @3x' }
     steps:
       - uses: actions/checkout@v4
 
@@ -184,30 +166,31 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: termenbox-server
-          path: bin
-
-      - run: chmod +x bin/termenbox-server
-
       - run: pnpm --filter termenbox-client run e2e:build
 
-      - name: Install browsers
-        run: |
-          npx playwright install ${{ matrix.engine }}
-          npx playwright install-deps ${{ matrix.engine }} || true
+      # Chromium is the runner's Chrome; Firefox and WebKit are Playwright's own builds.
+      - name: Install the browser
+        if: matrix.engine != 'chromium'
+        working-directory: packages/client
+        run: pnpm exec playwright-core install --with-deps ${{ matrix.engine }}
 
-      - name: Run the browser end-to-end test (full matrix)
+      - name: Run the ${{ matrix.suite }} scripts
         working-directory: packages/client
         env:
-          TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
-          E2E_ENGINES: ${{ matrix.engine }}
-          E2E_FULL_MATRIX: '1'
-        run: node e2e/run.mjs
+          E2E_ENGINE: ${{ matrix.engine }}
+          E2E_VIEWPORT: ${{ matrix.size }}
+          E2E_DPR: ${{ matrix.dpr }}
+          E2E_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
+        run: node e2e/suite.mjs ${{ matrix.suite }}
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-failure-${{ matrix.suite }}-${{ matrix.engine }}-${{ matrix.size }}-${{ matrix.dpr }}x
+          path: ${{ runner.temp }}/e2e-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
+
   # The native host mode (decision 0075) ships one static musl binary per architecture: no glibc, no OpenSSL,
   # nothing to install. Build both on the native runners and fail if anything is linked dynamically.
   static:
@@ -265,10 +248,6 @@ jobs:
     name: Browser end-to-end with the static binary
     needs: static
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        engine: [chromium]  # default: chromium only; full matrix on schedule/manual
     steps:
       - uses: actions/checkout@v4
 
@@ -294,66 +273,11 @@ jobs:
       - run: chmod +x bin/termenbox-server
 
       - run: pnpm --filter termenbox-client run e2e:build
-
-      - name: Install browsers
-        run: |
-          npx playwright install ${{ matrix.engine }}
-          npx playwright install-deps ${{ matrix.engine }} || true
 
       - name: Run the browser end-to-end test
         working-directory: packages/client
         env:
           TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
-          E2E_ENGINES: ${{ matrix.engine }}
-        run: node e2e/run.mjs
-
-  # Full browser matrix (chromium, firefox, webkit) for static binary on schedule and manual trigger
-  e2e-static-full-matrix:
-    name: Browser end-to-end with static binary (full matrix)
-    needs: static
-    runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    strategy:
-      fail-fast: false
-      matrix:
-        engine: [chromium, firefox, webkit]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v2
-        with:
-          version: 9
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: 'pnpm'
-
-      - run: pnpm install --frozen-lockfile
-
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: termenbox-server-musl-x86_64
-          path: bin
-
-      - run: chmod +x bin/termenbox-server
-
-      - run: pnpm --filter termenbox-client run e2e:build
-
-      - name: Install browsers
-        run: |
-          npx playwright install ${{ matrix.engine }}
-          npx playwright install-deps ${{ matrix.engine }} || true
-
-      - name: Run the browser end-to-end test (full matrix)
-        working-directory: packages/client
-        env:
-          TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
-          E2E_ENGINES: ${{ matrix.engine }}
-          E2E_FULL_MATRIX: '1'
         run: node e2e/run.mjs
 
   # The bundled tmux (decision 0119), built from the pinned sources and put through its gate (static, runs with an
