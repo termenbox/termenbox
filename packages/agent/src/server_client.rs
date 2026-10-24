@@ -170,6 +170,7 @@ impl ServerClient {
             | ServerMessage::PushSettingsRejected { .. }
             | ServerMessage::Snapshot { .. }
             | ServerMessage::WindowList { .. }
+            | ServerMessage::Scrollback { .. }
             | ServerMessage::SessionView { .. }
             | ServerMessage::AgentHooks { .. }
             | ServerMessage::AcpView(_)
