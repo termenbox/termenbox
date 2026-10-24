@@ -110,20 +110,23 @@ async function runDesktopTests(engine, viewportName, dpr) {
   await page.keyboard.press('Escape');
   t.ok('the shortcut list opens from the palette and names the keys; Settings turns shortcuts off and on');
 
-  // 6. The sidebar holds still when a status update arrives while the pointer is down.
-  await side.locator('[data-destination=sessions]').click();
-  const rowsSelector = '[data-session-groups] button';
-  await page.mouse.move(100, 200);
+  // 6. The sidebar holds still under the pointer: press on a session, a status update arrives, nothing moves; release, then it re-sorts.
+  await t.api('setState', 'alpha', 'svc-9', 'idle');
+  await page.waitForTimeout(2300);
+  const rows = '[data-shell=sidebar] [data-key]';
+  const before = await t.rects(rows);
+  const box = await side.locator('[data-key="alpha/svc-7"]').boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   await t.api('setState', 'alpha', 'svc-9', 'needs_input');
   await page.waitForTimeout(400);
-  const before = await t.rects(rowsSelector);
-  t.check(JSON.stringify(before) === JSON.stringify(await t.rects(rowsSelector)), 'a sidebar row moved while the pointer was down and a status update arrived');
+  const during = await t.rects(rows);
+  t.check(JSON.stringify(before) === JSON.stringify(during), 'a sidebar row moved while the pointer was down and a status update arrived');
   t.check((await side.locator('[data-key="alpha/svc-9"]').innerText()).includes('Needs you'), 'the row did not show the new state in place');
-  await page.mouse.move(100, 200); // release away from the row: no click
+  await page.mouse.move(box.x + box.width + 400, box.y); // release away from the row: no click
   await page.mouse.up();
   await page.waitForTimeout(300);
-  const after = await t.rects(rowsSelector);
+  const after = await t.rects(rows);
   t.check(JSON.stringify(after) !== JSON.stringify(before), 'the sidebar did not apply the held update after release');
   t.ok('no control moves when a status update arrives while the pointer is down');
 
