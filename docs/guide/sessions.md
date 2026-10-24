@@ -49,6 +49,8 @@ termenbox-server --setup-push     # writes the key to connectors.env (mode 0600)
 
 Restart the server, then Settings → Appearance, notifications and more → Turn on notifications (on iPhone the app must be added to the Home Screen first, iOS 16.4+). A notification is sent about 5 seconds after the item appears, unless a device is showing that session. It names the session and what happened and never carries anything the agent wrote. A phone follows one server at a time.
 
+Tapping a notification opens Home on that session's decision card, so one tap on an option answers it. A question that waits is pushed again after 10 minutes, then at growing gaps (twice as long each time, up to an hour) until you answer it on any device. Settings → Push reminders sets the wait, the longest gap, quiet hours in your local time (for example `22:00-07:00`) and which agents are muted; quiet hours and mutes silence every push, the first included. Finished and failed items are pushed once.
+
 ## Agent events
 
 The server turns what agents do into a small typed stream (idle, working, needs input, done) that clients can follow. With no setup it comes from a process scan and screen heuristics (low confidence). For exact tool and "needs input" events from Claude Code, opt in:
