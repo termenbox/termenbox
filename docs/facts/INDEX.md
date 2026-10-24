@@ -53,5 +53,6 @@
 | 0051 | The server needs no external call to accept a connection after claim | transport, auth, network, deployment | active |
 | 0052 | CPace over ristretto255 fits the pairing code on both ends with no WASM; the phone half of the spike is still open | pake, security, client, server, onboarding, spike | draft |
 | 0053 | A server inside a NAT'd VM (WSL2 NAT mode, VirtualBox NAT, Docker Desktop) is reachable from other devices only through port forwarding or a bridged network | network, deployment, wsl, lan, topology | active |
+| 0055 | A waiting question is pushed again on a ladder until it is answered anywhere, and a push opens its decision card | notifications, agents | active |
 
 <!-- bootstrap-generated: true -->
