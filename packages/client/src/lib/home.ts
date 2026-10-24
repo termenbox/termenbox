@@ -77,9 +77,11 @@ export interface HomeQueue {
   rest: Row[];
 }
 
-export function splitQueue(queue: Row[]): HomeQueue {
-  const hero = queue[0]?.kind === 'needs_input' ? queue[0] : undefined;
-  return { hero, rest: hero ? queue.slice(1) : queue };
+/** The oldest waiting decision is the hero; a push's deep link (`focusKey`) puts its own session there while it still waits. */
+export function splitQueue(queue: Row[], focusKey?: string | null): HomeQueue {
+  const focused = focusKey ? queue.find((r) => r.key === focusKey && r.kind === 'needs_input') : undefined;
+  const hero = focused ?? (queue[0]?.kind === 'needs_input' ? queue[0] : undefined);
+  return { hero, rest: hero ? queue.filter((r) => r !== hero) : queue };
 }
 
 export type FleetCounts = Record<'needs-you' | 'working' | 'failed' | 'finished', number>;

@@ -54,7 +54,7 @@
   import Resizer from './shell/Resizer.svelte';
   import Home from './Home.svelte';
   import SessionGroups from './SessionGroups.svelte';
-  import { destination, navigate, startRouter, type Destination } from './lib/router';
+  import { destination, navigate, parseFocusLink, startRouter, type Destination } from './lib/router';
   import ReportDialog from './ReportDialog.svelte';
   import { buildReport, noteError, recentErrors, scrub } from './lib/report';
   import { runningBundle } from './lib/update';
@@ -153,6 +153,15 @@
       else if (msg.type === 'health_history') healthMap = answeredHealth(healthMap, _id, msg);
       else if (msg.type === 'history_deleted') historyDeletes.reply(_id, msg.removed);
       else if (msg.type === 'push_info') pushInfos = { ...pushInfos, [_id]: msg };
+      else if (msg.type === 'push_settings') {
+        pushSettings = { ...pushSettings, [_id]: msg.settings };
+        if (pushSaving) showToast('Push reminders saved');
+        pushSaving = false;
+      }
+      else if (msg.type === 'push_settings_rejected') {
+        pushSaving = false;
+        showToast(msg.reason, 'error');
+      }
       else if (msg.type === 'agent_hooks') {
         hookMap = applyHookReply(hookMap, _id, msg);
         // After a removal the next Enable needs the exact change again.
@@ -276,6 +285,15 @@
     configured: pushInfos[pushServerId].configured, on: pushOn,
     denied: typeof Notification !== 'undefined' && Notification.permission === 'denied',
   } : null;
+  let pushSettings: Record<string, import('./lib/protocol').PushSettings> = {};
+  let pushSaving = false;
+  // Older servers do not answer push_settings_get, so ask only those that say they do (push_info.settings).
+  $: if ($destination === 'settings' && pushServerId && pushInfos[pushServerId]?.settings) hub.send(pushServerId, { type: 'push_settings_get' });
+  function savePushSettings(settings: import('./lib/protocol').PushSettings) {
+    if (!pushServerId) return;
+    pushSaving = true;
+    hub.send(pushServerId, { type: 'push_settings_set', settings });
+  }
   async function togglePush(enable: boolean) {
     const id = pushServerId;
     if (!id) return;
@@ -529,6 +547,14 @@
     if (result === 'copied') showToast('Link and code copied. Open the link on your other device, or paste the code in Add Server in the app, and sign in with the same GitHub account.');
     else if (result === 'failed') showToast('Could not share the link', 'error');
   }
+
+  /** A push opened the app on a decision (U11): Home shows that session's card first, whether or not its server is connected yet. */
+  let focusKey: string | null = null;
+  function openDecision(key: string) {
+    focusKey = key;
+    navigate('home');
+  }
+  $: if ($destination !== 'home') focusKey = null;
 
   const LAST_KEY = 'termenbox_last_session';
   // The app opens on Home; its Continue card offers the session last used (decision 0100). Nothing attaches by itself.
@@ -793,6 +819,11 @@
       const claim = parseClaim(window.location.hash);
       const serverId = parseServerLink(window.location.hash);
       const pair = parsePairLink(window.location.hash);
+      const focus = parseFocusLink(window.location.hash);
+      if (focus) {
+        if (user) openDecision(focus); else sessionStorage.setItem('termenbox_pending_focus', focus);
+        return;
+      }
       if (!claim && !serverId && !pair) return;
       window.history.replaceState({}, '', window.location.pathname);
       if (pair) {
@@ -828,6 +859,13 @@
       window.history.replaceState({}, '', window.location.pathname);
     }
 
+    // A push's deep link (#/home?focus=...), kept across the GitHub login redirect like the links below.
+    const focus = parseFocusLink(window.location.hash);
+    if (focus) {
+      sessionStorage.setItem('termenbox_pending_focus', focus);
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+
     // A re-add link (#server=...) from the installer or a QR, kept across the GitHub login redirect.
     const serverId = parseServerLink(window.location.hash);
     if (serverId) {
@@ -839,6 +877,12 @@
     if (window.location.pathname === '/callback') authed = await handleOAuthCallback();
     else authed = checkAuth();
     if (!authed) return;
+
+    const pendingFocus = sessionStorage.getItem('termenbox_pending_focus');
+    if (pendingFocus) {
+      sessionStorage.removeItem('termenbox_pending_focus');
+      openDecision(pendingFocus);
+    }
 
     loadServers();
     hub.start(servers);
@@ -910,13 +954,13 @@
         {#if servers.length > 0}<button class="secondary" on:click={showWorkspace}>← Sessions</button>{/if}
         <ServerList {servers} states={$hubServers} onpause={(id) => { hub.pause(id); }} onresume={(id) => hub.resume(id)} onretry={(id) => hub.retry(id)} onadd={() => { addPrefill = null; addStart = 'install'; showAddServer = true; }} onscan={() => { addPrefill = null; addStart = 'scan'; showAddServer = true; }} onremove={removeServer} onshare={shareServer} />
       {:else if $destination === 'home'}
-        <Home sessions={$allSessions} agents={$allAgents} servers={$hubServers} {now} {lastKey} offer={hookOffer} onhook={homeHook} onopen={openWaiting} onservers={leaveServer} onnew={newSession}
+        <Home sessions={$allSessions} agents={$allAgents} servers={$hubServers} {now} {lastKey} {focusKey} offer={hookOffer} onhook={homeHook} onopen={openWaiting} onservers={leaveServer} onnew={newSession}
           onanswer={(key, choice, prompt) => sendSession({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })}
           onreply={(key, text) => sendSession({ type: 'reply', session: key, text })} />
       {:else if $destination === 'activity'}
         <ActivityView servers={$hubServers} history={historyMap} {now} onask={askHistory} caches={warmCaches} ttlMs={$settings.cacheTtlMs} health={healthMap} onhealth={askHealth} rttOf={(id) => hub.rtt(id)} />
       {:else if $destination === 'settings'}
-        <SettingsView user={user ?? ''} {serverVersion} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} onmenu={() => { titleTapped(); menuOpen = true; }} onshortcuts={() => (helpOpen = true)} onreport={openReport} onlogout={logout} ondeletedata={deleteData} historyServers={$connectedCount} ondeletehistory={deleteHistory} />
+        <SettingsView user={user ?? ''} {serverVersion} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} onmenu={() => { titleTapped(); menuOpen = true; }} onshortcuts={() => (helpOpen = true)} onreport={openReport} onlogout={logout} ondeletedata={deleteData} historyServers={$connectedCount} ondeletehistory={deleteHistory} pushSettings={pushServerId ? pushSettings[pushServerId] : undefined} {pushSaving} onpushsettings={savePushSettings} />
       {:else}
         <div class="workspace" class:mobile={narrow}>
           <div class="terminal-pane">

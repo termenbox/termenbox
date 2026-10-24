@@ -37,6 +37,9 @@ const PUSH_HOSTS: [&str; 5] = [
     "push.microsoft.com",
 ];
 
+/// The escalation ladder's settings live in the shared protocol so the client and the server agree on the unit.
+pub use termenbox_core::protocol::PushSettings as EscalationConfig;
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Subscription {
     pub endpoint: String,
@@ -247,15 +250,22 @@ fn body(
     Ok(out)
 }
 
-/// What a notification says: the session, the kind and the time. Nothing an agent wrote.
-pub fn payload(session: &str, kind: AttentionKind, at: u64) -> Vec<u8> {
+/// What a notification says: the session, the kind, the time, and a deep link. Nothing an agent wrote.
+/// Builds the JSON push body. `session` is the display name (e.g., "work"), `session_key` is the
+/// qualified key the client uses to find the session (e.g., "a/tmux:work").
+pub fn payload(session: &str, kind: AttentionKind, at: u64, session_key: &str) -> Vec<u8> {
     let kind = match kind {
         AttentionKind::NeedsInput => "needs_input",
         AttentionKind::FinishedUnseen => "finished",
         AttentionKind::Failed => "failed",
         AttentionKind::Unknown => "attention",
     };
-    serde_json::json!({"session": session, "kind": kind, "at": at, "tag": session})
+    // Percent-encode the focus value so special chars don't truncate the deep link.
+    let focus =
+        percent_encoding::utf8_percent_encode(session_key, percent_encoding::NON_ALPHANUMERIC)
+            .to_string();
+    let deep_link = format!("/#/home?focus={}", focus);
+    serde_json::json!({"session": session, "kind": kind, "at": at, "tag": session, "deep_link": deep_link})
         .to_string()
         .into_bytes()
 }
@@ -281,6 +291,10 @@ pub struct Push {
     /// Tests post to a local fake service; production only to the browser vendors' hosts.
     allow_any_endpoint: bool,
     pub grace: Duration,
+    /// Escalation ladder configuration (persisted to push_settings.json).
+    config: Arc<Mutex<EscalationConfig>>,
+    /// The server id that prefixes a deep link, so the client can find the session across servers.
+    server_id: Mutex<Option<String>>,
 }
 
 impl Push {
@@ -299,12 +313,24 @@ impl Push {
         let path = dir.join("push_subscriptions.json");
         let subs = std::fs::read(&path)
             .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
+            .and_then(|b| serde_json::from_slice::<Vec<Subscription>>(&b).ok())
             .unwrap_or_default();
-        Arc::new(Self::new(vapid, subs, path))
+        // Load escalation config from push_settings.json
+        let settings_path = dir.join("push_settings.json");
+        let config: EscalationConfig = std::fs::read(&settings_path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<EscalationConfig>(&b).ok())
+            .unwrap_or_default()
+            .sanitized();
+        Arc::new(Self::new(vapid, subs, path, config))
     }
 
-    pub fn new(vapid: Option<Vapid>, subs: Vec<Subscription>, path: PathBuf) -> Self {
+    pub fn new(
+        vapid: Option<Vapid>,
+        subs: Vec<Subscription>,
+        path: PathBuf,
+        config: EscalationConfig,
+    ) -> Self {
         Self {
             vapid,
             subs: Mutex::new(subs),
@@ -316,6 +342,21 @@ impl Push {
                 .unwrap_or_default(),
             allow_any_endpoint: false,
             grace: DEFAULT_GRACE,
+            config: Arc::new(Mutex::new(config)),
+            server_id: Mutex::default(),
+        }
+    }
+
+    /// Sets the id the client knows this server by; used to qualify a deep link.
+    pub fn set_server_id(&self, id: String) {
+        *self.server_id.lock().unwrap() = Some(id);
+    }
+
+    /// `server_id/session` when the id is known, the bare session otherwise.
+    fn focus_key(&self, session: &str) -> String {
+        match self.server_id.lock().unwrap().as_deref() {
+            Some(id) if !id.is_empty() => format!("{id}/{session}"),
+            _ => session.to_string(),
         }
     }
 
@@ -339,6 +380,11 @@ impl Push {
             .any(|s| s.endpoint == endpoint)
     }
 
+    /// Sets the grace period before the first push (for testing).
+    pub fn set_grace(&mut self, grace: Duration) {
+        self.grace = grace;
+    }
+
     fn save(&self, subs: &[Subscription]) {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
@@ -357,6 +403,45 @@ impl Push {
         if let Err(e) = write() {
             warn!("cannot save push subscriptions: {e}");
         }
+    }
+
+    /// Saves the escalation config to push_settings.json.
+    fn save_config(&self, config: &EscalationConfig) {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let Ok(json) = serde_json::to_vec(config) else {
+            return;
+        };
+        let path = self.path.with_file_name("push_settings.json");
+        let write = || -> std::io::Result<()> {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)?;
+            f.write_all(&json)
+        };
+        if let Err(e) = write() {
+            warn!("cannot save push settings: {e}");
+        }
+    }
+
+    /// Returns a clone of the current escalation config.
+    pub fn get_config(&self) -> EscalationConfig {
+        self.config.lock().unwrap().clone()
+    }
+
+    /// Updates the escalation config and persists it.
+    pub fn set_config(&self, config: EscalationConfig) {
+        *self.config.lock().unwrap() = config.clone();
+        self.save_config(&config);
+    }
+
+    /// Whether a push for `agent` is silenced now: inside quiet hours, or the agent is muted.
+    fn suppressed(&self, agent: &str, now: u64) -> bool {
+        let config = self.config.lock().unwrap();
+        config.quiet_at_ms(now) || config.muted_agents.iter().any(|a| a == agent)
     }
 
     /// One subscription per endpoint; a device that subscribes again replaces its old entry.
@@ -451,7 +536,8 @@ impl Push {
     /// Sends to every device; a dead subscription is removed. Returns how many accepted it.
     pub async fn notify(&self, session: &str, kind: AttentionKind, at: u64) -> usize {
         let name = display_name(session);
-        let body = payload(name, kind, at);
+        let focus_key = self.focus_key(session);
+        let body = payload(name, kind, at, &focus_key);
         // The service keeps one waiting message per topic: a newer one for the session replaces the older.
         let topic = B64.encode(&Sha256::digest(session.as_bytes())[..16]);
         let subs = self.subs.lock().unwrap().clone();
@@ -471,8 +557,15 @@ impl Push {
     }
 }
 
+/// The wait after a rung: the last wait times the multiplier, never past the cap.
+pub fn next_wait(wait_secs: u64, config: &EscalationConfig) -> u64 {
+    ((wait_secs as f64 * config.multiplier).ceil() as u64).min(config.max_interval_secs)
+}
+
 /// Watches Attention items: for each new one, waits out the grace, and pushes unless it is gone by then or a
 /// device shows the session. A hint never reaches here: only items raised by a hook exist.
+/// A question (`needs_input`) is then repeated on the ladder, at growing intervals, until it is answered anywhere
+/// and so leaves the Attention list (decision 0104); quiet hours and a muted agent skip a rung, not the ladder.
 pub fn spawn_watcher(push: Arc<Push>, hub: EventHub) {
     let mut rx = hub.subscribe_status();
     tokio::spawn(async move {
@@ -494,17 +587,31 @@ pub fn spawn_watcher(push: Arc<Push>, hub: EventHub) {
                 if !push.configured() || push.subscription_count() == 0 {
                     continue;
                 }
-                let (push, hub) = (push.clone(), hub.clone());
-                tokio::spawn(async move {
-                    tokio::time::sleep(push.grace).await;
-                    let still_open = hub.attention_items().iter().any(|a| a.id == it.id);
-                    if still_open && !push.shown(&it.session) {
-                        push.notify(&it.session, it.kind, it.raised_at).await;
-                    }
-                });
+                tokio::spawn(climb(push.clone(), hub.clone(), it));
             }
         }
     });
+}
+
+/// One Attention item's pushes: the first after the grace, then (for a question) one per rung.
+async fn climb(push: Arc<Push>, hub: EventHub, it: Attention) {
+    let ladder = it.kind == AttentionKind::NeedsInput;
+    let mut wait = push.get_config().initial_wait_secs;
+    tokio::time::sleep(push.grace).await;
+    loop {
+        if !hub.attention_items().iter().any(|a| a.id == it.id) {
+            return; // answered or acknowledged, on any device
+        }
+        let agent = hub.agent(&it.session).unwrap_or_default();
+        if !push.shown(&it.session) && !push.suppressed(&agent, now_ms()) {
+            push.notify(&it.session, it.kind, it.raised_at).await;
+        }
+        if !ladder {
+            return;
+        }
+        tokio::time::sleep(Duration::from_secs(wait)).await;
+        wait = next_wait(wait, &push.get_config());
+    }
 }
 
 #[cfg(test)]
@@ -584,11 +691,19 @@ mod tests {
 
     #[test]
     fn the_payload_has_no_room_for_agent_text() {
-        let p = String::from_utf8(payload("api-refactor", AttentionKind::NeedsInput, 5)).unwrap();
-        assert_eq!(
-            p,
-            r#"{"at":5,"kind":"needs_input","session":"api-refactor","tag":"api-refactor"}"#
-        );
+        let p = String::from_utf8(payload(
+            "api-refactor",
+            AttentionKind::NeedsInput,
+            5,
+            "api-refactor",
+        ))
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&p).unwrap();
+        assert_eq!(v["at"], 5);
+        assert_eq!(v["kind"], "needs_input");
+        assert_eq!(v["session"], "api-refactor");
+        assert_eq!(v["tag"], "api-refactor");
+        assert_eq!(v["deep_link"], "/#/home?focus=api%2Drefactor");
         assert_eq!(display_name("tmux:work"), "work");
     }
 
@@ -711,7 +826,7 @@ mod tests {
         (format!("http://{addr}/push"), rx)
     }
 
-    fn push_for(endpoint: &str, sub_keys: &Subscription) -> Push {
+    fn push_for(endpoint: &str, ua: &SecretKey, auth: &[u8]) -> (Push, Subscription) {
         let (line, _) = new_key_line();
         let v = Vapid::from_private(
             line.strip_prefix("TERMENBOX_VAPID_PRIVATE_KEY=").unwrap(),
@@ -720,23 +835,32 @@ mod tests {
         .unwrap();
         let dir = std::env::temp_dir().join(format!("termenbox-push-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut p = Push::new(Some(v), vec![], dir.join("subs.json"));
-        p.allow_any_endpoint = true;
-        p.grace = Duration::from_millis(50);
-        p.subs.lock().unwrap().push(Subscription {
+        let public = EncodedPoint::from(ua.public_key());
+        let sub = Subscription {
             endpoint: endpoint.into(),
-            ..sub_keys.clone()
-        });
-        p
+            p256dh: B64.encode(public.as_bytes()),
+            auth: B64.encode(auth),
+        };
+        let mut p = Push::new(
+            Some(v),
+            vec![],
+            dir.join("subs.json"),
+            EscalationConfig::default(),
+        );
+        p.allow_any_endpoint = true;
+        p.set_grace(Duration::from_millis(50));
+        p.subs.lock().unwrap().push(sub.clone());
+        (p, sub)
     }
 
     #[tokio::test]
     async fn a_push_carries_no_marker_text_from_the_title_or_prompt() {
         // The guardrail's test: an event whose title and prompt hold a marker, then the bytes the service received.
         use termenbox_core::events::{Confidence, EventKind, Source};
-        let (ua, auth, keys) = device();
+        let (ua, auth, _keys) = device();
         let (url, mut rx) = fake_service(Arc::new(Mutex::new(StatusCode::CREATED))).await;
-        let push = Arc::new(push_for(&url, &keys));
+        let (push, _) = push_for(&url, &ua, &auth);
+        let push = Arc::new(push);
         let hub = EventHub::new([3; 32]);
         spawn_watcher(push.clone(), hub.clone());
         const MARKER: &str = "zebra-marker-7781";
@@ -794,9 +918,10 @@ mod tests {
     #[tokio::test]
     async fn a_device_showing_the_session_suppresses_the_push_and_so_does_a_quick_ack() {
         use termenbox_core::events::{AgentState, Confidence, EventKind, Source};
-        let (_, _, keys) = device();
+        let (ua, auth, _keys) = device();
         let (url, mut rx) = fake_service(Arc::new(Mutex::new(StatusCode::CREATED))).await;
-        let push = Arc::new(push_for(&url, &keys));
+        let (push, _) = push_for(&url, &ua, &auth);
+        let push = Arc::new(push);
         let hub = EventHub::new([3; 32]);
         spawn_watcher(push.clone(), hub.clone());
         push.set_foreground(1, Some("work".into()));
@@ -853,9 +978,10 @@ mod tests {
     #[tokio::test]
     async fn an_expired_subscription_is_removed_and_a_hint_pushes_nothing() {
         use termenbox_core::events::{AgentState, Confidence, EventKind, Source};
-        let (_, _, keys) = device();
+        let (ua, auth, _keys) = device();
         let (url, mut rx) = fake_service(Arc::new(Mutex::new(StatusCode::GONE))).await;
-        let push = Arc::new(push_for(&url, &keys));
+        let (push, _) = push_for(&url, &ua, &auth);
+        let push = Arc::new(push);
         let hub = EventHub::new([3; 32]);
         spawn_watcher(push.clone(), hub.clone());
         hub.push(
@@ -905,7 +1031,12 @@ mod tests {
         let (_, _, keys) = device();
         let dir = std::env::temp_dir().join(format!("termenbox-push-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let off = Push::new(None, vec![], dir.join("push_subscriptions.json"));
+        let off = Push::new(
+            None,
+            vec![],
+            dir.join("push_subscriptions.json"),
+            EscalationConfig::default(),
+        );
         assert!(off.subscribe(keys.clone()).is_err(), "not set up");
         let (line, _) = new_key_line();
         let v = Vapid::from_private(
@@ -913,7 +1044,12 @@ mod tests {
             "",
         )
         .unwrap();
-        let on = Push::new(Some(v), vec![], dir.join("push_subscriptions.json"));
+        let on = Push::new(
+            Some(v),
+            vec![],
+            dir.join("push_subscriptions.json"),
+            EscalationConfig::default(),
+        );
         assert!(on
             .subscribe(Subscription {
                 endpoint: "https://127.0.0.1/x".into(),
@@ -936,5 +1072,221 @@ mod tests {
         );
         on.unsubscribe(&keys.endpoint);
         assert_eq!(on.subscription_count(), 0);
+    }
+
+    // --- Escalation ladder tests ----------------------------------------------------------------
+
+    /// A one-second ladder, so a real wait is short; `validate` (which forbids it) guards only what a client sends.
+    fn quick_ladder(quiet_hours: Option<String>, muted: &[&str]) -> EscalationConfig {
+        EscalationConfig {
+            initial_wait_secs: 1,
+            max_interval_secs: 1,
+            multiplier: 2.0,
+            quiet_hours,
+            muted_agents: muted.iter().map(|a| a.to_string()).collect(),
+            ..EscalationConfig::default()
+        }
+    }
+
+    fn state(hub: &EventHub, session: &str, state: termenbox_core::events::AgentState, at: u64) {
+        use termenbox_core::events::{Confidence, EventKind, Source};
+        hub.push(
+            session,
+            Source::Hook,
+            Confidence::High,
+            EventKind::State { state },
+            at,
+        );
+    }
+
+    /// The ladder's timing is a pure function of the settings, so it needs no sleeping to prove.
+    #[test]
+    fn the_ladder_grows_by_the_multiplier_up_to_its_cap() {
+        let cfg = EscalationConfig {
+            initial_wait_secs: 600,
+            max_interval_secs: 3600,
+            multiplier: 2.0,
+            ..EscalationConfig::default()
+        };
+        let mut waits = vec![cfg.initial_wait_secs];
+        for _ in 0..4 {
+            waits.push(next_wait(*waits.last().unwrap(), &cfg));
+        }
+        assert_eq!(waits, [600, 1200, 2400, 3600, 3600]);
+    }
+
+    #[tokio::test]
+    async fn a_question_repeats_until_it_is_answered_on_any_device() {
+        use termenbox_core::events::AgentState;
+        let (ua, auth, _) = device();
+        let (url, mut rx) = fake_service(Arc::new(Mutex::new(StatusCode::CREATED))).await;
+        let (push, _) = push_for(&url, &ua, &auth);
+        push.set_config(quick_ladder(None, &[]));
+        let push = Arc::new(push);
+        let hub = EventHub::new([3; 32]);
+        spawn_watcher(push.clone(), hub.clone());
+        state(&hub, "work", AgentState::NeedsInput, 1_000);
+        for rung in 1..=3 {
+            tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("push {rung} never came"))
+                .unwrap();
+        }
+        // The answer, on any device, makes the agent work again and clears the item.
+        state(&hub, "work", AgentState::Working, 1_001);
+        assert!(hub.attention_items().is_empty());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(2500), rx.recv())
+                .await
+                .is_err(),
+            "no push after the answer"
+        );
+    }
+
+    #[tokio::test]
+    async fn answering_one_session_does_not_stop_the_ladder_of_another() {
+        use termenbox_core::events::AgentState;
+        let (ua, auth, _) = device();
+        let (url, mut rx) = fake_service(Arc::new(Mutex::new(StatusCode::CREATED))).await;
+        let (push, _) = push_for(&url, &ua, &auth);
+        push.set_config(quick_ladder(None, &[]));
+        let push = Arc::new(push);
+        let hub = EventHub::new([3; 32]);
+        spawn_watcher(push.clone(), hub.clone());
+        state(&hub, "one", AgentState::NeedsInput, 1_000);
+        state(&hub, "two", AgentState::NeedsInput, 1_000);
+        for _ in 0..2 {
+            tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        state(&hub, "one", AgentState::Working, 1_001);
+        // "two" is still waiting: a later rung arrives, and it names "two".
+        for _ in 0..3 {
+            let (_, body) = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .expect("the other ladder keeps climbing")
+                .unwrap();
+            let plain = String::from_utf8(decrypt(&ua, &auth, &body)).unwrap();
+            if plain.contains("\"session\":\"two\"") {
+                return;
+            }
+        }
+        panic!("no rung for the session still waiting");
+    }
+
+    #[tokio::test]
+    async fn quiet_hours_and_a_muted_agent_suppress_every_push() {
+        use termenbox_core::events::AgentState;
+        let (ua, auth, _) = device();
+        let (url, mut rx) = fake_service(Arc::new(Mutex::new(StatusCode::CREATED))).await;
+        // A window around the real time, so the test needs no clock of its own.
+        let day: u32 = 24 * 60;
+        let minute = (now_ms() / 60_000 % u64::from(day)) as u32;
+        let hhmm = |m: u32| format!("{:02}:{:02}", m % day / 60, m % 60);
+        let around_now = format!("{}-{}", hhmm(minute + day - 60), hhmm(minute + 60));
+        let (push, _) = push_for(&url, &ua, &auth);
+        push.set_config(quick_ladder(Some(around_now), &[]));
+        let push = Arc::new(push);
+        let hub = EventHub::new([3; 32]);
+        spawn_watcher(push.clone(), hub.clone());
+        state(&hub, "work", AgentState::NeedsInput, 1_000);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1500), rx.recv())
+                .await
+                .is_err(),
+            "quiet hours silence the first push and the rungs"
+        );
+        // Out of quiet hours the same ladder speaks, unless the agent is muted.
+        hub.set_agent("work", "claude");
+        push.set_config(quick_ladder(None, &["claude"]));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1500), rx.recv())
+                .await
+                .is_err(),
+            "a muted agent stays silent"
+        );
+        push.set_config(quick_ladder(None, &[]));
+        tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .expect("unmuted, the next rung is heard")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn escalation_payload_no_leak() {
+        use termenbox_core::events::{AgentState, Confidence, EventKind, Source};
+        let (ua, auth, _) = device();
+        let (url, mut rx) = fake_service(Arc::new(Mutex::new(StatusCode::CREATED))).await;
+        let (mut push, _) = push_for(&url, &ua, &auth);
+        push.set_grace(Duration::from_millis(50));
+        let push = Arc::new(push);
+        let hub = EventHub::new([3; 32]);
+        spawn_watcher(push.clone(), hub.clone());
+
+        const MARKER: &str = "escalation-marker-999";
+        hub.push(
+            "work",
+            Source::Hook,
+            Confidence::High,
+            EventKind::Task {
+                title: MARKER.into(),
+            },
+            1_000,
+        );
+        hub.push(
+            "work",
+            Source::Hook,
+            Confidence::High,
+            EventKind::State {
+                state: AgentState::NeedsInput,
+            },
+            1_001,
+        );
+        hub.push(
+            "work",
+            Source::Hook,
+            Confidence::High,
+            EventKind::Message {
+                summary: format!("{MARKER} please approve"),
+            },
+            1_002,
+        );
+
+        // Wait for grace + first push
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        // Check that attention was raised
+        let attention_items = hub.attention_items();
+        assert!(!attention_items.is_empty(), "No attention items raised");
+
+        // Wait for the push to be processed and sent
+        let (_, body) = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Decrypt the body (it's encrypted with AES-GCM)
+        let plain_bytes = decrypt(&ua, &auth, &body);
+        let plain = String::from_utf8_lossy(&plain_bytes);
+
+        // Verify marker text never reaches push
+        assert!(
+            !plain.contains(MARKER),
+            "Marker text leaked in push payload: {plain}"
+        );
+
+        // Verify payload structure
+        let v: serde_json::Value = serde_json::from_str(&plain).unwrap();
+        assert_eq!(v["session"], "work");
+        assert_eq!(v["kind"], "needs_input");
+        // deep_link uses the qualified key (server_id/session); in tests there's no server_id set
+        assert_eq!(v["deep_link"], "/#/home?focus=work");
+        assert!(!v
+            .as_object()
+            .unwrap()
+            .keys()
+            .any(|k| k == "title" || k == "prompt" || k == "summary"));
     }
 }

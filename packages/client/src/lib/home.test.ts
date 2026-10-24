@@ -40,6 +40,15 @@ describe('queue order', () => {
     expect(none.hero).toBeUndefined();
     expect(none.rest).toHaveLength(1);
   });
+  it('puts the session a push named in the hero while it still waits, and falls back to the oldest when it does not', () => {
+    const ss = [sess('a'), sess('b'), sess('c')];
+    const agents = { 's1/a': withAtt('needs_input', 9), 's1/b': withAtt('needs_input', 3), 's1/c': withAtt('failed', 1) };
+    const q = splitQueue(queueOf(ss, agents), 's1/a');
+    expect(q.hero?.name).toBe('a');
+    expect(q.rest.map((r) => r.name)).toEqual(['b', 'c']);
+    expect(splitQueue(queueOf(ss, agents), 's1/c').hero?.name).toBe('b');
+    expect(splitQueue(queueOf(ss, agents), 's1/gone').hero?.name).toBe('b');
+  });
   it('carries what a row shows: task title, server, wait start and the prompt it was read from', () => {
     const prompt = { id: 'p1', kind: 'choice', choices: ['Yes', 'No'], seq: 4, confidence: 'high' };
     const r = rowOf(sess('a'), withAtt('needs_input', 42, { prompt, agent: 'claude' }));

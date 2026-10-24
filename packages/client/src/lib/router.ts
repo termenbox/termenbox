@@ -21,6 +21,16 @@ export function parseRoute(hash: string): Destination | null {
 }
 export const routeHash = (d: Destination) => `#/${d}`;
 
+/** A push's deep link (U11): `#/home?focus=<session key>`, the key percent-encoded. The key, or null for any other hash. */
+export function parseFocusLink(hash: string): string | null {
+  const m = /^#\/home\?focus=([^&]+)$/.exec(hash);
+  if (!m) return null;
+  try {
+    const key = decodeURIComponent(m[1]);
+    return key.length <= 256 ? key : null;
+  } catch { return null; }
+}
+
 export const destination = writable<Destination>(DEFAULT_DESTINATION);
 
 type Win = Pick<Window, 'location' | 'history' | 'addEventListener' | 'removeEventListener'>;

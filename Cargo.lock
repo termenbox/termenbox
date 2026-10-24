@@ -2535,6 +2535,7 @@ dependencies = [
  "hmac",
  "libc",
  "p256",
+ "percent-encoding",
  "portable-pty",
  "qrcode",
  "rand 0.8.8",

@@ -157,6 +157,11 @@ impl SessionManager {
         &self.tmux_version
     }
 
+    /// Returns the push instance if configured.
+    pub fn push(&self) -> Option<&Arc<crate::push::Push>> {
+        self.push.as_ref()
+    }
+
     /// Enables remote uninstall: `server_name` is what the owner must type, `on_uninstalled` stops the server.
     pub fn with_uninstall(
         mut self,
@@ -437,6 +442,7 @@ impl SessionManager {
                         public_key,
                         devices,
                         subscribed: false,
+                        settings: configured,
                     },
                 )
                 .await?;
@@ -461,6 +467,7 @@ impl SessionManager {
                         public_key: p.public_key().unwrap_or_default(),
                         devices: p.subscription_count() as u32,
                         subscribed: p.has(&endpoint),
+                        settings: true,
                     },
                 )
                 .await?;
@@ -475,6 +482,39 @@ impl SessionManager {
                             public_key: p.public_key().unwrap_or_default(),
                             devices: p.subscription_count() as u32,
                             subscribed: false,
+                            settings: p.configured(),
+                        },
+                    )
+                    .await?;
+                }
+            }
+            ClientMessage::PushSettingsGet => {
+                if let Some(p) = &self.push {
+                    let settings = p.get_config();
+                    send_r(tx, &ServerMessage::PushSettings { settings }).await?;
+                } else {
+                    send_r(
+                        tx,
+                        &ServerMessage::PushSettingsRejected {
+                            reason: "Push is not configured on this server".into(),
+                        },
+                    )
+                    .await?;
+                }
+            }
+            ClientMessage::PushSettingsSet { settings } => {
+                if let Some(p) = &self.push {
+                    if let Err(e) = settings.validate() {
+                        send_r(tx, &ServerMessage::PushSettingsRejected { reason: e }).await?;
+                    } else {
+                        p.set_config(settings.clone());
+                        send_r(tx, &ServerMessage::PushSettings { settings }).await?;
+                    }
+                } else {
+                    send_r(
+                        tx,
+                        &ServerMessage::PushSettingsRejected {
+                            reason: "Push is not configured on this server".into(),
                         },
                     )
                     .await?;

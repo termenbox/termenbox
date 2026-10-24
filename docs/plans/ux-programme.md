@@ -45,6 +45,6 @@ One roadmap file per step (the old numbering `U.n` equals `Un` with a zero pad: 
 | [U13](roadmap/archive/U13.md) | Usage and cost view | both | U12 | done (PR #244) |
 | [U14](roadmap/archive/U14.md) | Server health collection and view | both | U04 | done (PR #215) |
 | [U15](roadmap/archive/U15.md) | Desktop workspace: panes and shortcuts | desktop | U05, U08 | done (PR #198) |
-| [U16](roadmap/U16.md) | Real-device gate and the free gate | mobile | U04, U05, U07, U07a, U07b, U07c, U08, U09, U10, U11, U12, U13, U15, R36 | pending |
+| [U16](roadmap/U16.md) | Real-device gate and the free gate | mobile | U04, U05, U07, U07a, U07b, U07c, U08, U09, U10, U12, U13, U15, R36 | pending |
 
 Step header fields, tiers and how to re-enter work are described in `docs/plans/termenbox-roadmap.md`. Legend for the original steps: `‖` marked steps could run in parallel (U03, U14); a step's Done-when is in its file.
