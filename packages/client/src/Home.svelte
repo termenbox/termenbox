@@ -12,7 +12,7 @@
   import { continueTarget, fleetCounts, queueOf, rowOf, Settle, splitQueue, type HomeQueue, type Row } from './lib/home';
 
   /** Home (decision 0100): the oldest waiting decision, the rest of the queue, the four fleet counts and Continue. */
-  let { sessions, agents, servers, now, lastKey, offer, onopen, onanswer, onreply, onservers, onnew, onhook }: {
+  let { sessions, agents, servers, now, lastKey, offer, focusKey = null, onopen, onanswer, onreply, onservers, onnew, onhook }: {
     sessions: HubSession[]; agents: AgentMap; servers: HubServer[]; now: number; lastKey: string | null;
     onopen: (key: string) => void;
     onanswer: (key: string, choice: number, prompt: NonNullable<SessionAgent['prompt']>) => void;
@@ -20,6 +20,8 @@
     onservers: () => void; onnew: (serverId?: string) => void;
     /** The hook offer to show, if one is due (decision 0106), and what the user chose on it. */
     offer?: HookOffer; onhook?: (choice: 'enable' | 'later' | 'never', offer: HookOffer) => void;
+    /** The session a push's deep link named (U11): its decision is shown first and scrolled to, while it still waits. */
+    focusKey?: string | null;
   } = $props();
 
   const FILTERS = ['needs-you', 'working', 'failed', 'finished'] as const;
@@ -34,10 +36,12 @@
 
   const counts = $derived(fleetCounts(sessions, agents));
   const live = $derived.by(() => {
-    const q = splitQueue(queueOf(sessions, agents, unhealthy));
+    const q = splitQueue(queueOf(sessions, agents, unhealthy), focusKey);
     return { ...q, decision: q.hero ? decisionFor(q.hero, agents[q.hero.key], now) : undefined, offerKey: offer ? `${offer.serverId}|${offer.agent}` : undefined };
   });
   const view = $derived.by(() => { beat; return settle.view(live, Date.now()); });
+  let decisionEl = $state<HTMLElement>();
+  $effect(() => { if (focusKey && view.hero?.key === focusKey) decisionEl?.scrollIntoView({ block: 'start' }); });
   const connected = $derived(new Set(servers.filter((s) => s.state === 'connected').map((s) => s.id)));
   const cont = $derived(continueTarget(lastKey, sessions, connected, [...(view.hero ? [view.hero] : []), ...view.rest]));
   const filtered = $derived(filter ? sessions.map((s) => rowOf(s, agents[s.key], unhealthy.has(s.serverId))).filter((r) => r.state === filter) : []);
@@ -75,8 +79,10 @@
       {#if view.hero && view.decision}
         {@const h = view.hero}
         {@const d = view.decision}
-        <DecisionPanel decision={d} {now} server={h.serverName} unhealthy={h.unhealthy}
-          onpick={(i) => d.prompt && onanswer(h.key, i, d.prompt)} onreply={(text) => onreply(h.key, text)} onopen={() => onopen(h.key)} />
+        <div bind:this={decisionEl} data-decision-card={h.key}>
+          <DecisionPanel decision={d} {now} server={h.serverName} unhealthy={h.unhealthy}
+            onpick={(i) => d.prompt && onanswer(h.key, i, d.prompt)} onreply={(text) => onreply(h.key, text)} onopen={() => onopen(h.key)} />
+        </div>
       {/if}
 
       <!-- Inserted only when nothing is being touched (it is part of the settled view), so the queue never jumps under a finger. -->

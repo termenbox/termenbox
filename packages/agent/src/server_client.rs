@@ -166,6 +166,8 @@ impl ServerClient {
             | ServerMessage::Activity { .. }
             | ServerMessage::Attention { .. }
             | ServerMessage::PushInfo { .. }
+            | ServerMessage::PushSettings { .. }
+            | ServerMessage::PushSettingsRejected { .. }
             | ServerMessage::Snapshot { .. }
             | ServerMessage::WindowList { .. }
             | ServerMessage::SessionView { .. }

@@ -22,30 +22,41 @@ self.addEventListener('activate', (event) => {
 const withTimeout = (promise, ms) =>
   Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))]);
 
-// Web Push (decision 0095). The payload is {session, kind, at, tag} and nothing an agent wrote; the words are
-// ours. A newer notification for the same session replaces the older by `tag`.
+// Web Push (decision 0095, U11). The payload is {session, kind, at, tag, deep_link} and nothing
+// an agent wrote; the words are ours. A newer notification for the same session replaces the older by `tag`.
 const WORDS = { needs_input: 'needs you', finished: 'finished', failed: 'failed', attention: 'wants you' };
 self.addEventListener('push', (event) => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch { /* Show the generic text. */ }
   const name = typeof data.session === 'string' ? data.session.slice(0, 64) : 'A session';
   const word = WORDS[data.kind] ?? WORDS.attention;
+  // Only a path inside this app is followed, whatever the payload says.
+  const deepLink = typeof data.deep_link === 'string' && data.deep_link.startsWith('/#/') ? data.deep_link.slice(0, 512) : '/';
   event.waitUntil(
     self.registration.showNotification(`${name} ${word}`, {
       tag: typeof data.tag === 'string' ? data.tag.slice(0, 64) : name,
       renotify: true,
       icon: '/icons/icon-192.png',
-      data: { session: typeof data.session === 'string' ? data.session : '' },
+      data: {
+        session: typeof data.session === 'string' ? data.session : '',
+        deep_link: deepLink,
+      },
     }),
   );
 });
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
+  const deepLink = event.notification.data?.deep_link ?? '/';
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
-      for (const c of list) if ('focus' in c) return c.focus();
-      return self.clients.openWindow('/');
+      for (const c of list) {
+        if ('focus' in c) {
+          // Only the fragment changes, so the running app hears a hashchange and keeps its connections.
+          return c.navigate(deepLink).then(() => c.focus(), () => c.focus());
+        }
+      }
+      return self.clients.openWindow(deepLink);
     }),
   );
 });

@@ -1,8 +1,176 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
+/// The push escalation settings (decision 0104, U11). Seconds, so a client never has to guess the unit.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct PushSettings {
+    /// Wait after the first push before re-notifying.
+    #[serde(default = "default_initial_wait_secs")]
+    pub initial_wait_secs: u64,
+    /// The interval never grows past this.
+    #[serde(default = "default_max_interval_secs")]
+    pub max_interval_secs: u64,
+    /// Applied to the interval after each fire.
+    #[serde(default = "default_multiplier")]
+    pub multiplier: f64,
+    /// `HH:MM-HH:MM` in 24-hour local time; absent or empty disables quiet hours.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quiet_hours: Option<String>,
+    /// Minutes the owner's local time is ahead of UTC (the browser's, saved with the settings): the server keeps UTC.
+    #[serde(default)]
+    pub utc_offset_minutes: i32,
+    /// Agent names whose pushes are silenced.
+    #[serde(default)]
+    pub muted_agents: Vec<String>,
+}
+
+fn default_initial_wait_secs() -> u64 {
+    600
+}
+fn default_max_interval_secs() -> u64 {
+    3600
+}
+fn default_multiplier() -> f64 {
+    2.0
+}
+
+impl Default for PushSettings {
+    fn default() -> Self {
+        Self {
+            initial_wait_secs: default_initial_wait_secs(),
+            max_interval_secs: default_max_interval_secs(),
+            multiplier: default_multiplier(),
+            quiet_hours: None,
+            utc_offset_minutes: 0,
+            muted_agents: Vec::new(),
+        }
+    }
+}
+
+impl PushSettings {
+    /// A rung can be as short as a minute and as long as a week; below a minute the ladder is a notification storm,
+    /// above a week it is not a ladder any more.
+    pub const MIN_WAIT_SECS: u64 = 60;
+    pub const MAX_WAIT_SECS: u64 = 7 * 24 * 60 * 60;
+    pub const MAX_MULTIPLIER: f64 = 10.0;
+    pub const MIN_UTC_OFFSET: i32 = -12 * 60;
+    pub const MAX_UTC_OFFSET: i32 = 14 * 60;
+    pub const MAX_MUTED_AGENTS: usize = 32;
+    pub const MAX_AGENT_NAME: usize = 64;
+
+    /// `(start, end)` minutes since midnight, or `None` when quiet hours are off or unreadable.
+    pub fn quiet_minutes(&self) -> Option<(u32, u32)> {
+        let text = self.quiet_hours.as_deref()?.trim();
+        if text.is_empty() {
+            return None;
+        }
+        let (start, end) = text.split_once('-')?;
+        Some((parse_hhmm(start)?, parse_hhmm(end)?))
+    }
+
+    /// Whether `minutes` (since midnight) falls inside quiet hours; `start == end` means never.
+    pub fn quiet_at(&self, minutes: u32) -> bool {
+        let Some((start, end)) = self.quiet_minutes() else {
+            return false;
+        };
+        if start == end {
+            return false;
+        }
+        if start < end {
+            minutes >= start && minutes < end
+        } else {
+            minutes >= start || minutes < end
+        }
+    }
+
+    /// Whether the owner's local time at `now_ms` (ms since the epoch, UTC) falls inside quiet hours.
+    pub fn quiet_at_ms(&self, now_ms: u64) -> bool {
+        let local = (now_ms / 60_000) as i64 + self.utc_offset_minutes as i64;
+        self.quiet_at(local.rem_euclid(24 * 60) as u32)
+    }
+
+    /// Checks before the value is persisted or used. The reason is safe to show to the owner.
+    pub fn validate(&self) -> Result<(), String> {
+        if !(Self::MIN_WAIT_SECS..=Self::MAX_WAIT_SECS).contains(&self.initial_wait_secs) {
+            return Err(format!(
+                "Re-notify after must be between {} and {} seconds",
+                Self::MIN_WAIT_SECS,
+                Self::MAX_WAIT_SECS
+            ));
+        }
+        if !(self.initial_wait_secs..=Self::MAX_WAIT_SECS).contains(&self.max_interval_secs) {
+            return Err(
+                "Max interval must be at least the re-notify wait and at most a week".into(),
+            );
+        }
+        if !self.multiplier.is_finite()
+            || self.multiplier <= 1.0
+            || self.multiplier > Self::MAX_MULTIPLIER
+        {
+            return Err(format!(
+                "Multiplier must be greater than 1 and at most {}",
+                Self::MAX_MULTIPLIER
+            ));
+        }
+        if let Some(text) = self.quiet_hours.as_deref().map(str::trim) {
+            if !text.is_empty() && self.quiet_minutes().is_none() {
+                return Err("Quiet hours must look like 22:00-07:00".into());
+            }
+        }
+        if !(Self::MIN_UTC_OFFSET..=Self::MAX_UTC_OFFSET).contains(&self.utc_offset_minutes) {
+            return Err("The time zone offset is out of range".into());
+        }
+        if self.muted_agents.len() > Self::MAX_MUTED_AGENTS {
+            return Err(format!("At most {} muted agents", Self::MAX_MUTED_AGENTS));
+        }
+        if self
+            .muted_agents
+            .iter()
+            .any(|a| a.trim().is_empty() || a.len() > Self::MAX_AGENT_NAME)
+        {
+            return Err("Muted agent names must be 1–64 characters".into());
+        }
+        Ok(())
+    }
+
+    /// Repairs a value read from disk instead of refusing it: a hand-edited file must not stop the ladder.
+    pub fn sanitized(mut self) -> Self {
+        self.initial_wait_secs = self
+            .initial_wait_secs
+            .clamp(Self::MIN_WAIT_SECS, Self::MAX_WAIT_SECS);
+        self.max_interval_secs = self
+            .max_interval_secs
+            .clamp(self.initial_wait_secs, Self::MAX_WAIT_SECS);
+        if !self.multiplier.is_finite() || self.multiplier <= 1.0 {
+            self.multiplier = default_multiplier();
+        }
+        self.multiplier = self.multiplier.min(Self::MAX_MULTIPLIER);
+        if self.quiet_minutes().is_none() {
+            self.quiet_hours = None;
+        }
+        self.utc_offset_minutes = self
+            .utc_offset_minutes
+            .clamp(Self::MIN_UTC_OFFSET, Self::MAX_UTC_OFFSET);
+        self.muted_agents = self
+            .muted_agents
+            .into_iter()
+            .map(|a| a.trim().to_string())
+            .filter(|a| !a.is_empty() && a.len() <= Self::MAX_AGENT_NAME)
+            .take(Self::MAX_MUTED_AGENTS)
+            .collect();
+        self
+    }
+}
+
+fn parse_hhmm(text: &str) -> Option<u32> {
+    let (h, m) = text.trim().split_once(':')?;
+    let h: u32 = h.parse().ok()?;
+    let m: u32 = m.parse().ok()?;
+    (h <= 23 && m <= 59).then_some(h * 60 + m)
+}
+
 /// Client → Server (WebSocket)
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
     /// Opens the handshake; the server answers with a `challenge`.
@@ -114,6 +282,12 @@ pub enum ClientMessage {
     },
     /// Asks whether this server can send Web Push, and its public key.
     PushInfo,
+    /// Asks for the server's push escalation settings (U11).
+    PushSettingsGet,
+    /// Replaces the push escalation settings; the answer is `push_settings` or `push_settings_rejected`.
+    PushSettingsSet {
+        settings: PushSettings,
+    },
     /// This device's push subscription (the browser's `PushSubscription` fields).
     PushSubscribe {
         endpoint: String,
@@ -207,7 +381,7 @@ pub enum ClientMessage {
 }
 
 /// Server → Client (WebSocket)
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
     /// Fresh per connection; the device signs it together with the `server_id`.
@@ -309,6 +483,17 @@ pub enum ServerMessage {
         devices: u32,
         /// Whether the asking device's subscription is among them.
         subscribed: bool,
+        /// Whether this server understands `push_settings_get`/`push_settings_set` (U11). Absent from older servers.
+        #[serde(default)]
+        settings: bool,
+    },
+    /// Answers `push_settings_get` and `push_settings_set` with the settings in force.
+    PushSettings {
+        settings: PushSettings,
+    },
+    /// Refuses `push_settings_set`; `reason` is safe to show.
+    PushSettingsRejected {
+        reason: String,
     },
     /// The derived Activity (with task) of every session; answers `agent_sync`, then follows each change.
     Activity {
@@ -742,6 +927,27 @@ impl Display for AgentEventType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quiet_hours_are_read_in_the_owners_local_time() {
+        let night = |offset| PushSettings {
+            quiet_hours: Some("22:00-07:00".into()),
+            utc_offset_minutes: offset,
+            ..PushSettings::default()
+        };
+        let at = |h: u64, m: u64| (h * 60 + m) * 60_000;
+        // 23:30 UTC is 01:30 at +2 (quiet); 12:00 UTC is 14:00 at +2 (awake).
+        assert!(night(0).quiet_at_ms(at(23, 30)));
+        assert!(night(120).quiet_at_ms(at(23, 30)));
+        assert!(!night(120).quiet_at_ms(at(12, 0)));
+        // 05:00 UTC is 23:00 the evening before at -6 (quiet); 14:00 UTC is 08:00 there (awake).
+        assert!(night(-360).quiet_at_ms(at(5, 0)));
+        assert!(!night(-360).quiet_at_ms(at(14, 0)));
+        // 06:30 UTC at +1 is 07:30: the end of the window is exclusive.
+        assert!(!night(60).quiet_at_ms(at(6, 30)));
+        assert!(PushSettings::default().validate().is_ok());
+        assert!(night(15 * 60).validate().is_err());
+    }
 
     /// The browser client speaks these exact strings (packages/client/src/lib/protocol.ts).
     #[test]

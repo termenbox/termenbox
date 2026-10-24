@@ -143,6 +143,7 @@ jobs:
           node e2e/pane.mjs
           node e2e/acp.mjs
           node e2e/hookoffer.mjs
+          node e2e/push-link.mjs
           node e2e/add-server.mjs
           node e2e/pair.mjs
           node e2e/failures.mjs

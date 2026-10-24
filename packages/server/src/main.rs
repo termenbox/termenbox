@@ -1017,6 +1017,7 @@ async fn main() -> anyhow::Result<()> {
         reach = Some(handle);
         let key = Arc::new(directory::ServerKey::load_or_create(&args.config_dir)?);
         info!("Server id {}", key.server_id());
+        push.set_server_id(key.server_id());
         directory::spawn_publisher(
             publishes,
             origin,

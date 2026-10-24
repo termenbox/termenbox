@@ -1099,6 +1099,11 @@ impl EventHub {
         }
     }
 
+    /// The agent name for a session, if known.
+    pub fn agent(&self, session: &str) -> Option<String> {
+        self.agents.lock().unwrap().get(session).cloned()
+    }
+
     pub fn snapshot(&self) -> Vec<SessionAgentState> {
         self.snapshot_at(now_ms())
     }
