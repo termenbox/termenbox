@@ -5,7 +5,7 @@
 // place when switching sessions, streaming that does not move the reader, the keyboard guardrail, and a 360 px phone.
 // Desktop Chromium with mobile emulation: this is NOT an iPhone or an Android check (guardrail a-phone-check-names-its-platform).
 // Usage: node e2e/acp.mjs   (needs a built server, `pnpm run build` and `pnpm run e2e:build`, node, tmux, and Chrome)
-import { launch } from './browser.mjs';
+import { launch, contextOptions, tap } from './browser.mjs';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, statSync } from 'node:fs';
@@ -84,7 +84,7 @@ try {
   browser = await launch(['--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection']);
 
   // The harness page is a second device of the owner: it makes the sessions and sends prompts the phone then shows.
-  const hp = await (await browser.newContext()).newPage();
+  const hp = await (await browser.newContext(contextOptions())).newPage();
   hp.on('pageerror', (e) => fail(`harness page error: ${e.message}`));
   await hp.goto(`http://127.0.0.1:${webPort}/`);
   const cert = mint(await hp.evaluate(() => window.__e2e.deviceKey()), 1, 'alice');
@@ -102,7 +102,7 @@ try {
 
   // ---- The owner's phone, on Home.
   const app = async (viewport, extra = {}) => {
-    const ctx = await browser.newContext({ viewport, isMobile: true, hasTouch: true, ...extra });
+    const ctx = await browser.newContext(contextOptions({ viewport, isMobile: true, hasTouch: true, ...extra }));
     await ctx.addInitScript(() => {
       localStorage.setItem('termenbox_ios_hint', '1');
       // Every peer connection, so a test can cut the transport the way a network drop would.
@@ -169,7 +169,7 @@ try {
   const say = async (p, text) => {
     const field = prompt(p);
     await field.fill(text);
-    await p.getByRole('button', { name: 'Send', exact: true }).tap();
+    await tap(p.getByRole('button', { name: 'Send', exact: true }));
   };
   const idle = (p) => p.waitForFunction(() => !document.querySelector('[data-testid=stop]'), null, { timeout: 30000 });
   const streamText = (p) => p.locator('[data-testid=stream]').innerText();
@@ -184,7 +184,7 @@ try {
   check(!/always|all edits/i.test(cardText), `a standing rule is offered on the card: ${cardText}`);
   const options = await card.locator('[data-hero-options] button').allInnerTexts();
   check(options.length === 2, `the card offers ${options.length} options, not the agent's two one-time ones: ${options}`);
-  await card.locator('[data-hero-options] button').first().tap(); // the one tap
+  await tap(card.locator('[data-hero-options] button').first()); // the one tap
   await waitFor(() => logged().some((m) => m.id >= 9000 && m.result?.outcome), 'the agent got the answer');
   const answers = logged().filter((m) => m.id >= 9000 && m.result);
   check(answers.length === 1 && answers[0].result.outcome.outcome === 'selected' && answers[0].result.outcome.optionId === 'allow-once', `the agent received ${JSON.stringify(answers)}, not exactly allow-once`);
@@ -204,7 +204,7 @@ try {
   // The diff: collapsed behind a 44 pt summary, opened by a tap, shows the added line.
   const diffBtn = toolRow.locator('[data-diff] button[aria-expanded]');
   check((await diffBtn.getAttribute('aria-expanded')) === 'false', 'a diff opens by itself');
-  await diffBtn.tap();
+  await tap(diffBtn);
   await toolRow.locator('[data-diff] pre').waitFor();
   check((await toolRow.locator('[data-diff] pre').innerText()).includes('+ hi'), 'the diff does not show the added line');
   check(await page.locator('[data-testid=context]').isVisible(), 'the context meter is missing');
@@ -224,7 +224,7 @@ try {
   check((await page.locator('[data-testid=stream] [data-diff]').count()) === 2, 'the diff is not shown exactly once while the permission is open (one in the card, one in the earlier, finished tool)');
   const bigEnough = await inline.locator('[data-hero-options] button').evaluateAll((b) => b.every((x) => x.getBoundingClientRect().height >= 43.5));
   check(bigEnough, 'inline option buttons under 44 pt');
-  await inline.getByRole('button', { name: 'No', exact: true }).tap();
+  await tap(inline.getByRole('button', { name: 'No', exact: true }));
   await page.locator('[data-kind=permission][data-state=answered]').filter({ hasText: 'Rejected · No' }).waitFor({ timeout: 15000 });
   await idle(page);
   check(logged().filter((m) => m.id >= 9000 && m.result?.outcome?.optionId === 'reject').length === 1, 'the agent did not receive exactly the rejecting option id');
@@ -233,7 +233,7 @@ try {
   await inline.waitFor({ timeout: 15000 });
   const shellText = await inline.innerText();
   check(shellText.includes('Wants to run a command') && shellText.includes('ls /etc') && !/always/i.test(shellText), `the shell request card is wrong: ${shellText}`);
-  await inline.getByRole('button', { name: 'Allow once' }).tap();
+  await tap(inline.getByRole('button', { name: 'Allow once' }));
   await page.locator('[data-kind=message]').filter({ hasText: 'Listed /etc.' }).waitFor({ timeout: 15000 });
   await idle(page);
   ok('inline permission: the same card as Home, with the diff in it, kind in words and only one-time options; the answer ends as the agent recorded it');
@@ -246,13 +246,13 @@ try {
 
   // 4. Slash commands from available_commands_update.
   const field = prompt(page);
-  await field.tap();
+  await tap(field);
   await field.fill('/des');
   const list = page.getByRole('listbox', { name: 'Commands' });
   await list.waitFor();
   check((await list.innerText()).includes('/design'), 'the agent\'s own /design is not offered');
   check((await list.locator('button').evaluateAll((b) => b.every((x) => x.getBoundingClientRect().height >= 43.5))), 'completion targets under 44 pt');
-  await list.getByRole('button', { name: /design/ }).tap();
+  await tap(list.getByRole('button', { name: /design/ }));
   check((await field.inputValue()) === '/design ', `choosing a command left "${await field.inputValue()}"`);
   await field.fill('');
   ok('slash commands: typing / offers the agent\'s own commands (with 44 pt targets) and a tap completes one');
@@ -270,7 +270,7 @@ try {
   await say(page, 'stream');
   await stop.waitFor();
   await page.locator('[data-kind=message]').filter({ hasText: 'token-3' }).last().waitFor();
-  await stop.tap();
+  await tap(stop);
   await waitFor(async () => (await page.locator('[data-kind=notice]').filter({ hasText: 'Interrupted' }).count()) === 2, 'the second interrupt');
   await idle(page);
   check(logged().filter((m) => m.method === 'session/cancel').length === 2, 'the Stop key did not send session/cancel');
@@ -309,9 +309,9 @@ try {
   const after6 = await visibleEntry();
   check(after6.id === before.id && Math.abs(after6.top - before.top) <= 1, `the stream moved under the reader while a turn streamed: ${JSON.stringify(before)} -> ${JSON.stringify(after6)}`);
   await latest.waitFor();
-  await latest.tap();
+  await tap(latest);
   await waitFor(() => streamBox.evaluate((e) => e.scrollHeight - e.scrollTop - e.clientHeight < 60), 'Latest takes the view to the end');
-  await stop.tap();
+  await tap(stop);
   await idle(page);
   ok('streaming: scrolled away from the end, the view holds still while the turn streams; Latest returns to the end');
 
@@ -323,7 +323,7 @@ try {
   const mdLinks = await page.locator('[data-kind=message] a').evaluateAll((a) => a.map((x) => [x.getAttribute('href'), x.rel, x.target]));
   check(mdLinks.some(([h, r, t]) => h === 'https://example.com/spec' && r.includes('noopener') && t === '_blank'), `the link is not a safe web link: ${JSON.stringify(mdLinks)}`);
   check((await page.locator('[data-kind=message] figure pre').count()) >= 1 && (await page.locator('[data-kind=message] h1, [data-kind=message] [role=heading]').count()) >= 1, 'the markdown reply lacks its code block or heading');
-  await page.getByRole('button', { name: 'Search this session' }).tap();
+  await tap(page.getByRole('button', { name: 'Search this session' }));
   const q = page.getByRole('searchbox', { name: 'Search this session' });
   await q.fill('lex');
   const count = page.getByTestId('matches');
@@ -333,9 +333,9 @@ try {
   await q.press('Enter');
   await waitFor(async () => (await count.innerText()).trim() === '2 / 3', 'next hit');
   await waitFor(() => visible('mark[data-current]'), 'the second hit scrolls into view');
-  await page.getByRole('button', { name: 'Next match' }).tap();
+  await tap(page.getByRole('button', { name: 'Next match' }));
   await waitFor(async () => (await count.innerText()).trim() === '3 / 3', 'third hit');
-  await page.getByRole('button', { name: 'Next match' }).tap();
+  await tap(page.getByRole('button', { name: 'Next match' }));
   await waitFor(async () => (await count.innerText()).trim() === '1 / 3', 'wrap-around to the first');
   await q.fill('zzzzqq');
   await waitFor(async () => (await count.innerText()).trim() === 'No matches', 'no matches is said');
@@ -375,7 +375,7 @@ try {
   await idle(page);
 
   // 9. Reload restores the view: the stream, the draft, and the place.
-  await field.tap();
+  await tap(field);
   await field.fill('half-typed prompt');
   await sleep(600);
   await streamBox.evaluate((e) => { e.scrollTop = Math.max(0, e.scrollHeight / 3); });
@@ -400,7 +400,7 @@ try {
   // 10. Companion shell: a plain tmux session in the session's directory, one tap, the same one the second time.
   const shellBtn = page.getByTestId('shell');
   check((await shellBtn.boundingBox()).height >= 43.5, 'the Shell key is under 44 pt');
-  await shellBtn.tap();
+  await tap(shellBtn);
   await page.locator('.xterm').waitFor({ timeout: 20000 });
   await waitFor(async () => (await sessions()).some((s) => s.id === 'tmux:work-shell'), 'the companion tmux session');
   await send({ type: 'attach', session_id: 'tmux:work-shell' });
@@ -409,7 +409,7 @@ try {
   await waitFor(() => hp.evaluate((d) => window.__e2e.output.includes(d), work), `the shell starts in ${work}`);
   await send({ type: 'detach' });
   await openSession(page, 'work');
-  await page.getByTestId('shell').tap();
+  await tap(page.getByTestId('shell'));
   await page.locator('.xterm').waitFor();
   check((await sessions()).filter((s) => s.id === 'tmux:work-shell').length === 1, 'a second tap made a second shell');
   ok('companion shell: one tap opens a plain tmux session in the ACP session\'s directory; the next tap opens the same one');
@@ -430,7 +430,7 @@ try {
   await sleep(800);
   check((await termBytes()) === t2, `the shell kept streaming to the phone after the ACP view opened (${(await termBytes()) - t2} bytes)`);
   await send({ type: 'detach' });
-  await page.getByTestId('shell').tap(); // back to the shell, where the next step starts
+  await tap(page.getByTestId('shell')); // back to the shell, where the next step starts
   await page.locator('.xterm').waitFor();
   ok('leaving a terminal for an ACP session detaches it: the shell\'s output reaches the phone before, and stops after');
 
@@ -509,7 +509,7 @@ try {
   const flush = (d) => within(d) && d.viewBottom - d.keys.bottom <= 30;
   check(within(await dock()), `the prompt and key row are outside the view with no keyboard: ${JSON.stringify(await dock())}`);
   check((await dock()).field.height <= 50, `the prompt line is ${(await dock()).field.height} px tall when empty (its hint wraps?)`);
-  await sp.locator('textarea[aria-label=Prompt]').tap();
+  await tap(sp.locator('textarea[aria-label=Prompt]'));
   await sp.evaluate(() => window.__vv({ height: 740 - 336 }, 'resize'));
   await sleep(300);
   check(flush(await dock()), `the keyboard covers the prompt or the key row: ${JSON.stringify(await dock())}`);

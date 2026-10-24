@@ -2,7 +2,7 @@
 // answered with one tap on an option, or with a typed reply, without opening the terminal; the card stays (and says it
 // is waiting) until the server clears Attention. Desktop Chromium with mobile emulation: not an iPhone or Android check.
 // Usage: node e2e/decision.mjs   (needs the e2e harness built: pnpm e2e:build; CHROME_PATH for the browser)
-import { launch } from './browser.mjs';
+import { launch, contextOptions, tap } from './browser.mjs';
 import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, extname } from 'node:path';
@@ -21,7 +21,7 @@ const browser = await launch();
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const small = (page, sel) => page.$$eval(sel, (els) => els.filter((e) => e.getBoundingClientRect().height < 43.5 || e.getBoundingClientRect().width < 43.5).map((e) => e.getAttribute('aria-label') || e.textContent.trim().slice(0, 20)));
 try {
-  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const ctx = await browser.newContext(contextOptions({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }));
   const open = async (path, ready) => {
     const page = await ctx.newPage();
     page.on('pageerror', (e) => fail(`page error: ${e.message}`));
@@ -45,7 +45,7 @@ try {
 
   // One tap on an option sends that option and nothing else; the card waits for the server.
   await home.evaluate(() => { window.__home.answers.length = 0; });
-  await card.locator('[data-hero-options] button').nth(1).tap();
+  await tap(card.locator('[data-hero-options] button').nth(1));
   const answers = await home.evaluate(() => window.__home.answers);
   if (!eq(answers, [{ type: 'answer', session: 'alpha/s4', prompt_id: 'p4', seq: 11, choice: 1 }])) fail(`answer: ${JSON.stringify(answers)}`);
   await home.waitForTimeout(600);
@@ -53,7 +53,7 @@ try {
   if (!(await card.locator('[data-decision-status]').innerText()).includes('Waiting for the agent')) fail('the card does not say it is waiting');
   const disabled = await card.locator('[data-hero-options] button').evaluateAll((els) => els.map((e) => e.disabled));
   if (!disabled.every(Boolean)) fail('the options are still tappable while the answer is in flight');
-  await card.locator('[data-hero-options] button').first().tap({ force: true }).catch(() => {});
+  await tap(card.locator('[data-hero-options] button').first(), { force: true }).catch(() => {});
   if ((await home.evaluate(() => window.__home.answers.length)) !== 1) fail('a second tap sent a second answer');
   console.log('ok  Home: one tap sends exactly that option; the card stays, says it waits, and cannot be answered twice');
 
@@ -67,7 +67,7 @@ try {
   const input = card.getByLabel('Write a reply');
   await input.waitFor();
   await input.fill('run the tests first');
-  await card.getByRole('button', { name: 'Send', exact: true }).tap();
+  await tap(card.getByRole('button', { name: 'Send', exact: true }));
   const replies = await home.evaluate(() => window.__home.replies);
   if (!eq(replies, [{ type: 'reply', session: 'beta/s1', text: 'run the tests first' }])) fail(`reply: ${JSON.stringify(replies)}`);
   if ((await home.evaluate(() => window.__home.opened)).length) fail('the terminal was opened to answer');
@@ -87,7 +87,7 @@ try {
   const icard = inbox.getByRole('region', { name: 'Decision' });
   const itext = await icard.innerText();
   for (const w of ['api', 'Move login to the session store', 'Waiting 4 min', 'Allow the edit?', 'src/auth/session.ts +12 -3', 'Structured']) if (!itext.includes(w)) fail(`the inbox card lacks "${w}"`);
-  await icard.getByRole('button', { name: 'Yes', exact: true }).tap();
+  await tap(icard.getByRole('button', { name: 'Yes', exact: true }));
   if (!eq(await inbox.evaluate(() => window.__decision.sent), [{ type: 'answer', session: 'srv/api', prompt_id: 'p1', seq: 3, choice: 0 }])) fail('inbox answer');
   await inbox.waitForTimeout(400);
   if (await icard.count() !== 1) fail('the inbox card resolved before Attention cleared');
@@ -102,12 +102,12 @@ try {
   const scard = sv.getByRole('region', { name: 'Decision' });
   const stext = await scard.innerText();
   for (const w of ['Allow the edit?', 'Waiting 4 min', 'Move login to the session store', 'The agent is about to use Edit', 'Structured']) if (!stext.includes(w)) fail(`the session card lacks "${w}"`);
-  await scard.getByRole('button', { name: 'No', exact: true }).tap();
+  await tap(scard.getByRole('button', { name: 'No', exact: true }));
   if (!eq(await sv.evaluate(() => window.__decision.sent), [{ type: 'session_answer', session: 'api', prompt_id: 'p1', option: 2 }])) fail('session answer');
   await sv.waitForTimeout(400);
   if (await scard.count() !== 1) fail('the session card resolved before Attention cleared');
   await sv.getByLabel('Send a line').fill('thanks, carry on');
-  await sv.getByRole('button', { name: 'Send', exact: true }).tap();
+  await tap(sv.getByRole('button', { name: 'Send', exact: true }));
   const sent = await sv.evaluate(() => window.__decision.sent);
   if (!eq(sent[1], { type: 'reply', session: 'api', text: 'thanks, carry on' }) || sent.some((m) => m.terminal)) fail(`session reply: ${JSON.stringify(sent)}`);
   await sv.evaluate(() => window.__decision.clear());

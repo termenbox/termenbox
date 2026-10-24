@@ -95,9 +95,9 @@ export async function startShared() {
 
 let scenarios = 0;
 
-export async function startApp(shared, { viewport, storage = {}, blockedStorage = false, clipboard = false, server = new ScriptedServer() } = {}) {
+export async function startApp(shared, { viewport, deviceScaleFactor, storage = {}, blockedStorage = false, clipboard = false, server = new ScriptedServer() } = {}) {
   const { origin, browser } = shared;
-  const ctx = await browser.newContext(contextOptions({ viewport, isMobile: false, hasTouch: false, ...(clipboard && ENGINE === 'chromium' ? { permissions: ['clipboard-read', 'clipboard-write'] } : {}) }));
+  const ctx = await browser.newContext(contextOptions({ viewport, ...(deviceScaleFactor ? { deviceScaleFactor } : {}), isMobile: false, hasTouch: false, ...(clipboard && ENGINE === 'chromium' ? { permissions: ['clipboard-read', 'clipboard-write'] } : {}) }));
   const label = `${basename(process.argv[1], '.mjs')}-${++scenarios}`;
   await trace(ctx, label);
   const seed = { termenbox_auth: JSON.stringify({ cert, login: 'tester' }), termenbox_ios_hint: '1',

@@ -2,7 +2,7 @@
 // structured view, crossing 720 px, and the keyboard shortcuts. Runs from desktop.mjs; see app-lib.mjs for what the
 // scripted server stands in for.
 import { startShared, startApp, CLAUDE_PROMPT } from './app-lib.mjs';
-import { DPR } from './browser.mjs';
+import { DPR, viewport } from './browser.mjs';
 
 const WORKSPACE = 'termenbox_workspace';
 const WIDTHS = [721, 1024, 1440, 1920];
@@ -653,6 +653,44 @@ async function clipboardDenied(shared) {
   return ok;
 }
 
+/**
+ * Browser zoom at 200%, as a half-size viewport at twice the pixel ratio (that is what zoom does to CSS pixels). The window
+ * is 1440x900 or 1024x768 (E2E_VIEWPORT) and then 720x450 or 512x384: the phone layout starts at 720 px, so both zoomed
+ * sizes are phones. The same page goes through the change, so it also proves the xterm is kept. A real browser's zoom is
+ * checked by hand (docs/skills/browser-support-check.md).
+ */
+async function zoom200(shared) {
+  const full = viewport('1280x800');
+  const half = { width: Math.round(full.width / 2), height: Math.round(full.height / 2) };
+  const t = await startApp(shared, { viewport: full, deviceScaleFactor: DPR * 2 });
+  const { page } = t;
+  await t.open();
+  await t.openSession('s1');
+  await page.evaluate(() => { window.__xterm = document.querySelector('.xterm'); });
+  const since = t.server.of('resize').length;
+  await page.setViewportSize(half);
+  const size = await nextSize(t, since, `at ${half.width}x${half.height} `);
+  await page.waitForTimeout(500);
+  t.check((await page.evaluate(() => devicePixelRatio)) === DPR * 2, `zoom: the pixel ratio is not ${DPR * 2}`);
+  t.check((await page.locator('[data-shell=sidebar]').count()) === 0 && (await page.locator('[data-shell=bottom-bar]').count()) === 1, `zoom: ${half.width} px is not the phone layout`);
+  t.check((await t.overflow()) <= 0, `zoom: ${half.width}x${half.height} overflows sideways`);
+  t.check(size.cols >= 10 && size.rows >= 3, `zoom: the terminal fits ${size.cols}x${size.rows} in ${half.width}x${half.height}`);
+  const fit = await page.evaluate(() => {
+    const r = document.querySelector('.xterm-screen').getBoundingClientRect();
+    return { inside: r.right <= innerWidth + 1 && r.bottom <= innerHeight + 1, same: document.querySelector('.xterm') === window.__xterm };
+  });
+  t.check(fit.inside, 'zoom: the terminal spills out of the window');
+  t.check(fit.same, 'zoom: the xterm was rebuilt by the zoom');
+  // Typing still reaches the shell.
+  await page.locator('.xterm-helper-textarea').focus();
+  await page.keyboard.type('zoomed');
+  await page.waitForTimeout(300);
+  t.check(typedBytes(t.server).join('').includes('zoomed'), 'zoom: typing did not reach the server');
+  const ok = await t.end();
+  if (ok) t.ok(`200% zoom (${full.width}x${full.height} -> ${half.width}x${half.height} @${DPR * 2}x): phone layout, terminal fits ${size.cols}x${size.rows}, no sideways scroll, same xterm, typing works`);
+  return ok;
+}
+
 export async function realApp() {
   const shared = await startShared();
   const results = [];
@@ -667,6 +705,7 @@ export async function realApp() {
     results.push(await copyFromServer(shared));
     results.push(await resizeWhileActive(shared));
     results.push(await clipboardDenied(shared));
+    results.push(await zoom200(shared));
     results.push(await phone(shared));
   } finally {
     await shared.stop();

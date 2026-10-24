@@ -3,7 +3,7 @@
 // and removing it, and the session reaching T1 once the hook entry that was written is run. A stand-in `claude` (a copy of
 // `sleep` under that name) is what the server's process scan detects; the settings file lives in a private HOME.
 // Usage: node e2e/hookoffer.mjs   (needs a built server, `pnpm run build` and `pnpm run e2e:build`, and Chrome)
-import { launch } from './browser.mjs';
+import { launch, contextOptions } from './browser.mjs';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, existsSync, rmSync, mkdirSync, copyFileSync, statSync, writeFileSync } from 'node:fs';
@@ -92,7 +92,7 @@ try {
   browser = await launch(['--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection']);
 
   // The harness page plays the agent's shell: window 0 is a shell, window 1 runs the stand-in `claude`.
-  const hp = await (await browser.newContext()).newPage();
+  const hp = await (await browser.newContext(contextOptions())).newPage();
   hp.on('pageerror', (e) => fail(`harness page error: ${e.message}`));
   await hp.goto(`http://127.0.0.1:${webPort}/`);
   const cert = mint(await hp.evaluate(() => window.__e2e.deviceKey()), 1, 'alice');
@@ -118,7 +118,7 @@ try {
   await hp.evaluate((l) => window.__e2e.type(l), `${fakeBin}/claude 3000\r`);
 
   // The real app, on a phone.
-  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const ctx = await browser.newContext(contextOptions({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }));
   await ctx.addInitScript(() => localStorage.setItem('termenbox_ios_hint', '1'));
   const page = await ctx.newPage();
   const errors = [];
