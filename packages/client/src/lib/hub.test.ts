@@ -296,4 +296,20 @@ describe('ServerHub candidate bundles (decision 0123)', () => {
     expect(get(hub.servers)[0].path).toBe('Direct, LAN');
     expect(saved.at(-1)?.winner).toBe('lan 10.0.0.2:4443');
   });
+  it('shows a new name at once, sends it with the server-local id, and asks for the list again to settle it', () => {
+    vi.useFakeTimers();
+    const { hub, connections } = setup();
+    hub.start([server('a')]);
+    connections[0].ready();
+    connections[0].emit({ type: 'sessions', sessions: [{ id: 'one', name: 'one', agent: null }] });
+    hub.rename(serverKey(server('a')) + '/one', 'renamed');
+    expect(get(hub.allSessions).map(s => s.name)).toEqual(['renamed']);
+    expect(connections[0].sent).toContainEqual({ type: 'rename_session', session: 'one', name: 'renamed' });
+    vi.advanceTimersByTime(2100);
+    expect(connections[0].sent.at(-1)).toEqual({ type: 'list_sessions' });
+    // The server's own list is the truth: a refusal brings the old name back.
+    connections[0].emit({ type: 'sessions', sessions: [{ id: 'one', name: 'one', agent: null }] });
+    expect(get(hub.allSessions).map(s => s.name)).toEqual(['one']);
+    vi.useRealTimers();
+  });
 });

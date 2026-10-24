@@ -135,7 +135,9 @@ export default {
             toolName = tools.get(toolKey(data));
             if (event.type !== "session.tool.called") tools.delete(toolKey(data));
           }
-          if (FORWARD.has(event.type)) send({ type: event.type, data: compact(event.type, data, toolName) });
+          // One OpenCode service can serve several TUIs, so the frame says which conversation it is about; the server
+          // places the conversation in the tmux session whose TUI it is.
+          if (FORWARD.has(event.type)) send({ type: event.type, sessionID: typeof data.sessionID === "string" ? data.sessionID : undefined, data: compact(event.type, data, toolName) });
         }
       } catch {
         // A closed subscription is an OpenCode shutdown, not an error to report.
@@ -342,6 +344,24 @@ pub fn supported(agent: &str) -> bool {
     agent == "opencode"
 }
 
+/// Brings a plugin the owner already connected up to the current template. The owner agreed to the plugin when they
+/// connected it; a server upgrade keeps it working the way `--connect-opencode` would write it. Nothing is written
+/// when OpenCode has no plugin of ours, or when it is current.
+pub fn refresh(t: &Target) -> Option<Outcome> {
+    let plugin = if t.auto {
+        default_plugin_path()
+    } else {
+        t.plugin.clone()
+    };
+    if !is_connected(&plugin) {
+        return None;
+    }
+    if std::fs::read_to_string(&plugin).is_ok_and(|text| text == plugin_source(&t.binary)) {
+        return None;
+    }
+    connect(&plugin, &t.binary, &t.state_dir, true).ok()
+}
+
 /// Handles one `status`, `preview`, `apply` or `remove` for `agent`. File contents never leave this function
 /// except as the preview the owner asked for; callers log the event only.
 pub fn respond(target: Option<&Target>, agent: &str, action: &str) -> Reply {
@@ -392,7 +412,7 @@ pub fn respond(target: Option<&Target>, agent: &str, action: &str) -> Reply {
 }
 
 /// With `apply == false` only the preview is returned (the dry run the guardrail asks for).
-pub fn connect(plugin: &Path, binary: &str, state_dir: &Path, apply: bool) -> Result<Outcome> {
+fn connect_plugin(plugin: &Path, binary: &str, state_dir: &Path, apply: bool) -> Result<Outcome> {
     let before = std::fs::read(plugin).ok();
     let text = planned_text(plugin, binary)?;
     if !apply {
@@ -445,7 +465,7 @@ pub fn connect(plugin: &Path, binary: &str, state_dir: &Path, apply: bool) -> Re
 
 /// Restores the original file when only we have changed it since; otherwise removes our plugin file. A file the
 /// owner edited after we wrote it is left in place (with the journal), so their edit is not destroyed.
-pub fn disconnect(plugin: &Path, state_dir: &Path) -> Result<Outcome> {
+fn disconnect_plugin(plugin: &Path, state_dir: &Path) -> Result<Outcome> {
     let jp = journal_path(state_dir);
     let journal: Option<Value> = std::fs::read_to_string(&jp)
         .ok()
@@ -490,6 +510,156 @@ pub fn disconnect(plugin: &Path, state_dir: &Path) -> Result<Outcome> {
         "{} changed since Termenbox wrote it; leaving it in place. Remove it by hand, then run --disconnect-opencode again.",
         plugin.display()
     ))
+}
+
+/// The two OpenCode keys the rebind sets: Ctrl+A selects all in the prompt (the terminal's select-all, which the client
+/// passes through while the user is in the prompt), and the start of the line moves to Home. OpenCode's own default for
+/// select-all is Super+A, which a terminal never delivers.
+const KEYBINDS: [(&str, &str); 2] = [("input_select_all", "ctrl+a"), ("input_line_home", "home")];
+
+/// OpenCode reads its keybindings from `tui.json` in the config directory, next to `plugins/`.
+fn tui_path(plugin: &Path) -> Option<PathBuf> {
+    Some(plugin.parent()?.parent()?.join("tui.json"))
+}
+
+fn keys_journal_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("opencode-keys.json")
+}
+
+/// The `tui.json` text with the rebind, or why it is left alone: a file that is not plain JSON (OpenCode accepts
+/// comments), that is not an object, or where the owner already chose either key is not ours to edit.
+fn planned_keys(current: Option<&str>) -> std::result::Result<String, String> {
+    let mut doc: Value = match current {
+        None => json!({}),
+        Some(text) => match serde_json::from_str(text) {
+            Ok(v @ Value::Object(_)) => v,
+            _ => return Err("tui.json is not a plain JSON object".into()),
+        },
+    };
+    let keybinds = doc
+        .as_object_mut()
+        .expect("an object")
+        .entry("keybinds")
+        .or_insert_with(|| json!({}));
+    let Some(keybinds) = keybinds.as_object_mut() else {
+        return Err("tui.json has keybinds that are not an object".into());
+    };
+    if let Some((key, _)) = KEYBINDS.iter().find(|(k, _)| keybinds.contains_key(*k)) {
+        return Err(format!("tui.json already sets {key}"));
+    }
+    for (k, v) in KEYBINDS {
+        keybinds.insert(k.into(), json!(v));
+    }
+    Ok(serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())? + "\n")
+}
+
+/// Applies (or, with `apply == false`, describes) the rebind. The note says what happened or why nothing did.
+fn connect_keys(plugin: &Path, state_dir: &Path, apply: bool) -> String {
+    let Some(path) = tui_path(plugin) else {
+        return "Keys: no config directory; Ctrl+A is unchanged.".into();
+    };
+    let before = std::fs::read(&path).ok();
+    let current = match &before {
+        Some(b) => match std::str::from_utf8(b) {
+            Ok(t) => Some(t),
+            Err(_) => return format!("Keys: {} is not text; Ctrl+A is unchanged.", path.display()),
+        },
+        None => None,
+    };
+    let text = match planned_keys(current) {
+        Ok(t) => t,
+        Err(why) => return format!("Keys: {why}; Ctrl+A is unchanged."),
+    };
+    if !apply {
+        return format!(
+            "Would also make Ctrl+A select all in the OpenCode prompt, with Home as the start of the line, in {} (a backup is kept):\n{}",
+            path.display(),
+            text
+        );
+    }
+    let write = || -> Result<()> {
+        std::fs::create_dir_all(state_dir)?;
+        let backup = state_dir.join("opencode-tui.backup");
+        match &before {
+            Some(b) => std::fs::write(&backup, b)?,
+            None => {
+                let _ = std::fs::remove_file(&backup);
+            }
+        }
+        let tmp = path.with_extension("json.termenbox-tmp");
+        std::fs::write(&tmp, &text)?;
+        std::fs::rename(&tmp, &path)?;
+        let entry = json!({
+            "path": path.display().to_string(),
+            "existed": before.is_some(),
+            "backup": backup.display().to_string(),
+            "after_sha256": sha(text.as_bytes()),
+        });
+        std::fs::write(
+            keys_journal_path(state_dir),
+            serde_json::to_string_pretty(&entry)?,
+        )?;
+        Ok(())
+    };
+    match write() {
+        Ok(()) => format!(
+            "Keys: Ctrl+A selects all in the OpenCode prompt and Home goes to the start of the line ({}).",
+            path.display()
+        ),
+        Err(e) => format!("Keys: could not write {}: {e}", path.display()),
+    }
+}
+
+/// Undoes the rebind when `tui.json` is still exactly what we wrote; a file the owner edited since is left alone.
+fn disconnect_keys(state_dir: &Path) -> Option<String> {
+    let jp = keys_journal_path(state_dir);
+    let j: Value = serde_json::from_str(&std::fs::read_to_string(&jp).ok()?).ok()?;
+    let path = PathBuf::from(j["path"].as_str()?);
+    let note = match std::fs::read(&path) {
+        Err(_) => "Keys: tui.json is gone; nothing to restore.".to_string(),
+        Ok(cur) if j["after_sha256"].as_str() != Some(sha(&cur).as_str()) => {
+            return Some(format!(
+                "Keys: {} changed since Termenbox wrote it; left in place (remove the two keybinds by hand).",
+                path.display()
+            ))
+        }
+        Ok(_) if j["existed"] == json!(true) => {
+            match std::fs::copy(j["backup"].as_str().unwrap_or_default(), &path) {
+                Ok(_) => "Keys: tui.json is back to what it was.".into(),
+                Err(e) => return Some(format!("Keys: could not restore {}: {e}", path.display())),
+            }
+        }
+        Ok(_) => match std::fs::remove_file(&path) {
+            Ok(()) => "Keys: tui.json removed.".into(),
+            Err(e) => return Some(format!("Keys: could not remove {}: {e}", path.display())),
+        },
+    };
+    let _ = std::fs::remove_file(&jp);
+    Some(note)
+}
+
+/// With `apply == false` only the preview is returned (the dry run the guardrail asks for). The plugin is the change;
+/// the key rebind rides along and never fails the connect.
+pub fn connect(plugin: &Path, binary: &str, state_dir: &Path, apply: bool) -> Result<Outcome> {
+    let mut out = connect_plugin(plugin, binary, state_dir, apply)?;
+    let keys = connect_keys(plugin, state_dir, apply);
+    if !apply {
+        // The "run again" line stays last.
+        let (body, tail) = out.0.rsplit_once("\nRun again").unwrap_or((&out.0, ""));
+        out.0 = format!("{body}\n\n{keys}\nRun again{tail}");
+    } else {
+        out.0 = format!("{}\n{keys}", out.0);
+    }
+    Ok(out)
+}
+
+/// Removes the plugin and, if Termenbox rebound the keys, puts them back.
+pub fn disconnect(plugin: &Path, state_dir: &Path) -> Result<Outcome> {
+    let mut out = disconnect_plugin(plugin, state_dir);
+    if let (Ok(o), Some(note)) = (&mut out, disconnect_keys(state_dir)) {
+        o.0 = format!("{}\n{note}", o.0);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -758,6 +928,66 @@ mod tests {
             respond(Some(&t), "opencode", "remove").state,
             "not_connected"
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_key_rebind_is_added_to_a_plain_config_and_left_alone_otherwise() {
+        let new = planned_keys(None).unwrap();
+        assert!(
+            new.contains("\"input_select_all\": \"ctrl+a\"")
+                && new.contains("\"input_line_home\": \"home\"")
+        );
+        let kept = planned_keys(Some(r#"{"theme":"x","keybinds":{"leader":"ctrl+b"}}"#)).unwrap();
+        assert!(
+            kept.contains("\"theme\"")
+                && kept.contains("\"leader\"")
+                && kept.contains("input_select_all")
+        );
+        assert!(
+            planned_keys(Some("// a comment\n{}")).is_err(),
+            "comments: not plain JSON"
+        );
+        assert!(planned_keys(Some("[]")).is_err());
+        assert!(
+            planned_keys(Some(r#"{"keybinds":{"input_line_home":"ctrl+a"}}"#)).is_err(),
+            "the owner chose it"
+        );
+    }
+
+    #[test]
+    fn connect_rebinds_the_keys_and_disconnect_puts_tui_json_back() {
+        let d = tmpdir("keys");
+        let plugin = d.join("cfg/plugins/termenbox.js");
+        let state = d.join("state");
+        let tui = d.join("cfg/tui.json");
+        std::fs::create_dir_all(d.join("cfg")).unwrap();
+        std::fs::write(&tui, r#"{"theme":"x"}"#).unwrap();
+        let preview = connect(&plugin, BIN, &state, false).unwrap().0;
+        assert!(
+            preview.contains("select all") && preview.trim_end().ends_with("--yes to apply."),
+            "{preview}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&tui).unwrap(),
+            r#"{"theme":"x"}"#,
+            "a preview writes nothing"
+        );
+        connect(&plugin, BIN, &state, true).unwrap();
+        let written = std::fs::read_to_string(&tui).unwrap();
+        assert!(written.contains("input_select_all") && written.contains("\"theme\""));
+        disconnect(&plugin, &state).unwrap();
+        assert_eq!(std::fs::read_to_string(&tui).unwrap(), r#"{"theme":"x"}"#);
+        assert!(!keys_journal_path(&state).exists());
+        // Absent before: removed again. Edited since: left alone.
+        std::fs::remove_file(&tui).unwrap();
+        connect(&plugin, BIN, &state, true).unwrap();
+        disconnect(&plugin, &state).unwrap();
+        assert!(!tui.exists());
+        connect(&plugin, BIN, &state, true).unwrap();
+        std::fs::write(&tui, r#"{"mine":true}"#).unwrap();
+        let out = disconnect(&plugin, &state).unwrap().0;
+        assert!(out.contains("left in place") && tui.exists(), "{out}");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

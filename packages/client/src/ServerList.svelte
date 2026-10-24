@@ -1,11 +1,13 @@
 <script lang="ts">
   import type { ServerListItem } from './lib/protocol';
   import { serverKey, type HubServer } from './lib/hub';
-  import PortHelp from './PortHelp.svelte';
-  import PathReport from './PathReport.svelte';
+  import ServerMenu from './ServerMenu.svelte';
+  import ServerIssue from './ServerIssue.svelte';
 
   export let servers: ServerListItem[] = [];
   export let states: HubServer[] = [];
+  /** Sessions each connected server has, by server id. */
+  export let counts: Record<string, number> = {};
   export let onpause: (id: string) => void;
   export let onresume: (id: string) => void;
   export let onretry: (id: string) => void;
@@ -14,6 +16,12 @@
   export let onscan: () => void = () => {};
   export let onremove: (index: number) => void;
   export let onshare: (index: number) => void;
+
+  const word = (state: string) => (state === 'connected' ? 'Connected' : state.charAt(0).toUpperCase() + state.slice(1));
+  const sessionsText = (n: number) => (n === 1 ? '1 session' : `${n} sessions`);
+  const remove = (server: ServerListItem, index: number) => {
+    if (confirm(`Remove "${server.server_name}" from this browser? You can add it again with its link or QR.`)) onremove(index);
+  };
 </script>
 
 <div class="server-list" style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 48px 24px;">
@@ -40,39 +48,22 @@
         </button>
       </div>
     {:else}
-      <div style="display: grid; gap: 16px;">
-        {#each servers as server, index}
+      <div style="display: grid; gap: 12px;">
+        {#each servers as server, index (serverKey(server))}
           {@const status = states.find(s => s.id === serverKey(server))}
-          <div class="server-card" style="background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 20px; display: flex; align-items: center; gap: 16px; transition: border-color 0.15s;" on:mouseenter={() => {}} on:mouseleave={() => {}}>
-            <div style="width: 48px; height: 48px; border-radius: 10px; background: linear-gradient(135deg, var(--accent), #a371f7); display: flex; align-items: center; justify-content: center;">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"></rect><path d="M8 21h8M12 17v4"></path></svg>
+          {@const state = status?.state ?? 'connecting'}
+          <!-- A row has one height whatever the server is doing: the name, one line of state, and two fixed slots at the end. -->
+          <div class="server-card" data-server={serverKey(server)} data-state={state}>
+            <div class="info">
+              <h3>{server.server_name || 'Server'}</h3>
+              <p class="addr">{server.server_url || (server.record ? `${server.record.ip}:${server.record.udp_port}` : server.bundle ? 'Paired by link' : '')}</p>
+              <p class="state" class:ok={state === 'connected'}>
+                <span aria-hidden="true">{state === 'connected' ? '●' : '○'}</span> {word(state)}{#if state === 'connected' && status?.path} · {status.path}{/if}{#if state === 'connected'} · <span data-testid="session-count">{sessionsText(counts[serverKey(server)] ?? 0)}</span>{/if}
+              </p>
             </div>
-            <div style="flex: 1; min-width: 0;">
-              <h3 style="font-size: 1rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{server.server_name || 'Server'}</h3>
-              <p style="font-size: 0.75rem; color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{server.server_url || (server.record ? `${server.record.ip}:${server.record.udp_port}` : server.bundle ? 'Paired by link' : '')}</p>
-              <p class="state">{status?.state ?? 'connecting'}{#if status?.state === 'connected' && status.path} · {status.path}{/if}</p>
-              {#if status?.reason}<p class="reason">{status.reason}</p>{/if}
-              {#if status?.state === 'unreachable'}
-                {#if status.failures?.length}<PathReport failures={status.failures} />{/if}
-                <details class="help">
-                  <summary>Why can't I connect?</summary>
-                  <p class="note">The server may be stopped, or its UDP port may be blocked. On the machine, <code>systemctl status termenbox</code> (or <code>systemctl --user status termenbox</code> for a user install) says whether it runs; a server whose port is taken stops with a message in <code>journalctl</code>.</p>
-                  {#if server.record?.udp_port}<PortHelp port={server.record.udp_port} />{/if}
-                </details>
-              {/if}
-            </div>
-            <div style="display: flex; gap: 8px;">
-              <button class="secondary" aria-pressed={status?.state === 'paused'} on:click={() => status?.state === 'paused' ? onresume(serverKey(server)) : onpause(serverKey(server))}>{status?.state === 'paused' ? 'Resume' : 'Pause'}</button>
-              {#if status && status.state !== 'connected' && status.state !== 'paused'}<button class="secondary" on:click={() => onretry(serverKey(server))}>Retry</button>{/if}
-              {#if server.server_id}
-                <button class="secondary" aria-label="Send to another device" title="Send to another device" on:click={() => onshare(index)} style="padding: 8px;">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M8 7l4-4 4 4"></path><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"></path></svg>
-                </button>
-              {/if}
-              <button class="secondary" aria-label="Remove server" on:click={() => confirm(`Remove "${server.server_name}" from this browser? You can add it again with its link or QR.`) && onremove(index)} style="padding: 8px; color: var(--danger);">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-              </button>
-            </div>
+            <span class="slot">{#if status && state !== 'connected'}<ServerIssue name={server.server_name || 'Server'} {status} udpPort={server.record?.udp_port} />{/if}</span>
+            <ServerMenu name={server.server_name || 'Server'} paused={state === 'paused'} canRetry={!!status && state !== 'connected' && state !== 'paused'} canShare={!!server.server_id}
+              onpause={() => onpause(serverKey(server))} onresume={() => onresume(serverKey(server))} onretry={() => onretry(serverKey(server))} onshare={() => onshare(index)} onremove={() => remove(server, index)} />
           </div>
         {/each}
       </div>
@@ -82,11 +73,13 @@
 
 <style>
   .server-list { overflow-y: auto; }
-  .server-card { flex-wrap: wrap; }
-  .state { font-size: 0.8rem; text-transform: capitalize; }
-  .help { font-size: 0.85rem; margin-top: 6px; }
-  .help summary { cursor: pointer; color: var(--fg-muted); }
-  .help .note { color: var(--fg-muted); margin: 8px 0; }
-  .reason { font-size: 0.8rem; color: var(--fg-muted); overflow-wrap: anywhere; }
+  .server-card { display: flex; align-items: center; gap: 4px; min-height: 84px; padding: 12px 8px 12px 20px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; }
+  .info { flex: 1; min-width: 0; }
+  .info h3 { font-size: 1rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .info p { font-size: 0.8rem; color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .addr { font-size: 0.75rem; }
+  .state.ok { color: var(--fg); }
+  /* The slot is there whether it holds the issue button or not, so the end of the row never moves. */
+  .slot { display: inline-grid; width: 44px; height: 44px; flex-shrink: 0; place-items: center; }
   button { min-height: 44px; min-width: 44px; }
 </style>

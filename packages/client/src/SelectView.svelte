@@ -1,13 +1,30 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { copyText } from './lib/clipboard';
 
   export let text: string;
   export let onclose: () => void;
+  /** Starts with everything selected (select-all from the terminal); the history may still be on its way. */
+  export let all = false;
+  export let loading = false;
 
   let box: HTMLPreElement;
+  let root: HTMLDivElement;
   let status = '';
-  onMount(() => box.scrollTo(0, box.scrollHeight));
+  onMount(() => { root.focus(); box.scrollTo(0, box.scrollHeight); });
+  /** Selects the text of the page's pre and nothing else, so Ctrl+A here is the same as in the terminal. */
+  function selectAll() {
+    const range = document.createRange();
+    range.selectNodeContents(box);
+    const s = getSelection();
+    s?.removeAllRanges();
+    s?.addRange(range);
+  }
+  // The text arrives when the server has sent the history: the selection and the view follow it.
+  $: if (box && text !== undefined) void tick().then(() => { if (all) selectAll(); box.scrollTo(0, box.scrollHeight); });
+  function key(e: KeyboardEvent) {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.code === 'KeyA')) { e.preventDefault(); selectAll(); }
+  }
 
   async function copyAll() {
     status = (await copyText(text)) ? 'Copied' : 'Copy failed';
@@ -17,9 +34,9 @@
 
 <!-- Touch screens cannot select text drawn by the terminal, so this shows the same text as plain, selectable
      text: long-press a word, drag the handles, copy. -->
-<div class="select" role="dialog" aria-label="Select text">
+<div bind:this={root} class="select" role="dialog" aria-label="Select text" tabindex="-1" on:keydown={key}>
   <div class="bar">
-    <span>Long-press to select {status}</span>
+    <span>{loading ? 'Loading the whole history…' : all ? 'All selected. Copy, or scroll and adjust.' : 'Long-press to select'} {status}</span>
     <button type="button" on:click={copyAll}>Copy all</button>
     <button type="button" class="secondary" on:click={onclose}>Close</button>
   </div>

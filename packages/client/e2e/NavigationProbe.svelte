@@ -2,6 +2,7 @@
   import AppShell from '../src/AppShell.svelte';
   import NavigationBar from '../src/NavigationBar.svelte';
   import MenuSheet from '../src/MenuSheet.svelte';
+  import SettingsView from '../src/shell/SettingsView.svelte';
   import SessionActions from '../src/SessionActions.svelte';
   import SessionSheet from '../src/SessionSheet.svelte';
   import KeyRow from '../src/KeyRow.svelte';
@@ -45,6 +46,7 @@
   $: menuSession = $sessions.find(s => s.key === menuKey);
   let activeKey = 'gamma/session-3';
   let menu = false;
+  let settings = false;
   let actions: string | null = null;
   let height: SheetHeight = 'closed';
   let mobile = true;
@@ -72,13 +74,14 @@
   } });
 </script>
 <AppShell pinned>
-  <NavigationBar sessions={tabs} agents={$agents} servers={$servers} windows={$wins} ontabmenu={key => { menuKey = key; hub.sendToSession(key, { type: 'windows', session: key }); }} {activeKey} held={!!actions || expanded || sheetHeld} onopen={key => { activeKey = key; height = 'closed'; }} onactions={key => actions = key} onmenu={() => menu = true} onsessions={() => height = height === 'closed' ? 'half' : 'closed'} />
+  <NavigationBar sessions={tabs} agents={$agents} servers={$servers} windows={$wins} ontabmenu={key => { menuKey = key; hub.sendToSession(key, { type: 'windows', session: key }); }} {activeKey} held={!!actions || expanded || sheetHeld} onopen={key => { activeKey = key; height = 'closed'; }} onactions={key => actions = key} onmenu={() => menu = true} onsessions={() => { settings = false; height = height === 'closed' ? 'half' : 'closed'; }} />
   <NeedsYouBanner {waiting} now={Date.now()} onopen={key => { activeKey = key; }} onanswer={(key, choice, prompt) => hub.sendToSession(key, { type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })} />
   <main class:mobile>
     <div class="terminal"><p>{activeKey}</p><div class="screen"><textarea class="xterm-helper-textarea" aria-label="Terminal input"></textarea></div><KeyRow bind:mods onkey={() => {}} onpaste={() => {}} oncopy={() => {}} /></div>
+    {#if settings}<div class="settings"><SettingsView user="test" onservers={() => {}} onshortcuts={() => {}} onreport={() => {}} onlogout={() => {}} ondeletedata={async () => 0} historyServers={0} ondeletehistory={async () => ({ servers: 0, removed: 0, failedNames: [] })} /></div>{/if}
     <SessionSheet sessions={$sessions} agents={$agents} servers={$servers} {activeKey} {mobile} bind:height held={!!actions} onexpanded={value => expanded = value} onheld={value => sheetHeld = value} onopen={key => { activeKey = key; height = 'closed'; }} onnew={() => {}} onrefresh={() => {}} onretry={id => hub.retry(id)} send={m => { if ('session' in m) hub.sendToSession(m.session, m); }} />
   </main>
-  {#if menu}<MenuSheet user="test" onservers={() => {}} onreport={() => {}} onlogout={() => {}} onclose={() => menu = false} />{/if}
+  {#if menu}<MenuSheet user="test" onservers={() => {}} onsettings={() => settings = true} onreport={() => {}} onlogout={() => {}} onclose={() => menu = false} />{/if}
   {#if actionSession}<SessionActions session={actionSession} confirmFirst={confirmClose} ondetach={() => { hidden = new Set(hidden).add(actionSession.key); }} onclosesession={() => hub.sendToSession(actionSession.key, { type: 'close_session', session: actionSession.key })} onclose={() => actions = null} />{/if}
   {#if menuSession && menuKey}
     <WindowMenu session={menuSession} data={$wins[menuSession.key]}
@@ -88,4 +91,4 @@
       ondetach={() => { hidden = new Set(hidden).add(menuSession.key); }} onclosesession={() => { confirmClose = true; actions = menuSession.key; }} onclose={() => menuKey = null} />
   {/if}
 </AppShell>
-<style>main { display: flex; flex: 1; min-height: 0; overflow: hidden; } main.mobile { flex-direction: column; } .terminal { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; } .screen { flex: 1; min-height: 0; }</style>
+<style>main { position: relative; display: flex; flex: 1; min-height: 0; overflow: hidden; } main.mobile { flex-direction: column; } .terminal { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; } .screen { flex: 1; min-height: 0; } .settings { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; background: var(--bg, #000); }</style>

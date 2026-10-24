@@ -129,13 +129,14 @@ try {
   await page.keyboard.press('Enter');
   if ((await page.evaluate(() => window.__navigation.active())) !== 'alpha/session-1') fail('long press suppressed later keyboard activation');
   await page.getByRole('button', { name: 'Menu', exact: true }).click();
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Menu', exact: true }).getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('button', { name: /^Appearance, notifications and more/ }).click();
   await page.getByLabel('Cache TTL').selectOption('3600000');
   await page.getByLabel('Theme').selectOption('light');
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('termenbox_settings')));
   if (stored.cacheTtlMs !== 3600000 || stored.theme !== 'light') fail('settings did not persist together');
-  await page.getByRole('button', { name: 'Close menu', exact: true }).click();
-  console.log('ok  long press opens actions without switching; menu settings persist');
+  await page.getByRole('button', { name: 'Back to Settings', exact: true }).click();
+  console.log('ok  long press opens actions without switching; appearance settings persist');
 
   // G.5: adaptive view, real drag/snaps, server status, controls, persistence and keyboard-safe layout.
   await page.getByRole('button', { name: 'Sessions, 3 need you' }).click();

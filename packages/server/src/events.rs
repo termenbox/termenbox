@@ -635,6 +635,27 @@ impl EventHub {
         Ok(())
     }
 
+    /// Like `ingest`, for an event whose reporter proved to belong to `target` rather than to the session its
+    /// environment named: the token must still be the declared session's.
+    pub fn ingest_as(
+        &self,
+        declared: &str,
+        token: &str,
+        target: &str,
+        source: Source,
+        confidence: Confidence,
+        kinds: Vec<EventKind>,
+    ) -> Result<()> {
+        if !valid_event_session(target) || !self.token_matches(declared, token) {
+            tracing::info!(target: "audit", event = "agent_event_refused", session = %declared);
+            return Err(anyhow!("token does not match the session"));
+        }
+        for k in kinds {
+            self.feed(target, source, confidence, k, now_ms());
+        }
+        Ok(())
+    }
+
     /// An event from the server's own adapters (scan, screen). A repeated state is not an event.
     pub fn report(&self, session: &str, source: Source, confidence: Confidence, kind: EventKind) {
         self.feed(session, source, confidence, kind, now_ms());
@@ -1242,13 +1263,20 @@ struct Wire {
     token: String,
     adapter: String,
     data: serde_json::Value,
+    /// Parent process ids of the reporter, nearest first (absent from an older hook).
+    #[serde(default)]
+    ancestors: Vec<u32>,
 }
 
 const MAX_LINE: u64 = 64 * 1024;
 
 /// A Unix socket in the state directory, mode 0600, never TCP. Every connection carries one line and is
 /// answered with nothing; refusals only show in the audit log.
-pub async fn serve_socket(hub: EventHub, path: std::path::PathBuf) -> Result<()> {
+pub async fn serve_socket(
+    hub: EventHub,
+    path: std::path::PathBuf,
+    resolver: Arc<crate::owner::Resolver>,
+) -> Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
     let _ = std::fs::remove_file(&path);
     let listener = tokio::net::UnixListener::bind(&path)?;
@@ -1262,26 +1290,18 @@ pub async fn serve_socket(hub: EventHub, path: std::path::PathBuf) -> Result<()>
     tokio::spawn({
         let hub = hub.clone();
         async move {
-            while let Some((w, source, confidence, kinds)) = rx.recv().await {
-                if w.adapter == "claude" && hub.token_matches(&w.session, &w.token) {
-                    // File reads: off the async threads.
-                    let (h, session, data) = (hub.clone(), w.session.clone(), w.data.clone());
-                    let _ =
-                        tokio::task::spawn_blocking(move || h.note_claude_usage(&session, &data))
-                            .await;
-                }
-                if hub
-                    .ingest(&w.session, &w.token, source, confidence, kinds)
-                    .is_ok()
-                    && w.adapter == "claude"
-                {
-                    if let Some(path) = w.data.get("transcript_path").and_then(|p| p.as_str()) {
-                        hub.set_transcript(&w.session, path);
+            // Events whose session is not known yet (a shared service, before its first prompt shows where it is).
+            let mut pending: VecDeque<(Hooked, u64)> = VecDeque::new();
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+            loop {
+                tokio::select! {
+                    item = rx.recv() => {
+                        let Some(item) = item else { break };
+                        if handle_hooked(&hub, &resolver, item, &mut pending).await {
+                            retry_pending(&hub, &resolver, &mut pending).await;
+                        }
                     }
-                    // A task this event opened takes its folder now; one it ended took it above.
-                    if let Some(cwd) = w.data.get("cwd").and_then(|c| c.as_str()) {
-                        hub.record_project(&w.session, cwd);
-                    }
+                    _ = tick.tick() => retry_pending(&hub, &resolver, &mut pending).await,
                 }
             }
         }
@@ -1307,6 +1327,121 @@ pub async fn serve_socket(hub: EventHub, path: std::path::PathBuf) -> Result<()>
             };
             let _ = tx.send((w, source, confidence, kinds)).await;
         });
+    }
+}
+
+/// How many events wait for a session, and for how long.
+const MAX_PENDING: usize = 64;
+const PENDING_MS: u64 = 30_000;
+
+fn report_of(w: &Wire, kinds: &[EventKind]) -> crate::owner::Report {
+    crate::owner::Report {
+        adapter: w.adapter.clone(),
+        declared: w.session.clone(),
+        agent_id: crate::adapters::agent_session_id(&w.adapter, &w.data),
+        ancestors: w.ancestors.clone(),
+        turn: kinds.iter().find_map(|k| match k {
+            EventKind::Turn { open, .. } => Some(*open),
+            _ => None,
+        }),
+        prompt: kinds.iter().find_map(|k| match k {
+            EventKind::Task { title } => Some(title.clone()),
+            _ => None,
+        }),
+    }
+}
+
+/// Delivers one event, parks it, or drops it. True when it was delivered, so parked events may now be placeable.
+async fn handle_hooked(
+    hub: &EventHub,
+    resolver: &crate::owner::Resolver,
+    item: Hooked,
+    pending: &mut VecDeque<(Hooked, u64)>,
+) -> bool {
+    use crate::owner::Verdict;
+    let (w, source, confidence, kinds) = &item;
+    if !hub.token_matches(&w.session, &w.token) {
+        tracing::info!(target: "audit", event = "agent_event_refused", session = %w.session);
+        return false;
+    }
+    match resolver.resolve(&report_of(w, kinds), now_ms()).await {
+        Verdict::Deliver(session) => {
+            deliver(hub, &item.0, *source, *confidence, kinds.clone(), &session).await;
+            true
+        }
+        Verdict::Pending => {
+            if pending.len() >= MAX_PENDING {
+                pending.pop_front();
+            }
+            pending.push_back((item, now_ms()));
+            false
+        }
+        Verdict::Drop(why) => {
+            tracing::info!(target: "audit", event = "agent_event_unplaced", session = %w.session, adapter = %w.adapter, reason = why);
+            false
+        }
+    }
+}
+
+/// Parked events are tried again, oldest first, so their order is kept; those that wait too long are dropped.
+async fn retry_pending(
+    hub: &EventHub,
+    resolver: &crate::owner::Resolver,
+    pending: &mut VecDeque<(Hooked, u64)>,
+) {
+    use crate::owner::Verdict;
+    let now = now_ms();
+    let mut keep = VecDeque::new();
+    let mut placed_any = true;
+    while placed_any {
+        placed_any = false;
+        while let Some((item, since)) = pending.pop_front() {
+            if now.saturating_sub(since) > PENDING_MS {
+                tracing::info!(target: "audit", event = "agent_event_unplaced", session = %item.0.session, adapter = %item.0.adapter, reason = "no session found for it in time");
+                continue;
+            }
+            let (w, source, confidence, kinds) = &item;
+            match resolver.resolve(&report_of(w, kinds), now).await {
+                Verdict::Deliver(session) => {
+                    deliver(hub, &item.0, *source, *confidence, kinds.clone(), &session).await;
+                    placed_any = true;
+                }
+                Verdict::Pending => keep.push_back((item, since)),
+                Verdict::Drop(_) => {}
+            }
+        }
+        std::mem::swap(pending, &mut keep);
+        if !placed_any {
+            break;
+        }
+    }
+}
+
+async fn deliver(
+    hub: &EventHub,
+    w: &Wire,
+    source: Source,
+    confidence: Confidence,
+    kinds: Vec<EventKind>,
+    session: &str,
+) {
+    if w.adapter == "claude" {
+        // File reads: off the async threads.
+        let (h, s, data) = (hub.clone(), session.to_string(), w.data.clone());
+        let _ = tokio::task::spawn_blocking(move || h.note_claude_usage(&s, &data)).await;
+    }
+    if hub
+        .ingest_as(&w.session, &w.token, session, source, confidence, kinds)
+        .is_ok()
+        && w.adapter == "claude"
+    {
+        if let Some(path) = w.data.get("transcript_path").and_then(|p| p.as_str()) {
+            hub.set_transcript(session, path);
+        }
+        // A task this event opened takes its folder now; one it ended took it above.
+        if let Some(cwd) = w.data.get("cwd").and_then(|c| c.as_str()) {
+            hub.record_project(session, cwd);
+        }
     }
 }
 
@@ -1348,7 +1483,8 @@ pub fn run_hook_with(
         let _ = stdin.read_to_string(&mut raw);
         let data =
             serde_json::from_str::<serde_json::Value>(&raw).unwrap_or(serde_json::Value::Null);
-        let line = serde_json::json!({"session": session, "token": token, "adapter": adapter, "data": data}).to_string() + "\n";
+        let ancestors = crate::owner::own_ancestors();
+        let line = serde_json::json!({"session": session, "token": token, "adapter": adapter, "data": data, "ancestors": ancestors}).to_string() + "\n";
         if let Ok(mut s) = std::os::unix::net::UnixStream::connect(&socket) {
             let _ = s.set_write_timeout(Some(std::time::Duration::from_millis(500)));
             let _ = s.write_all(line.as_bytes());
@@ -1976,7 +2112,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let sock = dir.join("events.sock");
         let h = hub();
-        tokio::spawn(serve_socket(h.clone(), sock.clone()));
+        tokio::spawn(serve_socket(
+            h.clone(),
+            sock.clone(),
+            Arc::new(crate::owner::Resolver::default()),
+        ));
         for _ in 0..50 {
             if sock.exists() {
                 break;

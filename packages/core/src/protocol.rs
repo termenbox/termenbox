@@ -230,6 +230,11 @@ pub enum ClientMessage {
         #[serde(default)]
         hash: Option<String>,
     },
+    /// Asks for everything a session's terminal still holds, history included, as text (answered with `scrollback`
+    /// parts). It is what select-all selects when the cursor is not in the prompt.
+    Scrollback {
+        session: String,
+    },
     /// Asks for the windows of a session (answered with `window_list`; later changes are pushed).
     Windows {
         session: String,
@@ -456,6 +461,14 @@ pub enum ServerMessage {
     },
     /// A session's visible screen as text with its colour codes. Empty `text` with `unchanged` false means the
     /// session manager cannot give one; with `unchanged` true the client's copy is current.
+    /// One part of the answer to `scrollback`, in order from 0; `last` closes it. A part is a few KB so that it fits
+    /// one message of the direct transport; the client joins the parts. Text is the terminal's, never logged.
+    Scrollback {
+        session: String,
+        part: u32,
+        last: bool,
+        text: String,
+    },
     Snapshot {
         session: String,
         text: String,
@@ -1051,6 +1064,22 @@ mod tests {
         .unwrap();
         assert_eq!(v["type"], "answer");
         assert_eq!(v["choice"], 1);
+        let v = serde_json::to_value(ClientMessage::Scrollback {
+            session: "s".into(),
+        })
+        .unwrap();
+        assert_eq!(v["type"], "scrollback");
+        let v = serde_json::to_value(ServerMessage::Scrollback {
+            session: "s".into(),
+            part: 1,
+            last: true,
+            text: "t".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            (v["type"].as_str(), v["part"].as_u64(), v["last"].as_bool()),
+            (Some("scrollback"), Some(1), Some(true))
+        );
         let v = serde_json::to_value(ClientMessage::Peek {
             session: "s".into(),
             hash: None,

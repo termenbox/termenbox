@@ -20,10 +20,10 @@
    * same at both widths. The frame never sizes the app: AppShell does (soft-keyboard-never-hides-input).
    */
   let { current, onnavigate, servers, sessions, agents, activeKey = null, chrome = true, inSession = false, keyboardOpen = false, wide = $bindable(false), helpOpen = $bindable(false),
-    canCreate = true, onopen, onserver, onrename, onclosesession, onaction = () => {}, onshortcut = () => {}, onback, children }: {
+    canCreate = true, onopen, onserver, onrename, onclosesession, onaction = () => {}, onshortcut = () => {}, onback, onrepeat, children }: {
     current: Destination; onnavigate: (d: Destination) => void; servers: HubServer[]; sessions: HubSession[]; agents: AgentMap; activeKey?: string | null; chrome?: boolean;
     inSession?: boolean; keyboardOpen?: boolean; wide?: boolean; helpOpen?: boolean; canCreate?: boolean; onopen: (key: string) => void; onserver: (id: string) => void;
-    onrename?: (key: string, name: string) => void; onclosesession?: (key: string) => void; onaction?: (id: string) => void; onshortcut?: (id: string) => void; onback?: () => void; children: Snippet;
+    onrename?: (key: string, name: string) => void; onclosesession?: (key: string) => void; onaction?: (id: string) => void; onshortcut?: (id: string) => void; onback?: () => void; /** The bottom bar's button for the destination already open was tapped again (Sessions: the list). */ onrepeat?: (d: Destination) => void; children: Snippet;
   } = $props();
 
   let viewport = $state(typeof innerWidth === 'number' ? innerWidth : 1280);
@@ -104,7 +104,7 @@
           onpointercancel={() => (swipe = null)}></div>
       {/if}
     </div>
-    {#if bar}<BottomBar {current} {onnavigate} {needsYou} />{/if}
+    {#if bar}<BottomBar {current} onnavigate={(d) => (d === current && d === 'sessions' && onrepeat ? onrepeat(d) : onnavigate(d))} {needsYou} />{/if}
   </div>
   {#if chrome}
     <CommandPalette bind:open={paletteOpen} {entries} onrun={run} {returnTo} />

@@ -457,6 +457,12 @@ async function phone(shared) {
   await page.locator('[data-shell=bottom-bar] [data-destination=sessions]').click();
   const sessions = page.locator('.sessions-button');
   await sessions.waitFor().catch(() => {});
+  // Tapping Sessions again, already on Sessions, brings the list back (and a third tap puts it away).
+  const open = async () => (await sessions.getAttribute('aria-expanded')) === 'true';
+  const before = await open();
+  await page.locator('[data-shell=bottom-bar] [data-destination=sessions]').click();
+  await page.waitForFunction(([was]) => (document.querySelector('.sessions-button')?.getAttribute('aria-expanded') === 'true') !== was, [before], { timeout: 3000 }).catch(() => {});
+  t.check((await open()) !== before, 'phone: a second tap on Sessions did not toggle the list');
   t.check((await t.overflow()) <= 0, 'phone: overflow');
   const ok = await t.end();
   if (ok) t.ok('390 px ignores the saved sidebar and split');

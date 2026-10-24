@@ -7,6 +7,7 @@ export type ClientMessage =
   | { type: 'uninstall'; confirm_name: string; delete_user?: boolean; remove_tmux?: boolean; kill_sessions?: boolean }
   | { type: 'agent_sync'; after: Record<string, number> }
   | { type: 'peek'; session: string; hash?: string }
+  | { type: 'scrollback'; session: string }
   | { type: 'answer'; session: string; prompt_id: string; seq: number; choice: number }
   | { type: 'reply'; session: string; text: string }
   | { type: 'windows'; session: string }
@@ -82,6 +83,8 @@ export type ServerMessage =
   | { type: 'output'; data: string }
   /** Never on the wire as JSON: terminal bytes from the `term` lane, as `Connection` hands them to listeners. */
   | { type: 'term'; bytes: Uint8Array }
+  /** One part of everything a terminal holds, history included (the answer to `scrollback`); `last` closes it. */
+  | { type: 'scrollback'; session: string; part: number; last: boolean; text: string }
   | { type: 'snapshot'; session: string; text: string; hash: string; unchanged?: boolean }
   | { type: 'window_list'; session: string; windows: WindowInfo[]; representative?: number | null }
   | { type: 'agent_snapshot'; states: SessionAgentState[] }

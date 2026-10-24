@@ -38,6 +38,7 @@ mod link;
 mod locale;
 mod netutil;
 mod opencode_hooks;
+mod owner;
 mod profile;
 mod pty;
 mod push;
@@ -749,10 +750,12 @@ async fn main() -> anyhow::Result<()> {
         hub = hub.with_history(history.clone());
     }
     let socket = events::socket_path(&args.config_dir);
+    // Which session an event belongs to is checked against the panes; the runner arrives with the backends below.
+    let owners = Arc::new(owner::Resolver::default());
     tokio::spawn({
-        let (hub, socket) = (hub.clone(), socket.clone());
+        let (hub, socket, owners) = (hub.clone(), socket.clone(), owners.clone());
         async move {
-            if let Err(e) = events::serve_socket(hub, socket).await {
+            if let Err(e) = events::serve_socket(hub, socket, owners).await {
                 tracing::warn!("agent event socket: {e}");
             }
         }
@@ -796,7 +799,10 @@ async fn main() -> anyhow::Result<()> {
     for k in &kinds {
         match k.as_str() {
             "tmux" => {
+                // A tmux server that outlived the last upgrade still has the old config.
+                mode.runner().reload_tmux_config().await;
                 agentwatch::spawn_tmux_scan(hub.clone(), mode.runner(), prefix_of(k));
+                owners.attach(mode.runner(), prefix_of(k));
                 // Control mode needs tmux 3.2; an older one keeps the scan and says so (plan H.3).
                 let out = mode
                     .runner()
@@ -837,6 +843,19 @@ async fn main() -> anyhow::Result<()> {
     let health = Arc::new(HealthCollector::new());
     health.spawn(args.config_dir.clone());
     let binary = std::env::current_exe()?.display().to_string();
+    // A plugin the owner connected earlier is brought up to this version's; OpenCode reads it on its next start.
+    if let Some(done) = opencode_hooks::refresh(&opencode_hooks::Target {
+        auto: args.opencode_dir.is_none(),
+        plugin: args
+            .opencode_dir
+            .clone()
+            .map(|d| d.join("plugins").join("termenbox.js"))
+            .unwrap_or_else(opencode_hooks::default_plugin_path),
+        binary: binary.clone(),
+        state_dir: args.config_dir.clone(),
+    }) {
+        info!(target: "audit", event = "opencode_plugin_refreshed", detail = %done.0);
+    }
     let mut state = AppState {
         auth,
         sessions: Arc::new(

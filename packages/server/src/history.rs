@@ -32,6 +32,22 @@ pub const DEFAULT_MAX_MB: u64 = 20;
 pub const TITLE_CHARS: usize = 80;
 /// Tasks one answer carries. About 200 bytes each on the wire, so an answer stays well under 100 KB.
 pub const MAX_RUNS: usize = 300;
+/// The most one `history` reply carries, in bytes of JSON. The direct transport's messages are at most 64 KiB, and 300
+/// ordinary runs are already about 80 KiB, so the newest runs that fit are sent and the rest are marked as cut.
+pub const REPLY_BYTES: usize = 48 * 1024;
+
+/// The newest of `runs` (oldest first) whose JSON fits in `budget`; whether any were left out.
+pub fn fit(mut runs: Vec<HistoryRun>, budget: usize) -> (Vec<HistoryRun>, bool) {
+    let size = |r: &HistoryRun| serde_json::to_vec(r).map_or(0, |v| v.len() + 1);
+    let mut total: usize = runs.iter().map(size).sum();
+    let mut cut = 0;
+    while total > budget && cut < runs.len() {
+        total -= size(&runs[cut]);
+        cut += 1;
+    }
+    runs.drain(..cut);
+    (runs, cut > 0)
+}
 /// Tasks in flight at once, one per session (the same bound as the event hub).
 const MAX_OPEN: usize = crate::events::MAX_SESSIONS;
 /// A rewrite leaves room for this share of the limit, so it does not run again on the next record.
@@ -843,6 +859,30 @@ impl History {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_reply_keeps_the_newest_runs_that_fit_and_says_it_cut_the_rest() {
+        let run = |n: u64| HistoryRun {
+            session: "session-opencode".into(),
+            agent: Some("opencode".into()),
+            task: Some("x".repeat(80)),
+            started_at: n,
+            ended_at: Some(n + 1),
+            outcome: Some(RunOutcome::Finished),
+            blocked_ms: 0,
+            project: None,
+            usage: None,
+        };
+        let runs: Vec<_> = (0..300).map(run).collect();
+        let (kept, cut) = fit(runs.clone(), REPLY_BYTES);
+        assert!(cut && !kept.is_empty() && kept.len() < 300);
+        assert_eq!(kept.last().unwrap().started_at, 299, "the newest are kept");
+        assert!(serde_json::to_vec(&kept).unwrap().len() <= REPLY_BYTES);
+        let (all, cut) = fit(runs.clone(), usize::MAX);
+        assert!(!cut && all == runs);
+        let (none, cut) = fit(runs, 0);
+        assert!(cut && none.is_empty());
+    }
+
     use super::*;
 
     const T0: u64 = 1_700_000_000_000;

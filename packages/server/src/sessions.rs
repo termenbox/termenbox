@@ -56,6 +56,10 @@ pub struct SessionManager {
     hooks: Option<crate::agent_hooks::Targets>,
     /// Samples of the server's CPU, RAM and disk (U14).
     health: Option<Arc<HealthCollector>>,
+    /// Pinged (with the connection's number) when a connection creates, renames or closes a session, so every other
+    /// connection sends its client the new list (a device that did not ask must not keep showing the old names). The
+    /// connection that asked has its own reply and skips the ping.
+    list_changed: tokio::sync::broadcast::Sender<u64>,
 }
 
 impl SessionManager {
@@ -74,6 +78,7 @@ impl SessionManager {
             transcripts: Arc::default(),
             hooks: None,
             health: None,
+            list_changed: tokio::sync::broadcast::channel(16).0,
         }
     }
 
@@ -203,6 +208,7 @@ impl SessionManager {
         let mut agent_rx = self.events.as_ref().map(|h| h.subscribe());
         let mut window_rx = self.windows.as_ref().map(|h| h.subscribe());
         let mut status_rx = self.events.as_ref().map(|h| h.subscribe_status());
+        let mut list_rx = self.list_changed.subscribe();
         let mut acp: Option<AcpSub> = None;
         let mut acp_tick = tokio::time::interval(ACP_BATCH);
         acp_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -276,6 +282,12 @@ impl SessionManager {
                     for m in msgs {
                         if !send(&link.tx, &m).await { return Ok(()); }
                     }
+                }
+                from = next_list_change(&mut list_rx) => {
+                    // Another connection changed the list of sessions: this one's client gets the new one.
+                    if from == Some(conn) { continue; }
+                    let sessions = self.backend.list().await.unwrap_or_default();
+                    if !send(&link.tx, &ServerMessage::Sessions { sessions }).await { break; }
                 }
                 update = next_window(&mut window_rx) => {
                     let msg = match update {
@@ -610,18 +622,21 @@ impl SessionManager {
                 // Closing the last window ends the session: the lists follow.
                 let sessions = self.backend.list().await?;
                 send_r(tx, &ServerMessage::Sessions { sessions }).await?;
+                let _ = self.list_changed.send(conn);
             }
             ClientMessage::CloseSession { session } => {
                 info!(target: "audit", event = "close_session", provider = %identity.provider, account_id = %identity.id, login = %identity.login, session = %session);
                 self.backend.kill(&session).await?;
                 let sessions = self.backend.list().await?;
                 send_r(tx, &ServerMessage::Sessions { sessions }).await?;
+                let _ = self.list_changed.send(conn);
             }
             ClientMessage::RenameSession { session, name } => {
                 info!(target: "audit", event = "rename_session", provider = %identity.provider, account_id = %identity.id, session = %session);
                 self.backend.rename(&session, &name).await?;
                 let sessions = self.backend.list().await?;
                 send_r(tx, &ServerMessage::Sessions { sessions }).await?;
+                let _ = self.list_changed.send(conn);
             }
             ClientMessage::Peek { session, hash } => {
                 // Only a counter in the audit log: what is on the screen is never logged.
@@ -633,6 +648,14 @@ impl SessionManager {
                 let reply =
                     peek_window(self.backend.as_ref(), &session, hash.as_deref(), window).await;
                 send_r(tx, &reply).await?;
+            }
+            ClientMessage::Scrollback { session } => {
+                // Only a counter in the audit log, as for a peek: the terminal's text is never logged.
+                audit_peek(&identity.provider, &identity.id, &session);
+                let text = self.backend.capture_history(&session).await?;
+                for part in scrollback_parts(&session, &text) {
+                    send_r(tx, &part).await?;
+                }
             }
             ClientMessage::SessionView { session, hash } => {
                 // Only a counter in the audit log, as for a peek: the screen is never logged.
@@ -772,13 +795,15 @@ impl SessionManager {
                 // A scan of the file: off the async threads.
                 let answer =
                     tokio::task::spawn_blocking(move || history.query(lo, to, now)).await?;
+                // One message must fit what the direct transport carries; the newest runs that do are sent.
+                let (runs, cut) = crate::history::fit(answer.runs, crate::history::REPLY_BYTES);
                 send_r(
                     tx,
                     &ServerMessage::History {
                         from,
                         to,
-                        runs: answer.runs,
-                        truncated: answer.truncated,
+                        runs,
+                        truncated: answer.truncated || cut,
                         keep_days: limits.keep_days,
                         max_bytes: limits.max_bytes,
                     },
@@ -821,6 +846,7 @@ impl SessionManager {
                     .await?;
                 let sessions = self.backend.list().await?;
                 send_r(tx, &ServerMessage::Sessions { sessions }).await?;
+                let _ = self.list_changed.send(conn);
             }
             ClientMessage::Attach { session_id } => {
                 *attachment = None; // detach the previous one first
@@ -912,6 +938,17 @@ async fn next_events(
     Some(out)
 }
 
+/// Resolves with the connection that changed the list of sessions (`None` after a missed ping, which still means
+/// "changed").
+async fn next_list_change(rx: &mut tokio::sync::broadcast::Receiver<u64>) -> Option<u64> {
+    use tokio::sync::broadcast::error::RecvError;
+    match rx.recv().await {
+        Ok(from) => Some(from),
+        Err(RecvError::Lagged(_)) => None,
+        Err(RecvError::Closed) => std::future::pending().await,
+    }
+}
+
 async fn next_status(
     rx: &mut Option<tokio::sync::broadcast::Receiver<crate::events::StatusChange>>,
 ) -> Option<crate::events::StatusChange> {
@@ -955,6 +992,46 @@ async fn next_window(
         Err(RecvError::Lagged(_)) => None,
         Err(RecvError::Closed) => std::future::pending().await,
     }
+}
+
+/// The most text one `scrollback` part carries, so that a part fits a message of the direct transport (64 KiB).
+const SCROLLBACK_PART: usize = 24 * 1024;
+
+/// A session's history as `scrollback` parts of at most `SCROLLBACK_PART` bytes, cut at line ends where it can (a line
+/// longer than a part is cut at a character). There is always at least one part, and the last one says so.
+pub(crate) fn scrollback_parts(session: &str, text: &str) -> Vec<ServerMessage> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for line in text.split_inclusive('\n') {
+        let mut line = line;
+        while cur.len() + line.len() > SCROLLBACK_PART {
+            if cur.is_empty() {
+                let mut at = SCROLLBACK_PART;
+                while !line.is_char_boundary(at) {
+                    at -= 1;
+                }
+                parts.push(line[..at].to_string());
+                line = &line[at..];
+            } else {
+                parts.push(std::mem::take(&mut cur));
+            }
+        }
+        cur.push_str(line);
+    }
+    if !cur.is_empty() || parts.is_empty() {
+        parts.push(cur);
+    }
+    let n = parts.len();
+    parts
+        .into_iter()
+        .enumerate()
+        .map(|(i, text)| ServerMessage::Scrollback {
+            session: session.to_string(),
+            part: i as u32,
+            last: i + 1 == n,
+            text,
+        })
+        .collect()
 }
 
 fn audit_acp_open(provider: &str, account_id: &str, session: &str) {
@@ -1597,5 +1674,158 @@ mod peek_tests {
             logged.contains("acp_open") && logged.contains("acp:work") && logged.contains("audit"),
             "{logged}"
         );
+    }
+}
+
+#[cfg(test)]
+mod propagation_tests {
+    use super::*;
+    use crate::auth::{AuthState, Identity};
+    use crate::cert::CertKeys;
+    use std::sync::Mutex;
+
+    /// A manager whose one session can be renamed and listed back.
+    struct Names(Mutex<String>);
+    #[async_trait::async_trait]
+    impl SessionBackend for Names {
+        fn name(&self) -> &str {
+            "fake"
+        }
+        async fn list(&self) -> Result<Vec<termenbox_core::protocol::SessionInfo>> {
+            Ok(vec![termenbox_core::protocol::SessionInfo {
+                id: "s".into(),
+                name: self.0.lock().unwrap().clone(),
+                agent: None,
+                backend: None,
+            }])
+        }
+        async fn create(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn attach(&self, _: &str, _: u16, _: u16) -> Result<Attachment> {
+            Err(anyhow::anyhow!("no"))
+        }
+        async fn rename(&self, _: &str, name: &str) -> Result<()> {
+            *self.0.lock().unwrap() = name.to_string();
+            Ok(())
+        }
+    }
+
+    /// Reads messages from a connection until one lists the session under `name`.
+    async fn sees_name(end: &mut crate::link::LinkEnd, name: &str) -> bool {
+        let wanted = format!("\"name\":\"{name}\"");
+        let read = async {
+            while let Some(m) = end.from_session.recv().await {
+                if m.contains("\"type\":\"sessions\"") && m.contains(&wanted) {
+                    return true;
+                }
+            }
+            false
+        };
+        tokio::time::timeout(Duration::from_secs(3), read)
+            .await
+            .unwrap_or(false)
+    }
+
+    #[tokio::test]
+    async fn a_rename_on_one_connection_reaches_every_other_connection() {
+        let dir = std::env::temp_dir().join(format!("tm-prop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth =
+            Arc::new(AuthState::new(dir.clone(), CertKeys::default(), "srv".into()).unwrap());
+        let mgr = SessionManager::new(
+            Arc::new(Names(Mutex::new("first".into()))),
+            RunMode::Container,
+        );
+        let id = Identity {
+            provider: "github".into(),
+            id: "1".into(),
+            login: "u".into(),
+            issued_at: None,
+        };
+        let (la, mut ea) = crate::link::pair(None, None);
+        let (lb, mut eb) = crate::link::pair(None, None);
+        for l in [la, lb] {
+            let (m, i, a) = (mgr.clone(), id.clone(), auth.clone());
+            tokio::spawn(async move {
+                let _ = m.serve(l, i, &a).await;
+            });
+        }
+        // Both devices are connected and neither has asked for anything.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        ea.to_session
+            .send(Inbound::Json(
+                r#"{"type":"rename_session","session":"s","name":"second"}"#.into(),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            sees_name(&mut ea, "second").await,
+            "the device that renamed sees it"
+        );
+        assert!(
+            sees_name(&mut eb, "second").await,
+            "a device that did not ask sees it too"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod scrollback_tests {
+    use super::*;
+
+    fn texts(parts: &[ServerMessage]) -> Vec<(u32, bool, String)> {
+        parts
+            .iter()
+            .map(|m| match m {
+                ServerMessage::Scrollback {
+                    part, last, text, ..
+                } => (*part, *last, text.clone()),
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn history_is_cut_into_parts_that_fit_one_message_and_join_back_to_the_text() {
+        let text: String = (0..5000).map(|i| format!("line number {i}\n")).collect();
+        let parts = texts(&scrollback_parts("s", &text));
+        assert!(parts.len() > 1);
+        assert!(parts.iter().all(|(_, _, t)| t.len() <= SCROLLBACK_PART));
+        assert_eq!(
+            parts.iter().map(|(_, _, t)| t.as_str()).collect::<String>(),
+            text
+        );
+        assert_eq!(
+            parts.iter().map(|(p, _, _)| *p).collect::<Vec<_>>(),
+            (0..parts.len() as u32).collect::<Vec<_>>()
+        );
+        assert_eq!(parts.iter().filter(|(_, last, _)| *last).count(), 1);
+        assert!(parts.last().unwrap().1);
+        // A part cut at a line end starts with a whole line.
+        assert!(parts[1].2.starts_with("line number "));
+    }
+
+    #[test]
+    fn an_empty_history_is_one_empty_last_part_and_a_very_long_line_is_cut_at_a_character() {
+        assert_eq!(
+            texts(&scrollback_parts("s", "")),
+            vec![(0, true, String::new())]
+        );
+        let long = "é".repeat(SCROLLBACK_PART);
+        let parts = texts(&scrollback_parts("s", &long));
+        assert!(parts.len() >= 2 && parts.iter().all(|(_, _, t)| t.len() <= SCROLLBACK_PART));
+        assert_eq!(
+            parts.iter().map(|(_, _, t)| t.as_str()).collect::<String>(),
+            long
+        );
+    }
+
+    #[test]
+    fn a_reply_part_is_far_below_the_limit_of_the_direct_transport() {
+        let text = "x".repeat(SCROLLBACK_PART);
+        let msg = &scrollback_parts("session-with-a-long-name", &text)[0];
+        assert!(serde_json::to_string(msg).unwrap().len() < 64 * 1024);
     }
 }

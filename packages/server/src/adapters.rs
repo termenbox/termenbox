@@ -15,6 +15,20 @@ pub fn adapt(adapter: &str, data: &Value) -> Option<Adapted> {
     }
 }
 
+/// The agent's own id for the conversation an event belongs to: Claude's and Codex's `session_id`, OpenCode's
+/// `sessionID` (on the plugin's frame, or inside its data).
+pub fn agent_session_id(adapter: &str, data: &Value) -> Option<String> {
+    let id = match adapter {
+        "claude" | "codex" => data.get("session_id").and_then(Value::as_str),
+        "opencode" => data
+            .get("sessionID")
+            .or_else(|| data.get("data").and_then(|d| d.get("sessionID")))
+            .and_then(Value::as_str),
+        _ => None,
+    }?;
+    (!id.is_empty() && id.len() <= 128).then(|| id.to_string())
+}
+
 fn state(s: AgentState) -> EventKind {
     EventKind::State { state: s }
 }
@@ -328,9 +342,13 @@ pub struct PaneScan {
     pub command: String,
     /// Seconds since the window last produced output.
     pub quiet_for: u64,
+    /// tmux's id of the pane (`%12`), empty when the listing did not give one.
+    pub pane_id: String,
+    /// The pane the session shows: the active pane of its active window.
+    pub active: bool,
 }
 
-/// `tmux list-panes -a -F '#{session_name}|#{pane_current_command}|#{window_activity}'`
+/// `tmux list-panes -a -F '#{session_name}|#{pane_current_command}|#{window_activity}|#{pane_id}|#{window_active}|#{pane_active}'`
 pub fn parse_panes(output: &str, now_s: u64) -> Vec<PaneScan> {
     output
         .lines()
@@ -339,10 +357,15 @@ pub fn parse_panes(output: &str, now_s: u64) -> Vec<PaneScan> {
             let session = f.next()?.to_string();
             let command = f.next()?.to_string();
             let activity: u64 = f.next()?.trim().parse().ok()?;
+            let pane_id = f.next().unwrap_or("").trim().to_string();
+            let active =
+                f.next().map(str::trim) == Some("1") && f.next().map(str::trim) == Some("1");
             Some(PaneScan {
                 session,
                 command,
                 quiet_for: now_s.saturating_sub(activity),
+                pane_id,
+                active,
             })
         })
         .collect()
@@ -772,6 +795,46 @@ mod tests {
         assert_eq!(scan_state(&panes[0]), Some(AgentState::Working));
         assert_eq!(scan_state(&panes[1]), None);
         assert_eq!(scan_state(&panes[2]), Some(AgentState::Idle));
+    }
+
+    #[test]
+    fn a_listing_with_pane_ids_says_which_pane_the_session_shows() {
+        let panes = parse_panes(
+            "s|claude|1000|%3|0|1\ns|opencode|1000|%4|1|1\ns|opencode|1000|%5|1|0\n",
+            1002,
+        );
+        assert_eq!(
+            panes
+                .iter()
+                .map(|p| (p.pane_id.as_str(), p.active))
+                .collect::<Vec<_>>(),
+            [("%3", false), ("%4", true), ("%5", false)],
+            "only the active pane of the active window is shown"
+        );
+    }
+
+    #[test]
+    fn the_agents_own_session_id_is_read_from_each_adapters_payload() {
+        assert_eq!(
+            agent_session_id("claude", &json!({"session_id": "c1"})).as_deref(),
+            Some("c1")
+        );
+        assert_eq!(
+            agent_session_id("codex", &json!({"session_id": "x9"})).as_deref(),
+            Some("x9")
+        );
+        assert_eq!(
+            agent_session_id("opencode", &json!({"sessionID": "ses_1", "data": {}})).as_deref(),
+            Some("ses_1")
+        );
+        assert_eq!(
+            agent_session_id("opencode", &json!({"data": {"sessionID": "ses_2"}})).as_deref(),
+            Some("ses_2"),
+            "an older plugin names it only inside the data, and not on every event"
+        );
+        assert_eq!(agent_session_id("opencode", &json!({"data": {}})), None);
+        assert_eq!(agent_session_id("claude", &json!({"session_id": ""})), None);
+        assert_eq!(agent_session_id("other", &json!({"session_id": "a"})), None);
     }
 
     fn fixture(name: &str) -> String {

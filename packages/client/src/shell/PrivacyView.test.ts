@@ -46,7 +46,23 @@ describe('the notice covers the counts (U13)', () => {
 
 describe('settings', () => {
   it('links to the privacy page', () => {
-    const out = render(SettingsView, { props: { user: 'octo', onservers() {}, onmenu() {}, onshortcuts() {}, onreport() {}, onlogout() {}, ondeletedata: async () => 0, historyServers: 0, ondeletehistory: async () => ({ servers: 0, removed: 0, failedNames: [] }) } }).body;
+    const out = render(SettingsView, { props: { user: 'octo', onservers() {}, onshortcuts() {}, onreport() {}, onlogout() {}, ondeletedata: async () => 0, historyServers: 0, ondeletehistory: async () => ({ servers: 0, removed: 0, failedNames: [] }) } }).body;
     expect(out).toContain('Privacy and your data');
+  });
+});
+
+describe('settings: appearance is a page of Settings, not a second menu', () => {
+  const props = { user: 'octo', onservers() {}, onshortcuts() {}, onreport() {}, onlogout() {}, ondeletedata: async () => 0, historyServers: 0, ondeletehistory: async () => ({ servers: 0, removed: 0, failedNames: [] }) };
+  it('opens in place, shows no server version beside the login, and never leads back to Settings', async () => {
+    const settings = render(SettingsView, { props }).body;
+    expect(settings).toContain('Appearance, notifications and more');
+    expect(settings).toContain('Signed in as octo');
+    expect(settings).not.toMatch(/Signed in as octo\s*·/);
+    const AppearanceView = (await import('./AppearanceView.svelte')).default;
+    const page = render(AppearanceView, { props: { onback() {} } }).body;
+    expect(page).toContain('Theme');
+    expect(page).toContain('Back to Settings');
+    // It is a leaf: the only way on is back.
+    expect(page).not.toMatch(/>\s*Settings\s*</);
   });
 });

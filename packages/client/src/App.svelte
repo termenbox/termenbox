@@ -246,6 +246,7 @@
   const hubServers = hub.servers;
   const allWindows = hub.windows;
   const allSessions = hub.allSessions;
+  $: sessionCounts = $allSessions.reduce<Record<string, number>>((n, s) => ({ ...n, [s.serverId]: (n[s.serverId] ?? 0) + 1 }), {});
   const allAgents = hub.agents;
   const connectedCount = hub.connectedCount;
   const overLimit = hub.overLimit;
@@ -634,7 +635,7 @@
   /** The name clients show; the session's id, and so its tabs, layout and events, stay as they were. */
   function renameSession(key: string, name: string) {
     crumb('rename session');
-    hub.sendToSession(key, { type: 'rename_session', session: key, name });
+    hub.rename(key, name);
   }
 
   /** The sidebar's close button: the dialog asks first where the manager can close, and offers only Detach where it cannot. */
@@ -709,6 +710,13 @@
     serversPage = true;
     navigate('settings');
     sheetHeight = 'closed';
+  }
+
+  /** A repeat tap on Sessions in the bottom bar, while in a session, brings the list back: the sheet on a phone, the sidebar when wide. */
+  function sessionsAgain() {
+    if (serversPage || servers.length === 0) return;
+    if (wide) toggleSidebar();
+    else sheetHeight = sheetHeight === 'closed' ? 'half' : 'closed';
   }
 
   function go(dest: Destination) {
@@ -935,7 +943,7 @@
       </div>
     </div>
   {:else}
-    <AppFrame current={$destination} onnavigate={go} servers={$hubServers} sessions={$allSessions} agents={$allAgents} {activeKey} chrome={servers.length > 0} inSession={!!activeKey && !away} {keyboardOpen}
+    <AppFrame current={$destination} onnavigate={go} onrepeat={sessionsAgain} servers={$hubServers} sessions={$allSessions} agents={$allAgents} {activeKey} chrome={servers.length > 0} inSession={!!activeKey && !away} {keyboardOpen}
       canCreate={sessionDestinations($hubServers, selected).length > 0} bind:wide bind:helpOpen onopen={attach} onserver={openServer} onrename={renameSession} onclosesession={askCloseSession} onaction={runAction} onshortcut={handleShortcut}
       onback={() => { showWorkspace(); sheetHeight = 'half'; }}>
     {#if $destination === 'sessions' || servers.length === 0}
@@ -964,8 +972,7 @@
         </div>
       {/snippet}
       {#if serversPage || servers.length === 0}
-        {#if servers.length > 0}<button class="secondary" on:click={showWorkspace}>← Sessions</button>{/if}
-        <ServerList {servers} states={$hubServers} onpause={(id) => { hub.pause(id); }} onresume={(id) => hub.resume(id)} onretry={(id) => hub.retry(id)} onadd={() => { addPrefill = null; addStart = 'install'; showAddServer = true; }} onscan={() => { addPrefill = null; addStart = 'scan'; showAddServer = true; }} onremove={removeServer} onshare={shareServer} />
+        <ServerList {servers} states={$hubServers} counts={sessionCounts} onpause={(id) => { hub.pause(id); }} onresume={(id) => hub.resume(id)} onretry={(id) => hub.retry(id)} onadd={() => { addPrefill = null; addStart = 'install'; showAddServer = true; }} onscan={() => { addPrefill = null; addStart = 'scan'; showAddServer = true; }} onremove={removeServer} onshare={shareServer} />
       {:else if $destination === 'home'}
         <Home sessions={$allSessions} agents={$allAgents} servers={$hubServers} {now} {lastKey} {focusKey} offer={hookOffer} onhook={homeHook} onopen={openWaiting} onservers={leaveServer} onnew={newSession}
           onanswer={(key, choice, prompt) => sendSession({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })}
@@ -973,7 +980,7 @@
       {:else if $destination === 'activity'}
         <ActivityView servers={$hubServers} history={historyMap} {now} onask={askHistory} caches={warmCaches} ttlMs={$settings.cacheTtlMs} health={healthMap} onhealth={askHealth} rttOf={(id) => hub.rtt(id)} />
       {:else if $destination === 'settings'}
-        <SettingsView user={user ?? ''} {serverVersion} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} onmenu={() => { titleTapped(); menuOpen = true; }} onshortcuts={() => (helpOpen = true)} onreport={openReport} onlogout={logout} ondeletedata={deleteData} historyServers={$connectedCount} ondeletehistory={deleteHistory} pushSettings={pushServerId ? pushSettings[pushServerId] : undefined} {pushSaving} onpushsettings={savePushSettings} />
+        <SettingsView user={user ?? ''} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} push={pushView} onpush={togglePush} onshortcuts={() => (helpOpen = true)} onreport={openReport} onlogout={logout} ondeletedata={deleteData} historyServers={$connectedCount} ondeletehistory={deleteHistory} pushSettings={pushServerId ? pushSettings[pushServerId] : undefined} {pushSaving} onpushsettings={savePushSettings} />
       {:else}
         <div class="workspace" class:mobile={narrow}>
           <div class="terminal-pane">
@@ -1029,7 +1036,7 @@
     </AppFrame>
   {/if}
 
-  {#if menuOpen && user}<MenuSheet {user} {avatar} {serverVersion} onservers={leaveServer} onreport={openReport} onlogout={logout} onclose={() => menuOpen = false} unread={unreadCount($inbox)} oninbox={() => inboxOpen = true} push={pushView} onpush={togglePush} />{/if}
+  {#if menuOpen && user}<MenuSheet {user} {avatar} onservers={leaveServer} onsettings={() => go('settings')} onreport={openReport} onlogout={logout} onclose={() => menuOpen = false} unread={unreadCount($inbox)} oninbox={() => inboxOpen = true} />{/if}
   {#if inboxOpen}<InboxSheet items={$inbox} {now} agents={$allAgents} onanswer={(key, choice, prompt) => sendSession({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })} onreply={(key, text) => sendSession({ type: 'reply', session: key, text })} onopen={openWaiting} onhome={() => go('home')} onread={() => inbox.update(markAllRead)} onclear={() => inbox.set([])} onclose={() => { inboxOpen = false; inbox.update(markAllRead); }} />{/if}
   {#if actionSession}<SessionActions session={actionSession} canClose={['tmux', 'acp'].includes(backendOf(actionSession))} confirmFirst={actionConfirm} ondetach={() => detach(actionSession.key)} onclosesession={() => closeSession(actionSession.key)} onclose={() => actionKey = null} />{/if}
   {#if menuSession && menuKey}

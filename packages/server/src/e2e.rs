@@ -89,6 +89,11 @@ fn keep_tmux_alive() {
 }
 
 async fn fixture() -> Fixture {
+    fixture_with(0).await
+}
+
+/// `history_runs` finished tasks of a long-lived server are already in its history, as on a machine in daily use.
+async fn fixture_with(history_runs: usize) -> Fixture {
     keep_tmux_alive();
     let dir = std::env::temp_dir().join(format!("termenbox-e2e-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -98,11 +103,23 @@ async fn fixture() -> Fixture {
     let claim = auth.claim_token().unwrap().unwrap();
     let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_flag = stopped.clone();
-    let hub = crate::events::EventHub::new([9; 32]);
+    let mut hub = crate::events::EventHub::new([9; 32]);
+    if history_runs > 0 {
+        let now = crate::events::now_ms();
+        let lines: String = (0..history_runs as u64)
+            .map(|i| format!("{{\"session\":\"session-opencode\",\"agent\":\"opencode\",\"task\":\"Fix the failing build of the installer on a machine that has no compiler or root access\",\"project\":\"termenbox\",\"started_at\":{},\"ended_at\":{},\"outcome\":\"finished\",\"blocked_ms\":0}}\n", now - 4_000_000 + i * 1000, now - 3_990_000 + i * 1000))
+            .collect();
+        std::fs::write(dir.join("history.jsonl"), lines).unwrap();
+        let limits = crate::history::Limits::new(90, 20);
+        hub = hub.with_history(Arc::new(
+            crate::history::History::open(&dir, limits, now).unwrap(),
+        ));
+    }
     let events_socket = dir.join("events.sock");
     tokio::spawn(crate::events::serve_socket(
         hub.clone(),
         events_socket.clone(),
+        std::sync::Arc::new(crate::owner::Resolver::default()),
     ));
     let env = crate::events::EventEnv {
         hub: hub.clone(),
@@ -1134,6 +1151,31 @@ async fn a_flood_of_output_on_the_single_pipe_still_reaches_the_client(kind: Kin
     panic!("end-42 never arrived: {} bytes", seen.len());
 }
 
+/// The Activity view asks for the history; a server that has run for weeks answers with more than one message of the
+/// direct transport holds, and the connection must survive it: the newest runs come, marked as cut, and the next request
+/// is answered.
+async fn a_long_history_is_cut_to_fit_and_the_connection_survives(kind: Kind) {
+    let f = fixture_with(400).await;
+    let alice = f.who(1, "alice");
+    let mut c = Conn::open(kind, &f).await;
+    c.login(&f, &alice, &f.claim).await;
+    c.recv_type("auth_ok").await;
+    let now = crate::events::now_ms();
+    c.send(json!({"type":"history","from":now - 86_400_000,"to":now + 1000}))
+        .await;
+    let h = c.recv_type("history").await;
+    let runs = h["runs"].as_array().unwrap();
+    assert!(!runs.is_empty() && runs.len() < 300, "{} runs", runs.len());
+    assert_eq!(h["truncated"], true);
+    assert!(
+        h.to_string().len() < 64 * 1024,
+        "{} bytes",
+        h.to_string().len()
+    );
+    c.send(json!({"type":"list_sessions"})).await;
+    c.recv_type("sessions").await;
+}
+
 /// `session_view` answers with the cleaned tail, tier and a parsed prompt without attaching; a message the server does
 /// not know is ignored and the connection stays up; an answer for a prompt that is not on the pane is refused.
 async fn session_view_reads_the_screen_and_unknown_messages_are_ignored(kind: Kind) {
@@ -1247,6 +1289,7 @@ macro_rules! over_both_transports {
 }
 
 over_both_transports!(
+    a_long_history_is_cut_to_fit_and_the_connection_survives,
     only_the_claiming_github_user_gets_in,
     an_authenticated_client_gets_a_signed_candidate_bundle,
     a_connection_for_another_server_expired_or_revoked_certificates_fail,
