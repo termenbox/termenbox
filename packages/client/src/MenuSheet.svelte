@@ -3,6 +3,8 @@
   import { NativeSelect } from './lib/ui/native-select';
   import { rememberFocus } from './lib/focus';
   import { settings, changeSettings, SKINS, type Skin } from './lib/settings';
+  import { audioState, previewChime } from './lib/bell';
+  import { CHIMES } from './lib/chimes';
   import { canInstall, promptInstall, isIosBrowser } from './lib/pwa';
   import { updateAvailable } from './lib/update';
   import { APP_VERSION } from './lib/appVersion';
@@ -53,6 +55,11 @@
       <label>Cache TTL <NativeSelect value={$settings.cacheTtlMs} onchange={(e) => changeSettings({ cacheTtlMs: Number(e.currentTarget.value) as 300000 | 3600000 })}><option value="300000">5 minutes</option><option value="3600000">1 hour</option></NativeSelect></label>
       <label>Keep warm text <input value={$settings.keepWarm} placeholder="empty hides the button" maxlength="200" autocapitalize="off" on:change={(e) => changeSettings({ keepWarm: e.currentTarget.value })} /></label>
       <label class="check"><input type="checkbox" checked={$settings.alertSound} on:change={(e) => changeSettings({ alertSound: e.currentTarget.checked })} /> Play a sound when a session needs you</label>
+      {#if $settings.alertSound}
+        <label>Sound <NativeSelect value={$settings.alertSoundId} onchange={(e) => changeSettings({ alertSoundId: e.currentTarget.value })}>{#each CHIMES as c}<option value={c.id}>{c.label}</option>{/each}</NativeSelect></label>
+        <div class="row"><button class="secondary" on:click={() => void previewChime($settings.alertSoundId, 'ask')}>Preview: asks</button><button class="secondary" on:click={() => void previewChime($settings.alertSoundId, 'done')}>Preview: finished</button></div>
+        {#if $audioState === 'locked'}<p>Sound locked: tap anywhere to enable it.</p>{/if}
+      {/if}
       {#if canVibrate}<label class="check"><input type="checkbox" checked={$settings.alertVibrate} on:change={(e) => changeSettings({ alertVibrate: e.currentTarget.checked })} /> Vibrate when a session needs you</label>{/if}
       <label>Theme <NativeSelect value={$settings.theme} onchange={(e) => changeSettings({ theme: e.currentTarget.value as 'dark' | 'light' | 'system' })}><option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option></NativeSelect></label>
       <label>Skin <NativeSelect value={$settings.skin} onchange={(e) => changeSettings({ skin: e.currentTarget.value as Skin })}>{#each SKINS as skin}<option value={skin}>{skin[0].toUpperCase() + skin.slice(1)}</option>{/each}</NativeSelect></label>
