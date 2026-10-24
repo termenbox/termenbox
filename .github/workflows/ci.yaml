@@ -191,6 +191,72 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # R36: the same engines against the real server binary and real tmux (attach, switch, reconnect, keys, selection, mouse
+  # reporting, resize, the 720/1024 breakpoints). WebSocket only; WebRTC and the resource gates stay in the Chromium job above.
+  browsers-real:
+    name: Browser matrix, real server (${{ matrix.label }})
+    needs: rust
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { engine: chromium, size: 1024x768, dpr: 1, label: 'desktop chromium 1024x768 @1x' }
+          - { engine: chromium, size: 1440x900, dpr: 2, label: 'desktop chromium 1440x900 @2x' }
+          - { engine: firefox, size: 1024x768, dpr: 1, label: 'desktop firefox 1024x768 @1x' }
+          - { engine: firefox, size: 1440x900, dpr: 2, label: 'desktop firefox 1440x900 @2x' }
+          - { engine: webkit, size: 1024x768, dpr: 1, label: 'desktop webkit 1024x768 @1x' }
+          - { engine: webkit, size: 1440x900, dpr: 2, label: 'desktop webkit 1440x900 @2x' }
+          - { engine: webkit, size: 390x844, dpr: 3, label: 'phone webkit @3x' }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: termenbox-server
+          path: bin
+
+      - run: chmod +x bin/termenbox-server
+
+      - run: pnpm --filter termenbox-client run e2e:build
+
+      - name: Install the browser
+        if: matrix.engine != 'chromium'
+        working-directory: packages/client
+        run: pnpm exec playwright-core install --with-deps ${{ matrix.engine }}
+
+      - name: Run the real-server scenario
+        working-directory: packages/client
+        env:
+          TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
+          E2E_ENGINE: ${{ matrix.engine }}
+          E2E_VIEWPORT: ${{ matrix.size }}
+          E2E_DPR: ${{ matrix.dpr }}
+          E2E_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
+        run: node e2e/suite.mjs realserver
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-failure-realserver-${{ matrix.engine }}-${{ matrix.size }}-${{ matrix.dpr }}x
+          path: ${{ runner.temp }}/e2e-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
+
   # The native host mode (decision 0075) ships one static musl binary per architecture: no glibc, no OpenSSL,
   # nothing to install. Build both on the native runners and fail if anything is linked dynamically.
   static:
