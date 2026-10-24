@@ -123,6 +123,20 @@ jobs:
       version: ${{ needs.select.outputs.version }}
       tags: ${{ needs.select.outputs.docker_tags }}
 
+  deploy:
+    name: Deploy the client
+    needs: [select, release]
+    if: needs.select.outputs.publish == 'true'
+    permissions:
+      contents: read
+      deployments: write
+    uses: ./.github/workflows/deploy-pages.yaml
+    secrets: inherit
+    with:
+      channel: nightly
+      sha: ${{ needs.select.outputs.sha }}
+      version: ${{ needs.select.outputs.version }}
+
   prune:
     name: Prune old nightlies
     needs: [select, release]
