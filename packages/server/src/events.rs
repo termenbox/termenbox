@@ -2112,7 +2112,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let sock = dir.join("events.sock");
         let h = hub();
-        tokio::spawn(serve_socket(h.clone(), sock.clone(), Arc::new(crate::owner::Resolver::default())));
+        tokio::spawn(serve_socket(
+            h.clone(),
+            sock.clone(),
+            Arc::new(crate::owner::Resolver::default()),
+        ));
         for _ in 0..50 {
             if sock.exists() {
                 break;

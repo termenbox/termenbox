@@ -742,12 +742,26 @@ impl SessionBackend for TmuxBackend {
             return Err(anyhow!("Unknown session"));
         }
         // `-S -` and `-E -` are the start and end of the history; `-J` joins the lines the width wrapped.
-        let args = ["capture-pane", "-p", "-J", "-S", "-", "-E", "-", "-t", &format!("={id}:")].map(String::from);
+        let args = [
+            "capture-pane",
+            "-p",
+            "-J",
+            "-S",
+            "-",
+            "-E",
+            "-",
+            "-t",
+            &format!("={id}:"),
+        ]
+        .map(String::from);
         let out = self.runner.run("tmux", &args).await?;
         if !out.status.success() {
             return Err(anyhow!("the pane cannot be read"));
         }
-        Ok(newest_text(&String::from_utf8_lossy(&out.stdout), HISTORY_TEXT_MAX))
+        Ok(newest_text(
+            &String::from_utf8_lossy(&out.stdout),
+            HISTORY_TEXT_MAX,
+        ))
     }
 
     async fn capture_styled(&self, id: &str) -> Result<String> {
@@ -1667,21 +1681,38 @@ mod tests {
         let runner =
             Runner::default().with_env(&[("TMUX_TMPDIR", Some(tmpdir.as_str())), ("TMUX", None)]);
         let b = TmuxBackend::new(runner.clone());
-        b.create_with("hist", None, Some("/tmp"), None).await.unwrap();
+        b.create_with("hist", None, Some("/tmp"), None)
+            .await
+            .unwrap();
         // Far more lines than any screen holds, so the first ones are only in the scrollback.
-        let args = ["send-keys", "-t", "=hist:", "seq 1 500; echo done-marker", "Enter"].map(String::from);
+        let args = [
+            "send-keys",
+            "-t",
+            "=hist:",
+            "seq 1 500; echo done-marker",
+            "Enter",
+        ]
+        .map(String::from);
         runner.run("tmux", &args).await.unwrap();
         let mut all = String::new();
         for _ in 0..30 {
             all = b.capture_history("hist").await.unwrap();
-            if all.contains("done-marker\n") || all.lines().filter(|l| *l == "done-marker").count() > 0 {
+            if all.contains("done-marker\n")
+                || all.lines().filter(|l| *l == "done-marker").count() > 0
+            {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         let screen = b.capture("hist").await.unwrap();
-        assert!(all.lines().any(|l| l == "1"), "the first line is in the history");
-        assert!(!screen.lines().any(|l| l == "1"), "and no longer on the screen");
+        assert!(
+            all.lines().any(|l| l == "1"),
+            "the first line is in the history"
+        );
+        assert!(
+            !screen.lines().any(|l| l == "1"),
+            "and no longer on the screen"
+        );
         assert!(all.lines().any(|l| l == "500"));
         let _ = b.kill("hist").await;
         let _ = runner.run("tmux", &["kill-server".to_string()]).await;
@@ -1692,9 +1723,17 @@ mod tests {
     fn the_history_sent_is_the_newest_whole_lines_that_fit() {
         assert_eq!(newest_text("a\nb\n\n\n", 100), "a\nb");
         assert_eq!(newest_text("aaaa\nbbbb\ncccc", 10), "bbbb\ncccc");
-        assert_eq!(newest_text("aaaa\nbbbb\ncccc", 9), "cccc", "a line that does not fit whole is dropped");
+        assert_eq!(
+            newest_text("aaaa\nbbbb\ncccc", 9),
+            "cccc",
+            "a line that does not fit whole is dropped"
+        );
         assert_eq!(newest_text("héllo\nwörld", 7), "wörld");
-        assert_eq!(newest_text("abcdefghij", 4), "ghij", "one long line is cut, not dropped");
+        assert_eq!(
+            newest_text("abcdefghij", 4),
+            "ghij",
+            "one long line is cut, not dropped"
+        );
     }
 
     #[test]
@@ -1806,7 +1845,13 @@ mod tests {
         // A tmux server that started before the config said `status off` keeps its status line until the config is
         // applied to it again, which the server does at every start.
         assert_eq!(show(&private, "status").await, "off");
-        private.run("tmux", &["set-option", "-g", "status", "on"].map(String::from)).await.unwrap();
+        private
+            .run(
+                "tmux",
+                &["set-option", "-g", "status", "on"].map(String::from),
+            )
+            .await
+            .unwrap();
         assert_eq!(show(&private, "status").await, "on");
         private.reload_tmux_config().await;
         assert_eq!(show(&private, "status").await, "off");

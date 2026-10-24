@@ -122,7 +122,9 @@ fn decide(state: &mut State, world: Option<&World>, r: &Report, now: u64) -> Ver
         },
     };
     if let Some(id) = &r.agent_id {
-        state.bound.insert(key(&r.adapter, id), (session.clone(), now));
+        state
+            .bound
+            .insert(key(&r.adapter, id), (session.clone(), now));
         if state.bound.len() > MAX_BOUND {
             if let Some(oldest) = state
                 .bound
@@ -177,7 +179,12 @@ fn shared_owner(
         return Ok(asked[0].id.clone());
     }
     // 2. The prompt it was given is on exactly one screen.
-    if let Some(p) = r.prompt.as_deref().map(str::trim).filter(|p| p.chars().count() >= 4) {
+    if let Some(p) = r
+        .prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| p.chars().count() >= 4)
+    {
         if w.has_screens {
             let shown: Vec<&&SessionFacts> = tuis.iter().filter(|s| s.screen.contains(p)).collect();
             if shown.len() == 1 {
@@ -205,7 +212,8 @@ fn sole_tui(world: Option<&World>) -> Option<String> {
 /// turn on top of it nor ends it.
 fn turn_gate(state: &mut State, session: &str, r: &Report, now: u64) -> Verdict {
     let (Some(open), Some(id)) = (r.turn, r.agent_id.as_deref()) else {
-        if let (Some(id), Some((owner, at))) = (r.agent_id.as_deref(), state.turns.get_mut(session)) {
+        if let (Some(id), Some((owner, at))) = (r.agent_id.as_deref(), state.turns.get_mut(session))
+        {
             if owner == id {
                 *at = now;
             }
@@ -220,10 +228,14 @@ fn turn_gate(state: &mut State, session: &str, r: &Report, now: u64) -> Verdict 
     match (open, owner) {
         (true, Some(o)) if o != id => Verdict::Drop("another conversation owns the open turn"),
         (true, _) => {
-            state.turns.insert(session.to_string(), (id.to_string(), now));
+            state
+                .turns
+                .insert(session.to_string(), (id.to_string(), now));
             Verdict::Deliver(session.to_string())
         }
-        (false, Some(o)) if o != id => Verdict::Drop("a conversation that does not own the turn ended"),
+        (false, Some(o)) if o != id => {
+            Verdict::Drop("a conversation that does not own the turn ended")
+        }
         (false, _) => {
             state.turns.remove(session);
             Verdict::Deliver(session.to_string())
@@ -262,7 +274,14 @@ impl Resolver {
         v
     }
 
-    async fn world(&self, runner: &Runner, prefix: &str, now: u64, tuis: bool, screens: bool) -> Option<World> {
+    async fn world(
+        &self,
+        runner: &Runner,
+        prefix: &str,
+        now: u64,
+        tuis: bool,
+        screens: bool,
+    ) -> Option<World> {
         if !tuis && !screens {
             if let Some(w) = self.cache.lock().unwrap().as_ref() {
                 if now.saturating_sub(w.read_at) < WORLD_TTL_MS {
@@ -279,7 +298,13 @@ impl Resolver {
 }
 
 /// Every pane's session and pid, and (when asked) the OpenCode TUIs under them and their screens.
-async fn read_world(runner: &Runner, prefix: &str, now: u64, tuis: bool, screens: bool) -> Option<World> {
+async fn read_world(
+    runner: &Runner,
+    prefix: &str,
+    now: u64,
+    tuis: bool,
+    screens: bool,
+) -> Option<World> {
     let args = ["list-panes", "-a", "-F", "#{session_name}|#{pane_pid}"].map(String::from);
     let out = runner.run("tmux", &args).await.ok()?;
     if !out.status.success() {
@@ -287,18 +312,30 @@ async fn read_world(runner: &Runner, prefix: &str, now: u64, tuis: bool, screens
     }
     let mut by: Vec<SessionFacts> = Vec::new();
     for l in String::from_utf8_lossy(&out.stdout).lines() {
-        let Some((name, pid)) = l.rsplit_once('|') else { continue };
-        let Ok(pid) = pid.trim().parse::<u32>() else { continue };
+        let Some((name, pid)) = l.rsplit_once('|') else {
+            continue;
+        };
+        let Ok(pid) = pid.trim().parse::<u32>() else {
+            continue;
+        };
         let id = format!("{prefix}{name}");
         match by.iter_mut().find(|s| s.id == id) {
             Some(s) => s.pane_pids.push(pid),
-            None => by.push(SessionFacts { id, pane_pids: vec![pid], ..Default::default() }),
+            None => by.push(SessionFacts {
+                id,
+                pane_pids: vec![pid],
+                ..Default::default()
+            }),
         }
     }
     if tuis {
         let table = tokio::task::spawn_blocking(ProcTable::read).await.ok()?;
         for s in &mut by {
-            s.tuis = s.pane_pids.iter().flat_map(|p| table.tuis_under(*p)).collect();
+            s.tuis = s
+                .pane_pids
+                .iter()
+                .flat_map(|p| table.tuis_under(*p))
+                .collect();
         }
     }
     if screens {
@@ -315,7 +352,11 @@ async fn read_world(runner: &Runner, prefix: &str, now: u64, tuis: bool, screens
             }
         }
     }
-    Some(World { sessions: by, read_at: now, has_screens: screens })
+    Some(World {
+        sessions: by,
+        read_at: now,
+        has_screens: screens,
+    })
 }
 
 /// The process table, for walking from a pane's process down to the TUIs under it.
@@ -325,18 +366,29 @@ pub struct ProcTable {
 }
 
 /// OpenCode subcommands that are not the interactive TUI.
-const NOT_A_TUI: [&str; 12] =
-    ["serve", "run", "acp", "web", "export", "import", "auth", "mcp", "models", "stats", "github", "upgrade"];
+const NOT_A_TUI: [&str; 12] = [
+    "serve", "run", "acp", "web", "export", "import", "auth", "mcp", "models", "stats", "github",
+    "upgrade",
+];
 
 impl ProcTable {
     pub fn read() -> Self {
         let mut procs = HashMap::new();
-        let Ok(dir) = std::fs::read_dir("/proc") else { return Self::default() };
+        let Ok(dir) = std::fs::read_dir("/proc") else {
+            return Self::default();
+        };
         for e in dir.flatten() {
-            let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
+            let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
+                continue;
+            };
             let Some(ppid) = ppid_of(pid) else { continue };
             let args = std::fs::read(e.path().join("cmdline"))
-                .map(|b| b.split(|c| *c == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect())
+                .map(|b| {
+                    b.split(|c| *c == 0)
+                        .filter(|a| !a.is_empty())
+                        .map(|a| String::from_utf8_lossy(a).into_owned())
+                        .collect()
+                })
                 .unwrap_or_default();
             procs.insert(pid, (ppid, args));
         }
@@ -345,7 +397,12 @@ impl ProcTable {
 
     #[cfg(test)]
     fn of(list: &[(u32, u32, &[&str])]) -> Self {
-        Self { procs: list.iter().map(|(p, pp, a)| (*p, (*pp, a.iter().map(|s| s.to_string()).collect()))).collect() }
+        Self {
+            procs: list
+                .iter()
+                .map(|(p, pp, a)| (*p, (*pp, a.iter().map(|s| s.to_string()).collect())))
+                .collect(),
+        }
     }
 
     /// Command lines of the OpenCode TUIs that are `root` or run below it.
@@ -373,10 +430,16 @@ impl ProcTable {
 
 fn is_tui(args: &[String]) -> bool {
     // `opencode ...`, or an interpreter running it (`node /path/opencode ...`, how a package install starts it).
-    let Some(at) = args.iter().take(2).position(|a| a.rsplit('/').next() == Some("opencode")) else {
+    let Some(at) = args
+        .iter()
+        .take(2)
+        .position(|a| a.rsplit('/').next() == Some("opencode"))
+    else {
         return false;
     };
-    !args.get(at + 1).is_some_and(|a| NOT_A_TUI.contains(&a.as_str()))
+    !args
+        .get(at + 1)
+        .is_some_and(|a| NOT_A_TUI.contains(&a.as_str()))
 }
 
 /// Parent of `pid`, from `/proc/<pid>/stat` (the name in field 2 may hold spaces and brackets: read after the last `)`).
@@ -410,12 +473,19 @@ mod tests {
         SessionFacts {
             id: id.into(),
             pane_pids: panes.to_vec(),
-            tuis: tuis.iter().map(|t| t.iter().map(|s| s.to_string()).collect()).collect(),
+            tuis: tuis
+                .iter()
+                .map(|t| t.iter().map(|s| s.to_string()).collect())
+                .collect(),
             screen: screen.into(),
         }
     }
     fn world(sessions: Vec<SessionFacts>) -> World {
-        World { sessions, read_at: 0, has_screens: true }
+        World {
+            sessions,
+            read_at: 0,
+            has_screens: true,
+        }
     }
     fn report(adapter: &str, declared: &str, id: Option<&str>, ancestors: &[u32]) -> Report {
         Report {
@@ -429,56 +499,93 @@ mod tests {
 
     #[test]
     fn a_reporter_inside_the_declared_session_is_trusted() {
-        let w = world(vec![session("a", &[100], &[], ""), session("b", &[200], &[], "")]);
+        let w = world(vec![
+            session("a", &[100], &[], ""),
+            session("b", &[200], &[], ""),
+        ]);
         let mut st = State::default();
         let r = report("claude", "a", Some("c1"), &[150, 100, 50]);
-        assert_eq!(decide(&mut st, Some(&w), &r, 1), Verdict::Deliver("a".into()));
+        assert_eq!(
+            decide(&mut st, Some(&w), &r, 1),
+            Verdict::Deliver("a".into())
+        );
     }
 
     #[test]
     fn a_reporter_inside_another_session_goes_to_that_session() {
         // The environment was inherited from a session that is not the one the process runs in.
-        let w = world(vec![session("a", &[100], &[], ""), session("b", &[200], &[], "")]);
+        let w = world(vec![
+            session("a", &[100], &[], ""),
+            session("b", &[200], &[], ""),
+        ]);
         let r = report("claude", "a", Some("c1"), &[250, 200]);
-        assert_eq!(decide(&mut State::default(), Some(&w), &r, 1), Verdict::Deliver("b".into()));
+        assert_eq!(
+            decide(&mut State::default(), Some(&w), &r, 1),
+            Verdict::Deliver("b".into())
+        );
     }
 
     #[test]
     fn without_ancestors_or_tmux_the_environment_stands() {
         let r = report("claude", "a", None, &[]);
-        assert_eq!(decide(&mut State::default(), None, &r, 1), Verdict::Deliver("a".into()));
+        assert_eq!(
+            decide(&mut State::default(), None, &r, 1),
+            Verdict::Deliver("a".into())
+        );
         let w = world(vec![session("b", &[200], &[], "")]);
-        assert_eq!(decide(&mut State::default(), Some(&w), &r, 1), Verdict::Deliver("a".into()));
+        assert_eq!(
+            decide(&mut State::default(), Some(&w), &r, 1),
+            Verdict::Deliver("a".into())
+        );
     }
 
     #[test]
     fn a_non_opencode_reporter_outside_every_pane_is_dropped() {
         let w = world(vec![session("a", &[100], &[], "")]);
         let r = report("claude", "a", Some("c1"), &[9, 8]);
-        assert!(matches!(decide(&mut State::default(), Some(&w), &r, 1), Verdict::Drop(_)));
+        assert!(matches!(
+            decide(&mut State::default(), Some(&w), &r, 1),
+            Verdict::Drop(_)
+        ));
     }
 
     #[test]
     fn a_shared_opencode_service_is_placed_by_the_tui_started_on_the_conversation() {
         let w = world(vec![
             session("session-opencode", &[100], &[&["opencode"]], ""),
-            session("projects-opencode", &[200], &[&["opencode", "-s", "ses_B"]], ""),
+            session(
+                "projects-opencode",
+                &[200],
+                &[&["opencode", "-s", "ses_B"]],
+                "",
+            ),
         ]);
         // The service runs outside every pane and its environment names the first session.
         let r = report("opencode", "session-opencode", Some("ses_B"), &[7777]);
-        assert_eq!(decide(&mut State::default(), Some(&w), &r, 1), Verdict::Deliver("projects-opencode".into()));
+        assert_eq!(
+            decide(&mut State::default(), Some(&w), &r, 1),
+            Verdict::Deliver("projects-opencode".into())
+        );
     }
 
     #[test]
     fn a_shared_opencode_service_is_placed_by_the_prompt_on_one_screen() {
         let w = world(vec![
             session("one", &[100], &[&["opencode"]], "> fix the failing test\n"),
-            session("two", &[200], &[&["opencode"]], "> write the release notes\n"),
+            session(
+                "two",
+                &[200],
+                &[&["opencode"]],
+                "> write the release notes\n",
+            ),
         ]);
         let mut r = report("opencode", "one", Some("ses_X"), &[7777]);
         r.prompt = Some("write the release notes".into());
         let mut st = State::default();
-        assert_eq!(decide(&mut st, Some(&w), &r, 1), Verdict::Deliver("two".into()));
+        assert_eq!(
+            decide(&mut st, Some(&w), &r, 1),
+            Verdict::Deliver("two".into())
+        );
         // The conversation stays there, without the prompt.
         r.prompt = None;
         r.turn = Some(true);
@@ -492,14 +599,23 @@ mod tests {
             session("two", &[200], &[&["opencode"]], ""),
         ]);
         let r = report("opencode", "one", Some("ses_X"), &[7777]);
-        assert_eq!(decide(&mut State::default(), Some(&w), &r, 1), Verdict::Pending);
+        assert_eq!(
+            decide(&mut State::default(), Some(&w), &r, 1),
+            Verdict::Pending
+        );
     }
 
     #[test]
     fn a_single_tui_takes_the_events_of_a_shared_service() {
-        let w = world(vec![session("one", &[100], &[&["opencode"]], ""), session("sh", &[300], &[], "")]);
+        let w = world(vec![
+            session("one", &[100], &[&["opencode"]], ""),
+            session("sh", &[300], &[], ""),
+        ]);
         let r = report("opencode", "sh", Some("ses_X"), &[7777]);
-        assert_eq!(decide(&mut State::default(), Some(&w), &r, 1), Verdict::Deliver("one".into()));
+        assert_eq!(
+            decide(&mut State::default(), Some(&w), &r, 1),
+            Verdict::Deliver("one".into())
+        );
     }
 
     #[test]
@@ -508,18 +624,33 @@ mod tests {
         let mut st = State::default();
         let mut open = report("opencode", "a", Some("parent"), &[100]);
         open.turn = Some(true);
-        assert_eq!(decide(&mut st, Some(&w), &open, 1), Verdict::Deliver("a".into()));
+        assert_eq!(
+            decide(&mut st, Some(&w), &open, 1),
+            Verdict::Deliver("a".into())
+        );
         let mut child_open = report("opencode", "a", Some("child"), &[100]);
         child_open.turn = Some(true);
-        assert!(matches!(decide(&mut st, Some(&w), &child_open, 2), Verdict::Drop(_)));
+        assert!(matches!(
+            decide(&mut st, Some(&w), &child_open, 2),
+            Verdict::Drop(_)
+        ));
         let mut child_end = report("opencode", "a", Some("child"), &[100]);
         child_end.turn = Some(false);
-        assert!(matches!(decide(&mut st, Some(&w), &child_end, 3), Verdict::Drop(_)), "the parent is still working");
+        assert!(
+            matches!(decide(&mut st, Some(&w), &child_end, 3), Verdict::Drop(_)),
+            "the parent is still working"
+        );
         let mut end = report("opencode", "a", Some("parent"), &[100]);
         end.turn = Some(false);
-        assert_eq!(decide(&mut st, Some(&w), &end, 4), Verdict::Deliver("a".into()));
+        assert_eq!(
+            decide(&mut st, Some(&w), &end, 4),
+            Verdict::Deliver("a".into())
+        );
         // The turn is over: the next conversation may open one.
-        assert_eq!(decide(&mut st, Some(&w), &child_open, 5), Verdict::Deliver("a".into()));
+        assert_eq!(
+            decide(&mut st, Some(&w), &child_open, 5),
+            Verdict::Deliver("a".into())
+        );
     }
 
     #[test]
@@ -531,7 +662,10 @@ mod tests {
         decide(&mut st, Some(&w), &open, 1);
         let mut next = report("claude", "a", Some("new"), &[100]);
         next.turn = Some(true);
-        assert_eq!(decide(&mut st, Some(&w), &next, TURN_OWNER_MS + 2), Verdict::Deliver("a".into()));
+        assert_eq!(
+            decide(&mut st, Some(&w), &next, TURN_OWNER_MS + 2),
+            Verdict::Deliver("a".into())
+        );
     }
 
     #[test]
@@ -544,7 +678,14 @@ mod tests {
             (301, 300, &["opencode"]),
         ]);
         let tuis = t.tuis_under(100);
-        assert_eq!(tuis, vec![vec!["/home/u/.opencode/bin/opencode".to_string(), "-s".into(), "ses_1".into()]]);
+        assert_eq!(
+            tuis,
+            vec![vec![
+                "/home/u/.opencode/bin/opencode".to_string(),
+                "-s".into(),
+                "ses_1".into()
+            ]]
+        );
         assert_eq!(t.tuis_under(300).len(), 1);
     }
 
@@ -557,7 +698,11 @@ mod tests {
     /// Real tmux, real processes: panes found by pid, an `opencode` TUI found below a pane by its command line.
     #[tokio::test]
     async fn the_resolver_places_events_by_the_processes_of_a_real_tmux() {
-        if std::process::Command::new("tmux").arg("-V").output().is_err() {
+        if std::process::Command::new("tmux")
+            .arg("-V")
+            .output()
+            .is_err()
+        {
             return;
         }
         let dir = std::env::temp_dir().join(format!("tm-owner-{}", std::process::id()));
@@ -570,19 +715,41 @@ mod tests {
             std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let tmpdir = dir.to_string_lossy().into_owned();
-        let runner = Runner::default().with_env(&[("TMUX_TMPDIR", Some(tmpdir.as_str())), ("TMUX", None)]);
+        let runner =
+            Runner::default().with_env(&[("TMUX_TMPDIR", Some(tmpdir.as_str())), ("TMUX", None)]);
         let run = |args: &[&str]| {
-            let (runner, args) = (runner.clone(), args.iter().map(|a| a.to_string()).collect::<Vec<_>>());
+            let (runner, args) = (
+                runner.clone(),
+                args.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+            );
             async move { runner.run("tmux", &args).await.unwrap() }
         };
         run(&["new-session", "-d", "-s", "ra", "sleep 600"]).await;
         run(&["new-session", "-d", "-s", "rb", "sleep 600"]).await;
         let tui = format!("{} -s ses_Z", fake.display());
         run(&["new-session", "-d", "-s", "rc", &tui]).await;
-        run(&["new-session", "-d", "-s", "rd", &format!("{}", fake.display())]).await;
-        let panes = String::from_utf8_lossy(&run(&["list-panes", "-a", "-F", "#{session_name} #{pane_pid}"]).await.stdout).into_owned();
+        run(&[
+            "new-session",
+            "-d",
+            "-s",
+            "rd",
+            &format!("{}", fake.display()),
+        ])
+        .await;
+        let panes = String::from_utf8_lossy(
+            &run(&["list-panes", "-a", "-F", "#{session_name} #{pane_pid}"])
+                .await
+                .stdout,
+        )
+        .into_owned();
         let pid_of = |name: &str| -> u32 {
-            panes.lines().find_map(|l| l.strip_prefix(&format!("{name} "))).unwrap().trim().parse().unwrap()
+            panes
+                .lines()
+                .find_map(|l| l.strip_prefix(&format!("{name} ")))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap()
         };
         let resolver = Resolver::default();
         resolver.attach(runner.clone(), String::new());
@@ -590,16 +757,28 @@ mod tests {
 
         // Inside the session it names, and inside another one.
         let own = report("claude", "ra", Some("c1"), &[1234, pid_of("ra")]);
-        assert_eq!(resolver.resolve(&own, now).await, Verdict::Deliver("ra".into()));
+        assert_eq!(
+            resolver.resolve(&own, now).await,
+            Verdict::Deliver("ra".into())
+        );
         let other = report("claude", "ra", Some("c1"), &[pid_of("rb")]);
-        assert_eq!(resolver.resolve(&other, now).await, Verdict::Deliver("rb".into()));
+        assert_eq!(
+            resolver.resolve(&other, now).await,
+            Verdict::Deliver("rb".into())
+        );
         // In no pane at all, for an agent that has no shared service.
         let stray = report("claude", "ra", Some("c1"), &[4_000_000]);
-        assert!(matches!(resolver.resolve(&stray, now).await, Verdict::Drop(_)));
+        assert!(matches!(
+            resolver.resolve(&stray, now).await,
+            Verdict::Drop(_)
+        ));
 
         // The shared OpenCode service (outside every pane) reports for the conversation a TUI was started on.
         let shared = report("opencode", "ra", Some("ses_Z"), &[4_000_000]);
-        assert_eq!(resolver.resolve(&shared, now).await, Verdict::Deliver("rc".into()));
+        assert_eq!(
+            resolver.resolve(&shared, now).await,
+            Verdict::Deliver("rc".into())
+        );
         // Two TUIs and nothing that tells the conversations apart: it waits.
         let unknown = report("opencode", "ra", Some("ses_Q"), &[4_000_000]);
         assert_eq!(resolver.resolve(&unknown, now).await, Verdict::Pending);

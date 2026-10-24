@@ -125,7 +125,10 @@ pub async fn scan_tmux_once(
     // window), so the process, the screen and the state all come from the same pane. Without an active agent pane
     // the first one is used, as before.
     let mut chosen: Vec<&adapters::PaneScan> = Vec::new();
-    for p in panes.iter().filter(|p| adapters::agent_name(&p.command).is_some()) {
+    for p in panes
+        .iter()
+        .filter(|p| adapters::agent_name(&p.command).is_some())
+    {
         match chosen.iter().position(|c| c.session == p.session) {
             None => chosen.push(p),
             Some(i) if p.active && !chosen[i].active => chosen[i] = p,
@@ -138,7 +141,10 @@ pub async fn scan_tmux_once(
             continue;
         }
         // The pane itself when tmux named it (`%12`); the session's active pane otherwise.
-        let target = if p.pane_id.starts_with('%') && p.pane_id[1..].chars().all(|c| c.is_ascii_digit()) && p.pane_id.len() > 1 {
+        let target = if p.pane_id.starts_with('%')
+            && p.pane_id[1..].chars().all(|c| c.is_ascii_digit())
+            && p.pane_id.len() > 1
+        {
             p.pane_id.clone()
         } else {
             format!("={tmux_name}:")

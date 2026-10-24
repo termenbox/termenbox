@@ -358,7 +358,8 @@ pub fn parse_panes(output: &str, now_s: u64) -> Vec<PaneScan> {
             let command = f.next()?.to_string();
             let activity: u64 = f.next()?.trim().parse().ok()?;
             let pane_id = f.next().unwrap_or("").trim().to_string();
-            let active = f.next().map(str::trim) == Some("1") && f.next().map(str::trim) == Some("1");
+            let active =
+                f.next().map(str::trim) == Some("1") && f.next().map(str::trim) == Some("1");
             Some(PaneScan {
                 session,
                 command,
@@ -803,7 +804,10 @@ mod tests {
             1002,
         );
         assert_eq!(
-            panes.iter().map(|p| (p.pane_id.as_str(), p.active)).collect::<Vec<_>>(),
+            panes
+                .iter()
+                .map(|p| (p.pane_id.as_str(), p.active))
+                .collect::<Vec<_>>(),
             [("%3", false), ("%4", true), ("%5", false)],
             "only the active pane of the active window is shown"
         );
@@ -811,9 +815,18 @@ mod tests {
 
     #[test]
     fn the_agents_own_session_id_is_read_from_each_adapters_payload() {
-        assert_eq!(agent_session_id("claude", &json!({"session_id": "c1"})).as_deref(), Some("c1"));
-        assert_eq!(agent_session_id("codex", &json!({"session_id": "x9"})).as_deref(), Some("x9"));
-        assert_eq!(agent_session_id("opencode", &json!({"sessionID": "ses_1", "data": {}})).as_deref(), Some("ses_1"));
+        assert_eq!(
+            agent_session_id("claude", &json!({"session_id": "c1"})).as_deref(),
+            Some("c1")
+        );
+        assert_eq!(
+            agent_session_id("codex", &json!({"session_id": "x9"})).as_deref(),
+            Some("x9")
+        );
+        assert_eq!(
+            agent_session_id("opencode", &json!({"sessionID": "ses_1", "data": {}})).as_deref(),
+            Some("ses_1")
+        );
         assert_eq!(
             agent_session_id("opencode", &json!({"data": {"sessionID": "ses_2"}})).as_deref(),
             Some("ses_2"),

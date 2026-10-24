@@ -1064,10 +1064,22 @@ mod tests {
         .unwrap();
         assert_eq!(v["type"], "answer");
         assert_eq!(v["choice"], 1);
-        let v = serde_json::to_value(ClientMessage::Scrollback { session: "s".into() }).unwrap();
+        let v = serde_json::to_value(ClientMessage::Scrollback {
+            session: "s".into(),
+        })
+        .unwrap();
         assert_eq!(v["type"], "scrollback");
-        let v = serde_json::to_value(ServerMessage::Scrollback { session: "s".into(), part: 1, last: true, text: "t".into() }).unwrap();
-        assert_eq!((v["type"].as_str(), v["part"].as_u64(), v["last"].as_bool()), (Some("scrollback"), Some(1), Some(true)));
+        let v = serde_json::to_value(ServerMessage::Scrollback {
+            session: "s".into(),
+            part: 1,
+            last: true,
+            text: "t".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            (v["type"].as_str(), v["part"].as_u64(), v["last"].as_bool()),
+            (Some("scrollback"), Some(1), Some(true))
+        );
         let v = serde_json::to_value(ClientMessage::Peek {
             session: "s".into(),
             hash: None,

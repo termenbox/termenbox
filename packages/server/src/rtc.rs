@@ -39,7 +39,8 @@ const TERM_MESSAGE: usize = 16 * 1024;
 /// A single message above this closes the connection; clients send small JSON.
 const MAX_MESSAGE: usize = 64 * 1024;
 /// Sent in place of a reply longer than `MAX_MESSAGE`.
-const OVERSIZE_REPLY: &str = r#"{"type":"error","message":"A reply was too large for this connection and was not sent."}"#;
+const OVERSIZE_REPLY: &str =
+    r#"{"type":"error","message":"A reply was too large for this connection and was not sent."}"#;
 /// Client messages the session has not read yet wait here, bounded by bytes: a terminal answers a palette query with
 /// one message per colour (about 260 at once after an attach), which must not cost the peer its connection.
 const BACKLOG_BYTES: usize = 256 * 1024;
@@ -441,7 +442,10 @@ impl Peer {
                     // A message the channel cannot carry would fail the write and take the connection down with it; the
                     // client is told instead, and everything else keeps flowing.
                     Ok(text) if text.len() > MAX_MESSAGE => {
-                        tracing::warn!(bytes = text.len(), "a reply is too large for the direct transport and was not sent");
+                        tracing::warn!(
+                            bytes = text.len(),
+                            "a reply is too large for the direct transport and was not sent"
+                        );
                         self.queue.push_back(OVERSIZE_REPLY.to_string());
                     }
                     Ok(text) => self.queue.push_back(text),

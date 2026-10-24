@@ -111,7 +111,9 @@ async fn fixture_with(history_runs: usize) -> Fixture {
             .collect();
         std::fs::write(dir.join("history.jsonl"), lines).unwrap();
         let limits = crate::history::Limits::new(90, 20);
-        hub = hub.with_history(Arc::new(crate::history::History::open(&dir, limits, now).unwrap()));
+        hub = hub.with_history(Arc::new(
+            crate::history::History::open(&dir, limits, now).unwrap(),
+        ));
     }
     let events_socket = dir.join("events.sock");
     tokio::spawn(crate::events::serve_socket(
@@ -1159,12 +1161,17 @@ async fn a_long_history_is_cut_to_fit_and_the_connection_survives(kind: Kind) {
     c.login(&f, &alice, &f.claim).await;
     c.recv_type("auth_ok").await;
     let now = crate::events::now_ms();
-    c.send(json!({"type":"history","from":now - 86_400_000,"to":now + 1000})).await;
+    c.send(json!({"type":"history","from":now - 86_400_000,"to":now + 1000}))
+        .await;
     let h = c.recv_type("history").await;
     let runs = h["runs"].as_array().unwrap();
     assert!(!runs.is_empty() && runs.len() < 300, "{} runs", runs.len());
     assert_eq!(h["truncated"], true);
-    assert!(h.to_string().len() < 64 * 1024, "{} bytes", h.to_string().len());
+    assert!(
+        h.to_string().len() < 64 * 1024,
+        "{} bytes",
+        h.to_string().len()
+    );
     c.send(json!({"type":"list_sessions"})).await;
     c.recv_type("sessions").await;
 }

@@ -1722,30 +1722,51 @@ mod propagation_tests {
             }
             false
         };
-        tokio::time::timeout(Duration::from_secs(3), read).await.unwrap_or(false)
+        tokio::time::timeout(Duration::from_secs(3), read)
+            .await
+            .unwrap_or(false)
     }
 
     #[tokio::test]
     async fn a_rename_on_one_connection_reaches_every_other_connection() {
         let dir = std::env::temp_dir().join(format!("tm-prop-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let auth = Arc::new(AuthState::new(dir.clone(), CertKeys::default(), "srv".into()).unwrap());
-        let mgr = SessionManager::new(Arc::new(Names(Mutex::new("first".into()))), RunMode::Container);
-        let id = Identity { provider: "github".into(), id: "1".into(), login: "u".into(), issued_at: None };
+        let auth =
+            Arc::new(AuthState::new(dir.clone(), CertKeys::default(), "srv".into()).unwrap());
+        let mgr = SessionManager::new(
+            Arc::new(Names(Mutex::new("first".into()))),
+            RunMode::Container,
+        );
+        let id = Identity {
+            provider: "github".into(),
+            id: "1".into(),
+            login: "u".into(),
+            issued_at: None,
+        };
         let (la, mut ea) = crate::link::pair(None, None);
         let (lb, mut eb) = crate::link::pair(None, None);
         for l in [la, lb] {
             let (m, i, a) = (mgr.clone(), id.clone(), auth.clone());
-            tokio::spawn(async move { let _ = m.serve(l, i, &a).await; });
+            tokio::spawn(async move {
+                let _ = m.serve(l, i, &a).await;
+            });
         }
         // Both devices are connected and neither has asked for anything.
         tokio::time::sleep(Duration::from_millis(200)).await;
         ea.to_session
-            .send(Inbound::Json(r#"{"type":"rename_session","session":"s","name":"second"}"#.into()))
+            .send(Inbound::Json(
+                r#"{"type":"rename_session","session":"s","name":"second"}"#.into(),
+            ))
             .await
             .unwrap();
-        assert!(sees_name(&mut ea, "second").await, "the device that renamed sees it");
-        assert!(sees_name(&mut eb, "second").await, "a device that did not ask sees it too");
+        assert!(
+            sees_name(&mut ea, "second").await,
+            "the device that renamed sees it"
+        );
+        assert!(
+            sees_name(&mut eb, "second").await,
+            "a device that did not ask sees it too"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -1758,7 +1779,9 @@ mod scrollback_tests {
         parts
             .iter()
             .map(|m| match m {
-                ServerMessage::Scrollback { part, last, text, .. } => (*part, *last, text.clone()),
+                ServerMessage::Scrollback {
+                    part, last, text, ..
+                } => (*part, *last, text.clone()),
                 other => panic!("{other:?}"),
             })
             .collect()
@@ -1770,8 +1793,14 @@ mod scrollback_tests {
         let parts = texts(&scrollback_parts("s", &text));
         assert!(parts.len() > 1);
         assert!(parts.iter().all(|(_, _, t)| t.len() <= SCROLLBACK_PART));
-        assert_eq!(parts.iter().map(|(_, _, t)| t.as_str()).collect::<String>(), text);
-        assert_eq!(parts.iter().map(|(p, _, _)| *p).collect::<Vec<_>>(), (0..parts.len() as u32).collect::<Vec<_>>());
+        assert_eq!(
+            parts.iter().map(|(_, _, t)| t.as_str()).collect::<String>(),
+            text
+        );
+        assert_eq!(
+            parts.iter().map(|(p, _, _)| *p).collect::<Vec<_>>(),
+            (0..parts.len() as u32).collect::<Vec<_>>()
+        );
         assert_eq!(parts.iter().filter(|(_, last, _)| *last).count(), 1);
         assert!(parts.last().unwrap().1);
         // A part cut at a line end starts with a whole line.
@@ -1780,11 +1809,17 @@ mod scrollback_tests {
 
     #[test]
     fn an_empty_history_is_one_empty_last_part_and_a_very_long_line_is_cut_at_a_character() {
-        assert_eq!(texts(&scrollback_parts("s", "")), vec![(0, true, String::new())]);
+        assert_eq!(
+            texts(&scrollback_parts("s", "")),
+            vec![(0, true, String::new())]
+        );
         let long = "é".repeat(SCROLLBACK_PART);
         let parts = texts(&scrollback_parts("s", &long));
         assert!(parts.len() >= 2 && parts.iter().all(|(_, _, t)| t.len() <= SCROLLBACK_PART));
-        assert_eq!(parts.iter().map(|(_, _, t)| t.as_str()).collect::<String>(), long);
+        assert_eq!(
+            parts.iter().map(|(_, _, t)| t.as_str()).collect::<String>(),
+            long
+        );
     }
 
     #[test]
