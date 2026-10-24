@@ -45,6 +45,8 @@ const OPTION_CHARS: usize = 40;
 const QUESTION_CHARS: usize = 200;
 /// Where on the screen a question or marker is looked for: its last non-empty lines.
 const SCAN_LINES: usize = 14;
+/// How many of the last non-empty lines count as the footer an idle agent draws under its input box.
+const FOOTER_LINES: usize = 3;
 const MAX_PATTERNS: usize = 32;
 const MAX_PATTERN_CHARS: usize = 80;
 
@@ -289,7 +291,12 @@ impl Profile {
                 .map(|t| t.chars().take(crate::events::TASK_CHARS).collect())
         });
         let working = has(&self.markers.working);
-        let prompt = self.prompt_in(scan);
+        // The idle footer (the last lines) is where an agent at its input prompt shows its hints. A question higher up
+        // is then the agent's own transcript (a `(y/n)` it printed, a numbered list in a reply), not a dialog that
+        // waits: a dialog replaces the footer. Only the dialog markers still say blocked then.
+        let footer = &non_empty[non_empty.len().saturating_sub(FOOTER_LINES)..];
+        let idle_footer = !working && footer.iter().any(|l| lower_contains(l, &self.markers.idle));
+        let prompt = self.prompt_in(scan).filter(|_| !idle_footer);
         ScreenView {
             working,
             blocked: has(&self.markers.blocked) || prompt.is_some(),
@@ -695,5 +702,24 @@ mod tests {
         // The scan used to call a pane working when it had just printed anything, such as a redraw on attach.
         assert!(!view("claude", "claude-idle").working && view("claude", "claude-idle").idle);
         assert!(view("claude", "claude-working").working);
+    }
+
+    /// An idle agent's last lines are its own transcript: a question it printed earlier is not a dialog that waits,
+    /// and an agent that is sitting at its input must not raise "needs you" for it when a client attaches.
+    #[test]
+    fn a_question_in_the_transcript_above_an_idle_footer_is_not_a_dialog() {
+        let (p, _) = profiles().for_agent(Some("claude"));
+        let idle = screen("claude-idle");
+        let with_question = idle.replacen(
+            "\n\n\n",
+            "\n  Do you want to proceed?\n  ❯ 1. Yes\n    2. No\n\n\n",
+            1,
+        );
+        assert_ne!(with_question, idle);
+        let v = p.read(&with_question);
+        assert!(v.idle && !v.blocked && v.prompt.is_none());
+        // The same question without the footer (a dialog replaces it) is still one.
+        let dialog = p.read("  Do you want to proceed?\n  ❯ 1. Yes\n    2. No\n");
+        assert!(dialog.blocked && dialog.prompt.is_some());
     }
 }
