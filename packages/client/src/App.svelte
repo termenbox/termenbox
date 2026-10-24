@@ -246,6 +246,7 @@
   const hubServers = hub.servers;
   const allWindows = hub.windows;
   const allSessions = hub.allSessions;
+  $: sessionCounts = $allSessions.reduce<Record<string, number>>((n, s) => ({ ...n, [s.serverId]: (n[s.serverId] ?? 0) + 1 }), {});
   const allAgents = hub.agents;
   const connectedCount = hub.connectedCount;
   const overLimit = hub.overLimit;
@@ -964,8 +965,7 @@
         </div>
       {/snippet}
       {#if serversPage || servers.length === 0}
-        {#if servers.length > 0}<button class="secondary" on:click={showWorkspace}>← Sessions</button>{/if}
-        <ServerList {servers} states={$hubServers} onpause={(id) => { hub.pause(id); }} onresume={(id) => hub.resume(id)} onretry={(id) => hub.retry(id)} onadd={() => { addPrefill = null; addStart = 'install'; showAddServer = true; }} onscan={() => { addPrefill = null; addStart = 'scan'; showAddServer = true; }} onremove={removeServer} onshare={shareServer} />
+        <ServerList {servers} states={$hubServers} counts={sessionCounts} onpause={(id) => { hub.pause(id); }} onresume={(id) => hub.resume(id)} onretry={(id) => hub.retry(id)} onadd={() => { addPrefill = null; addStart = 'install'; showAddServer = true; }} onscan={() => { addPrefill = null; addStart = 'scan'; showAddServer = true; }} onremove={removeServer} onshare={shareServer} />
       {:else if $destination === 'home'}
         <Home sessions={$allSessions} agents={$allAgents} servers={$hubServers} {now} {lastKey} {focusKey} offer={hookOffer} onhook={homeHook} onopen={openWaiting} onservers={leaveServer} onnew={newSession}
           onanswer={(key, choice, prompt) => sendSession({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })}

@@ -346,10 +346,10 @@ try {
     // Removing a server asks first; declining keeps it.
     await openServers();
     page.once('dialog', (d) => d.dismiss());
-    await page.getByRole('button', { name: 'Remove server' }).click();
+    await page.getByRole('button', { name: /^Menu of / }).click();
+    await page.getByRole('menuitem', { name: 'Remove' }).click();
     if (!(await page.getByRole('heading', { name: 'e2e-server' }).isVisible())) fail('the server was removed without confirmation');
     for (let lap = 1; lap <= 3; lap++) {
-      await page.getByRole('button', { name: '← Sessions', exact: true }).click();
       await page.locator('[data-shell=bottom-bar] [data-destination=sessions]').click(); // Home is the landing page now (U05)
       // The Sessions destination lists sessions in groups (U05); the row's name starts with its state and agent icons.
       const s1Row = page.locator('[data-session-groups] button').filter({ has: page.locator('b', { hasText: /^s1$/ }) }).first();
