@@ -16,7 +16,7 @@ jobs:
     name: Check tmux, libevent and ncurses pins
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Open an issue for each pin that is behind
         env:
           GH_TOKEN: ${{ github.token }}
