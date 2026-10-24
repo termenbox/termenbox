@@ -3,7 +3,7 @@
 
   /**
    * A draggable, focusable divider between two panes (the ARIA window splitter). The line is 2 px but the target is
-   * 44 px wide, centred on it. Pointer: drag. Keyboard: arrows move it by `step` (Shift: a larger step), Home and End go
+   * 44 px wide (8 px for a mouse), centred on it. Pointer: drag. Keyboard: arrows move it by `step` (Shift: a larger step), Home and End go
    * to the smallest and largest width, Enter or a double click resets it. `value` is the width of the pane it sizes;
    * `grow` is +1 when dragging right makes that pane wider (a pane on the left) and -1 when it makes it narrower.
    * `onchange` fires while moving; `oncommit` once the pointer is up or the key is released, which is when it is saved.
@@ -62,6 +62,9 @@
 </div>
 
 <style>
+  /* A mouse needs a thin target: 44 px reaches 22 px into the panes, and a drag that starts at the first column of the
+     terminal would move the divider instead of selecting. A finger keeps the wide one. */
+  @media (pointer: fine) { .resizer { left: -4px; width: 8px; } }
   .resizer::after { content: ''; position: absolute; inset-block: 0; left: 50%; width: 2px; margin-left: -1px; background: var(--line, currentColor); transition: background-color 120ms; }
   .resizer:hover::after, .resizer[data-dragging='true']::after { background: var(--accent); width: 4px; margin-left: -2px; }
   .resizer:focus-visible { outline: none; }

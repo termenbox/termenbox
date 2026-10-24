@@ -617,6 +617,12 @@ impl SessionManager {
                 let sessions = self.backend.list().await?;
                 send_r(tx, &ServerMessage::Sessions { sessions }).await?;
             }
+            ClientMessage::RenameSession { session, name } => {
+                info!(target: "audit", event = "rename_session", provider = %identity.provider, account_id = %identity.id, session = %session);
+                self.backend.rename(&session, &name).await?;
+                let sessions = self.backend.list().await?;
+                send_r(tx, &ServerMessage::Sessions { sessions }).await?;
+            }
             ClientMessage::Peek { session, hash } => {
                 // Only a counter in the audit log: what is on the screen is never logged.
                 audit_peek(&identity.provider, &identity.id, &session);
