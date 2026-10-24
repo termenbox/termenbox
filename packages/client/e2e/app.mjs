@@ -27,7 +27,7 @@ for (const [name, opts] of [['phone 360', { viewport: { width: 360, height: 740 
  const ctx = await browser.newContext(contextOptions(opts));
  await ctx.addInitScript(([c]) => {
    localStorage.setItem('termenbox_auth', JSON.stringify({ cert: c, login: 'tester' }));
-   localStorage.setItem('termenbox_servers', JSON.stringify([{ server_id: 'one', server_name: 'one', server_url: 'ws://127.0.0.1:9/ws', registered_at: 0 }]));
+   localStorage.setItem('termenbox_servers', JSON.stringify([{ server_id: 'one', server_name: 'one', server_url: 'ws://127.0.0.1:59999/ws', registered_at: 0 }])); // an unused port: WebKit throws at once for the blocked low ports (9), Chromium fails later
    localStorage.setItem('termenbox_ios_hint', '1');
  }, [cert]);
  const page = await ctx.newPage();

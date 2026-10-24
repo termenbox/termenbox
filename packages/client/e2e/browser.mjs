@@ -2,7 +2,7 @@
 //   E2E_ENGINE     chromium (default) | firefox | webkit
 //   E2E_VIEWPORT   WxH for the scripts that take it (default per script), e.g. 1024x768
 //   E2E_DPR        device pixel ratio for the scripts that take it (default 1)
-//   E2E_ARTIFACTS  directory: a failed scenario leaves <engine>-<label>.png and .zip (a Playwright trace) there
+//   E2E_ARTIFACTS  directory: a failed or crashed scenario leaves <engine>-<label>.png and .zip (a Playwright trace) there
 //   CHROME_PATH    Chrome/Chromium binary (default: Playwright's "chrome" channel); Firefox and WebKit come from
 //                  `playwright-core install firefox webkit`
 import { chromium, firefox, webkit } from 'playwright-core';
@@ -38,24 +38,47 @@ export async function launch(args = []) {
   return browser;
 }
 
-/** Context options for the selected engine: the pixel ratio applied, and what Firefox does not support dropped. */
+/** Context options for the selected engine: the pixel ratio applied, service workers blocked (no script tests the PWA, and
+ *  Playwright's WebKit freezes the page while one registers), and what Firefox does not support dropped. */
 export function contextOptions(options = {}) {
-  const out = { deviceScaleFactor: DPR, ...options };
+  const out = { deviceScaleFactor: DPR, serviceWorkers: 'block', ...options };
   if (ENGINE === 'firefox') delete out.isMobile;
   return out;
 }
 
-/** Starts a trace on the context when artifacts are wanted. Pair with `keepIfFailed`. */
-export async function trace(ctx) {
-  if (ARTIFACTS) await ctx.tracing.start({ screenshots: true, snapshots: true });
+let live = null; // the scenario in progress: what a crash should save
+
+async function save(ctx, label) {
+  const base = join(ARTIFACTS, `${ENGINE}-${label}`);
+  mkdirSync(ARTIFACTS, { recursive: true });
+  for (const [i, page] of ctx.pages().entries()) await page.screenshot({ path: `${base}-${i}.png` }).catch(() => {});
+  await ctx.tracing.stop({ path: `${base}.zip` }).catch(() => {});
+}
+
+/** A tap on a locator. Playwright's WebKit and Firefox cannot deliver touch input (a tap times out), so there it is a click, which
+ *  gives the same pointer events; only Chromium proves touch. */
+export const tap = (locator) => (ENGINE === 'chromium' ? locator.tap() : locator.click());
+
+/** Starts a trace on the context when artifacts are wanted, and saves it if the script dies with an exception mid-scenario. Pair with `keepIfFailed`. */
+export async function trace(ctx, label) {
+  if (!ARTIFACTS) return;
+  await ctx.tracing.start({ screenshots: true, snapshots: true });
+  live = { ctx, label };
+  if (trace.armed) return;
+  trace.armed = true;
+  for (const event of ['uncaughtException', 'unhandledRejection']) {
+    process.on(event, async (e) => {
+      console.error(e);
+      if (live) await save(live.ctx, live.label);
+      process.exit(1);
+    });
+  }
 }
 
 /** Ends the trace; when the scenario failed, saves a screenshot of each page and the trace under E2E_ARTIFACTS. */
 export async function keepIfFailed(ctx, label, failed) {
   if (!ARTIFACTS) return;
-  const base = join(ARTIFACTS, `${ENGINE}-${label}`);
-  if (!failed) return ctx.tracing.stop();
-  mkdirSync(ARTIFACTS, { recursive: true });
-  for (const [i, page] of ctx.pages().entries()) await page.screenshot({ path: `${base}-${i}.png` }).catch(() => {});
-  await ctx.tracing.stop({ path: `${base}.zip` });
+  live = null;
+  if (failed) await save(ctx, label);
+  else await ctx.tracing.stop();
 }

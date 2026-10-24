@@ -98,7 +98,8 @@ let scenarios = 0;
 export async function startApp(shared, { viewport, storage = {}, blockedStorage = false, clipboard = false, server = new ScriptedServer() } = {}) {
   const { origin, browser } = shared;
   const ctx = await browser.newContext(contextOptions({ viewport, isMobile: false, hasTouch: false, ...(clipboard && ENGINE === 'chromium' ? { permissions: ['clipboard-read', 'clipboard-write'] } : {}) }));
-  await trace(ctx);
+  const label = `${basename(process.argv[1], '.mjs')}-${++scenarios}`;
+  await trace(ctx, label);
   const seed = { termenbox_auth: JSON.stringify({ cert, login: 'tester' }), termenbox_ios_hint: '1',
     termenbox_servers: JSON.stringify([{ server_id: 'one', server_name: 'one', server_url: 'ws://127.0.0.1:9/ws', registered_at: 0 }]),
     termenbox_settings: JSON.stringify({ renderer: 'dom' }), ...storage };
@@ -128,14 +129,13 @@ export async function startApp(shared, { viewport, storage = {}, blockedStorage 
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
-  page.on('console', (m) => { if (m.type() === 'error' && !/WebSocket|favicon/.test(m.text())) errors.push(m.text()); });
+  page.on('console', (m) => { if (m.type() === 'error' && !/WebSocket|favicon|Navigated away from page|Viewport argument key "interactive-widget"/.test(m.text())) errors.push(m.text()); });
   await page.routeWebSocket(/127\.0\.0\.1:9\/ws/, (ws) => {
     server.sockets.add(ws);
     ws.onMessage((raw) => { try { server.handle(ws, JSON.parse(typeof raw === 'string' ? raw : raw.toString())); } catch { /* binary lane frames are not used here */ } });
     ws.onClose(() => server.sockets.delete(ws));
   });
   let failed = false;
-  const label = `${basename(process.argv[1], '.mjs')}-${++scenarios}`;
   const t = {
     page, server, errors, ctx,
     fail: (m) => { failed = true; console.error(`FAIL: ${m}`); },
@@ -143,11 +143,16 @@ export async function startApp(shared, { viewport, storage = {}, blockedStorage 
     check(cond, m) { if (!cond) t.fail(m); return !!cond; },
     async open() {
       await page.goto(origin);
-      await page.getByRole('navigation', { name: 'Main' }).first().waitFor();
-      await page.waitForFunction(() => document.querySelector('[data-shell=frame]'));
+      try {
+        await page.getByRole('navigation', { name: 'Main' }).first().waitFor({ timeout: 15000 });
+        await page.waitForFunction(() => document.querySelector('[data-shell=frame]'));
+      } catch (e) {
+        throw new Error(`${e.message}\npage errors: ${errors.join(' | ') || 'none'}\npage text: ${(await page.locator('body').innerText({ timeout: 2000 }).catch(() => '')).slice(0, 300)}`, { cause: e });
+      }
     },
     async reload() { await page.reload(); await page.getByRole('navigation', { name: 'Main' }).first().waitFor(); },
-    overflow: () => page.evaluate(() => document.documentElement.scrollWidth - innerWidth),
+    // The body, not the root: xterm parks a 50000 px wide measuring div above the page, which Firefox counts in the root's scroll width.
+    overflow: () => page.evaluate(() => document.body.scrollWidth - innerWidth),
     /** Opens session `id` from the sidebar and waits for the attach. The terminal takes focus when the session attaches (so
      *  typing works at once); `leaveTerminal` (default) hands it back to the page, as a click on empty space would. */
     async openSession(id, { leaveTerminal = true } = {}) {

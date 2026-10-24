@@ -86,7 +86,7 @@ async function sidebarAt(shared, width) {
   const mid = await sep.boundingBox();
   await page.mouse.move(mid.x + mid.width / 2, cy);
   await page.mouse.down();
-  await page.mouse.move(mid.x + 900, cy, { steps: 8 });
+  await page.mouse.move(Math.min(mid.x + 900, width - 2), cy, { steps: 8 }); // Firefox drops a pointer outside the window
   await page.mouse.up();
   const w2 = (await side.boundingBox()).width;
   t.check(Math.abs(w2 - max) <= 1, `${width}: the clamp is ${max} but the sidebar is ${w2}`);

@@ -19,7 +19,8 @@ export async function start(options) {
   await new Promise((r) => srv.listen(0, '127.0.0.1', r));
   const browser = await launch();
   const ctx = await browser.newContext(contextOptions(options));
-  await trace(ctx);
+  const label = basename(process.argv[1], '.mjs');
+  await trace(ctx, label);
   const page = await ctx.newPage();
   if (process.env.E2E_CPU_THROTTLE && ENGINE === 'chromium') await (await ctx.newCDPSession(page)).send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.E2E_CPU_THROTTLE) });
   const errors = [];
@@ -27,7 +28,6 @@ export async function start(options) {
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   const url = `http://127.0.0.1:${srv.address().port}/frame.html`;
   let failed = false;
-  const label = basename(process.argv[1], '.mjs');
   const t = {
     page, errors, url,
     fail: (m) => { failed = true; console.error(`FAIL: ${m}`); },
