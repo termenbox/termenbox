@@ -598,6 +598,11 @@ fn spawn_agent(
     for k in &profile.env_remove {
         cmd.env_remove(k);
     }
+    // opencode wraps OSC 52 in tmux DCS passthrough when TMUX env var is set.
+    // Unset TMUX so it emits plain OSC 52, which tmux's set-clipboard on forwards to xterm.js.
+    if agent == "opencode" {
+        cmd.env_remove("TMUX");
+    }
     let mut child = cmd
         .spawn()
         .map_err(|e| anyhow!("cannot start the agent for {name}: {e}"))?;
