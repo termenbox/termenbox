@@ -33,6 +33,7 @@
   import FnKeyboard from './FnKeyboard.svelte';
   import InputLog from './InputLog.svelte';
   import SelectView from './SelectView.svelte';
+  import { ScrollbackParts, clickTarget, keyAction, type Target } from './lib/terminal/focusTarget';
   import PasteSheet from './PasteSheet.svelte';
 
   export let connection: HubConnection;
@@ -52,6 +53,13 @@
   let prefixArmed = false;
   let previewing = false;
   let selectText: string | null = null;
+  /** The select view shows everything the terminal holds (select-all) and waits for the server's history. */
+  let selectAllView = false;
+  let historyLoading = false;
+  let historyTimer: ReturnType<typeof setTimeout> | undefined;
+  const historyParts = new ScrollbackParts();
+  /** Where the user's attention is: in the agent's prompt (typing), or on the output above it (a click there). */
+  let target: Target = 'prompt';
   let bell = bellEnabled();
   let fnOpen = false;
   let sel: Selection | null = null;
@@ -228,6 +236,7 @@
     // A word that came in whole (swipe typing, a tapped suggestion) is taken back whole; see WordTracker.
     const { out, used } = applyMods(data === '\x7f' ? '\x7f'.repeat(words.backspaceCount()) : data, mods);
     if (used) mods = { ctrl: false, alt: false, shift: false };
+    target = 'prompt'; // keys went to the program: the user is in its prompt
     words.feed(out);
     sendInput(withPrefix(out));
   }
@@ -309,6 +318,30 @@
     if (!term) return;
     const buf = term.buffer.active;
     selectText = bufferText((i) => buf.getLine(i)?.translateToString(true), buf.length);
+  }
+
+  /** Select all: everything the terminal holds, history included, selected in the select view. The server reads it from
+   *  tmux; a server that does not answer in time gets the screen this page has. */
+  function openHistory() {
+    if (!term) return;
+    selectAllView = true;
+    selectText = '';
+    historyLoading = !!activeSessionId;
+    if (!activeSessionId) { historyLoading = false; selectText = localText(); return; }
+    connection.send({ type: 'scrollback', session: activeSessionId });
+    clearTimeout(historyTimer);
+    historyTimer = setTimeout(() => { if (historyLoading) { historyLoading = false; selectText = localText(); } }, 4000);
+  }
+  function localText(): string {
+    const buf = term!.buffer.active;
+    return bufferText((i) => buf.getLine(i)?.translateToString(true), buf.length);
+  }
+  function closeSelect() {
+    clearTimeout(historyTimer);
+    selectText = null;
+    selectAllView = false;
+    historyLoading = false;
+    term?.focus();
   }
 
   function flash(message: string) {
@@ -507,10 +540,10 @@
     // Ctrl+V and Ctrl+Shift+V would reach the program as ^V; let the browser paste instead (xterm handles the paste event).
     // Copy: a selection goes to this machine's clipboard on Ctrl+C (Cmd+C on macOS) and the program must not also get
     // ^C. With nothing selected, Ctrl+C stays the interrupt. Ctrl+Shift+C keeps working where the browser delivers it.
-    // Cut: Ctrl+X (Cmd+X) with a selection copies it and clears the highlight (the text lives on the server, so nothing is
-    // deleted). With nothing selected Ctrl+X stays ^X, which nano, emacs and tmux use.
-    // Select all: Ctrl+A, Ctrl+Shift+A and Cmd+A, as in any text field. The program no longer gets ^A from the keyboard (readline's
-    // start of line, a tmux prefix); the key row's Ctrl still sends it.
+    // Ctrl+A and Ctrl+X belong to the agent while the user is in its prompt (see focusTarget.ts): the agent's own select
+    // all, cut and line editing work there, and so does the wheel. After a click on the output above the prompt, Ctrl+A
+    // selects everything the terminal holds, history included, and Ctrl+X copies the selection and clears the highlight
+    // (the text lives on the server, so nothing is deleted). Ctrl+Shift+A and Cmd+A select everything wherever the user is.
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== 'keydown' || ev.altKey) return true;
       // The physical key too: on a Cyrillic (or any non-Latin) layout Ctrl+C arrives as key "с", and only `code` says KeyC.
@@ -527,12 +560,17 @@
         void copyText(text);
         return false;
       }
-      if (isA && (ev.metaKey || ev.ctrlKey)) {
+      const action = keyAction(
+        { key: ev.key, code: ev.code, ctrl: ev.ctrlKey, meta: ev.metaKey, shift: ev.shiftKey, alt: ev.altKey },
+        target,
+        !!term?.hasSelection(),
+      );
+      if (action === 'select-all') {
         ev.preventDefault();
-        term?.selectAll();
+        openHistory();
         return false;
       }
-      if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && isX) {
+      if (action === 'cut') {
         const text = term?.getSelection();
         if (!text) return true;
         ev.preventDefault();
@@ -573,6 +611,22 @@
     };
     const onForceUp = (ev: MouseEvent) => forcing && toSelection(ev);
     const onForceEnd = () => (forcing = false); // window, after the document's own handlers: the drag is over wherever it ended
+    // A click on the output above the prompt steps out of it; a drag that ends in a selection does too.
+    const onTargetDown = (ev: MouseEvent) => {
+      const screen = terminalContainer.querySelector('.xterm-screen');
+      if (!term || !screen) return;
+      const rect = screen.getBoundingClientRect();
+      if (rect.height <= 0 || ev.clientY < rect.top || ev.clientY > rect.bottom) return;
+      const row = Math.floor(((ev.clientY - rect.top) / rect.height) * term.rows);
+      target = clickTarget(row, term.buffer.active.cursorY);
+    };
+    const onTargetUp = () => { if (term?.hasSelection()) target = 'output'; };
+    terminalContainer.addEventListener('mousedown', onTargetDown, true);
+    terminalContainer.addEventListener('mouseup', onTargetUp);
+    cleanups.push(() => {
+      terminalContainer.removeEventListener('mousedown', onTargetDown, true);
+      terminalContainer.removeEventListener('mouseup', onTargetUp);
+    });
     terminalContainer.addEventListener('mousedown', onForceStart, true);
     terminalContainer.addEventListener('mousemove', onForceMove, true);
     terminalContainer.addEventListener('mouseup', onForceUp, true);
@@ -624,7 +678,10 @@
 
     cleanups.push(
       connection.subscribe((msg) => {
-        if (msg.type === 'output') {
+        if (msg.type === 'scrollback') {
+          const whole = msg.session === activeSessionId ? historyParts.add(msg.part, msg.last, msg.text) : null;
+          if (whole !== null && selectAllView) { clearTimeout(historyTimer); historyLoading = false; selectText = whole; }
+        } else if (msg.type === 'output') {
           receive(b64ToBytes(msg.data));
         } else if (msg.type === 'term') {
           receive(msg.bytes);
@@ -688,7 +745,7 @@
     onpaste={paste} oncopy={copy} onselect={openSelect} {bell} onbell={toggleBell} />
   {#if fnOpen}<FnKeyboard bind:mods onkey={typed} onback={() => keyboard.closeFn()} {profile} {bell} onbell={toggleBell} oncombo={combo} onpaste={paste} oncopy={copy} onselect={openSelect} />{/if}
   {#if pasteDraft !== null}<PasteSheet text={pasteDraft} onsend={(t) => { pasteDraft = null; sendPaste(t); term?.focus(); }} onclose={() => { pasteDraft = null; term?.focus(); }} />{/if}
-  {#if selectText !== null}<SelectView text={selectText} onclose={() => { selectText = null; term?.focus(); }} />{/if}
+  {#if selectText !== null}<SelectView text={selectText} all={selectAllView} loading={historyLoading} onclose={closeSelect} />{/if}
 </div>
 
 <style>

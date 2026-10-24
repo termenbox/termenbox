@@ -649,6 +649,14 @@ impl SessionManager {
                     peek_window(self.backend.as_ref(), &session, hash.as_deref(), window).await;
                 send_r(tx, &reply).await?;
             }
+            ClientMessage::Scrollback { session } => {
+                // Only a counter in the audit log, as for a peek: the terminal's text is never logged.
+                audit_peek(&identity.provider, &identity.id, &session);
+                let text = self.backend.capture_history(&session).await?;
+                for part in scrollback_parts(&session, &text) {
+                    send_r(tx, &part).await?;
+                }
+            }
             ClientMessage::SessionView { session, hash } => {
                 // Only a counter in the audit log, as for a peek: the screen is never logged.
                 audit_peek(&identity.provider, &identity.id, &session);
@@ -984,6 +992,46 @@ async fn next_window(
         Err(RecvError::Lagged(_)) => None,
         Err(RecvError::Closed) => std::future::pending().await,
     }
+}
+
+/// The most text one `scrollback` part carries, so that a part fits a message of the direct transport (64 KiB).
+const SCROLLBACK_PART: usize = 24 * 1024;
+
+/// A session's history as `scrollback` parts of at most `SCROLLBACK_PART` bytes, cut at line ends where it can (a line
+/// longer than a part is cut at a character). There is always at least one part, and the last one says so.
+pub(crate) fn scrollback_parts(session: &str, text: &str) -> Vec<ServerMessage> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for line in text.split_inclusive('\n') {
+        let mut line = line;
+        while cur.len() + line.len() > SCROLLBACK_PART {
+            if cur.is_empty() {
+                let mut at = SCROLLBACK_PART;
+                while !line.is_char_boundary(at) {
+                    at -= 1;
+                }
+                parts.push(line[..at].to_string());
+                line = &line[at..];
+            } else {
+                parts.push(std::mem::take(&mut cur));
+            }
+        }
+        cur.push_str(line);
+    }
+    if !cur.is_empty() || parts.is_empty() {
+        parts.push(cur);
+    }
+    let n = parts.len();
+    parts
+        .into_iter()
+        .enumerate()
+        .map(|(i, text)| ServerMessage::Scrollback {
+            session: session.to_string(),
+            part: i as u32,
+            last: i + 1 == n,
+            text,
+        })
+        .collect()
 }
 
 fn audit_acp_open(provider: &str, account_id: &str, session: &str) {
@@ -1699,5 +1747,50 @@ mod propagation_tests {
         assert!(sees_name(&mut ea, "second").await, "the device that renamed sees it");
         assert!(sees_name(&mut eb, "second").await, "a device that did not ask sees it too");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod scrollback_tests {
+    use super::*;
+
+    fn texts(parts: &[ServerMessage]) -> Vec<(u32, bool, String)> {
+        parts
+            .iter()
+            .map(|m| match m {
+                ServerMessage::Scrollback { part, last, text, .. } => (*part, *last, text.clone()),
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn history_is_cut_into_parts_that_fit_one_message_and_join_back_to_the_text() {
+        let text: String = (0..5000).map(|i| format!("line number {i}\n")).collect();
+        let parts = texts(&scrollback_parts("s", &text));
+        assert!(parts.len() > 1);
+        assert!(parts.iter().all(|(_, _, t)| t.len() <= SCROLLBACK_PART));
+        assert_eq!(parts.iter().map(|(_, _, t)| t.as_str()).collect::<String>(), text);
+        assert_eq!(parts.iter().map(|(p, _, _)| *p).collect::<Vec<_>>(), (0..parts.len() as u32).collect::<Vec<_>>());
+        assert_eq!(parts.iter().filter(|(_, last, _)| *last).count(), 1);
+        assert!(parts.last().unwrap().1);
+        // A part cut at a line end starts with a whole line.
+        assert!(parts[1].2.starts_with("line number "));
+    }
+
+    #[test]
+    fn an_empty_history_is_one_empty_last_part_and_a_very_long_line_is_cut_at_a_character() {
+        assert_eq!(texts(&scrollback_parts("s", "")), vec![(0, true, String::new())]);
+        let long = "é".repeat(SCROLLBACK_PART);
+        let parts = texts(&scrollback_parts("s", &long));
+        assert!(parts.len() >= 2 && parts.iter().all(|(_, _, t)| t.len() <= SCROLLBACK_PART));
+        assert_eq!(parts.iter().map(|(_, _, t)| t.as_str()).collect::<String>(), long);
+    }
+
+    #[test]
+    fn a_reply_part_is_far_below_the_limit_of_the_direct_transport() {
+        let text = "x".repeat(SCROLLBACK_PART);
+        let msg = &scrollback_parts("session-with-a-long-name", &text)[0];
+        assert!(serde_json::to_string(msg).unwrap().len() < 64 * 1024);
     }
 }

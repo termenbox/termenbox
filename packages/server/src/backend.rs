@@ -51,6 +51,11 @@ pub trait SessionBackend: Send + Sync {
     async fn capture_window_styled(&self, id: &str, _index: u32) -> Result<String> {
         self.capture_styled(id).await
     }
+    /// Everything the session's terminal still holds, history included, as plain text with wrapped lines joined. A
+    /// manager that keeps no history gives the screen.
+    async fn capture_history(&self, id: &str) -> Result<String> {
+        self.capture(id).await
+    }
     /// Types `text` into the session's pane as if it was typed there.
     async fn send_text(&self, _id: &str, _text: &str) -> Result<()> {
         Err(anyhow!("this session manager cannot send keys"))
@@ -334,6 +339,26 @@ const DETACH: [&str; 4] = [
     "if command -v systemd-run >/dev/null 2>&1; then exec systemd-run --scope --quiet -- \"$@\"; fi; exec \"$@\"",
     "sh",
 ];
+
+/// The most of a session's history that is sent for select-all: the newest of it.
+const HISTORY_TEXT_MAX: usize = 2_000_000;
+
+/// The newest at most `max` bytes of `text`, starting at a line, without trailing blank lines.
+pub(crate) fn newest_text(text: &str, max: usize) -> String {
+    let text = text.trim_end();
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut from = text.len() - max;
+    while !text.is_char_boundary(from) {
+        from += 1;
+    }
+    // Start at the next line so the first line is whole.
+    match text[from..].find('\n') {
+        Some(n) => text[from + n + 1..].to_string(),
+        None => text[from..].to_string(),
+    }
+}
 
 impl Runner {
     /// Sets (`Some`) or removes (`None`) environment variables for every command this runner starts.
@@ -712,6 +737,19 @@ impl SessionBackend for TmuxBackend {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
+    async fn capture_history(&self, id: &str) -> Result<String> {
+        if !valid_name(id) {
+            return Err(anyhow!("Unknown session"));
+        }
+        // `-S -` and `-E -` are the start and end of the history; `-J` joins the lines the width wrapped.
+        let args = ["capture-pane", "-p", "-J", "-S", "-", "-E", "-", "-t", &format!("={id}:")].map(String::from);
+        let out = self.runner.run("tmux", &args).await?;
+        if !out.status.success() {
+            return Err(anyhow!("the pane cannot be read"));
+        }
+        Ok(newest_text(&String::from_utf8_lossy(&out.stdout), HISTORY_TEXT_MAX))
+    }
+
     async fn capture_styled(&self, id: &str) -> Result<String> {
         if !valid_name(id) {
             return Err(anyhow!("Unknown session"));
@@ -970,6 +1008,13 @@ impl SessionBackend for CompositeBackend {
             .split_once(':')
             .ok_or_else(|| anyhow!("Unknown session"))?;
         self.part(kind)?.capture_styled(name).await
+    }
+
+    async fn capture_history(&self, id: &str) -> Result<String> {
+        let (kind, name) = id
+            .split_once(':')
+            .ok_or_else(|| anyhow!("Unknown session"))?;
+        self.part(kind)?.capture_history(name).await
     }
 
     async fn capture_window_styled(&self, id: &str, index: u32) -> Result<String> {
@@ -1605,6 +1650,51 @@ mod tests {
         assert!(b.list().await.map(|l| l.is_empty()).unwrap_or(true));
         let _ = runner.run("tmux", &["kill-server".to_string()]).await;
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_history_includes_the_lines_that_scrolled_off_the_screen() {
+        if std::process::Command::new("tmux")
+            .arg("-V")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("tm-hist-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tmpdir = dir.to_string_lossy().into_owned();
+        let runner =
+            Runner::default().with_env(&[("TMUX_TMPDIR", Some(tmpdir.as_str())), ("TMUX", None)]);
+        let b = TmuxBackend::new(runner.clone());
+        b.create_with("hist", None, Some("/tmp"), None).await.unwrap();
+        // Far more lines than any screen holds, so the first ones are only in the scrollback.
+        let args = ["send-keys", "-t", "=hist:", "seq 1 500; echo done-marker", "Enter"].map(String::from);
+        runner.run("tmux", &args).await.unwrap();
+        let mut all = String::new();
+        for _ in 0..30 {
+            all = b.capture_history("hist").await.unwrap();
+            if all.contains("done-marker\n") || all.lines().filter(|l| *l == "done-marker").count() > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let screen = b.capture("hist").await.unwrap();
+        assert!(all.lines().any(|l| l == "1"), "the first line is in the history");
+        assert!(!screen.lines().any(|l| l == "1"), "and no longer on the screen");
+        assert!(all.lines().any(|l| l == "500"));
+        let _ = b.kill("hist").await;
+        let _ = runner.run("tmux", &["kill-server".to_string()]).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_history_sent_is_the_newest_whole_lines_that_fit() {
+        assert_eq!(newest_text("a\nb\n\n\n", 100), "a\nb");
+        assert_eq!(newest_text("aaaa\nbbbb\ncccc", 10), "bbbb\ncccc");
+        assert_eq!(newest_text("aaaa\nbbbb\ncccc", 9), "cccc", "a line that does not fit whole is dropped");
+        assert_eq!(newest_text("héllo\nwörld", 7), "wörld");
+        assert_eq!(newest_text("abcdefghij", 4), "ghij", "one long line is cut, not dropped");
     }
 
     #[test]
