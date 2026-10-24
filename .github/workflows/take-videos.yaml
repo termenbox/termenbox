@@ -26,7 +26,9 @@ jobs:
     name: Record E2E Videos
     runs-on: ubuntu-latest
     env:
-      E2E_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
+      # Use a fixed path for workflow dispatch compatibility;
+      # the scenario scripts will create artifacts relative to this dir
+      E2E_ARTIFACTS: ./e2e-artifacts
       E2E_ENGINE: ${{ github.event.inputs.engine || 'chromium' }}
       E2E_VIEWPORT: ${{ github.event.inputs.viewport || '390x800' }}
       E2E_DPR: '1'
