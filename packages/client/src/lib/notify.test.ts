@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { announce, attentionIcon, bannerChoices, bannerText, createAlerter, createAttention, createNotifier, VIBRATE_PATTERN, titleFor, waitingList } from './notify';
+import type { PlayResult } from './bell';
+import { announce, attentionIcon, bannerChoices, bannerText, createAlerter, createAttention, createNotifier, VIBRATE_PATTERN, PENDING_MS, titleFor, waitingList } from './notify';
 import type { AgentMap, SessionAgent } from './agents';
 
 const ag = (patch: Partial<SessionAgent>): SessionAgent => ({ state: 'needs_input', seq: 1, stale: false, ts: 1000, ...patch });
@@ -134,9 +135,11 @@ describe('sound and vibration when a session starts needing you', () => {
   const w = (key: string, since: number, clockOffset?: number) => ({ key, name: key, since, agent: ag({ clockOffset }) });
   const both = { sound: true, vibrate: true };
   const setup = (now = 100_000) => {
-    const play = vi.fn(() => true);
+    const play = vi.fn((_kind: string): PlayResult => 'played');
     const vibrate = vi.fn(() => true);
-    return { play, vibrate, update: createAlerter(play, vibrate, () => now) };
+    const log = vi.fn();
+    const clock = { now };
+    return { play, vibrate, log, clock, update: createAlerter(play, vibrate, () => clock.now, log) };
   };
 
   it('alerts once for a fresh item, with the pattern, and not again while it waits', () => {
@@ -185,5 +188,85 @@ describe('sound and vibration when a session starts needing you', () => {
     const { play, update } = setup(100_000);
     update([w('a', 160_000, 60_000)], both);
     expect(play).toHaveBeenCalledTimes(1);
+  });
+  it('sounds for a question that landed while the page slept, and not for a queue waiting before it opened', () => {
+    const { play, update, clock } = setup(100_000);
+    update([], both);
+    clock.now = 300_000; // the phone woke 200 s later; the server clock matches (offset 0)
+    update([w('a', 150_000, 0)], both);
+    expect(play).toHaveBeenCalledTimes(1);
+    const opened = setup(100_000);
+    opened.update([w('b', 50_000, 0)], both); // raised before the page was created
+    expect(opened.play).not.toHaveBeenCalled();
+  });
+
+  it('does not use the last-check rule without a known clock offset', () => {
+    const { play, update, clock } = setup(100_000);
+    update([], both);
+    clock.now = 300_000;
+    update([w('a', 150_000)], both);
+    expect(play).not.toHaveBeenCalled();
+  });
+
+  it('plays the asking form for a question and the done form for a finished reply', () => {
+    const asked = setup();
+    asked.update([w('a', 99_000)], both);
+    expect(asked.play).toHaveBeenCalledWith('ask');
+    const finished = setup();
+    finished.update([{ ...w('a', 99_000), agent: ag({ attention: { id: '1', session: 'a', kind: 'finished_unseen', raised_at: 99_000 } }) }], both);
+    expect(finished.play).toHaveBeenCalledWith('done');
+  });
+
+  it('keeps a sound that found audio locked and plays it on the next tap while the session still waits', () => {
+    const { play, update, clock } = setup();
+    play.mockReturnValueOnce('locked');
+    update([w('a', 99_000)], both);
+    expect(play).toHaveBeenCalledTimes(1);
+    clock.now += 10_000;
+    update.replay();
+    expect(play).toHaveBeenCalledTimes(2);
+    update.replay(); // once only
+    expect(play).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops a kept sound that is too old, or whose session no longer waits', () => {
+    const old = setup();
+    old.play.mockReturnValueOnce('locked');
+    old.update([w('a', 99_000)], both);
+    old.clock.now += PENDING_MS + 1;
+    old.update.replay();
+    expect(old.play).toHaveBeenCalledTimes(1);
+    const gone = setup();
+    gone.play.mockReturnValueOnce('locked');
+    gone.update([w('a', 99_000)], both);
+    gone.update([], both);
+    gone.update.replay();
+    expect(gone.play).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a kept sound while audio is still locked', () => {
+    const { play, update } = setup();
+    play.mockReturnValue('locked');
+    update([w('a', 99_000)], both);
+    update.replay();
+    play.mockReturnValue('played');
+    update.replay();
+    expect(play).toHaveBeenCalledTimes(3);
+  });
+
+  it('says why in one log line per update with new items, without a session name', () => {
+    const { log, update } = setup();
+    update([w('secret-session', 10_000)], both);
+    update([w('secret-session', 10_000)], both);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls[0][0]).toMatch(/1 new, 0 fresh \(ages 90 s.*stale/);
+    expect(log.mock.calls[0][0]).not.toContain('secret-session');
+    const off = setup();
+    off.update([w('a', 99_000)], { sound: false, vibrate: true });
+    expect(off.log.mock.calls[0][0]).toMatch(/sound off, vibrated/);
+    const locked = setup();
+    locked.play.mockReturnValue('locked');
+    locked.update([w('a', 99_000)], both);
+    expect(locked.log.mock.calls[0][0]).toMatch(/sound locked/);
   });
 });

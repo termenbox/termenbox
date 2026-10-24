@@ -20,7 +20,7 @@
   import { serverAtLeast, NEW_WINDOW_VERSION } from './lib/serverVersion';
   import { loadHidden, needsYou, openTabs, saveHidden } from './lib/tabs';
   import { windowToOpen } from './lib/windows';
-  import { beep, installAudioUnlock } from './lib/bell';
+  import { installAudioUnlock, onAudioRunning, playChime } from './lib/bell';
   import { announce, waitingList, createAttention, createNotifier, createAlerter } from './lib/notify';
   import { attentionToAck } from './lib/agents';
   import { cacheRemaining, expiringSoon } from './lib/cache';
@@ -375,7 +375,7 @@
     (key) => { window.focus(); void openWaiting(key); },
   );
   $: notifyWaiting?.(waiting, !pageVisible, pushOn);
-  const alertWaiting = createAlerter(beep, (pattern) => typeof navigator.vibrate === 'function' && navigator.vibrate(pattern));
+  const alertWaiting = createAlerter((kind) => playChime($settings.alertSoundId, kind), (pattern) => typeof navigator.vibrate === 'function' && navigator.vibrate(pattern), Date.now, (line) => console.info(line));
   $: alertWaiting(waiting, { sound: $settings.alertSound, vibrate: $settings.alertVibrate });
   // Looking at a session clears its finished or failed item on the server; a question stays until it is answered.
   let pageVisible = typeof document === 'undefined' || document.visibilityState !== 'hidden';
@@ -767,6 +767,7 @@
     watchForUpdates();
     const stopRouter = startRouter();
     const stopAudioUnlock = installAudioUnlock(); // the needs-you sound plays only once a tap has unlocked audio
+    const stopReplay = onAudioRunning(() => alertWaiting.replay({ sound: $settings.alertSound })); // a sound that found audio locked plays on the unlocking tap
     const clock = setInterval(() => {
       now = Date.now();
       const c = connection;
@@ -797,7 +798,7 @@
     window.addEventListener('unhandledrejection', report);
     return () => {
       clearInterval(clock);
-      stopRouter(); stopAudioUnlock();
+      stopRouter(); stopAudioUnlock(); stopReplay();
       document.removeEventListener("visibilitychange", visible);
       vv?.removeEventListener('resize', kb);
       stopTheme();

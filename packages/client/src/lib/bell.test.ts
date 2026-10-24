@@ -12,3 +12,10 @@ describe('bell setting', () => {
     expect(bellEnabled(storage)).toBe(true);
   });
 });
+
+describe('needs-you sound', () => {
+  it('reports unsupported where there is no Web Audio', async () => {
+    const { playChime } = await import('./bell');
+    expect(playChime('bloop', 'ask')).toBe('unsupported');
+  });
+});
