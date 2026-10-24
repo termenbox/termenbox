@@ -1681,6 +1681,8 @@ mod tests {
         let runner =
             Runner::default().with_env(&[("TMUX_TMPDIR", Some(tmpdir.as_str())), ("TMUX", None)]);
         let b = TmuxBackend::new(runner.clone());
+        // tmux pads the lines to the pane width.
+        let has_line = |text: &str, want: &str| text.lines().any(|l| l.trim_end() == want);
         b.create_with("hist", None, Some("/tmp"), None)
             .await
             .unwrap();
@@ -1697,23 +1699,16 @@ mod tests {
         let mut all = String::new();
         for _ in 0..30 {
             all = b.capture_history("hist").await.unwrap();
-            if all.contains("done-marker\n")
-                || all.lines().filter(|l| *l == "done-marker").count() > 0
-            {
+            // Only the output line: the typed command line also contains the marker.
+            if has_line(&all, "done-marker") {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         let screen = b.capture("hist").await.unwrap();
-        assert!(
-            all.lines().any(|l| l == "1"),
-            "the first line is in the history"
-        );
-        assert!(
-            !screen.lines().any(|l| l == "1"),
-            "and no longer on the screen"
-        );
-        assert!(all.lines().any(|l| l == "500"));
+        assert!(has_line(&all, "1"), "the first line is in the history");
+        assert!(!has_line(&screen, "1"), "and no longer on the screen");
+        assert!(has_line(&all, "500"));
         let _ = b.kill("hist").await;
         let _ = runner.run("tmux", &["kill-server".to_string()]).await;
         let _ = std::fs::remove_dir_all(&dir);
