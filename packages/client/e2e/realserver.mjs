@@ -80,6 +80,9 @@ const restartServer = async () => {
   server.kill();
   await new Promise((r) => server.once('exit', r));
   await startServer();
+  // A starting server applies its tmux config to the tmux server that is already running, `mouse on` included, and then tmux
+  // takes a double-click for itself. These sessions come from a bare tmux, where the selection steps below are the page's own.
+  tmux('set-option', '-g', 'mouse', 'off');
 };
 const tmux = (...args) => execFileSync('tmux', ['-L', 'termenbox', ...args], { env: { ...process.env, TMUX_TMPDIR: home }, encoding: 'utf8' }).trim();
 const appPort = await new Promise((r) => appServer.listen(0, '127.0.0.1', () => r(appServer.address().port)));
