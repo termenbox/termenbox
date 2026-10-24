@@ -352,6 +352,17 @@ impl Runner {
         self
     }
 
+    /// Applies the generated tmux config to a tmux server that is already running. tmux reads its config only when its
+    /// server starts, and sessions outlive the termenbox server, so an upgrade that changes the config (hiding the
+    /// status line, say) would otherwise wait for every session to end. Where no tmux server runs this does nothing.
+    pub async fn reload_tmux_config(&self) {
+        let Some(Isolation::File(conf)) = &self.isolation else {
+            return;
+        };
+        let args = ["source-file", "-q", conf.as_str()].map(String::from);
+        let _ = self.run("tmux", &args).await;
+    }
+
     /// Host mode: writes the private server's config on the host (decision 0120), as the session user.
     pub async fn install_host_tmux_conf(&self, content: &str) -> Result<()> {
         let args = ["-c", WRITE_HOST_CONF, "sh", content].map(String::from);
@@ -1702,6 +1713,13 @@ mod tests {
         };
         assert_eq!(show(&private, "default-terminal").await, "screen-256color");
         assert_ne!(show(&private, "history-limit").await, "77");
+        // A tmux server that started before the config said `status off` keeps its status line until the config is
+        // applied to it again, which the server does at every start.
+        assert_eq!(show(&private, "status").await, "off");
+        private.run("tmux", &["set-option", "-g", "status", "on"].map(String::from)).await.unwrap();
+        assert_eq!(show(&private, "status").await, "on");
+        private.reload_tmux_config().await;
+        assert_eq!(show(&private, "status").await, "off");
         // The user's tmux does not see it, and the session list of the private one does.
         let theirs = TmuxBackend::new(user_own.clone());
         assert!(theirs.list().await.map(|l| l.is_empty()).unwrap_or(true));
