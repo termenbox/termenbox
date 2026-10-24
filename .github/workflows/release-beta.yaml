@@ -28,7 +28,7 @@ jobs:
       aliases: ${{ steps.g.outputs.aliases }}
       publish: ${{ steps.g.outputs.publish }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: g

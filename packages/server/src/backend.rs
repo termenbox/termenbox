@@ -59,6 +59,11 @@ pub trait SessionBackend: Send + Sync {
     async fn kill(&self, _id: &str) -> Result<()> {
         Err(anyhow!("this session manager cannot close sessions"))
     }
+    /// Sets the name clients show for a session (an empty name clears it). The id, which events and layouts key on,
+    /// stays as it is.
+    async fn rename(&self, _id: &str, _name: &str) -> Result<()> {
+        Err(anyhow!("this session manager cannot rename sessions"))
+    }
     /// The windows of a session, for the windows dropdown.
     async fn windows(&self, _id: &str) -> Result<Vec<WindowState>> {
         Err(anyhow!("this session manager has no windows"))
@@ -125,6 +130,21 @@ pub fn valid_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// The display name a client may give a session: trimmed, one line, at most 64 characters, no `|` (the list format's
+/// separator). `None` clears it.
+pub fn clean_label(name: &str) -> Result<Option<String>> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Ok(None);
+    }
+    if name.chars().count() > 64 || name.chars().any(|c| c.is_control() || c == '|') {
+        return Err(anyhow!(
+            "A name is one line of at most 64 characters, without |"
+        ));
+    }
+    Ok(Some(name.to_string()))
 }
 
 /// A working directory a client may ask for: absolute, no control characters, a sane length. It reaches tmux as
@@ -597,7 +617,12 @@ impl SessionBackend for TmuxBackend {
     }
 
     async fn list(&self) -> Result<Vec<SessionInfo>> {
-        let args = ["list-sessions", "-F", "#{session_name}|#{session_name}"].map(String::from);
+        let args = [
+            "list-sessions",
+            "-F",
+            "#{session_name}|#{?@termenbox_name,#{@termenbox_name},#{session_name}}",
+        ]
+        .map(String::from);
         let out = self.runner.run("tmux", &args).await?;
         if !out.status.success() {
             let stderr = tmux_stderr(&out.stderr);
@@ -715,6 +740,31 @@ impl SessionBackend for TmuxBackend {
                     ["send-keys", "-t", &format!("={id}:"), "-l", "--", part].map(String::from);
                 self.runner.run("tmux", &args).await?;
             }
+        }
+        Ok(())
+    }
+
+    async fn rename(&self, id: &str, name: &str) -> Result<()> {
+        if !valid_name(id) {
+            return Err(anyhow!("Unknown session"));
+        }
+        let label = clean_label(name)?;
+        // A trailing colon: `set-option` takes a pane target, and `=name` alone is not one.
+        let target = format!("={id}:");
+        let args: Vec<String> = match &label {
+            Some(l) => ["set-option", "-t", &target, "@termenbox_name", l]
+                .map(String::from)
+                .into(),
+            None => ["set-option", "-u", "-t", &target, "@termenbox_name"]
+                .map(String::from)
+                .into(),
+        };
+        let out = self.runner.run("tmux", &args).await?;
+        if !out.status.success() {
+            return Err(anyhow!(
+                "tmux set-option failed: {}",
+                tmux_stderr(&out.stderr)
+            ));
         }
         Ok(())
     }
@@ -930,6 +980,13 @@ impl SessionBackend for CompositeBackend {
             .split_once(':')
             .ok_or_else(|| anyhow!("Unknown session"))?;
         self.part(kind)?.kill(name).await
+    }
+
+    async fn rename(&self, id: &str, name: &str) -> Result<()> {
+        let (kind, name_in) = id
+            .split_once(':')
+            .ok_or_else(|| anyhow!("Unknown session"))?;
+        self.part(kind)?.rename(name_in, name).await
     }
 
     async fn windows(&self, id: &str) -> Result<Vec<WindowState>> {
@@ -1535,6 +1592,49 @@ mod tests {
         assert_eq!(path, "/tmp");
         b.kill("nd").await.unwrap();
         assert!(b.list().await.map(|l| l.is_empty()).unwrap_or(true));
+        let _ = runner.run("tmux", &["kill-server".to_string()]).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_display_name_is_one_short_line_without_the_list_separator() {
+        assert_eq!(
+            clean_label("  my work ").unwrap().as_deref(),
+            Some("my work")
+        );
+        assert_eq!(clean_label("   ").unwrap(), None);
+        assert!(clean_label("a|b").is_err());
+        assert!(clean_label("a\nb").is_err());
+        assert!(clean_label(&"x".repeat(65)).is_err());
+        assert!(clean_label(&"x".repeat(64)).is_ok());
+    }
+
+    #[tokio::test]
+    async fn renaming_a_session_changes_the_name_clients_show_and_not_its_id() {
+        if std::process::Command::new("tmux")
+            .arg("-V")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("tm-rename-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tmpdir = dir.to_string_lossy().into_owned();
+        let runner =
+            Runner::default().with_env(&[("TMUX_TMPDIR", Some(tmpdir.as_str())), ("TMUX", None)]);
+        let b = TmuxBackend::new(runner.clone());
+        b.create("rn").await.unwrap();
+        b.rename("rn", "Release  notes").await.unwrap();
+        let l = b.list().await.unwrap();
+        assert_eq!(
+            (l[0].id.as_str(), l[0].name.as_str()),
+            ("rn", "Release  notes")
+        );
+        b.rename("rn", "").await.unwrap();
+        let l = b.list().await.unwrap();
+        assert_eq!((l[0].id.as_str(), l[0].name.as_str()), ("rn", "rn"));
+        assert!(b.rename("nope", "x").await.is_err());
         let _ = runner.run("tmux", &["kill-server".to_string()]).await;
         let _ = std::fs::remove_dir_all(&dir);
     }

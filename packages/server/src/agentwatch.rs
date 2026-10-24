@@ -138,7 +138,20 @@ pub async fn scan_tmux_once(
         if let Some(agent) = adapters::agent_name(&p.command) {
             hub.set_agent(&p.session, agent);
         }
-        let info = adapters::parse_prompt(&screen);
+        // Where the agent has a profile that tells working from idle, the screen decides both what the scan says
+        // (a redraw on attach is output, not inference) and whether the reducer's turn or wait is still on screen.
+        let agent = adapters::agent_name(&p.command);
+        let (profile, _) = Profiles::builtin().for_agent(agent);
+        let view =
+            (profile.has_state_markers() && !screen.is_empty()).then(|| profile.read(&screen));
+        // The question heuristic reads the last lines of the screen, which in an idle or working agent are its own
+        // transcript: a `(y/n)` it printed earlier, or a numbered list in a reply, is not a dialog that waits. A screen
+        // the profile recognises as idle or working (and not blocked) therefore has no prompt; only a blocked or an
+        // unrecognised screen can have one.
+        let recognised_without_dialog = view
+            .as_ref()
+            .is_some_and(|v| (v.working || v.idle) && !v.blocked);
+        let info = adapters::parse_prompt(&screen).filter(|_| !recognised_without_dialog);
         if let Some(id) = tracker.update(&p.session, info.as_ref().map(|i| i.question.as_str())) {
             let info = info.expect("a new prompt has a screen");
             // The screen says what the question is; only the agent's own hook says it is really waiting.
@@ -178,12 +191,6 @@ pub async fn scan_tmux_once(
                 },
             );
         }
-        // Where the agent has a profile that tells working from idle, the screen decides both what the scan says
-        // (a redraw on attach is output, not inference) and whether the reducer's turn or wait is still on screen.
-        let agent = adapters::agent_name(&p.command);
-        let (profile, _) = Profiles::builtin().for_agent(agent);
-        let view =
-            (profile.has_state_markers() && !screen.is_empty()).then(|| profile.read(&screen));
         if let Some(v) = &view {
             // Without hooks the screen is the only witness: a dialog that waits is `needs_input`, as a hint (never
             // a push), and the screen says so again when it is gone, so the hint cannot outlive the dialog.

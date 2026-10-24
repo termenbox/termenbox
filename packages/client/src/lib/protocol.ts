@@ -14,6 +14,8 @@ export type ClientMessage =
   | { type: 'new_window'; session: string }
   | { type: 'close_window'; session: string; index: number }
   | { type: 'close_session'; session: string }
+  /** Sets the name shown for a session; an empty name clears it. The session's id does not change. */
+  | { type: 'rename_session'; session: string; name: string }
   | { type: 'list_sessions' }
   /** U14: the server's in-memory health samples; the answer is `health_history`. Older servers do not answer. */
   | { type: 'health_history' }

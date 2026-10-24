@@ -254,6 +254,12 @@ pub enum ClientMessage {
     CloseSession {
         session: String,
     },
+    /// Gives the session a display name; its id (what hooks, tabs and layouts key on) is unchanged. An empty name
+    /// takes the label off again.
+    RenameSession {
+        session: String,
+        name: String,
+    },
     ListSessions,
     NewSession {
         name: String,
@@ -1141,6 +1147,13 @@ mod tests {
                     session: "s".into(),
                 },
                 "close_session",
+            ),
+            (
+                ClientMessage::RenameSession {
+                    session: "s".into(),
+                    name: "n".into(),
+                },
+                "rename_session",
             ),
         ] {
             assert_eq!(serde_json::to_value(msg).unwrap()["type"], name);

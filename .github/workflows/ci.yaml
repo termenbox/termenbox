@@ -14,7 +14,7 @@ jobs:
     name: Rust (check, test, build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -52,7 +52,7 @@ jobs:
           sh .github/scripts/test-update-alias.sh
 
       - name: Keep the server binary for the browser end-to-end job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: termenbox-server
           path: target/release/termenbox-server
@@ -62,13 +62,13 @@ jobs:
     name: Client (typecheck, build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v2
+      - uses: pnpm/action-setup@v6
         with:
           version: 9
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: 'pnpm'
@@ -98,13 +98,13 @@ jobs:
     needs: rust
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v2
+      - uses: pnpm/action-setup@v6
         with:
           version: 9
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: 'pnpm'
@@ -114,7 +114,7 @@ jobs:
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: termenbox-server
           path: bin
@@ -130,7 +130,7 @@ jobs:
           E2E_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
         run: node e2e/suite.mjs server
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: e2e-failure-chromium-server
@@ -156,13 +156,13 @@ jobs:
           - { suite: desktop, engine: webkit, size: 1440x900, dpr: 2, label: 'desktop webkit 1440x900 @2x' }
           - { suite: phone, engine: webkit, size: 390x844, dpr: 3, label: 'phone webkit @3x' }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v2
+      - uses: pnpm/action-setup@v6
         with:
           version: 9
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: 'pnpm'
@@ -186,7 +186,7 @@ jobs:
           E2E_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
         run: node e2e/suite.mjs ${{ matrix.suite }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: e2e-failure-${{ matrix.suite }}-${{ matrix.engine }}-${{ matrix.size }}-${{ matrix.dpr }}x
@@ -214,13 +214,13 @@ jobs:
           # The phone scripts that need the real server: touch.mjs, run.mjs and wizard.mjs stay in the Chromium server job (CDP, resource gates, fake camera).
           - { engine: webkit, size: 390x844, dpr: 3, suite: phone-real, label: 'phone webkit scripts @3x' }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v2
+      - uses: pnpm/action-setup@v6
         with:
           version: 9
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: 'pnpm'
@@ -230,7 +230,7 @@ jobs:
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: termenbox-server
           path: bin
@@ -254,7 +254,7 @@ jobs:
           E2E_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
         run: node e2e/suite.mjs ${{ matrix.suite }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: e2e-failure-${{ matrix.suite }}-${{ matrix.engine }}-${{ matrix.size }}-${{ matrix.dpr }}x
@@ -274,7 +274,7 @@ jobs:
           - { arch: x86_64, runner: ubuntu-latest, target: x86_64-unknown-linux-musl }
           - { arch: aarch64, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -307,7 +307,7 @@ jobs:
           if readelf -d "$bin" 2>/dev/null | grep -q NEEDED; then echo "the binary needs shared libraries:"; readelf -d "$bin" | grep NEEDED; exit 1; fi
           ls -l "$bin"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: termenbox-server-musl-${{ matrix.arch }}
           path: target/${{ matrix.target }}/release/termenbox-server
@@ -320,13 +320,13 @@ jobs:
     needs: static
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v2
+      - uses: pnpm/action-setup@v6
         with:
           version: 9
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: 'pnpm'
@@ -336,7 +336,7 @@ jobs:
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: termenbox-server-musl-x86_64
           path: bin
@@ -357,7 +357,7 @@ jobs:
     name: Bundled tmux (static, x86_64)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the musl toolchain
         run: sudo apt-get update && sudo apt-get install -y musl-tools bison
@@ -368,7 +368,7 @@ jobs:
       - name: Gate
         run: .github/scripts/check-tmux.sh tmux-out/tmux
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: tmux-musl-x86_64
           path: |
@@ -390,14 +390,14 @@ jobs:
         image: ['jrei/systemd-debian:12', 'jrei/systemd-ubuntu:24.04']
         mode: [host-user, host-me, host]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: termenbox-server-musl-x86_64
           path: release
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: tmux-musl-x86_64
           path: tmux-dist

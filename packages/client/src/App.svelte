@@ -631,6 +631,18 @@
     if (key === activeKey) { activeKey = null; activeServerId = null; preview = null; sheetHeight = 'half'; }
   }
 
+  /** The name clients show; the session's id, and so its tabs, layout and events, stay as they were. */
+  function renameSession(key: string, name: string) {
+    crumb('rename session');
+    hub.sendToSession(key, { type: 'rename_session', session: key, name });
+  }
+
+  /** The sidebar's close button: the dialog asks first where the manager can close, and offers only Detach where it cannot. */
+  function askCloseSession(key: string) {
+    actionConfirm = ['tmux', 'acp'].includes(backendOf(hub.findSession(key)));
+    actionKey = key;
+  }
+
   function openWindowMenu(key: string) {
     crumb('window menu opened');
     menuKey = key;
@@ -924,7 +936,7 @@
     </div>
   {:else}
     <AppFrame current={$destination} onnavigate={go} servers={$hubServers} sessions={$allSessions} agents={$allAgents} {activeKey} chrome={servers.length > 0} inSession={!!activeKey && !away} {keyboardOpen}
-      canCreate={sessionDestinations($hubServers, selected).length > 0} bind:wide bind:helpOpen onopen={attach} onserver={openServer} onaction={runAction} onshortcut={handleShortcut}
+      canCreate={sessionDestinations($hubServers, selected).length > 0} bind:wide bind:helpOpen onopen={attach} onserver={openServer} onrename={renameSession} onclosesession={askCloseSession} onaction={runAction} onshortcut={handleShortcut}
       onback={() => { showWorkspace(); sheetHeight = 'half'; }}>
     {#if $destination === 'sessions' || servers.length === 0}
     <NavigationBar sessions={tabSessions} agents={$allAgents} servers={$hubServers} windows={$allWindows} {expiring} {link} {activeKey} held={!!actionSession || !!menuSession || cardExpanded || sheetHeld} onopen={attach} onpeek={peek} ontabmenu={openWindowMenu} onactions={(key) => { actionConfirm = false; actionKey = key; }}

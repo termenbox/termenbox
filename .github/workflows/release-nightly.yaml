@@ -47,7 +47,7 @@ jobs:
       docker_tags: ${{ steps.s.outputs.docker_tags }}
       publish: ${{ steps.s.outputs.publish }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: s
@@ -145,7 +145,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Delete nightlies older than 14 days (never the alias target)
         env:
           GH_TOKEN: ${{ github.token }}
