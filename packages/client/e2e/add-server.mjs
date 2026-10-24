@@ -3,7 +3,7 @@
 // reachability check ends in "can reach it" when the UDP port answers and in "could not reach it" when it does not
 // (decision 0118). The server signs its own record; the directory lives in this script.
 // Usage: node e2e/add-server.mjs   (needs a built server, `pnpm run build`, and Chrome)
-import { launch } from './browser.mjs';
+import { launch, contextOptions } from './browser.mjs';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
@@ -79,13 +79,13 @@ async function startServer(label) {
 
 async function run(label, srv, extraArgs, freeze, expected) {
   const browser = await launch([...extraArgs]);
-  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const ctx = await browser.newContext(contextOptions({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }));
   const page = await ctx.newPage();
   const errors = [];
   page.on('response', (r) => r.status() === 404 && log('   404: ' + r.url().replace(/claim=[^&]*/, 'claim=…').replace(/h=[^&]*/, 'h=…')));
   page.on('pageerror', (e) => errors.push(e.message));
   // The pending lookup answers 404 until the server has announced: the page logs it, which is not an error.
-  page.on('console', (m) => m.type() === 'error' && !/status of 404/.test(m.text()) && errors.push(m.text()));
+  page.on('console', (m) => m.type() === 'error' && !/status of 404|Viewport argument key "interactive-widget"/.test(m.text()) && errors.push(m.text()));
   await page.goto(`http://127.0.0.1:${appPort}/`);
   const dpk = await page.evaluate(async () => {
     const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);

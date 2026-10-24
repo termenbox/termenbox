@@ -4,7 +4,7 @@
 // being true. It builds nothing for production: the "snapshot" is `capture-pane` run through `termenbox-server tmux`.
 // Usage: node e2e/search.mjs   (needs a built server, `pnpm run build` and `pnpm run e2e:build`, tmux, and Chrome)
 //   SEARCH_RESULTS=path   also writes the measurements as JSON
-import { launch } from './browser.mjs';
+import { launch, contextOptions } from './browser.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, statSync } from 'node:fs';
@@ -77,7 +77,7 @@ try {
   browser = await launch(['--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection']);
 
   // The harness page types into the session, as an agent's shell would receive it.
-  const hp = await (await browser.newContext()).newPage();
+  const hp = await (await browser.newContext(contextOptions())).newPage();
   hp.on('pageerror', (e) => fail(`harness page error: ${e.message}`));
   await hp.goto(`http://127.0.0.1:${webPort}/`);
   const cert = mint(await hp.evaluate(() => window.__e2e.deviceKey()), 1, 'alice');
@@ -102,7 +102,7 @@ try {
   };
 
   // The real app, on a phone, rendering with the DOM renderer so the visible rows can be read.
-  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const ctx = await browser.newContext(contextOptions({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }));
   await ctx.addInitScript(() => localStorage.setItem('termenbox_ios_hint', '1'));
   const page = await ctx.newPage();
   const errors = [];
@@ -300,7 +300,8 @@ try {
     historyLimit: 20000, historyRowsHeld: meta('=big:').historySize, paneCols: meta('=big:').cols, firstLine: bigSnap.split('\n')[0].slice(0, 9), lines: bigSnap.split('\n').length, bytes: Buffer.byteLength(bigSnap), gzipBytes: gzipSync(bigSnap).length, captureMs: +bigMs.toFixed(1),
     tmuxRssMbBefore: +rssBefore.toFixed(1), tmuxRssMbAfter: +rssMb(tmuxPid).toFixed(1), serverRssMb: +rssMb(server.pid).toFixed(1), browserSearchMs: bigProbe.ms, browserHits: bigProbe.hits,
   };
-  check(bigProbe.hits === 1 && R.big.historyRowsHeld > 19000, `a 20000-line history is searchable in the page: ${JSON.stringify(R.big)}`);
+  // tmux drops 10% of the history when the limit is reached, so a full pane holds 18000 to 20000 rows, depending on where in that cycle it stopped.
+  check(bigProbe.hits === 1 && R.big.historyRowsHeld >= 18000, `a 20000-line history is searchable in the page: ${JSON.stringify(R.big)}`);
   console.log(`ok  9 20000-row history (${R.big.lines} logical lines at ${R.big.paneCols} columns, oldest ${R.big.firstLine}): ${(R.big.bytes / 1e6).toFixed(2)} MB (${(R.big.gzipBytes / 1e6).toFixed(2)} MB gzip), capture ${R.big.captureMs} ms, page search ${R.big.browserSearchMs} ms, tmux RSS ${R.big.tmuxRssMbBefore} -> ${R.big.tmuxRssMbAfter} MB`);
 
   check(errors.length === 0, `page errors: ${errors.slice(0, 3).join(' | ')}`);

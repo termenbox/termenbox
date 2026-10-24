@@ -201,13 +201,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { engine: chromium, size: 1024x768, dpr: 1, label: 'desktop chromium 1024x768 @1x' }
-          - { engine: chromium, size: 1440x900, dpr: 2, label: 'desktop chromium 1440x900 @2x' }
-          - { engine: firefox, size: 1024x768, dpr: 1, label: 'desktop firefox 1024x768 @1x' }
-          - { engine: firefox, size: 1440x900, dpr: 2, label: 'desktop firefox 1440x900 @2x' }
-          - { engine: webkit, size: 1024x768, dpr: 1, label: 'desktop webkit 1024x768 @1x' }
-          - { engine: webkit, size: 1440x900, dpr: 2, label: 'desktop webkit 1440x900 @2x' }
-          - { engine: webkit, size: 390x844, dpr: 3, label: 'phone webkit @3x' }
+          - { engine: chromium, size: 1024x768, dpr: 1, suite: realserver, label: 'desktop chromium 1024x768 @1x' }
+          - { engine: chromium, size: 1440x900, dpr: 2, suite: realserver, label: 'desktop chromium 1440x900 @2x' }
+          - { engine: firefox, size: 1024x768, dpr: 1, suite: realserver, label: 'desktop firefox 1024x768 @1x' }
+          - { engine: firefox, size: 1440x900, dpr: 2, suite: realserver, label: 'desktop firefox 1440x900 @2x' }
+          - { engine: webkit, size: 1024x768, dpr: 1, suite: realserver, label: 'desktop webkit 1024x768 @1x' }
+          - { engine: webkit, size: 1440x900, dpr: 2, suite: realserver, label: 'desktop webkit 1440x900 @2x' }
+          - { engine: webkit, size: 390x844, dpr: 3, suite: realserver, label: 'phone webkit @3x' }
+          # The phone scripts that need the real server: touch.mjs, run.mjs and wizard.mjs stay in the Chromium server job (CDP, resource gates, fake camera).
+          - { engine: webkit, size: 390x844, dpr: 3, suite: phone-real, label: 'phone webkit scripts @3x' }
     steps:
       - uses: actions/checkout@v4
 
@@ -239,7 +241,7 @@ jobs:
         working-directory: packages/client
         run: pnpm exec playwright-core install --with-deps ${{ matrix.engine }}
 
-      - name: Run the real-server scenario
+      - name: Run the ${{ matrix.suite }} scripts
         working-directory: packages/client
         env:
           TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
@@ -247,12 +249,12 @@ jobs:
           E2E_VIEWPORT: ${{ matrix.size }}
           E2E_DPR: ${{ matrix.dpr }}
           E2E_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
-        run: node e2e/suite.mjs realserver
+        run: node e2e/suite.mjs ${{ matrix.suite }}
 
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: e2e-failure-realserver-${{ matrix.engine }}-${{ matrix.size }}-${{ matrix.dpr }}x
+          name: e2e-failure-${{ matrix.suite }}-${{ matrix.engine }}-${{ matrix.size }}-${{ matrix.dpr }}x
           path: ${{ runner.temp }}/e2e-artifacts
           if-no-files-found: ignore
           retention-days: 7

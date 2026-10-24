@@ -2,7 +2,7 @@
 // real termenbox-server and tmux. A Claude Code hook is simulated by running the server's own `--hook claude` command
 // inside the session, with a transcript made from the recorded fixture under a private Claude config directory.
 // Usage: node e2e/pane.mjs   (needs a built server, `pnpm run build` and `pnpm run e2e:build`, and Chrome)
-import { launch } from './browser.mjs';
+import { launch, contextOptions } from './browser.mjs';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, existsSync, rmSync, mkdirSync, copyFileSync, statSync } from 'node:fs';
@@ -78,7 +78,7 @@ try {
   browser = await launch(['--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection']);
 
   // The harness page owns the server and types into the session (it plays the agent's shell).
-  const hp = await (await browser.newContext()).newPage();
+  const hp = await (await browser.newContext(contextOptions())).newPage();
   hp.on('pageerror', (e) => fail(`harness page error: ${e.message}`));
   await hp.goto(`http://127.0.0.1:${webPort}/`);
   const cert = mint(await hp.evaluate(() => window.__e2e.deviceKey()), 1, 'alice');
@@ -97,7 +97,7 @@ try {
   };
 
   // The real app, on a phone.
-  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const ctx = await browser.newContext(contextOptions({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }));
   await ctx.addInitScript(() => localStorage.setItem('termenbox_ios_hint', '1'));
   const page = await ctx.newPage();
   const errors = [];

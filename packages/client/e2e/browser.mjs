@@ -57,7 +57,7 @@ async function save(ctx, label) {
 
 /** A tap on a locator. Playwright's WebKit and Firefox cannot deliver touch input (a tap times out), so there it is a click, which
  *  gives the same pointer events; only Chromium proves touch. */
-export const tap = (locator) => (ENGINE === 'chromium' ? locator.tap() : locator.click());
+export const tap = (locator, options) => (ENGINE === 'chromium' ? locator.tap(options) : locator.click(options));
 
 /** Starts a trace on the context when artifacts are wanted, and saves it if the script dies with an exception mid-scenario. Pair with `keepIfFailed`. */
 export async function trace(ctx, label) {

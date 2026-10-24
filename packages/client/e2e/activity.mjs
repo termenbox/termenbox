@@ -1,7 +1,7 @@
 // U12: the real Activity view in Chrome at 360 px (a small phone) and at 1280 px, over a fake server that answers from a fixture.
 // The clock is fixed to the fixture's day. Desktop Chromium with mobile emulation: not an iPhone or Android check.
 // Usage: node e2e/activity.mjs   (needs the e2e harness built: pnpm e2e:build; CHROME_PATH for the browser)
-import { launch } from './browser.mjs';
+import { launch, contextOptions } from './browser.mjs';
 import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, extname } from 'node:path';
@@ -33,7 +33,7 @@ async function open(ctx, query = '') {
 }
 try {
   for (const [name, opts] of [['360 px phone', { viewport: { width: 360, height: 740 }, isMobile: true, hasTouch: true }], ['1280 px desktop', { viewport: { width: 1280, height: 800 } }]]) {
-    const ctx = await browser.newContext(opts);
+    const ctx = await browser.newContext(contextOptions(opts));
     const page = await open(ctx);
     await page.waitForSelector('[data-activity=ready]');
 
@@ -142,7 +142,7 @@ try {
   }
 
   // A server older than the feature never answers: the view says so instead of loading forever.
-  const ctx = await browser.newContext({ viewport: { width: 360, height: 740 }, isMobile: true, hasTouch: true });
+  const ctx = await browser.newContext(contextOptions({ viewport: { width: 360, height: 740 }, isMobile: true, hasTouch: true }));
   const page = await open(ctx, '?silent');
   await page.waitForSelector('[data-activity=loading]');
   await page.clock.fastForward(9000);

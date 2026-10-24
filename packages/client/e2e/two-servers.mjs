@@ -4,7 +4,7 @@
 //   TERMENBOX_BIN   server binary          (default ../../target/release/termenbox-server)
 //   CHROME_PATH    Chrome/Chromium binary (default: Playwright's "chrome" channel)
 // Not covered here (checked in e2e/navigation.mjs with injected states): the tab label frozen while a finger is down.
-import { launch } from './browser.mjs';
+import { launch, contextOptions, tap } from './browser.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
@@ -124,7 +124,7 @@ try {
 
   // The first connection to each server carries its claim secret and creates the sessions, with a real agent window.
   const createSessions = async (server, names) => {
-    const page = await (await browser.newContext()).newPage();
+    const page = await (await browser.newContext(contextOptions())).newPage();
     page.on('pageerror', (e) => fail(`page error: ${e.message}`));
     await page.goto(`http://127.0.0.1:${webPort}/`);
     const cert = mint(await page.evaluate(() => window.__e2e.deviceKey()), alice.id, alice.login);
@@ -144,7 +144,7 @@ try {
   for (const [s, name] of [[a, 'api'], [a, 'web'], [a, 'docs'], [b, 'infra']]) s.tmux('send-keys', '-t', `=${name}:`, `READY-${name}`, 'Enter');
 
   // The real app on a phone with both servers saved.
-  const ctx = await browser.newContext({ viewport: { width: 390, height: 800 }, hasTouch: true, isMobile: true });
+  const ctx = await browser.newContext(contextOptions({ viewport: { width: 390, height: 800 }, hasTouch: true, isMobile: true }));
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
@@ -281,7 +281,7 @@ try {
   await menu('web').getByRole('button', { name: 'Detach', exact: true }).click();
   await tab('web').waitFor({ state: 'detached' });
   if (!a.tmux('list-sessions', '-F', '#{session_name}').split('\n').includes('web')) fail('Detach ended the session');
-  await tab('docs').tap();
+  await tap(tab('docs'));
   await page.waitForFunction(() => document.querySelector('[role=tab][aria-selected=true]')?.getAttribute('aria-label')?.includes('docs'));
   await tab('docs').click();
   await menu('docs').waitFor();

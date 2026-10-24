@@ -1,7 +1,7 @@
 // Browser matrix, real server (roadmap R36): the real client, built, against a real isolated termenbox-server and real
 // tmux, in the engine named by E2E_ENGINE (chromium | firefox | webkit). Viewport and pixel ratio come from E2E_VIEWPORT
 // (default 1280x800) and E2E_DPR; a width of 720 px or less is a phone, anything wider a desktop window (mouse and
-// keyboard, no touch). The breakpoint scenario runs in desktop only.
+// keyboard, no touch). The 720/721 switch is covered by `crossing` in desktop-app.mjs.
 // The client connects over WebSocket (the iOS Safari baseline, DECISION-0112); the WebRTC path is covered by run.mjs on Chromium.
 // What this proves is what the page does in that engine. It does not prove a real Safari, Edge or iPhone: see docs/skills/browser-support-check.md.
 //
@@ -14,7 +14,7 @@ import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, extname, resolve } from 'node:path';
 import { randomBytes, generateKeyPairSync, sign, createPrivateKey, createPublicKey } from 'node:crypto';
-import { launch, viewport, contextOptions, trace, keepIfFailed, ENGINE, DPR } from './browser.mjs';
+import { launch, viewport, contextOptions, trace, keepIfFailed, tap, ENGINE, DPR } from './browser.mjs';
 
 const here = import.meta.dirname;
 const BIN = process.env.TERMENBOX_BIN ?? resolve(here, '../../../target/release/termenbox-server');
@@ -159,8 +159,9 @@ async function runContext(browser, label) {
     check((await sidebar.count()) === (phone ? 0 : 1), `sidebar presence is wrong for ${label}`);
     check((await bottom.count()) === (phone ? 1 : 0), `bottom bar presence is wrong for ${label}`);
     const nav = phone ? bottom : sidebar;
+    const press = (locator) => (phone ? tap(locator) : locator.click()); // a desktop context has no touch
     for (const [id, heading] of [['activity', 'Activity'], ['settings', 'Settings'], ['home', 'Home']]) {
-      await nav.locator(`[data-destination=${id}]`).click();
+      await press(nav.locator(`[data-destination=${id}]`));
       await page.getByRole('heading', { name: heading, exact: true }).waitFor();
       { const o = await sideways(page); check(!o.scrollable, `${id} scrolls sideways (${o.px}px, ${o.culprit})`); }
     }
@@ -169,8 +170,8 @@ async function runContext(browser, label) {
     // 2. Open a session; attach shows a real xterm, typing reaches the shell, a second session switches.
     const open = async (session) => {
       if (phone) {
-        await bottom.locator('[data-destination=sessions]').click();
-        await page.locator(`[role=tab][aria-label*="${session}"]`).first().click();
+        await tap(bottom.locator('[data-destination=sessions]'));
+        await tap(page.locator(`[role=tab][aria-label*="${session}"]`).first());
       } else {
         await sidebar.locator(`[data-key$="/${session}"]`).click();
       }
@@ -332,45 +333,6 @@ async function runContext(browser, label) {
   return failures;
 }
 
-/** The 720/721 transition on one page (the sidebar stays through 1023 px, the phone layout starts at 720): the layout flips at the breakpoint and the session survives. */
-async function runBreakpoints(browser) {
-  const engine = ENGINE;
-  const failures = [];
-  const check = (cond, msg) => { if (!cond) { failures.push(msg); console.error(`FAIL [${engine} breakpoints]: ${msg}`); } return !!cond; };
-  const ctx = await browser.newContext(contextOptions({ viewport: { width: 1440, height: 900 }, isMobile: false, hasTouch: false }));
-  await trace(ctx, 'breakpoints');
-  try {
-    const page = await ctx.newPage();
-    page.on('pageerror', (e) => check(false, `page error: ${e.message}`));
-    await signIn(page);
-    await page.locator('[data-shell=sidebar]').locator('[data-key$="/alpha"]').click();
-    await page.locator('.xterm-rows').waitFor();
-    const term = await page.locator('.xterm').elementHandle();
-    const state = () => page.evaluate(() => ({
-      sidebar: !!document.querySelector('[data-shell=sidebar]'),
-      bar: !!document.querySelector('[data-shell=bottom-bar]'),
-      mobile: !!document.querySelector('.workspace.mobile'),
-    }));
-    const at = async (width) => { await page.setViewportSize({ width, height: 800 }); await page.waitForTimeout(250); return { ...(await state()), ...(await sideways(page)) }; };
-    const wide = { sidebar: true, bar: false, mobile: false };
-    for (const [width, want] of [[1024, wide], [1023, wide], [721, wide], [720, { sidebar: false, bar: true, mobile: true }], [721, wide], [1024, wide]]) {
-      const got = await at(width);
-      check(got.sidebar === want.sidebar && got.bar === want.bar && got.mobile === want.mobile, `at ${width}px: sidebar ${got.sidebar}, bottom bar ${got.bar}, mobile ${got.mobile}; expected ${JSON.stringify(want)}`);
-      check(!got.scrollable, `at ${width}px the page scrolls sideways (${got.px}px, ${got.culprit})`);
-    }
-    // The session view is rebuilt by the layout switch only if the shell remounts it; a switch must not lose the terminal screen.
-    await waitFor(async () => (await page.locator('.xterm-rows').innerText()).includes('READY-alpha'), 'the alpha screen after the breakpoint round trip');
-    check(await term.evaluate((e) => e.isConnected) || (await page.locator('.xterm').count()) === 1, 'no xterm after the breakpoint round trip');
-    console.log(`ok  [${engine} breakpoints] 721/720 flips the layout, 1024 and 1023 keep the sidebar, and the session stays on screen`);
-  } catch (e) {
-    check(false, `scenario aborted: ${e instanceof Error ? e.message : e}`);
-  } finally {
-    await keepIfFailed(ctx, 'breakpoints', failures.length > 0).catch(() => {});
-    await ctx.close();
-  }
-  return failures;
-}
-
 let failures = [];
 let browser;
 try {
@@ -383,7 +345,6 @@ try {
   const vp = viewport('1280x800');
   const label = `${vp.width > 720 ? 'desktop' : 'phone'}-${vp.width}x${vp.height}-${DPR}x`;
   failures.push(...(await runContext(browser, label)));
-  if (vp.width > 720) failures.push(...(await runBreakpoints(browser)));
 } catch (e) {
   failures.push(e instanceof Error ? e.stack : String(e));
   console.error(`FAIL: ${failures.at(-1)}`);
