@@ -70,7 +70,7 @@ Done-when: `scripts/dev.sh sh -c 'cargo test --workspace && pnpm -r test'` passe
 
 ## Phase 2: the protocol and its ports
 
-### 2.1 Verify ACP's extension rules and the schema crate's coverage — [ ]‖
+### 2.1 Verify ACP's extension rules and the schema crate's coverage — [x]‖
 Class: explore · Needs: none · Check: `test -f docs/facts/0057-acp-extension-rules-and-schema-crate-coverage.md`
 Context: Decision 0136 builds the extension registry on ACP's own extensibility (`_meta` fields and custom methods). That is not yet verified against the specification and the pinned schema crate, and the registry's shape depends on it. Read-only research; the output is a fact. The next free fact number may differ: check `docs/facts/` first and adjust the file name in the check.
 Do: Read the ACP specification's extensibility section and the `agent-client-protocol-schema` source (pin the version the repo uses after step 0.1, or 1.12 before it lands). Establish: how `_meta` is reserved and namespaced; how custom methods and notifications are named and what a peer that does not know them must do; how capabilities are advertised in `initialize` for extensions; whether the schema types let an extension ride in `_meta` without losing it on a round trip; which of `session/update` kinds, content blocks and terminal types the schema crate covers; and anything in ACP v1 that conflicts with the extension rule "unknown is skipped". Write a fact with sources, the version and date, and list conflicts.

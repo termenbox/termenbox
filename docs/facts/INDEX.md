@@ -55,5 +55,6 @@
 | 0053 | A server inside a NAT'd VM (WSL2 NAT mode, VirtualBox NAT, Docker Desktop) is reachable from other devices only through port forwarding or a bridged network | network, deployment, wsl, lan, topology | active |
 | 0055 | A waiting question is pushed again on a ladder until it is answered anywhere, and a push opens its decision card | notifications, agents | active |
 | 0056 | The UX harness builds on existing Playwright pieces, and CI emulates a phone, it does not verify one | client, mobile, ux, ci | active |
+| 0057 | ACP's own extension rules and what the pinned schema crate covers, checked for the extension registry | agents, protocol, client | active |
 
 <!-- bootstrap-generated: true -->
