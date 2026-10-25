@@ -51,9 +51,10 @@ const MAX_PROMPT: usize = 16 * 1024;
 const MAX_PENDING: usize = 8;
 const MAX_TOOLS: usize = 64;
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30);
-/// Sessions at once when the config does not say. An agent child is a Node or Rust process of a few hundred MB
-/// (see the measurements in the PR that added this), so the owner sets the real number for the agents they use.
-const DEFAULT_MAX_SESSIONS: usize = 2;
+/// Sessions at once when the config does not say. The default is 6 and there is no memory floor: an agent child is
+/// a Node or Rust process of a few hundred MB, so the box sizes it (six adapters on 512 MB can hit the OOM killer).
+/// `resource-constraints` covers termenbox's own processes, not the agents it starts.
+const DEFAULT_MAX_SESSIONS: usize = 6;
 
 // ---------------------------------------------------------------------------------------------------
 // Allowlist config
@@ -70,14 +71,64 @@ pub struct AgentProfile {
     /// Variables removed from the child's environment (claude's adapter refuses to start with `CLAUDECODE`).
     #[serde(default)]
     pub env_remove: Vec<String>,
+    /// Advertise form elicitation in `initialize`. Without it opencode's questions go unanswered and block the turn.
+    #[serde(default)]
+    pub elicitation_form: bool,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct AcpConfig {
     #[serde(default = "default_max")]
     pub max_sessions: usize,
+    /// Keep the built-in agents beside the ones in this file (a same-named entry in the file wins).
+    #[serde(default)]
+    pub builtin: bool,
     #[serde(default)]
     pub agents: HashMap<String, AgentProfile>,
+}
+
+/// The agents termenbox knows how to start (fact 0040), used when there is no file or the file sets `builtin`.
+/// The adapters are not shipped: the owner installs them, and `acp_agents` lists only those on `PATH`.
+pub fn builtin_agents() -> HashMap<String, AgentProfile> {
+    HashMap::from([
+        (
+            "claude".to_string(),
+            AgentProfile {
+                command: "claude-agent-acp".into(),
+                args: vec![],
+                env: HashMap::new(),
+                env_remove: vec!["CLAUDECODE".into()],
+                elicitation_form: false,
+            },
+        ),
+        (
+            "opencode".to_string(),
+            AgentProfile {
+                command: "opencode".into(),
+                args: vec!["acp".into()],
+                env: HashMap::new(),
+                env_remove: vec![],
+                elicitation_form: true,
+            },
+        ),
+    ])
+}
+
+/// Whether `command` can be started: a path (it has a `/`) must be an executable file, a bare name must be one in
+/// some `PATH` entry. Checked on every call, so an install shows up without a restart.
+pub fn on_path(command: &str) -> bool {
+    fn executable(p: &std::path::Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p)
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    if command.contains('/') {
+        return executable(std::path::Path::new(command));
+    }
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|d| executable(&d.join(command))))
+        .unwrap_or(false)
 }
 
 fn default_max() -> usize {
@@ -88,20 +139,22 @@ impl Default for AcpConfig {
     fn default() -> Self {
         Self {
             max_sessions: DEFAULT_MAX_SESSIONS,
-            agents: HashMap::new(),
+            builtin: true,
+            agents: builtin_agents(),
         }
     }
 }
 
 impl AcpConfig {
     /// ```toml
-    /// max_sessions = 2
+    /// max_sessions = 6
+    /// builtin = true # keep claude and opencode beside the agents below
     /// [agents.claude]
     /// command = "claude-agent-acp"
     /// env_remove = ["CLAUDECODE"]
     /// ```
     pub fn parse(text: &str) -> Result<Self> {
-        let cfg: Self = toml::from_str(text).map_err(|e| anyhow!("acp agents file: {e}"))?;
+        let mut cfg: Self = toml::from_str(text).map_err(|e| anyhow!("acp agents file: {e}"))?;
         if !(1..=16).contains(&cfg.max_sessions) {
             return Err(anyhow!("max_sessions must be 1 to 16"));
         }
@@ -110,10 +163,15 @@ impl AcpConfig {
                 return Err(anyhow!("agent `{name}` needs a plain name and a command"));
             }
         }
+        if cfg.builtin {
+            for (name, a) in builtin_agents() {
+                cfg.agents.entry(name).or_insert(a);
+            }
+        }
         Ok(cfg)
     }
 
-    /// A missing file is an empty allowlist: no ACP agent can be started.
+    /// No file means the built-in agents. A file is the whole allowlist unless it sets `builtin = true`.
     pub fn load(path: &std::path::Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(text) => Self::parse(&text),
@@ -831,15 +889,20 @@ fn spawn_agent(
 }
 
 /// No file system and no terminal: the agent runs its own tools (decision 0111).
-fn initialize_request() -> acp::InitializeRequest {
+fn initialize_request(elicitation_form: bool) -> acp::InitializeRequest {
+    let mut caps = acp::ClientCapabilities::new()
+        .fs(acp::FileSystemCapabilities::new()
+            .read_text_file(false)
+            .write_text_file(false))
+        .terminal(false);
+    if elicitation_form {
+        // Serialises as `"elicitation": {"form": {}}`.
+        caps = caps.elicitation(
+            acp::ElicitationCapabilities::new().form(acp::ElicitationFormCapabilities::new()),
+        );
+    }
     acp::InitializeRequest::new(ProtocolVersion::V1)
-        .client_capabilities(
-            acp::ClientCapabilities::new()
-                .fs(acp::FileSystemCapabilities::new()
-                    .read_text_file(false)
-                    .write_text_file(false))
-                .terminal(false),
-        )
+        .client_capabilities(caps)
         .client_info(acp::Implementation::new(
             "termenbox",
             env!("CARGO_PKG_VERSION"),
@@ -860,11 +923,16 @@ fn initialize_params(req: &acp::InitializeRequest) -> Value {
 }
 
 /// `initialize`, then `session/new` or (after a restart) `session/resume` / `session/load`.
-async fn handshake(live: &Live, dir: &str, resume: Option<&str>) -> Result<String> {
+async fn handshake(
+    live: &Live,
+    dir: &str,
+    resume: Option<&str>,
+    elicitation_form: bool,
+) -> Result<String> {
     let init = live
         .request(
             "initialize",
-            initialize_params(&initialize_request()),
+            initialize_params(&initialize_request(elicitation_form)),
             Some(SETUP_TIMEOUT),
         )
         .await?;
@@ -1045,11 +1113,18 @@ impl AcpBackend {
             self.hub.clone(),
             format!("{}{name}", self.event_prefix),
         )?;
-        let id = match handshake(&live, dir, resume).await {
+        let id = match handshake(&live, dir, resume, profile.elicitation_form).await {
             Ok(id) => id,
             Err(e) => {
                 if let Some(k) = live.kill.lock().unwrap().take() {
                     let _ = k.send(());
+                }
+                // The agent refused `session/new` (gemini: -32000 when not logged in): say what to do about it.
+                let msg = e.to_string();
+                if let (None, Some(why)) = (resume, msg.strip_prefix("session/new: ")) {
+                    return Err(anyhow!(
+                        "{agent} would not start: {why}. Log in to it on the server, then try again."
+                    ));
                 }
                 return Err(e);
             }
@@ -1283,6 +1358,9 @@ impl SessionBackend for AcpBackend {
         let agent = template
             .filter(|t| self.config.agents.contains_key(*t))
             .ok_or_else(|| anyhow!("Unknown agent"))?;
+        if !on_path(&self.config.agents[agent].command) {
+            return Err(anyhow!("That agent is not installed on this server"));
+        }
         let dir = match dir.filter(|d| !d.is_empty()) {
             Some(d) if valid_dir(d) => d.to_string(),
             Some(_) => return Err(anyhow!("The directory must be an absolute path")),
@@ -1401,7 +1479,13 @@ impl SessionBackend for AcpBackend {
     }
 
     fn acp_agents(&self) -> Vec<String> {
-        let mut v: Vec<String> = self.config.agents.keys().cloned().collect();
+        let mut v: Vec<String> = self
+            .config
+            .agents
+            .iter()
+            .filter(|(_, a)| on_path(&a.command))
+            .map(|(name, _)| name.clone())
+            .collect();
         v.sort();
         v
     }

@@ -139,6 +139,8 @@ fn fake_agent() {
                 "loadSession": mode.contains("load"),
                 "sessionCapabilities": if mode.contains("resume") { json!({"resume": {}}) } else { json!({}) }
             }})),
+            "session/new" if mode.contains("authfail") => put(json!({"jsonrpc": "2.0", "id": id,
+                "error": {"code": -32000, "message": "Authentication required"}})),
             "session/new" if mode.contains("modes") => reply(json!({"sessionId": "acp-1",
                 "modes": {"currentModeId": "ask", "availableModes": [
                     {"id": "ask", "name": "Ask", "description": "Ask first"}, {"id": "plan", "name": "Plan"}]}})),
@@ -197,6 +199,7 @@ fn profile(mode: &str, log: &Path) -> AgentProfile {
             ("FAKE_LOG".to_string(), log.display().to_string()),
         ]),
         env_remove: vec![],
+        elicitation_form: false,
     }
 }
 
@@ -204,6 +207,7 @@ fn rig_with(mode: &str, max: usize, dir: PathBuf, state: bool) -> Rig {
     let log = dir.join(format!("{}.log", uuid::Uuid::new_v4()));
     let config = AcpConfig {
         max_sessions: max,
+        builtin: false,
         agents: HashMap::from([("fake".to_string(), profile(mode, &log))]),
     };
     let hub = EventHub::new([7; 32]);
@@ -280,10 +284,127 @@ fn the_allowlist_file_parses_and_refuses_nonsense() {
     assert!(AcpConfig::parse("max_sessions = 0").is_err());
     assert!(AcpConfig::parse("[agents.\"a b\"]\ncommand = \"x\"").is_err());
     assert!(AcpConfig::parse("[agents.x]\ncommand = \"\"").is_err());
+}
+
+#[test]
+fn no_file_means_the_built_ins_and_a_file_is_exclusive_unless_it_asks() {
+    let none = AcpConfig::load(Path::new("/nonexistent/acp.toml")).unwrap();
+    assert_eq!(none, AcpConfig::default());
+    assert_eq!(none.agents, builtin_agents());
+    assert_eq!(none.max_sessions, 6);
+
+    let only = AcpConfig::parse("[agents.mine]\ncommand = \"mine\"").unwrap();
+    assert_eq!(only.agents.keys().collect::<Vec<_>>(), ["mine"]);
+    assert_eq!(only.max_sessions, 6);
+
+    let both =
+        AcpConfig::parse("builtin = true\nmax_sessions = 3\n[agents.mine]\ncommand = \"mine\"")
+            .unwrap();
+    assert_eq!(both.max_sessions, 3);
+    let mut names: Vec<_> = both.agents.keys().cloned().collect();
+    names.sort();
+    assert_eq!(names, ["claude", "mine", "opencode"]);
+
+    // A same-named entry in the file wins over the built-in.
+    let over =
+        AcpConfig::parse("builtin = true\n[agents.claude]\ncommand = \"my-claude\"").unwrap();
+    assert_eq!(over.agents["claude"].command, "my-claude");
+    assert!(over.agents["claude"].env_remove.is_empty());
+    assert!(over.agents.contains_key("opencode"));
+
+    // An old file without the new keys parses unchanged.
+    let old = AcpConfig::parse(
+        "max_sessions = 2\n[agents.claude]\ncommand = \"claude-agent-acp\"\nenv_remove = [\"CLAUDECODE\"]\n",
+    )
+    .unwrap();
+    assert!(!old.builtin && !old.agents["claude"].elicitation_form);
+    assert_eq!(old.agents.len(), 1);
+}
+
+#[test]
+fn each_built_in_matches_the_probe_script() {
+    let probe = include_str!("../../../../scripts/acp-probe.mjs");
+    let b = builtin_agents();
+    assert!(probe.contains("opencode: ['opencode', 'acp']"));
     assert_eq!(
-        AcpConfig::load(Path::new("/nonexistent/acp.toml")).unwrap(),
-        AcpConfig::default()
+        (b["opencode"].command.as_str(), &b["opencode"].args[..]),
+        ("opencode", &["acp".to_string()][..])
     );
+    assert!(b["opencode"].elicitation_form);
+    assert!(probe.contains("claude: [`${NM}/claude-agent-acp`]"));
+    assert_eq!(b["claude"].command, "claude-agent-acp");
+    assert!(b["claude"].args.is_empty());
+    assert_eq!(b["claude"].env_remove, ["CLAUDECODE"]);
+}
+
+#[test]
+fn on_path_finds_executables_in_path_and_by_absolute_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tmp();
+    let exe = d.join("tbx-fake-adapter");
+    let plain = d.join("tbx-not-exec");
+    std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+    std::fs::write(&plain, "x").unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(on_path(exe.to_str().unwrap()));
+    assert!(!on_path(plain.to_str().unwrap()));
+    assert!(!on_path(d.join("missing").to_str().unwrap()));
+    assert!(
+        !on_path(d.to_str().unwrap()),
+        "a directory is not a command"
+    );
+
+    // PATH is process-wide: this is the only test that changes it.
+    let old = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths: Vec<_> = std::env::split_paths(&old).collect();
+    paths.push(d.clone());
+    std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+    assert!(on_path("tbx-fake-adapter"));
+    assert!(!on_path("tbx-not-exec"));
+    assert!(!on_path("tbx-never-installed"));
+    std::env::set_var("PATH", old);
+}
+
+#[tokio::test]
+async fn an_adapter_installed_later_shows_up_and_a_missing_one_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tmp();
+    let cmd = d.join("tbx-late-adapter");
+    let config = AcpConfig {
+        max_sessions: 2,
+        builtin: false,
+        agents: HashMap::from([(
+            "late".to_string(),
+            AgentProfile {
+                command: cmd.display().to_string(),
+                args: vec![],
+                env: HashMap::new(),
+                env_remove: vec![],
+                elicitation_form: false,
+            },
+        )]),
+    };
+    let backend = AcpBackend::new(config);
+    assert!(backend.acp_agents().is_empty());
+    let e = backend
+        .create_with("x", None, d.to_str(), Some("late"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.to_string(), "That agent is not installed on this server");
+
+    std::fs::write(&cmd, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&cmd, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(backend.acp_agents(), ["late"]);
+}
+
+#[test]
+fn elicitation_is_advertised_only_when_the_profile_asks() {
+    let off = initialize_params(&initialize_request(false));
+    assert!(off["clientCapabilities"].get("elicitation").is_none());
+    let on = initialize_params(&initialize_request(true));
+    assert_eq!(on["clientCapabilities"]["elicitation"], json!({"form": {}}));
 }
 
 #[tokio::test]
@@ -939,4 +1060,20 @@ async fn a_restored_session_says_that_its_earlier_output_is_not_shown() {
         .any(|e| matches!(e, AcpBody::Message { text, .. } if text.contains("REPLAYED"))));
     a.backend.kill("s1").await.unwrap();
     b.backend.kill("s1").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_refused_session_new_tells_the_owner_to_log_in() {
+    let r = rig("authfail");
+    let e = r
+        .backend
+        .create_with("s1", None, r.dir.to_str(), Some("fake"))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        e,
+        "fake would not start: Authentication required. Log in to it on the server, then try again."
+    );
+    assert!(r.backend.list().await.unwrap().is_empty());
 }

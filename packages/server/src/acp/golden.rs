@@ -409,7 +409,7 @@ fn the_requests_have_the_wire_form_they_always_had() {
         "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false},
         "clientInfo": {"name": "termenbox", "version": env!("CARGO_PKG_VERSION")},
     });
-    let new_initialize = initialize_params(&initialize_request());
+    let new_initialize = initialize_params(&initialize_request(false));
     assert_eq!(new_initialize, old_initialize);
     assert_eq!(
         wire(&acp::NewSessionRequest::new("/d")),
