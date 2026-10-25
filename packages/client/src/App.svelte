@@ -143,11 +143,11 @@
     onFatal: (_id, reason) => { noteError(`connection: ${reason}`); showToast(reason, 'error'); },
     onMessage: (_id, msg) => {
       const id = _id;
-      if (msg.type === 'snapshot') snapshots.apply(workspaceKey(_id, msg.session), msg);
-      else if (msg.type === 'session_attached') preview = null;
-      else if (msg.type === 'session_view') { if (id === activeServerId && msg.session === activeWorkspaceId) heldView = mergeView(heldView, msg); }
-      else if (msg.type === 'acp_view') acpStreams.update(m => applyAcp(m, workspaceKey(_id, msg.session), msg.session, msg));
-      else if (msg.type === 'sessions') { openPending(_id, msg.sessions); acpStreams.update(m => forgetAcp(m, `${_id}/`, new Set(msg.sessions.map(x => workspaceKey(_id, x.id))))); }
+      if (msg.type === 'snapshot') snapshots.apply(workspaceKey(_id, msg.workspace), msg);
+      else if (msg.type === 'workspace_attached') preview = null;
+      else if (msg.type === 'workspace_view') { if (id === activeServerId && msg.workspace === activeWorkspaceId) heldView = mergeView(heldView, msg); }
+      else if (msg.type === 'acp_view') acpStreams.update(m => applyAcp(m, workspaceKey(_id, msg.workspace), msg.workspace, msg));
+      else if (msg.type === 'workspaces') { openPending(_id, msg.workspaces); acpStreams.update(m => forgetAcp(m, `${_id}/`, new Set(msg.workspaces.map(x => workspaceKey(_id, x.id))))); }
       else if (msg.type === 'attention') inbox.update(l => mergeAttention(l, _id, msg.items, s => workspaceKey(_id, s), s => hub.findWorkspace(workspaceKey(_id, s))?.name ?? s));
       else if (msg.type === 'history') historyMap = answered(historyMap, _id, msg);
       else if (msg.type === 'health_history') healthMap = answeredHealth(healthMap, _id, msg);
@@ -168,7 +168,7 @@
         if (msg.action === 'remove' && !msg.error) hub.send(_id, { type: 'agent_hooks', agent: msg.agent, action: 'preview' });
       }
       if (msg.type === 'error') showToast(msg.message, 'error');
-      else if (msg.type === 'agent_event') showToast(`Agent ${msg.agent} ${msg.event} in ${msg.session_id}`);
+      else if (msg.type === 'agent_event') showToast(`Agent ${msg.agent} ${msg.event} in ${msg.workspace_id}`);
     },
   });
   const snapshots = new SnapshotStore();
@@ -314,8 +314,8 @@
     const s = activeKey && !away && pageVisible ? hub.findWorkspace(activeKey) : undefined;
     const next = s ? { serverId: s.serverId, workspace: s.id } : null;
     if (next?.serverId === reportedFg?.serverId && next?.workspace === reportedFg?.workspace) return;
-    if (reportedFg && reportedFg.serverId !== next?.serverId) hub.send(reportedFg.serverId, { type: 'foreground', session: null });
-    if (next) hub.send(next.serverId, { type: 'foreground', session: next.workspace });
+    if (reportedFg && reportedFg.serverId !== next?.serverId) hub.send(reportedFg.serverId, { type: 'foreground', workspace: null });
+    if (next) hub.send(next.serverId, { type: 'foreground', workspace: next.workspace });
     reportedFg = next;
   }
   $: activeKey, away, pageVisible, reportForeground();
@@ -344,7 +344,7 @@
       hub.sendToWorkspace(key, openMessage(key, $acpStreams[key]));
     } else {
       closeAcp();
-      hub.sendToWorkspace(key, { type: 'attach', session_id: key });
+      hub.sendToWorkspace(key, { type: 'attach', workspace_id: key });
     }
   }
   const sendAcp = (m: import('./lib/protocol').ClientMessage) => { if (activeKey) hub.sendToWorkspace(activeKey, m); };
@@ -567,7 +567,7 @@
   async function openWaiting(key: string) {
     const workspace = hub.findWorkspace(key);
     const index = workspace && needsYou($allAgents[key]) && backendOf(workspace) === 'tmux' ? windowToOpen($allWindows[key]) : null;
-    if (index !== null) hub.sendToWorkspace(key, { type: 'select_window', session: key, index });
+    if (index !== null) hub.sendToWorkspace(key, { type: 'select_window', workspace: key, index });
     await attach(key);
   }
 
@@ -601,13 +601,13 @@
    * switch straight back to the old one. tmux moves the attached client to the new window by itself. */
   async function newWindow(key: string) {
     if (key !== activeKey) await attach(key);
-    hub.sendToWorkspace(key, { type: 'new_window', session: key });
+    hub.sendToWorkspace(key, { type: 'new_window', workspace: key });
   }
 
   /** Fetches a workspace's screen while the finger is still going down on its tab or card (decision 0084). */
   function peek(key: string) {
     if (key === activeKey) return;
-    hub.sendToWorkspace(key, { type: 'peek', session: key, hash: snapshots.hash(key) });
+    hub.sendToWorkspace(key, { type: 'peek', workspace: key, hash: snapshots.hash(key) });
   }
 
   /** Detach: the tab closes and the stream stops; the workspace keeps running and stays in the Workspaces sheet. */
@@ -628,7 +628,7 @@
     crumb('close workspace');
     forget(key);
     if (key === activeKey) closeAcp();
-    hub.sendToWorkspace(key, { type: 'close_session', session: key });
+    hub.sendToWorkspace(key, { type: 'close_workspace', workspace: key });
     if (key === activeKey) { activeKey = null; activeServerId = null; preview = null; sheetHeight = 'half'; }
   }
 
@@ -648,12 +648,12 @@
     crumb('window menu opened');
     menuKey = key;
     const s = hub.findWorkspace(key);
-    if (backendOf(s) !== 'acp') hub.sendToWorkspace(key, { type: 'windows', session: key }); // an ACP workspace has no windows
+    if (backendOf(s) !== 'acp') hub.sendToWorkspace(key, { type: 'windows', workspace: key }); // an ACP workspace has no windows
   }
 
   function createWorkspace(req: { serverId: string; backend?: string; dir?: string; template?: string; name: string }) {
     pendingOpen = { serverId: req.serverId, name: req.name };
-    hub.send(req.serverId, { type: 'new_session', name: req.name, backend: req.backend, dir: req.dir, template: req.template });
+    hub.send(req.serverId, { type: 'new_workspace', name: req.name, backend: req.backend, dir: req.dir, template: req.template });
   }
   /** The workspace the user just created opens by itself once the server lists it. */
   function openPending(serverId: string, list: import('./lib/protocol').WorkspaceInfo[]) {
@@ -665,11 +665,11 @@
   }
 
   function keepWarm(key: string) {
-    if ($settings.keepWarm) hub.sendToWorkspace(key, { type: 'reply', session: key, text: $settings.keepWarm });
+    if ($settings.keepWarm) hub.sendToWorkspace(key, { type: 'reply', workspace: key, text: $settings.keepWarm });
   }
 
   function sendWorkspace(m: import('./lib/protocol').ClientMessage) {
-    if ('session' in m && m.session) hub.sendToWorkspace(m.session, m);
+    if ('workspace' in m && m.workspace) hub.sendToWorkspace(m.workspace, m);
   }
 
   function removeServer(index: number) {
@@ -950,7 +950,7 @@
     <NavigationBar workspaces={tabWorkspaces} agents={$allAgents} servers={$hubServers} windows={$allWindows} {expiring} {link} {activeKey} held={!!actionWorkspace || !!menuWorkspace || cardExpanded || sheetHeld} onopen={attach} onpeek={peek} ontabmenu={openWindowMenu} onactions={(key) => { actionConfirm = false; actionKey = key; }}
       onlink={() => link && showToast(link.text, link.ok ? 'success' : 'error')} onmenu={() => { titleTapped(); menuOpen = true; }} expanded={wide ? $layout.sidebarOpen : sheetHeight !== 'closed'} controls={wide && $layout.sidebarOpen ? 'workspace-sidebar' : undefined} onworkspaces={() => { if (wide) { toggleSidebar(); return; } crumb('workspaces sheet toggled'); showWorkspaceList(); sheetHeight = sheetHeight === 'closed' ? 'half' : 'closed'; }} />
     {/if}
-    <NeedsYouBanner {waiting} {now} collapsed={keyboardOpen} onopen={openWaiting} onhome={() => go('home')} ondismiss={(key, id) => sendAttention(key, { type: 'dismiss', attention_id: id })} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })} />
+    <NeedsYouBanner {waiting} {now} collapsed={keyboardOpen} onopen={openWaiting} onhome={() => go('home')} ondismiss={(key, id) => sendAttention(key, { type: 'dismiss', attention_id: id })} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} />
 
     {#if iosHint && !selectedServer}
       <div style="display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--bg-secondary); border-bottom: 1px solid var(--border); font-size: 0.85rem;">
@@ -975,8 +975,8 @@
         <ServerList {servers} states={$hubServers} counts={workspaceCounts} onpause={(id) => { hub.pause(id); }} onresume={(id) => hub.resume(id)} onretry={(id) => hub.retry(id)} onadd={() => { addPrefill = null; addStart = 'install'; showAddServer = true; }} onscan={() => { addPrefill = null; addStart = 'scan'; showAddServer = true; }} onremove={removeServer} onshare={shareServer} />
       {:else if $destination === 'home'}
         <Home workspaces={$allWorkspaces} agents={$allAgents} servers={$hubServers} {now} {lastKey} {focusKey} offer={hookOffer} onhook={homeHook} onopen={openWaiting} onservers={leaveServer} onnew={newWorkspace}
-          onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })}
-          onreply={(key, text) => sendWorkspace({ type: 'reply', session: key, text })} />
+          onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })}
+          onreply={(key, text) => sendWorkspace({ type: 'reply', workspace: key, text })} />
       {:else if $destination === 'activity'}
         <ActivityView servers={$hubServers} history={historyMap} {now} onask={askHistory} caches={warmCaches} ttlMs={$settings.cacheTtlMs} health={healthMap} onhealth={askHealth} rttOf={(id) => hub.rtt(id)} />
       {:else if $destination === 'settings'}
@@ -989,9 +989,9 @@
             {:else if connection && connState !== 'paused' && activeIsAcp && activeWorkspace}
               {#key activeKey}
                 <AcpView workspaceKey={activeWorkspace.key} name={activeWorkspace.name} agent={activeRow?.agent} fleet={activeRow?.state} stream={$acpStreams[activeWorkspace.key]} {connState} {now} {canShell}
-                  onprompt={(text) => sendAcp({ type: 'acp_prompt', session: activeWorkspace.key, text })} oninterrupt={() => sendAcp({ type: 'acp_interrupt', session: activeWorkspace.key })}
-                  onanswer={(promptId, optionId) => sendAcp({ type: 'acp_answer', session: activeWorkspace.key, prompt_id: promptId, option_id: optionId })}
-                  onmode={(mode) => sendAcp({ type: 'acp_mode', session: activeWorkspace.key, mode })} onshell={() => openShell(activeWorkspace.key)} />
+                  onprompt={(text) => sendAcp({ type: 'acp_prompt', workspace: activeWorkspace.key, text })} oninterrupt={() => sendAcp({ type: 'acp_interrupt', workspace: activeWorkspace.key })}
+                  onanswer={(promptId, optionId) => sendAcp({ type: 'acp_answer', workspace: activeWorkspace.key, prompt_id: promptId, option_id: optionId })}
+                  onmode={(mode) => sendAcp({ type: 'acp_mode', workspace: activeWorkspace.key, mode })} onshell={() => openShell(activeWorkspace.key)} />
               {/key}
             {:else if connection && connState !== 'paused'}
               {#if !(keyboardOpen && paneMode === 'terminal')}
@@ -1008,7 +1008,7 @@
                   <div class="pane-decision" data-pane="decision">
                     <SessionView name={activeWorkspace.name} agent={activeRow.agent} fleet={activeRow.state} task={activeRow.title} startedAt={$allAgents[activeWorkspace.key]?.task?.started_at}
                       waitingSince={activeRow.since} step={stepOf($allAgents[activeWorkspace.key])} {now} view={heldView}
-                      onreply={(line) => sendWorkspace({ type: 'reply', session: activeWorkspace.key, text: line })}
+                      onreply={(line) => sendWorkspace({ type: 'reply', workspace: activeWorkspace.key, text: line })}
                       onanswer={(m) => hub.sendToWorkspace(activeWorkspace.key, m)} onterminal={() => setPaneMode('terminal')} />
                   </div>
                 {/if}
@@ -1027,7 +1027,7 @@
           </div>
           {#if !wide && activeKey}
             <WorkspaceSheet workspaces={$allWorkspaces} agents={$allAgents} servers={$hubServers} windows={$allWindows} onpeek={peek} onwarm={keepWarm} {activeKey} mobile={narrow} bind:height={sheetHeight} held={!!actionWorkspace}
-              onexpanded={(open) => cardExpanded = open} onheld={(held) => sheetHeld = held} onopen={attach} onnew={newWorkspace} onrefresh={() => { for (const s of $hubServers) hub.send(s.id, { type: 'list_sessions' }); }} onretry={(id) => hub.retry(id)} send={sendWorkspace} />
+              onexpanded={(open) => cardExpanded = open} onheld={(held) => sheetHeld = held} onopen={attach} onnew={newWorkspace} onrefresh={() => { for (const s of $hubServers) hub.send(s.id, { type: 'list_workspaces' }); }} onretry={(id) => hub.retry(id)} send={sendWorkspace} />
           {/if}
         </div>
       {/if}
@@ -1037,14 +1037,14 @@
   {/if}
 
   {#if menuOpen && user}<MenuSheet {user} {avatar} onservers={leaveServer} onsettings={() => go('settings')} onreport={openReport} onlogout={logout} onclose={() => menuOpen = false} unread={unreadCount($inbox)} oninbox={() => inboxOpen = true} />{/if}
-  {#if inboxOpen}<InboxSheet items={$inbox} {now} agents={$allAgents} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })} onreply={(key, text) => sendWorkspace({ type: 'reply', session: key, text })} onopen={openWaiting} onhome={() => go('home')} onread={() => inbox.update(markAllRead)} onclear={() => inbox.set([])} onclose={() => { inboxOpen = false; inbox.update(markAllRead); }} />{/if}
+  {#if inboxOpen}<InboxSheet items={$inbox} {now} agents={$allAgents} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} onreply={(key, text) => sendWorkspace({ type: 'reply', workspace: key, text })} onopen={openWaiting} onhome={() => go('home')} onread={() => inbox.update(markAllRead)} onclear={() => inbox.set([])} onclose={() => { inboxOpen = false; inbox.update(markAllRead); }} />{/if}
   {#if actionWorkspace}<WorkspaceActions workspace={actionWorkspace} canClose={['tmux', 'acp'].includes(backendOf(actionWorkspace))} confirmFirst={actionConfirm} ondetach={() => detach(actionWorkspace.key)} oncloseworkspace={() => closeWorkspace(actionWorkspace.key)} onclose={() => actionKey = null} />{/if}
   {#if menuWorkspace && menuKey}
     <WindowMenu workspace={menuWorkspace} data={$allWindows[menuWorkspace.key]} supported={backendOf(menuWorkspace) === 'tmux'}
-      onselect={(index) => hub.sendToWorkspace(menuWorkspace.key, { type: 'select_window', session: menuWorkspace.key, index })}
+      onselect={(index) => hub.sendToWorkspace(menuWorkspace.key, { type: 'select_window', workspace: menuWorkspace.key, index })}
       canNewWindow={serverAtLeast($hubServers.find(h => h.id === menuWorkspace.serverId)?.version ?? '', NEW_WINDOW_VERSION)}
       onnewwindow={() => newWindow(menuWorkspace.key)}
-      onclosewindow={(index) => hub.sendToWorkspace(menuWorkspace.key, { type: 'close_window', session: menuWorkspace.key, index })}
+      onclosewindow={(index) => hub.sendToWorkspace(menuWorkspace.key, { type: 'close_window', workspace: menuWorkspace.key, index })}
       ondetach={() => detach(menuWorkspace.key)} oncloseworkspace={() => { actionConfirm = true; actionKey = menuWorkspace.key; }} onclose={() => menuKey = null} />
   {/if}
   {#if showNew}

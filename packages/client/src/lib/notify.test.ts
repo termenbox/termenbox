@@ -213,7 +213,7 @@ describe('sound and vibration when a workspace starts needing you', () => {
     asked.update([w('a', 99_000)], both);
     expect(asked.play).toHaveBeenCalledWith('ask');
     const finished = setup();
-    finished.update([{ ...w('a', 99_000), agent: ag({ attention: { id: '1', session: 'a', kind: 'finished_unseen', raised_at: 99_000 } }) }], both);
+    finished.update([{ ...w('a', 99_000), agent: ag({ attention: { id: '1', workspace: 'a', kind: 'finished_unseen', raised_at: 99_000 } }) }], both);
     expect(finished.play).toHaveBeenCalledWith('done');
   });
 

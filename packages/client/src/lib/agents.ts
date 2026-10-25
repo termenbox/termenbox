@@ -69,8 +69,8 @@ function derived(a: WorkspaceAgent): WorkspaceAgent {
 export function applyActivity(map: AgentMap, workspaces: WorkspaceActivity[], receivedAt: number): AgentMap {
   const next: AgentMap = { ...map };
   for (const s of workspaces) {
-    const cur = next[s.session] ?? { state: 'unknown' as AgentState, seq: 0, stale: false, ts: s.ts };
-    next[s.session] = derived({ ...cur, serverStatus: true, activity: s.activity, task: s.task, agent: s.agent ?? cur.agent,
+    const cur = next[s.workspace] ?? { state: 'unknown' as AgentState, seq: 0, stale: false, ts: s.ts };
+    next[s.workspace] = derived({ ...cur, serverStatus: true, activity: s.activity, task: s.task, agent: s.agent ?? cur.agent,
       clockOffset: s.ts - receivedAt, ts: Math.max(cur.ts, s.ts) });
   }
   return next;
@@ -80,8 +80,8 @@ export function applyActivity(map: AgentMap, workspaces: WorkspaceActivity[], re
 export function applyAttention(map: AgentMap, items: Attention[]): AgentMap {
   const best = new Map<string, Attention>();
   for (const it of items) {
-    const cur = best.get(it.session);
-    if (!cur || (URGENCY[it.kind] ?? 9) < (URGENCY[cur.kind] ?? 9)) best.set(it.session, it);
+    const cur = best.get(it.workspace);
+    if (!cur || (URGENCY[it.kind] ?? 9) < (URGENCY[cur.kind] ?? 9)) best.set(it.workspace, it);
   }
   const next: AgentMap = {};
   for (const [k, a] of Object.entries(map)) next[k] = derived({ ...a, serverStatus: true, attention: best.get(k) });
@@ -108,10 +108,10 @@ export function runningMs(a: WorkspaceAgent, nowMs: number): number | null {
 export function applySnapshot(map: AgentMap, states: WorkspaceAgentState[]): AgentMap {
   const next: AgentMap = {};
   for (const s of states) {
-    const old = map[s.session];
+    const old = map[s.workspace];
     // A lower seq than ours means the server restarted its counters: what we hold is from before, drop it.
     const keep = old && old.seq <= s.seq ? old : {};
-    next[s.session] = derived({ ...keep, state: s.state, seq: s.seq, stale: s.stale, ts: s.ts, agent: s.agent, lastResponseAt: s.last_response_at,
+    next[s.workspace] = derived({ ...keep, state: s.state, seq: s.seq, stale: s.stale, ts: s.ts, agent: s.agent, lastResponseAt: s.last_response_at,
       waitingSince: waiting(s.state) ? s.waiting_since ?? (old && old.seq <= s.seq && waiting(old.state) ? old.waitingSince ?? old.ts : s.ts) : undefined });
   }
   return next;
@@ -122,7 +122,7 @@ export function applyEvents(map: AgentMap, events: AgentEvent[]): { map: AgentMa
   let gap = false;
   const next: AgentMap = { ...map };
   for (const e of events) {
-    const cur = next[e.session];
+    const cur = next[e.workspace];
     if (cur && e.seq <= cur.seq) continue; // already seen
     if (e.seq !== (cur ? cur.seq + 1 : 1)) gap = true;
     const a: WorkspaceAgent = { ...(cur ?? { state: 'unknown' as AgentState }), seq: e.seq, ts: e.ts, stale: false } as WorkspaceAgent;
@@ -152,7 +152,7 @@ export function applyEvents(map: AgentMap, events: AgentEvent[]): { map: AgentMa
       default:
         break; // a kind this client does not know
     }
-    next[e.session] = a;
+    next[e.workspace] = a;
   }
   return { map: next, gap };
 }

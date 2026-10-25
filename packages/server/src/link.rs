@@ -26,6 +26,8 @@ pub struct LinkTx {
     status: mpsc::Sender<String>,
     term: mpsc::Sender<Vec<u8>>,
     lanes: Arc<AtomicBool>,
+    /// The client is an older one: messages go out in the legacy vocabulary (`legacy.rs`, step 3.2).
+    legacy: Arc<AtomicBool>,
     wake: Option<Arc<Notify>>,
 }
 
@@ -60,6 +62,11 @@ impl OutPermit<'_> {
 impl LinkTx {
     /// False when the transport is gone.
     pub async fn send(&self, text: String) -> bool {
+        let text = if self.legacy.load(Ordering::Acquire) {
+            crate::legacy::outbound(&text)
+        } else {
+            text
+        };
         if self.status.send(text).await.is_err() {
             return false;
         }
@@ -72,6 +79,21 @@ impl LinkTx {
     /// From now on terminal output travels as raw bytes on its own lane.
     pub fn enable_lanes(&self) {
         self.lanes.store(true, Ordering::Release);
+    }
+
+    /// From now on messages are written in the vocabulary of clients that announced no protocol version.
+    pub fn enable_legacy(&self) {
+        self.legacy.store(true, Ordering::Release);
+    }
+
+    /// A message from the client, translated to the current vocabulary when the client is a legacy one.
+    pub fn inbound(&self, msg: Inbound) -> Inbound {
+        match msg {
+            Inbound::Json(text) if self.legacy.load(Ordering::Acquire) => {
+                Inbound::Json(crate::legacy::inbound(&text))
+            }
+            other => other,
+        }
     }
 
     pub fn lanes(&self) -> bool {
@@ -115,6 +137,7 @@ pub fn pair(peer_ip: Option<String>, wake: Option<Arc<Notify>>) -> (Link, LinkEn
                 status: out_tx,
                 term: term_tx,
                 lanes: Arc::default(),
+                legacy: Arc::default(),
                 wake,
             },
             peer_ip,

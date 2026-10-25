@@ -148,7 +148,7 @@ export function shellName(name: string): string {
 
 /** What to send to show a workspace: the revision held (if any) so only the difference comes back. */
 export const openMessage = (workspace: string, held?: StreamState): ClientMessage =>
-  held && held.epoch ? { type: 'acp_open', session: workspace, after: held.rev, epoch: held.epoch } : { type: 'acp_open', session: workspace };
+  held && held.epoch ? { type: 'acp_open', workspace: workspace, after: held.rev, epoch: held.epoch } : { type: 'acp_open', workspace: workspace };
 
 // ---- What the view derives
 

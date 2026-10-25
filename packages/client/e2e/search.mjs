@@ -86,11 +86,11 @@ try {
   // With `acp` registered next to tmux, workspace ids are `tmux:<name>`; tmux itself is addressed by the bare name.
   const bare = (sid) => sid.replace(/^tmux:/, '');
   const newWorkspace = async (name) => {
-    await hp.evaluate((n) => window.__e2e.send({ type: 'new_session', name: n }), name);
-    return waitFor(() => hp.evaluate((n) => (window.__e2e.send({ type: 'list_sessions' }), window.__e2e.workspaces.find((s) => s.name === n)?.id), name), `workspace ${name}`);
+    await hp.evaluate((n) => window.__e2e.send({ type: 'new_workspace', name: n }), name);
+    return waitFor(() => hp.evaluate((n) => (window.__e2e.send({ type: 'list_workspaces' }), window.__e2e.workspaces.find((s) => s.name === n)?.id), name), `workspace ${name}`);
   };
   const id = await newWorkspace('s1');
-  await hp.evaluate((id) => window.__e2e.send({ type: 'attach', session_id: id }), id);
+  await hp.evaluate((id) => window.__e2e.send({ type: 'attach', workspace_id: id }), id);
   await sleep(500);
   const run = async (cmd, marker) => {
     await hp.evaluate(() => window.__e2e.clear());

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { MAX_STREAMS, applyAcp, forgetAcp, loadSaved, placeFor, save } from './acpStore';
 import type { AcpViewMessage } from './protocol';
 
-const view = (over: Partial<AcpViewMessage> = {}): AcpViewMessage => ({ type: 'acp_view', session: 's', epoch: 1, rev: 1, reset: true, first: 1, entries: [{ id: 1, rev: 1, kind: 'user', text: 'hi' }], ...over });
+const view = (over: Partial<AcpViewMessage> = {}): AcpViewMessage => ({ type: 'acp_view', workspace: 's', epoch: 1, rev: 1, reset: true, first: 1, entries: [{ id: 1, rev: 1, kind: 'user', text: 'hi' }], ...over });
 const memory = () => { const m = new Map<string, string>(); return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v) }; };
 
 describe('streams held on this device', () => {

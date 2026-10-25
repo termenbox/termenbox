@@ -1,28 +1,29 @@
 export type ClientMessage =
-  | { type: 'hello' }
+  /** `protocol`: the termenbox protocol version the client speaks; a server that predates versions ignores it. */
+  | { type: 'hello'; protocol?: number }
   | { type: 'auth'; cert: string; signature: string; server_token: string; channels?: boolean }
   /** Decision 0117: sent instead of `auth`; the token authorises a read-only preview and nothing is bound. */
   | { type: 'claim_preview'; server_token: string }
   | { type: 'revoke_device'; device: string }
-  | { type: 'uninstall'; confirm_name: string; delete_user?: boolean; remove_tmux?: boolean; kill_sessions?: boolean }
+  | { type: 'uninstall'; confirm_name: string; delete_user?: boolean; remove_tmux?: boolean; kill_workspaces?: boolean }
   | { type: 'agent_sync'; after: Record<string, number> }
-  | { type: 'peek'; session: string; hash?: string }
-  | { type: 'scrollback'; session: string }
-  | { type: 'answer'; session: string; prompt_id: string; seq: number; choice: number }
-  | { type: 'reply'; session: string; text: string }
-  | { type: 'windows'; session: string }
-  | { type: 'select_window'; session: string; index: number }
-  | { type: 'new_window'; session: string }
-  | { type: 'close_window'; session: string; index: number }
-  | { type: 'close_session'; session: string }
+  | { type: 'peek'; workspace: string; hash?: string }
+  | { type: 'scrollback'; workspace: string }
+  | { type: 'answer'; workspace: string; prompt_id: string; seq: number; choice: number }
+  | { type: 'reply'; workspace: string; text: string }
+  | { type: 'windows'; workspace: string }
+  | { type: 'select_window'; workspace: string; index: number }
+  | { type: 'new_window'; workspace: string }
+  | { type: 'close_window'; workspace: string; index: number }
+  | { type: 'close_workspace'; workspace: string }
   /** Sets the name shown for a workspace; an empty name clears it. The workspace's id does not change. */
-  | { type: 'rename_session'; session: string; name: string }
-  | { type: 'list_sessions' }
+  | { type: 'rename_workspace'; workspace: string; name: string }
+  | { type: 'list_workspaces' }
   /** U14: the server's in-memory health samples; the answer is `health_history`. Older servers do not answer. */
   | { type: 'health_history' }
-  | { type: 'new_session'; name: string; backend?: string; dir?: string; template?: string }
+  | { type: 'new_workspace'; name: string; backend?: string; dir?: string; template?: string }
   | { type: 'ping' }
-  | { type: 'attach'; session_id: string }
+  | { type: 'attach'; workspace_id: string }
   | { type: 'detach' }
   | { type: 'input'; data: string }
   | { type: 'resize'; cols: number; rows: number }
@@ -30,25 +31,25 @@ export type ClientMessage =
   | { type: 'push_subscribe'; endpoint: string; p256dh: string; auth: string }
   | { type: 'push_unsubscribe'; endpoint: string }
   /** The workspace this device shows in the foreground now, or null (hidden, or on the list): no push for it. */
-  | { type: 'foreground'; session: string | null }
+  | { type: 'foreground'; workspace: string | null }
   | { type: 'ack'; attention_id: string }
   | { type: 'dismiss'; attention_id: string }
   /** Decision 0103: asks for the workspace view (cleaned tail, parsed prompt, tier); `hash` is the one already held. */
-  | { type: 'session_view'; session: string; hash?: string }
+  | { type: 'workspace_view'; workspace: string; hash?: string }
   /** Taps option `option` (0-based) of prompt `prompt_id`; the server sends the keys its profile lists for it, never more. */
-  | { type: 'session_answer'; session: string; prompt_id: string; option: number }
+  | { type: 'workspace_answer'; workspace: string; prompt_id: string; option: number }
   /** U10: the hook state of one agent on this server. `preview` answers with the exact settings file `apply` will write. */
   | { type: 'agent_hooks'; agent: string; action: 'status' | 'preview' | 'apply' | 'remove' }
   /** T0 (decision 0111): shows this ACP workspace on this connection; `after` and `epoch` are the revision and stream the client holds. */
-  | { type: 'acp_open'; session: string; after?: number; epoch?: number }
+  | { type: 'acp_open'; workspace: string; after?: number; epoch?: number }
   | { type: 'acp_close' }
   /** The owner's next prompt (`session/prompt`); several lines allowed. */
-  | { type: 'acp_prompt'; session: string; text: string }
-  | { type: 'acp_interrupt'; session: string }
+  | { type: 'acp_prompt'; workspace: string; text: string }
+  | { type: 'acp_interrupt'; workspace: string }
   /** Answers a permission with exactly the option id the agent offered. */
-  | { type: 'acp_answer'; session: string; prompt_id: string; option_id: string }
+  | { type: 'acp_answer'; workspace: string; prompt_id: string; option_id: string }
   /** Switches to a mode the agent listed. */
-  | { type: 'acp_mode'; session: string; mode: string }
+  | { type: 'acp_mode'; workspace: string; mode: string }
   /** U12: the tasks that ended in [from, to) (ms since the epoch) and those still running. Older servers do not answer. */
   | { type: 'history'; from: number; to: number }
   /** U11: ask for the server's push escalation settings. */
@@ -77,26 +78,26 @@ export type ServerMessage =
   | { type: 'uninstall_done'; mode: string }
   /** Decision 0123: the server's signed candidate bundle, pushed after `auth_ok`; verify it before use (lib/bundle.ts). */
   | { type: 'candidates'; bundle: string }
-  | { type: 'auth_ok'; channels?: string[]; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string; acp_agents?: string[] }
-  | { type: 'sessions'; sessions: WorkspaceInfo[] }
-  | { type: 'session_attached'; session_id: string }
+  | { type: 'auth_ok'; protocol?: number; channels?: string[]; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string; acp_agents?: string[] }
+  | { type: 'workspaces'; workspaces: WorkspaceInfo[] }
+  | { type: 'workspace_attached'; workspace_id: string }
   | { type: 'output'; data: string }
   /** Never on the wire as JSON: terminal bytes from the `term` lane, as `Connection` hands them to listeners. */
   | { type: 'term'; bytes: Uint8Array }
   /** One part of everything a terminal holds, history included (the answer to `scrollback`); `last` closes it. */
-  | { type: 'scrollback'; session: string; part: number; last: boolean; text: string }
-  | { type: 'snapshot'; session: string; text: string; hash: string; unchanged?: boolean }
-  | { type: 'window_list'; session: string; windows: WindowInfo[]; representative?: number | null }
+  | { type: 'scrollback'; workspace: string; part: number; last: boolean; text: string }
+  | { type: 'snapshot'; workspace: string; text: string; hash: string; unchanged?: boolean }
+  | { type: 'window_list'; workspace: string; windows: WindowInfo[]; representative?: number | null }
   | { type: 'agent_snapshot'; states: WorkspaceAgentState[] }
   | { type: 'agent_events'; events: AgentEvent[] }
-  | { type: 'activity'; sessions: WorkspaceActivity[] }
+  | { type: 'activity'; workspaces: WorkspaceActivity[] }
   | { type: 'attention'; items: Attention[] }
   | SessionViewMessage
   | AcpViewMessage
   | { type: 'push_info'; configured: boolean; public_key: string; devices: number; subscribed: boolean; settings?: boolean }
   | { type: 'push_settings'; settings: PushSettings }
   | { type: 'push_settings_rejected'; reason: string }
-  | { type: 'agent_event'; event: AgentEventType; agent: string; session_id: string }
+  | { type: 'agent_event'; event: AgentEventType; agent: string; workspace_id: string }
   | { type: 'agent_hooks'; agent: string; action: string; state: 'connected' | 'not_connected' | 'unsupported' | 'unavailable' | string; preview?: string; error?: string }
   | ({ type: 'server_health' } & ServerHealth)
   | HealthHistoryMessage
@@ -133,7 +134,7 @@ export interface HealthHistoryMessage {
 
 /** One task an agent worked on: metadata only. `task` is scrubbed text, shown as text; no `ended_at` while it still runs. */
 export interface HistoryRun {
-  session: string;
+  workspace: string;
   agent?: string;
   task?: string;
   started_at: number;
@@ -173,8 +174,8 @@ export interface HistoryMessage {
 
 /** Decision 0103. Unknown tiers and prompt kinds are read as `t3` and `choice`; extra fields are ignored. Options carry no keys. */
 export interface SessionViewMessage {
-  type: 'session_view';
-  session: string;
+  type: 'workspace_view';
+  workspace: string;
   tier: 't1' | 't2' | 't3' | string;
   agent?: string;
   /** The cleaned screen tail, at most 30 lines. Empty with `unchanged` when the client's copy is current. */
@@ -190,7 +191,7 @@ export interface SessionViewMessage {
 /** T0: a change to the client's copy of an ACP workspace. Every text is untrusted agent text, cleaned again on arrival. */
 export interface AcpViewMessage {
   type: 'acp_view';
-  session: string;
+  workspace: string;
   epoch: number;
   rev: number;
   /** `entries` is everything the server keeps: drop what you hold. */
@@ -258,7 +259,7 @@ export interface WindowInfo {
 export type AgentState = 'idle' | 'working' | 'needs_input' | 'done' | 'error' | 'unknown';
 
 export interface WorkspaceAgentState {
-  session: string;
+  workspace: string;
   state: AgentState;
   seq: number;
   stale: boolean;
@@ -284,7 +285,7 @@ export interface Task {
 }
 
 export interface WorkspaceActivity {
-  session: string;
+  workspace: string;
   activity: Activity;
   ts: number;
   task?: Task;
@@ -296,7 +297,7 @@ export interface WorkspaceActivity {
 /** A durable, server-owned item that asks for the owner. */
 export interface Attention {
   id: string;
-  session: string;
+  workspace: string;
   kind: AttentionKind;
   raised_at: number;
   task?: Task;
@@ -305,7 +306,7 @@ export interface Attention {
 }
 
 /** Plan v6: `seq` and `ts` come from the server; unknown `kind`s and extra fields are ignored. */
-export type AgentEvent = { session: string; seq: number; ts: number; source: string; confidence: string } & (
+export type AgentEvent = { workspace: string; seq: number; ts: number; source: string; confidence: string } & (
   | { kind: 'state'; state: AgentState }
   | { kind: 'tool'; name: string; summary: string; phase: 'started' | 'finished' }
   | { kind: 'plan'; items: { text: string; status: string }[] }

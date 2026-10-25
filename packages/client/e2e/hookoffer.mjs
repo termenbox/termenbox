@@ -98,10 +98,10 @@ try {
   const cert = mint(await hp.evaluate(() => window.__e2e.deviceKey()), 1, 'alice');
   await hp.evaluate((o) => window.__e2e.start(o), { record, cert, serverId, claim });
   await waitFor(() => hp.evaluate(() => window.__e2e.state === 'connected'), 'harness connected');
-  await hp.evaluate(() => window.__e2e.send({ type: 'new_session', name: 's1' }));
-  await waitFor(() => hp.evaluate(() => (window.__e2e.send({ type: 'list_sessions' }), window.__e2e.workspaces.length > 0)), 'workspace listed');
+  await hp.evaluate(() => window.__e2e.send({ type: 'new_workspace', name: 's1' }));
+  await waitFor(() => hp.evaluate(() => (window.__e2e.send({ type: 'list_workspaces' }), window.__e2e.workspaces.length > 0)), 'workspace listed');
   const id = await hp.evaluate(() => window.__e2e.workspaces[0].id);
-  await hp.evaluate((id) => window.__e2e.send({ type: 'attach', session_id: id }), id);
+  await hp.evaluate((id) => window.__e2e.send({ type: 'attach', workspace_id: id }), id);
   await sleep(500);
   const typeLine = async (line, marker) => {
     await hp.evaluate(() => window.__e2e.clear());
@@ -109,11 +109,11 @@ try {
     await waitFor(() => hp.evaluate((m) => window.__e2e.output.includes(`${m}-2`), marker), `${marker} ran`);
   };
   const selectWindow = async (index) => {
-    await hp.evaluate(([id, index]) => window.__e2e.send({ type: 'select_window', session: id, index }), [id, index]);
+    await hp.evaluate(([id, index]) => window.__e2e.send({ type: 'select_window', workspace: id, index }), [id, index]);
     await sleep(700);
   };
   await typeLine(`ln -s "$(command -v sleep)" ${fakeBin}/claude`, 'linked');
-  await hp.evaluate((id) => window.__e2e.send({ type: 'new_window', session: id }), id);
+  await hp.evaluate((id) => window.__e2e.send({ type: 'new_window', workspace: id }), id);
   await sleep(700);
   await hp.evaluate((l) => window.__e2e.type(l), `${fakeBin}/claude 3000\r`);
 

@@ -56,13 +56,13 @@
   }
 
   function answer(id: string, choice: number, p: NonNullable<import('./lib/agents').WorkspaceAgent['prompt']>) {
-    send({ type: 'answer', session: id, prompt_id: p.id, seq: p.seq, choice });
+    send({ type: 'answer', workspace: id, prompt_id: p.id, seq: p.seq, choice });
   }
 
   function sendReply(text: string) {
     const t = snippets.clean(text);
     if (!t || !replyTo) return;
-    send({ type: 'reply', session: replyTo, text: t });
+    send({ type: 'reply', workspace: replyTo, text: t });
     draft = '';
   }
   function saveDraft() {

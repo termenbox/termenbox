@@ -68,9 +68,9 @@ try {
   const cert = mint(await page.evaluate(() => window.__e2e.deviceKey()), 1, 'alice');
   await page.evaluate((o) => window.__e2e.start(o), { record, cert, serverId: serverIdOf(join(home, 'config')), claim });
   await waitFor(() => page.evaluate(() => window.__e2e.state === 'connected'), 'connected');
-  await page.evaluate(() => window.__e2e.send({ type: 'new_session', name: 'h1' }));
+  await page.evaluate(() => window.__e2e.send({ type: 'new_workspace', name: 'h1' }));
   await waitFor(() => page.evaluate(() => window.__e2e.workspaces.some((s) => s.id === 'h1')), 'workspace listed');
-  await page.evaluate(() => { window.__e2e.mountTerminal('h1'); window.__e2e.send({ type: 'attach', session_id: 'h1' }); });
+  await page.evaluate(() => { window.__e2e.mountTerminal('h1'); window.__e2e.send({ type: 'attach', workspace_id: 'h1' }); });
 
   const screenText = () => page.evaluate(() => [...document.querySelectorAll('.xterm-rows > div')].map((r) => r.textContent.replace(/\s+$/, '')).join('\n'));
   const cellXY = (col, row) => page.evaluate(({ col, row }) => {

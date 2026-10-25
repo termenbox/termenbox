@@ -143,7 +143,6 @@ pub struct Decision {
 /// server and never taken from the source.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct AgentEvent {
-    #[serde(rename = "session")]
     pub workspace: String,
     pub seq: u64,
     pub ts: u64,
@@ -156,7 +155,6 @@ pub struct AgentEvent {
 /// The latest state of one workspace, for a client that has just connected.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceAgentState {
-    #[serde(rename = "session")]
     pub workspace: String,
     pub state: AgentState,
     pub seq: u64,
@@ -210,7 +208,6 @@ pub struct Task {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Attention {
     pub id: String,
-    #[serde(rename = "session")]
     pub workspace: String,
     pub kind: AttentionKind,
     pub raised_at: u64,
@@ -224,7 +221,6 @@ pub struct Attention {
 /// The derived Activity of one workspace with its task, as the status channel carries it.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceActivity {
-    #[serde(rename = "session")]
     pub workspace: String,
     pub activity: Activity,
     pub ts: u64,
@@ -265,9 +261,10 @@ mod tests {
     #[test]
     fn a_snapshot_from_an_older_server_still_parses_and_the_new_fields_stay_off_the_wire_when_empty(
     ) {
-        let old: WorkspaceAgentState =
-            serde_json::from_str(r#"{"session":"s","state":"idle","seq":1,"stale":false,"ts":5}"#)
-                .unwrap();
+        let old: WorkspaceAgentState = serde_json::from_str(
+            r#"{"workspace":"s","state":"idle","seq":1,"stale":false,"ts":5}"#,
+        )
+        .unwrap();
         assert_eq!(
             (old.agent, old.last_response_at, old.waiting_since),
             (None, None, None)
@@ -293,7 +290,7 @@ mod tests {
     #[test]
     fn unknown_kinds_and_values_are_ignored_not_fatal() {
         let e: AgentEvent = serde_json::from_str(
-            r#"{"session":"s","seq":1,"ts":1,"source":"telepathy","confidence":"certain","kind":"hologram","x":1}"#,
+            r#"{"workspace":"s","seq":1,"ts":1,"source":"telepathy","confidence":"certain","kind":"hologram","x":1}"#,
         )
         .unwrap();
         assert_eq!(e.kind, EventKind::Unknown);
@@ -328,11 +325,11 @@ mod tests {
         assert!(v.get("prompt").is_none());
         assert_eq!(serde_json::from_value::<Attention>(v).unwrap(), a);
         let u: Attention =
-            serde_json::from_str(r#"{"id":"a","session":"s","kind":"levitating","raised_at":1}"#)
+            serde_json::from_str(r#"{"id":"a","workspace":"s","kind":"levitating","raised_at":1}"#)
                 .unwrap();
         assert_eq!(u.kind, AttentionKind::Unknown);
         let act: WorkspaceActivity =
-            serde_json::from_str(r#"{"session":"s","activity":"dreaming","ts":1}"#).unwrap();
+            serde_json::from_str(r#"{"workspace":"s","activity":"dreaming","ts":1}"#).unwrap();
         assert_eq!(act.activity, Activity::Unknown);
         assert_eq!(serde_json::to_value(Activity::Blocked).unwrap(), "blocked");
     }

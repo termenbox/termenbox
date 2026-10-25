@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { INBOX_MAX, loadInbox, markAllRead, mergeAttention, saveInbox, unreadCount, type InboxItem } from './inbox';
 import type { Attention } from './protocol';
 
-const att = (id: string, at: number, kind: Attention['kind'] = 'finished_unseen', workspace = 's'): Attention => ({ id, session: workspace, kind, raised_at: at, task: { title: 'fix login', started_at: 1, source: 'hook' } });
+const att = (id: string, at: number, kind: Attention['kind'] = 'finished_unseen', workspace = 's'): Attention => ({ id, workspace: workspace, kind, raised_at: at, task: { title: 'fix login', started_at: 1, source: 'hook' } });
 const merge = (list: InboxItem[], items: Attention[], server = 'srv') => mergeAttention(list, server, items, (s) => `${server}/${s}`, (s) => s.toUpperCase());
 
 describe('inbox', () => {

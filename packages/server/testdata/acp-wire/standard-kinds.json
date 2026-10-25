@@ -132,7 +132,7 @@
     }
   ],
   "view": {
-    "session": "w",
+    "workspace": "w",
     "epoch": 1,
     "rev": 14,
     "reset": true,
@@ -209,7 +209,7 @@
   },
   "per_kind": {
     "user_message_chunk": {
-      "session": "w",
+      "workspace": "w",
       "epoch": 1,
       "rev": 0,
       "reset": true,
@@ -223,7 +223,7 @@
       }
     },
     "agent_message_chunk": {
-      "session": "w",
+      "workspace": "w",
       "epoch": 1,
       "rev": 3,
       "reset": true,
@@ -244,7 +244,7 @@
       }
     },
     "agent_thought_chunk": {
-      "session": "w",
+      "workspace": "w",
       "epoch": 1,
       "rev": 3,
       "reset": true,
@@ -265,7 +265,7 @@
       }
     },
     "tool_call": {
-      "session": "w",
+      "workspace": "w",
       "epoch": 1,
       "rev": 1,
       "reset": true,
@@ -302,7 +302,7 @@
       }
     },
     "tool_call_update": {
-      "session": "w",
+      "workspace": "w",
       "epoch": 1,
       "rev": 1,
       "reset": true,
@@ -326,7 +326,7 @@
       }
     },
     "plan": {
-      "session": "w",
+      "workspace": "w",
       "epoch": 1,
       "rev": 1,
       "reset": true,
@@ -356,7 +356,7 @@
       }
     },
     "available_commands_update": {
-      "session": "w",
+      "workspace": "w",
       "epoch": 1,
       "rev": 1,
       "reset": true,
@@ -376,7 +376,7 @@
       }
     },
     "current_mode_update": {
-      "session": "w",
+      "workspace": "w",
       "epoch": 1,
       "rev": 1,
       "reset": true,
@@ -391,7 +391,7 @@
       }
     },
     "config_option_update": {
-      "session": "w",
+      "workspace": "w",
       "epoch": 1,
       "rev": 1,
       "reset": true,
@@ -405,7 +405,7 @@
       }
     },
     "session_info_update": {
-      "session": "w",
+      "workspace": "w",
       "epoch": 1,
       "rev": 1,
       "reset": true,
@@ -420,7 +420,7 @@
       }
     },
     "usage_update": {
-      "session": "w",
+      "workspace": "w",
       "epoch": 1,
       "rev": 1,
       "reset": true,
@@ -438,7 +438,7 @@
       }
     },
     "notice": {
-      "session": "w",
+      "workspace": "w",
       "epoch": 1,
       "rev": 0,
       "reset": true,
@@ -452,7 +452,7 @@
       }
     },
     "compaction_update": {
-      "session": "w",
+      "workspace": "w",
       "epoch": 1,
       "rev": 0,
       "reset": true,
@@ -466,7 +466,7 @@
       }
     },
     "compaction_summary_chunk": {
-      "session": "w",
+      "workspace": "w",
       "epoch": 1,
       "rev": 0,
       "reset": true,

@@ -10,7 +10,7 @@ export interface WorkspaceWindows {
 export type WindowMap = Record<string, WorkspaceWindows>;
 
 export function applyWindowList(map: WindowMap, msg: Extract<ServerMessage, { type: 'window_list' }>): WindowMap {
-  return { ...map, [msg.session]: { windows: msg.windows, representative: msg.representative ?? null } };
+  return { ...map, [msg.workspace]: { windows: msg.windows, representative: msg.representative ?? null } };
 }
 
 /** Keeps only workspaces that still exist. */

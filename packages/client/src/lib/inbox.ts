@@ -27,7 +27,7 @@ export function mergeAttention(list: InboxItem[], serverId: string, items: Atten
     const id = `${serverId}:${it.id}:${it.raised_at}`;
     if (have.has(id) || it.kind === 'unknown') continue;
     have.add(id);
-    fresh.push({ id, key: keyOf(it.session), name: nameOf(it.session), kind: it.kind, at: it.raised_at, title: it.task?.title, read: false });
+    fresh.push({ id, key: keyOf(it.workspace), name: nameOf(it.workspace), kind: it.kind, at: it.raised_at, title: it.task?.title, read: false });
   }
   if (!fresh.length) return list;
   return [...fresh.sort((a, b) => b.at - a.at), ...list].slice(0, INBOX_MAX);

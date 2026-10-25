@@ -47,7 +47,7 @@ try {
   await home.evaluate(() => { window.__home.answers.length = 0; });
   await tap(card.locator('[data-hero-options] button').nth(1));
   const answers = await home.evaluate(() => window.__home.answers);
-  if (!eq(answers, [{ type: 'answer', session: 'alpha/s4', prompt_id: 'p4', seq: 11, choice: 1 }])) fail(`answer: ${JSON.stringify(answers)}`);
+  if (!eq(answers, [{ type: 'answer', workspace: 'alpha/s4', prompt_id: 'p4', seq: 11, choice: 1 }])) fail(`answer: ${JSON.stringify(answers)}`);
   await home.waitForTimeout(600);
   if (!(await card.innerText()).includes('task-4')) fail('the card resolved before the server cleared Attention');
   if (!(await card.locator('[data-decision-status]').innerText()).includes('Waiting for the agent')) fail('the card does not say it is waiting');
@@ -69,7 +69,7 @@ try {
   await input.fill('run the tests first');
   await tap(card.getByRole('button', { name: 'Send', exact: true }));
   const replies = await home.evaluate(() => window.__home.replies);
-  if (!eq(replies, [{ type: 'reply', session: 'beta/s1', text: 'run the tests first' }])) fail(`reply: ${JSON.stringify(replies)}`);
+  if (!eq(replies, [{ type: 'reply', workspace: 'beta/s1', text: 'run the tests first' }])) fail(`reply: ${JSON.stringify(replies)}`);
   if ((await home.evaluate(() => window.__home.opened)).length) fail('the terminal was opened to answer');
   await home.waitForTimeout(600);
   if (!(await card.innerText()).includes('task-1')) fail('the card resolved on send, before Attention cleared');
@@ -88,7 +88,7 @@ try {
   const itext = await icard.innerText();
   for (const w of ['api', 'Move login to the workspace store', 'Waiting 4 min', 'Allow the edit?', 'src/auth/session.ts +12 -3', 'Structured']) if (!itext.includes(w)) fail(`the inbox card lacks "${w}"`);
   await tap(icard.getByRole('button', { name: 'Yes', exact: true }));
-  if (!eq(await inbox.evaluate(() => window.__decision.sent), [{ type: 'answer', session: 'srv/api', prompt_id: 'p1', seq: 3, choice: 0 }])) fail('inbox answer');
+  if (!eq(await inbox.evaluate(() => window.__decision.sent), [{ type: 'answer', workspace: 'srv/api', prompt_id: 'p1', seq: 3, choice: 0 }])) fail('inbox answer');
   await inbox.waitForTimeout(400);
   if (await icard.count() !== 1) fail('the inbox card resolved before Attention cleared');
   await inbox.evaluate(() => window.__decision.clear());
@@ -103,13 +103,13 @@ try {
   const stext = await scard.innerText();
   for (const w of ['Allow the edit?', 'Waiting 4 min', 'Move login to the workspace store', 'The agent is about to use Edit', 'Structured']) if (!stext.includes(w)) fail(`the workspace card lacks "${w}"`);
   await tap(scard.getByRole('button', { name: 'No', exact: true }));
-  if (!eq(await sv.evaluate(() => window.__decision.sent), [{ type: 'session_answer', session: 'api', prompt_id: 'p1', option: 2 }])) fail('workspace answer');
+  if (!eq(await sv.evaluate(() => window.__decision.sent), [{ type: 'workspace_answer', workspace: 'api', prompt_id: 'p1', option: 2 }])) fail('workspace answer');
   await sv.waitForTimeout(400);
   if (await scard.count() !== 1) fail('the workspace card resolved before Attention cleared');
   await sv.getByLabel('Send a line').fill('thanks, carry on');
   await tap(sv.getByRole('button', { name: 'Send', exact: true }));
   const sent = await sv.evaluate(() => window.__decision.sent);
-  if (!eq(sent[1], { type: 'reply', session: 'api', text: 'thanks, carry on' }) || sent.some((m) => m.terminal)) fail(`workspace reply: ${JSON.stringify(sent)}`);
+  if (!eq(sent[1], { type: 'reply', workspace: 'api', text: 'thanks, carry on' }) || sent.some((m) => m.terminal)) fail(`workspace reply: ${JSON.stringify(sent)}`);
   await sv.evaluate(() => window.__decision.clear());
   await scard.waitFor({ state: 'detached', timeout: 3000 });
   console.log('ok  Workspace view: the same card answers by option index (the server holds the keys), the composer replies, the card resolves when Attention clears');

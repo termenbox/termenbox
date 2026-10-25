@@ -114,7 +114,7 @@
   }
   function cycle() { if (!suppressCycle) height = HEIGHTS[(HEIGHTS.indexOf(height) + 1) % HEIGHTS.length]; suppressCycle = false; }
   function answer(key: string, choice: number, prompt: NonNullable<WorkspaceAgent['prompt']>) {
-    send({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice });
+    send({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice });
   }
   onMount(() => {
     const parent = root.parentElement!;

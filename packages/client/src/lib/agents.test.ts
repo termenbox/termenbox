@@ -4,7 +4,7 @@ import { agents, applyActivity, applyAttention, applyEvents, applySnapshot, atte
 import { needsYou } from './tabs';
 import type { AgentEvent, ClientMessage, ServerMessage } from './protocol';
 
-const ev = (seq: number, rest: object, workspace = 's'): AgentEvent => ({ session: workspace, seq, ts: 1000 + seq, source: 'hook', confidence: 'high', ...rest }) as AgentEvent;
+const ev = (seq: number, rest: object, workspace = 's'): AgentEvent => ({ workspace: workspace, seq, ts: 1000 + seq, source: 'hook', confidence: 'high', ...rest }) as AgentEvent;
 
 describe('agent events', () => {
   it('follows state, tool, prompt and message events in order', () => {
@@ -30,8 +30,8 @@ describe('agent events', () => {
     expect(map.s.waitingSince).toBeUndefined();
     map = applyEvents(map, [ev(4, { kind: 'state', state: 'needs_input', ts: 40 })]).map;
     expect(map.s.waitingSince).toBe(40);
-    expect(applySnapshot(map, [{ session: 's', seq: 1, ts: 50, state: 'needs_input', stale: false }]).s.waitingSince).toBe(50);
-    expect(applySnapshot(map, [{ session: 's', seq: 5, ts: 60, state: 'working', stale: false }]).s.waitingSince).toBeUndefined();
+    expect(applySnapshot(map, [{ workspace: 's', seq: 1, ts: 50, state: 'needs_input', stale: false }]).s.waitingSince).toBe(50);
+    expect(applySnapshot(map, [{ workspace: 's', seq: 5, ts: 60, state: 'working', stale: false }]).s.waitingSince).toBeUndefined();
   });
   it('ignores kinds and fields it does not know', () => {
     const r = applyEvents({}, [ev(1, { kind: 'hologram', x: 1 }), ev(2, { kind: 'state', state: 'working', extra: true })]);
@@ -49,7 +49,7 @@ describe('agent events', () => {
   it('recovers from a gap with a snapshot and asks only for what is newer', () => {
     let map: AgentMap = applyEvents({}, [ev(1, { kind: 'state', state: 'idle' })]).map;
     expect(syncRequest(map)).toEqual({ s: 1 });
-    map = applySnapshot(map, [{ session: 's', state: 'working', seq: 7, stale: false, ts: 9000 }, { session: 't', state: 'idle', seq: 2, stale: false, ts: 1 }]);
+    map = applySnapshot(map, [{ workspace: 's', state: 'working', seq: 7, stale: false, ts: 9000 }, { workspace: 't', state: 'idle', seq: 2, stale: false, ts: 1 }]);
     expect(map.s.seq).toBe(7);
     expect(map.s.state).toBe('working');
     expect(applyEvents(map, [ev(8, { kind: 'state', state: 'done' })]).gap).toBe(false);
@@ -57,9 +57,9 @@ describe('agent events', () => {
 
   it('drops workspaces the snapshot no longer lists and survives a server counter reset', () => {
     const map = applyEvents({}, [ev(1, { kind: 'state', state: 'idle' }), ev(1, { kind: 'state', state: 'idle' }, 'gone')]).map;
-    const snap = applySnapshot(map, [{ session: 's', state: 'idle', seq: 1, stale: false, ts: 1 }]);
+    const snap = applySnapshot(map, [{ workspace: 's', state: 'idle', seq: 1, stale: false, ts: 1 }]);
     expect(Object.keys(snap)).toEqual(['s']);
-    const restarted = applySnapshot({ s: { ...map.s, seq: 40 } }, [{ session: 's', state: 'working', seq: 2, stale: false, ts: 5 }]);
+    const restarted = applySnapshot({ s: { ...map.s, seq: 40 } }, [{ workspace: 's', state: 'working', seq: 2, stale: false, ts: 5 }]);
     expect(restarted.s.seq).toBe(2);
     expect(restarted.s.state).toBe('working');
   });
@@ -74,7 +74,7 @@ describe('agent events', () => {
 
 describe('agent and last response', () => {
   it('takes both from the snapshot and advances the response time on done, message and working going quiet', () => {
-    let map = applySnapshot({}, [{ session: 's', state: 'working', seq: 3, stale: false, ts: 1000, agent: 'claude', last_response_at: 500 }]);
+    let map = applySnapshot({}, [{ workspace: 's', state: 'working', seq: 3, stale: false, ts: 1000, agent: 'claude', last_response_at: 500 }]);
     expect(map.s.agent).toBe('claude');
     expect(map.s.lastResponseAt).toBe(500);
     map = applyEvents(map, [ev(4, { kind: 'tool', name: 'Bash', summary: 'ls', phase: 'started' })]).map;
@@ -83,7 +83,7 @@ describe('agent and last response', () => {
     expect(map.s.lastResponseAt).toBe(1005);
     map = applyEvents(map, [ev(6, { kind: 'message', summary: 'ok' })]).map;
     expect(map.s.lastResponseAt).toBe(1006);
-    const none = applySnapshot({}, [{ session: 't', state: 'idle', seq: 1, stale: false, ts: 1 }]);
+    const none = applySnapshot({}, [{ workspace: 't', state: 'idle', seq: 1, stale: false, ts: 1 }]);
     expect(none.t.agent).toBeUndefined();
     expect(none.t.lastResponseAt).toBeUndefined();
   });
@@ -94,7 +94,7 @@ describe('the message handler', () => {
     resetAgents();
     const sent: ClientMessage[] = [];
     const send = (m: ClientMessage) => sent.push(m);
-    expect(handleAgentMessage({ type: 'agent_snapshot', states: [{ session: 's', state: 'idle', seq: 4, stale: false, ts: 1 }] }, send)).toBe(true);
+    expect(handleAgentMessage({ type: 'agent_snapshot', states: [{ workspace: 's', state: 'idle', seq: 4, stale: false, ts: 1 }] }, send)).toBe(true);
     expect(get(agents).s.seq).toBe(4);
     handleAgentMessage({ type: 'agent_events', events: [ev(5, { kind: 'state', state: 'working' })] }, send);
     expect(sent).toEqual([]);
@@ -106,8 +106,8 @@ describe('the message handler', () => {
 });
 
 describe('server status (activity and attention)', () => {
-  const att = (kind: 'needs_input' | 'finished_unseen' | 'failed', id = 'a1', workspace = 's') => ({ id, session: workspace, kind, raised_at: 5000 });
-  const base = (): AgentMap => applyActivity({}, [{ session: 's', activity: 'working', ts: 10_000, task: { title: 'fix login', started_at: 4_000, source: 'hook' } }], 9_000);
+  const att = (kind: 'needs_input' | 'finished_unseen' | 'failed', id = 'a1', workspace = 's') => ({ id, workspace, kind, raised_at: 5000 });
+  const base = (): AgentMap => applyActivity({}, [{ workspace: 's', activity: 'working', ts: 10_000, task: { title: 'fix login', started_at: 4_000, source: 'hook' } }], 9_000);
 
   it('derives the card state from activity and attention, and raw events no longer move it', () => {
     let m = base();
@@ -116,10 +116,10 @@ describe('server status (activity and attention)', () => {
     expect(m.s.state).toBe('needs_input');
     expect(m.s.waitingSince).toBe(5000);
     expect(needsYou(m.s)).toBe(true);
-    m = applyEvents(m, [{ session: 's', seq: 1, ts: 1, source: 'hook', confidence: 'high', kind: 'state', state: 'idle' } as never]).map;
+    m = applyEvents(m, [{ workspace: 's', seq: 1, ts: 1, source: 'hook', confidence: 'high', kind: 'state', state: 'idle' } as never]).map;
     expect(m.s.state).toBe('needs_input');
     m = applyAttention(m, []);
-    m = applyActivity(m, [{ session: 's', activity: 'idle', ts: 11_000 }], 11_000);
+    m = applyActivity(m, [{ workspace: 's', activity: 'idle', ts: 11_000 }], 11_000);
     expect(m.s.state).toBe('idle');
     expect(needsYou(m.s)).toBe(false);
   });
@@ -128,13 +128,13 @@ describe('server status (activity and attention)', () => {
     let m = applyAttention(base(), [att('finished_unseen', 'a1'), att('failed', 'a2')]);
     expect(m.s.attention?.id).toBe('a2');
     m = applyAttention(m, [att('finished_unseen', 'a1')]);
-    m = applyActivity(m, [{ session: 's', activity: 'idle', ts: 12_000 }], 12_000);
+    m = applyActivity(m, [{ workspace: 's', activity: 'idle', ts: 12_000 }], 12_000);
     expect(m.s.state).toBe('done');
     expect(needsYou(m.s)).toBe(true);
   });
 
   it('shows a silent working workspace as unknown, never as stale', () => {
-    const m = applyActivity(base(), [{ session: 's', activity: 'unknown', ts: 80_000 }], 80_000);
+    const m = applyActivity(base(), [{ workspace: 's', activity: 'unknown', ts: 80_000 }], 80_000);
     expect(m.s.state).toBe('unknown');
     expect(isStale(m.s, 999_999)).toBe(false);
   });

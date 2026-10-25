@@ -50,7 +50,7 @@ fn split_mode(label: &str) -> (String, String) {
 /// certificate and a signature over the challenge. Nothing else is read until that checks out and the
 /// user owns this server. Returning drops the link, which makes the transport close the connection.
 pub async fn run(mut link: Link, state: AppState) {
-    if !matches!(next(&mut link).await, Some(ClientMessage::Hello)) {
+    let Some(ClientMessage::Hello { protocol: client }) = next(&mut link).await else {
         send(
             &link,
             &ServerMessage::Error {
@@ -59,6 +59,11 @@ pub async fn run(mut link: Link, state: AppState) {
         )
         .await;
         return;
+    };
+    // A client that announces no version is an older one: it is spoken to in the legacy vocabulary (legacy.rs).
+    let protocol = client.min(termenbox_core::ext::PROTOCOL_VERSION);
+    if protocol == 0 {
+        link.tx.enable_legacy();
     }
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
@@ -133,6 +138,7 @@ pub async fn run(mut link: Link, state: AppState) {
 
     tracing::info!("Authenticated {}", identity.login);
     let ok = ServerMessage::AuthOk {
+        protocol,
         user: identity.login.clone(),
         channels: if lanes { vec!["term".into()] } else { vec![] },
         server_name: state.server_name.clone(),

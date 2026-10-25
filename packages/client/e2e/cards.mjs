@@ -51,7 +51,7 @@ try {
   await page.getByRole('button', { name: 'Show details' }).first().click();
   await page.getByRole('button', { name: 'No', exact: true }).click();
   const answer = (await sent()).find((m) => m.type === 'answer');
-  if (JSON.stringify(answer) !== JSON.stringify({ type: 'answer', session: 'api-refactor', prompt_id: '1-ab12cd34', seq: 2, choice: 2 })) fail(`wrong answer message: ${JSON.stringify(answer)}`);
+  if (JSON.stringify(answer) !== JSON.stringify({ type: 'answer', workspace: 'api-refactor', prompt_id: '1-ab12cd34', seq: 2, choice: 2 })) fail(`wrong answer message: ${JSON.stringify(answer)}`);
   else console.log('ok  an answer names its prompt, event number and choice');
 
   // 4. Quick reply goes to the chosen workspace; text is cleaned of control characters.
@@ -59,7 +59,7 @@ try {
   await page.fill('input[aria-label="Reply text"]', 'run the tests');
   await page.getByRole('button', { name: 'Send', exact: true }).click();
   const reply = (await sent()).find((m) => m.type === 'reply');
-  if (JSON.stringify(reply) !== JSON.stringify({ type: 'reply', session: 'docs', text: 'run the tests' })) fail(`wrong reply: ${JSON.stringify(reply)}`);
+  if (JSON.stringify(reply) !== JSON.stringify({ type: 'reply', workspace: 'docs', text: 'run the tests' })) fail(`wrong reply: ${JSON.stringify(reply)}`);
   else console.log('ok  a quick reply goes to the chosen workspace');
 
   // 5. Tap targets are at least 44 px.
@@ -173,7 +173,7 @@ try {
   await page.evaluate(() => window.__navigation.changePrompt());
   await card.getByRole('button', { name: 'Yes', exact: true }).click();
   const answerSent = await page.evaluate(() => window.__navigation.sent().filter(m => m.message.type === 'answer').at(-1));
-  if (original !== 'Yes' || answerSent?.message.prompt_id !== 'prompt-alpha' || answerSent.message.seq !== 2 || answerSent.message.session !== 'workspace-1') fail(`answer did not keep the displayed prompt: ${JSON.stringify(answerSent)}`);
+  if (original !== 'Yes' || answerSent?.message.prompt_id !== 'prompt-alpha' || answerSent.message.seq !== 2 || answerSent.message.workspace !== 'workspace-1') fail(`answer did not keep the displayed prompt: ${JSON.stringify(answerSent)}`);
   await card.getByRole('button', { name: 'Hide details', exact: true }).click();
   console.log('ok  expanded cards hold their layout and answers carry the prompt read by the user');
 
@@ -211,7 +211,7 @@ try {
   if (replyBox.y < 80 || replyBox.y + replyBox.height > 540 || sheetBox.y + sheetBox.height > 540) fail('the keyboard viewport shrink/pan hides the sheet input');
   await page.locator('.workspace-sheet').getByRole('button', { name: 'Send', exact: true }).click();
   const sentReply = await page.evaluate(() => window.__navigation.sent().filter(m => m.message.type === 'reply').at(-1));
-  if (sentReply?.server !== 'beta' || sentReply.message.session !== 'workspace-2' || sentReply.message.text !== 'continue') fail(`quick reply crossed servers: ${JSON.stringify(sentReply)}`);
+  if (sentReply?.server !== 'beta' || sentReply.message.workspace !== 'workspace-2' || sentReply.message.text !== 'continue') fail(`quick reply crossed servers: ${JSON.stringify(sentReply)}`);
   await page.getByRole('button', { name: 'Minimize workspaces', exact: true }).click();
   const keyBox = await page.getByRole('toolbar', { name: 'Terminal keys', exact: true }).boundingBox();
   if (keyBox.y < 80 || keyBox.y + keyBox.height > 540) fail('the keyboard viewport shrink/pan hides the terminal keys');
@@ -256,7 +256,7 @@ try {
   // The queue holds still under a touch and for 2 s after a scroll, then follows the data.
   const heroText = () => home.getByRole('region', { name: 'Decision' }).innerText();
   const agentOf = (key) => home.evaluate((k) => window.__home.agents()[k], key);
-  const arriving = { ...(await agentOf('beta/s1')), attention: { ...(await agentOf('beta/s1')).attention, id: 'new', raised_at: Date.now() - 60 * 60_000, session: 's0' } };
+  const arriving = { ...(await agentOf('beta/s1')), attention: { ...(await agentOf('beta/s1')).attention, id: 'new', raised_at: Date.now() - 60 * 60_000, workspace: 's0' } };
   await home.locator('[data-home-queue] > button').first().dispatchEvent('pointerdown', { pointerId: 5, pointerType: 'touch' });
   await home.evaluate(([k, a]) => window.__home.set(k, a), ['alpha/s0', { ...arriving, prompt: undefined }]);
   await home.waitForTimeout(1200);
@@ -276,7 +276,7 @@ try {
   const primary = home.getByRole('region', { name: 'Decision' }).locator('[data-hero-options] button').first();
   await tap(primary);
   const answers = await home.evaluate(() => window.__home.answers);
-  if (JSON.stringify(answers) !== JSON.stringify([{ type: 'answer', session: 'alpha/s4', prompt_id: 'p4', seq: 11, choice: 0 }])) fail(`hero answer: ${JSON.stringify(answers)}`);
+  if (JSON.stringify(answers) !== JSON.stringify([{ type: 'answer', workspace: 'alpha/s4', prompt_id: 'p4', seq: 11, choice: 0 }])) fail(`hero answer: ${JSON.stringify(answers)}`);
   console.log('ok  Home: the hero is answered with one tap, carrying its prompt id and event number');
 
   // A state tile filters.
