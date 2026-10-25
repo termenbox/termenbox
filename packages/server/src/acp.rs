@@ -39,6 +39,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use crate::acp_stream::{ModeVia, Stream};
 use crate::backend::{valid_dir, valid_name, WorkspaceBackend};
 use crate::events::EventHub;
+use crate::layout::Layout;
 use crate::pty::Attachment;
 
 /// One line from the agent is never longer than this; a longer one is dropped whole.
@@ -1047,6 +1048,7 @@ fn write_state(path: &std::path::Path, workspaces: &Mutex<HashMap<String, Entry>
                 reason,
                 retry,
                 turn_open,
+                layout: e.layout.clone(),
             })
         })
         .collect();
@@ -1072,6 +1074,9 @@ struct Saved {
     /// A turn was running when this was saved: a restart interrupted it.
     #[serde(default)]
     turn_open: bool,
+    /// The windows and focus (step 3.1). Absent in state an older server wrote: one agent window.
+    #[serde(default)]
+    layout: Layout,
 }
 
 struct Entry {
@@ -1088,10 +1093,12 @@ struct Entry {
     acp_id: String,
     retry: bool,
     turn_open: bool,
+    /// The windows of the workspace; kept across a restore, which replaces the placeholder entry by a running one.
+    layout: Layout,
 }
 
 impl Entry {
-    fn running(agent: &str, dir: &str, live: Arc<Live>) -> Self {
+    fn running(agent: &str, dir: &str, live: Arc<Live>, layout: Layout) -> Self {
         Self {
             agent: agent.to_string(),
             dir: dir.to_string(),
@@ -1101,6 +1108,7 @@ impl Entry {
             acp_id: String::new(),
             retry: false,
             turn_open: false,
+            layout,
         }
     }
 
@@ -1115,6 +1123,7 @@ impl Entry {
             acp_id: s.acp_id.clone(),
             retry,
             turn_open: s.turn_open,
+            layout: s.layout.clone(),
         }
     }
 }
@@ -1185,6 +1194,30 @@ impl AcpBackend {
             None if e.restoring => Err(anyhow!("This workspace is still being restored")),
             None => Err(anyhow!("Unknown workspace")),
         }
+    }
+
+    /// The windows of workspace `id` and its ACP `sessionId`.
+    pub fn layout(&self, id: &str) -> Result<(Layout, Option<String>)> {
+        let g = self.workspaces.lock().unwrap();
+        let e = g.get(id).ok_or_else(|| anyhow!("Unknown workspace"))?;
+        let session = match &e.live {
+            Some(l) => l.inner.lock().unwrap().acp_id.clone(),
+            None => e.acp_id.clone(),
+        };
+        Ok((e.layout.clone(), Some(session).filter(|s| !s.is_empty())))
+    }
+
+    /// Changes the windows of workspace `id` and writes the state file; an error from `f` leaves them as they were.
+    pub fn edit_layout(&self, id: &str, f: impl FnOnce(&mut Layout) -> Result<()>) -> Result<()> {
+        {
+            let mut g = self.workspaces.lock().unwrap();
+            let e = g.get_mut(id).ok_or_else(|| anyhow!("Unknown workspace"))?;
+            let mut next = e.layout.clone();
+            f(&mut next)?;
+            e.layout = next;
+        }
+        self.save();
+        Ok(())
     }
 
     fn save(&self) {
@@ -1260,10 +1293,13 @@ impl AcpBackend {
         if let Some(hub) = &self.hub {
             hub.set_agent(&format!("{}{name}", self.event_prefix), agent);
         }
-        self.workspaces
-            .lock()
-            .unwrap()
-            .insert(name.to_string(), Entry::running(agent, dir, live));
+        let mut workspaces = self.workspaces.lock().unwrap();
+        // A restore started this workspace from a placeholder that holds its saved windows.
+        let layout = workspaces
+            .get(name)
+            .map(|e| e.layout.clone())
+            .unwrap_or_default();
+        workspaces.insert(name.to_string(), Entry::running(agent, dir, live, layout));
         Ok(())
     }
 

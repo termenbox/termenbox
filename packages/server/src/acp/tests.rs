@@ -1349,3 +1349,152 @@ async fn the_saved_turn_flag_follows_the_turn_so_a_finished_turn_is_not_called_i
     a.backend.kill("s1").await.unwrap();
     b.backend.kill("s1").await.unwrap();
 }
+
+// ---- windows (step 3.1) ---------------------------------------------------------------------------------------
+
+use crate::layout::{AcpHost, Layout, AGENT_WINDOW};
+use crate::ports::{WindowEntry, WindowHost, WindowKind, WindowSpec};
+
+/// Terminal windows in memory, standing in for tmux.
+#[derive(Default)]
+struct FakeTerminals {
+    open: Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl WindowHost for FakeTerminals {
+    async fn create(&self, _w: &str, spec: WindowSpec) -> Result<WindowEntry> {
+        let mut o = self.open.lock().unwrap();
+        let id = format!("{}", o.len() + 1);
+        o.push(id.clone());
+        Ok(WindowEntry {
+            id,
+            kind: WindowKind::Terminal,
+            name: spec.name,
+            focused: false,
+            session_id: None,
+        })
+    }
+    async fn list(&self, _w: &str) -> Result<Vec<WindowEntry>> {
+        Ok(vec![])
+    }
+    async fn focus(&self, _w: &str, _id: &str) -> Result<()> {
+        Ok(())
+    }
+    async fn close(&self, _w: &str, id: &str) -> Result<()> {
+        self.open.lock().unwrap().retain(|o| o != id);
+        Ok(())
+    }
+    async fn resize(&self, _w: &str, _id: &str, _c: u16, _r: u16) -> Result<()> {
+        Ok(())
+    }
+}
+
+fn terminal_spec() -> WindowSpec {
+    WindowSpec {
+        kind: WindowKind::Terminal,
+        name: "logs".into(),
+        dir: None,
+        command: None,
+    }
+}
+
+#[tokio::test]
+async fn a_workspace_with_two_windows_persists_and_the_focus_survives_a_restart() {
+    let dir = tmp();
+    let a = rig_with("resume", 2, dir.clone(), true);
+    a.create("s1").await;
+    let backend = Arc::new(a.backend);
+    let terminals = Arc::new(FakeTerminals::default());
+    let host = AcpHost::new(backend.clone()).with_terminals(terminals.clone());
+
+    let made = host.create("s1", terminal_spec()).await.unwrap();
+    host.focus("s1", &made.id).await.unwrap();
+    let listed = host.list("s1").await.unwrap();
+    assert_eq!(listed.len(), 2);
+    let agent = listed.iter().find(|w| w.id == AGENT_WINDOW).unwrap();
+    assert_eq!(agent.kind, WindowKind::Agent);
+    assert_eq!(agent.session_id.as_deref(), Some("acp-1"));
+    assert!(listed.iter().find(|w| w.id == made.id).unwrap().focused);
+
+    // "Restart": a new backend on the same state file.
+    let b = rig_with("resume", 2, dir.clone(), true);
+    b.backend.restore().await;
+    let b = Arc::new(b.backend);
+    let host = AcpHost::new(b.clone()).with_terminals(terminals.clone());
+    let after = host.list("s1").await.unwrap();
+    assert_eq!(after.len(), 2, "{after:?}");
+    assert!(after.iter().find(|w| w.id == made.id).unwrap().focused);
+    assert_eq!(
+        after
+            .iter()
+            .find(|w| w.id == AGENT_WINDOW)
+            .unwrap()
+            .session_id
+            .as_deref(),
+        Some("acp-1")
+    );
+
+    // Closing a terminal window removes it from the layout and from the host; the agent window stays.
+    host.close("s1", &made.id).await.unwrap();
+    assert!(terminals.open.lock().unwrap().is_empty());
+    let left = host.list("s1").await.unwrap();
+    assert_eq!(left.len(), 1);
+    assert!(left[0].focused, "the focus falls back to the agent window");
+    assert!(host.close("s1", AGENT_WINDOW).await.is_err());
+    assert!(host.focus("s1", "nope").await.is_err());
+    assert!(host
+        .create(
+            "s1",
+            WindowSpec {
+                kind: WindowKind::Agent,
+                ..terminal_spec()
+            }
+        )
+        .await
+        .is_err());
+    b.kill("s1").await.unwrap();
+    backend.kill("s1").await.ok();
+}
+
+#[tokio::test]
+async fn state_an_older_server_wrote_loads_as_one_agent_window() {
+    let dir = tmp();
+    let a = rig_with("resume", 2, dir.clone(), true);
+    a.create("s1").await;
+    // Take the layout out of the saved state: what a server before step 3.1 wrote.
+    let path = dir.join("workspaces.json");
+    let mut saved: Vec<Value> =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    for s in &mut saved {
+        s.as_object_mut().unwrap().remove("layout");
+    }
+    std::fs::write(&path, serde_json::to_string(&saved).unwrap()).unwrap();
+
+    let b = rig_with("resume", 2, dir.clone(), true);
+    b.backend.restore().await;
+    let host = AcpHost::new(Arc::new(b.backend));
+    let windows = host.list("s1").await.unwrap();
+    assert_eq!(windows.len(), 1);
+    assert_eq!(windows[0].id, AGENT_WINDOW);
+    assert_eq!(windows[0].kind, WindowKind::Agent);
+    assert!(windows[0].focused);
+    assert_eq!(windows[0].session_id.as_deref(), Some("acp-1"));
+    assert!(serde_json::from_str::<Layout>(r#"{"windows":[]}"#).is_ok());
+}
+
+#[tokio::test]
+async fn an_acp_window_is_addressed_by_id_and_an_unknown_workspace_is_refused() {
+    let r = rig("");
+    r.create("s1").await;
+    let backend = Arc::new(r.backend);
+    let host = AcpHost::new(backend.clone());
+    host.focus("s1", AGENT_WINDOW).await.unwrap();
+    host.resize("s1", AGENT_WINDOW, 80, 24).await.unwrap();
+    assert!(host.resize("s1", "nope", 80, 24).await.is_err());
+    assert!(host.list("zz").await.is_err());
+    // No terminal host: a terminal window cannot be made, and nothing is recorded.
+    assert!(host.create("s1", terminal_spec()).await.is_err());
+    assert_eq!(host.list("s1").await.unwrap().len(), 1);
+    backend.kill("s1").await.unwrap();
+}
