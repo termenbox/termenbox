@@ -16,3 +16,8 @@ Use when a detected agent (see `packages/client/src/lib/agentIcons.ts`) only has
 3. Add tests that run the profile over the recorded screens and assert the parsed state, options and keys. Include a screen where nothing should match.
 4. Check that parsed text is sanitised and that a profile cannot send keys beyond the options the screen showed.
 5. Update facts 0038 and 0040 with what the agent exposes and the agent version measured.
+
+## Writing an adapter (decision 0136)
+
+A T2 screen profile is data. A new agent that needs more than a profile is an **adapter** behind the server's adapter port: it turns the agent's payloads into the protocol (ACP v1 core plus extensions) and states its tier. Use the native ACP adapter when the agent speaks ACP; otherwise the hook or scan/screen adapter. An out-of-process adapter is declared in the server-side profile file and speaks the protocol over stdio. An adapter never emits content the agent did not provide (no invented diffs, options or plans), and the client needs no change: unknown content falls back to the generic renderer. Add fixtures and a test that strips the extensions and validates the core (guardrail `protocol-core-stays-acp-v1`).
+
