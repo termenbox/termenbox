@@ -86,6 +86,9 @@ pub struct AcpConfig {
     pub builtin: bool,
     #[serde(default)]
     pub agents: HashMap<String, AgentProfile>,
+    /// Bytes of agent events kept per conversation for a client that reconnects (`event_log.rs`).
+    #[serde(default = "default_ring")]
+    pub event_ring_bytes: usize,
 }
 
 /// The agents termenbox knows how to start (fact 0040), used when there is no file or the file sets `builtin`.
@@ -136,12 +139,17 @@ fn default_max() -> usize {
     DEFAULT_MAX_SESSIONS
 }
 
+fn default_ring() -> usize {
+    crate::event_log::DEFAULT_BUDGET_BYTES
+}
+
 impl Default for AcpConfig {
     fn default() -> Self {
         Self {
             max_sessions: DEFAULT_MAX_SESSIONS,
             builtin: true,
             agents: builtin_agents(),
+            event_ring_bytes: default_ring(),
         }
     }
 }
@@ -149,6 +157,7 @@ impl Default for AcpConfig {
 impl AcpConfig {
     /// ```toml
     /// max_sessions = 6
+    /// event_ring_bytes = 1048576 # per conversation, for a client that reconnects
     /// builtin = true # keep claude and opencode beside the agents below
     /// [agents.claude]
     /// command = "claude-agent-acp"
@@ -158,6 +167,9 @@ impl AcpConfig {
         let mut cfg: Self = toml::from_str(text).map_err(|e| anyhow!("acp agents file: {e}"))?;
         if !(1..=16).contains(&cfg.max_sessions) {
             return Err(anyhow!("max_sessions must be 1 to 16"));
+        }
+        if !(64 * 1024..=64 * 1024 * 1024).contains(&cfg.event_ring_bytes) {
+            return Err(anyhow!("event_ring_bytes must be 65536 to 67108864"));
         }
         for (name, a) in &cfg.agents {
             if !valid_name(name) || a.command.is_empty() {
@@ -545,6 +557,8 @@ struct Inner {
     replaying: bool,
     /// What the workspace view shows (T0): kept here, bounded, and handed to a client on `acp_open`.
     stream: Stream,
+    /// The conversation as scrubbed `session/update` frames with a sequence number, for a client that resumes.
+    log: crate::event_log::EventLog,
 }
 
 struct Live {
@@ -686,6 +700,7 @@ impl Live {
                 return;
             }
             g.stream.update(update);
+            g.log.push(update);
             (g.mapper.map(update), g.stream.rev())
         };
         self.changed.send_replace(rev);
@@ -818,6 +833,7 @@ fn spawn_agent(
     name: &str,
     hub: Option<EventHub>,
     event_name: String,
+    event_ring_bytes: usize,
 ) -> Result<Arc<Live>> {
     let mut cmd = Command::new(&profile.command);
     cmd.args(&profile.args)
@@ -855,6 +871,7 @@ fn spawn_agent(
             turn: false,
             replaying: false,
             stream: Stream::new(agent, dir, crate::events::now_ms()),
+            log: crate::event_log::EventLog::new("", crate::events::now_ms(), event_ring_bytes),
         }),
         out,
         kill: Mutex::new(Some(kill_tx)),
@@ -1249,6 +1266,7 @@ impl AcpBackend {
             name,
             self.hub.clone(),
             format!("{}{name}", self.event_prefix),
+            self.config.event_ring_bytes,
         )?;
         let id = match handshake(&live, dir, resume, profile.elicitation_form).await {
             Ok(id) => id,
@@ -1266,7 +1284,11 @@ impl AcpBackend {
                 return Err(e);
             }
         };
-        live.inner.lock().unwrap().acp_id = id;
+        {
+            let mut g = live.inner.lock().unwrap();
+            g.log.set_session(&id);
+            g.acp_id = id;
+        }
         if let Some(path) = self.state_file.clone() {
             let workspaces = self.workspaces.clone();
             *live.saver.lock().unwrap() = Some(Arc::new(move || write_state(&path, &workspaces)));
@@ -1725,6 +1747,17 @@ impl WorkspaceBackend for AcpBackend {
         info_seen: u64,
     ) -> Result<(AcpView, u64)> {
         self.stream_view(id, after, epoch, info_seen)
+    }
+
+    fn acp_events(
+        &self,
+        id: &str,
+        after: Option<u64>,
+        epoch: Option<u64>,
+    ) -> Result<crate::event_log::Replay> {
+        let live = self.live(id)?;
+        let g = live.inner.lock().unwrap();
+        Ok(g.log.resume(after, epoch))
     }
 
     async fn acp_prompt(&self, id: &str, text: &str) -> Result<()> {

@@ -29,6 +29,7 @@ mod control;
 mod directory;
 #[cfg(test)]
 mod e2e;
+mod event_log;
 mod events;
 mod health;
 mod helper;

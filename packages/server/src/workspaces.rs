@@ -34,6 +34,55 @@ struct AcpSub {
     dead: bool,
 }
 
+/// The conversation log one connection follows (step 3.4): where it is in the log, and whether news is waiting.
+struct EventSub {
+    workspace: String,
+    rx: tokio::sync::watch::Receiver<u64>,
+    after: u64,
+    epoch: u64,
+    due: bool,
+    dead: bool,
+}
+
+/// Frames of one `acp_events` message stay under this many bytes of JSON (the direct transport carries 64 KiB).
+const EVENTS_MESSAGE_BYTES: usize = 40 * 1024;
+
+/// A replay as messages of bounded size; `reset` is set on the first only. A replay with no frames still makes one
+/// message when it is a reset or `always` (the client learns `last`).
+fn events_messages(
+    workspace: &str,
+    r: crate::event_log::Replay,
+    always: bool,
+) -> Vec<ServerMessage> {
+    let mut groups: Vec<Vec<serde_json::Value>> = vec![Vec::new()];
+    let mut size = 0;
+    for f in r.frames {
+        let n = f.to_string().len();
+        if size + n > EVENTS_MESSAGE_BYTES && !groups.last().is_some_and(Vec::is_empty) {
+            groups.push(Vec::new());
+            size = 0;
+        }
+        size += n;
+        if let Some(g) = groups.last_mut() {
+            g.push(f);
+        }
+    }
+    if groups.iter().all(Vec::is_empty) && !r.reset && !always {
+        return Vec::new();
+    }
+    groups
+        .into_iter()
+        .enumerate()
+        .map(|(i, frames)| ServerMessage::AcpEvents {
+            workspace: workspace.to_string(),
+            epoch: r.epoch,
+            last: r.last,
+            reset: r.reset && i == 0,
+            frames,
+        })
+        .collect()
+}
+
 /// Serves one authenticated WebSocket: lists/creates tmux workspaces and bridges one attached workspace.
 /// Persistence lives in the workspace backend (tmux by default); a dropped connection only detaches (see pty.rs).
 #[derive(Clone)]
@@ -210,8 +259,11 @@ impl WorkspaceManager {
         let mut status_rx = self.events.as_ref().map(|h| h.subscribe_status());
         let mut list_rx = self.list_changed.subscribe();
         let mut acp: Option<AcpSub> = None;
+        let mut events: Option<EventSub> = None;
         let mut acp_tick = tokio::time::interval(ACP_BATCH);
         acp_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut event_tick = tokio::time::interval(ACP_BATCH);
+        event_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // None once the collector is gone: the arm below then waits for ever instead of spinning on a closed channel.
         let mut health_rx = self.health.as_ref().map(|h| h.subscribe());
         if let Some(u) = self.health.as_ref().and_then(|h| h.latest()) {
@@ -249,7 +301,7 @@ impl WorkspaceManager {
                         // Who got a shell on the host and as whom; never what they typed.
                         info!(target: "audit", event = "host_session", provider = %identity.provider, account_id = %identity.id, login = %identity.login, run_as = %self.mode.label(), session = %workspace_id);
                     }
-                    let result = self.handle(conn, client_msg, auth, &identity, &mut attachment, &mut cols, &mut rows, &mut acp, &link.tx).await;
+                    let result = self.handle(conn, client_msg, auth, &identity, &mut attachment, &mut cols, &mut rows, &mut acp, &mut events, &link.tx).await;
                     match (req, result) {
                         (Some(req), result) => {
                             if !send_ack(&link.tx, req, result.map_err(|e| e.to_string())).await { break; }
@@ -317,6 +369,18 @@ impl WorkspaceManager {
                     };
                     if !send(&link.tx, &msg).await { break; }
                 }
+                woke = next_event_change(&mut events) => {
+                    if let Some(sub) = events.as_mut() {
+                        if woke { sub.due = true } else { sub.dead = true }
+                    }
+                }
+                _ = event_tick.tick(), if events.as_ref().is_some_and(|e| e.due) => {
+                    let mut gone = false;
+                    for msg in self.event_update(&mut events) {
+                        if !send(&link.tx, &msg).await { gone = true; break; }
+                    }
+                    if gone { break; }
+                }
                 woke = next_acp_change(&mut acp) => {
                     if let Some(sub) = acp.as_mut() {
                         if woke { sub.due = true } else { sub.dead = true }
@@ -351,6 +415,30 @@ impl WorkspaceManager {
 
         info!("Connection closed for {}", identity.login);
         Ok(())
+    }
+
+    /// The `acp_events` messages the connection owes its client: the frames since the last it sent, or a compacted
+    /// replay if the log no longer holds them.
+    fn event_update(&self, events: &mut Option<EventSub>) -> Vec<ServerMessage> {
+        let Some(sub) = events.as_mut() else {
+            return Vec::new();
+        };
+        sub.due = false;
+        match self
+            .backend
+            .acp_events(&sub.workspace, Some(sub.after), Some(sub.epoch))
+        {
+            Ok(replay) => {
+                sub.after = replay.last;
+                sub.epoch = replay.epoch;
+                events_messages(&sub.workspace, replay, false)
+            }
+            // The workspace was closed: the client learns it from the workspace list.
+            Err(_) => {
+                *events = None;
+                Vec::new()
+            }
+        }
     }
 
     /// The `acp_view` messages the connection owes its client, if anything changed since the last update. A view is cut
@@ -414,6 +502,7 @@ impl WorkspaceManager {
         cols: &mut u16,
         rows: &mut u16,
         acp: &mut Option<AcpSub>,
+        events: &mut Option<EventSub>,
         tx: &LinkTx,
     ) -> Result<()> {
         match msg {
@@ -762,7 +851,33 @@ impl WorkspaceManager {
                     dead: false,
                 });
             }
-            ClientMessage::AcpClose => *acp = None,
+            ClientMessage::AcpClose => {
+                *acp = None;
+                *events = None;
+            }
+            ClientMessage::AcpEvents {
+                workspace,
+                after,
+                epoch,
+            } => {
+                // Who followed which conversation, never what it held.
+                audit_acp_open(&identity.provider, &identity.id, &workspace);
+                // Subscribe first: a change between the two calls then still wakes the connection.
+                let rx = self.backend.acp_watch(&workspace)?;
+                let replay = self.backend.acp_events(&workspace, after, epoch)?;
+                let (last, epoch) = (replay.last, replay.epoch);
+                for m in events_messages(&workspace, replay, true) {
+                    send_r(tx, &m).await?;
+                }
+                *events = Some(EventSub {
+                    workspace,
+                    rx,
+                    after: last,
+                    epoch,
+                    due: false,
+                    dead: false,
+                });
+            }
             ClientMessage::AcpPrompt { workspace, text } => {
                 // Lines and indentation stay; every other control character (an escape sequence) goes.
                 let text: String = text
@@ -955,6 +1070,13 @@ async fn next_output(attachment: &mut Option<Attachment>) -> Option<Vec<u8>> {
 
 /// Wakes when the ACP workspace this connection shows has a new revision. `false` means the stream is gone for
 /// good; it then pends, as do connections that show no ACP workspace or already owe an update.
+async fn next_event_change(events: &mut Option<EventSub>) -> bool {
+    match events {
+        Some(sub) if !sub.dead && !sub.due => sub.rx.changed().await.is_ok(),
+        _ => std::future::pending().await,
+    }
+}
+
 async fn next_acp_change(acp: &mut Option<AcpSub>) -> bool {
     match acp {
         Some(sub) if !sub.dead && !sub.due => sub.rx.changed().await.is_ok(),
@@ -1877,5 +1999,61 @@ mod scrollback_tests {
         let text = "x".repeat(SCROLLBACK_PART);
         let msg = &scrollback_parts("workspace-with-a-long-name", &text)[0];
         assert!(serde_json::to_string(msg).unwrap().len() < 64 * 1024);
+    }
+}
+
+#[cfg(test)]
+mod replay_message_tests {
+    use super::*;
+    use crate::event_log::Replay;
+    use serde_json::json;
+
+    fn replay(frames: Vec<serde_json::Value>, reset: bool) -> Replay {
+        Replay {
+            epoch: 5,
+            last: 99,
+            reset,
+            frames,
+        }
+    }
+
+    fn frame(n: usize) -> serde_json::Value {
+        json!({"sessionId": "a", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "x".repeat(n)}}})
+    }
+
+    #[test]
+    fn replay_a_big_replay_is_cut_into_messages_the_direct_transport_carries_and_only_the_first_resets(
+    ) {
+        let frames: Vec<_> = (0..30).map(|_| frame(5_000)).collect();
+        let msgs = events_messages("w", replay(frames, true), false);
+        assert!(msgs.len() >= 4, "{} messages", msgs.len());
+        let mut total = 0;
+        for (i, m) in msgs.iter().enumerate() {
+            let ServerMessage::AcpEvents {
+                reset,
+                frames,
+                last,
+                epoch,
+                ..
+            } = m
+            else {
+                panic!()
+            };
+            assert_eq!(*reset, i == 0);
+            assert_eq!((*last, *epoch), (99, 5));
+            assert!(serde_json::to_string(m).unwrap().len() < 48 * 1024);
+            total += frames.len();
+        }
+        assert_eq!(total, 30);
+    }
+
+    #[test]
+    fn replay_nothing_to_say_is_silent_for_a_live_tail_and_one_message_for_an_open_or_a_reset() {
+        assert!(events_messages("w", replay(vec![], false), false).is_empty());
+        assert_eq!(events_messages("w", replay(vec![], false), true).len(), 1);
+        let reset = events_messages("w", replay(vec![], true), false);
+        assert!(
+            matches!(&reset[..], [ServerMessage::AcpEvents { reset: true, frames, .. }] if frames.is_empty())
+        );
     }
 }

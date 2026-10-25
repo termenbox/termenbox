@@ -330,6 +330,7 @@ pub fn downsample_from(
                 cpu_percent: hi(acc.cpu_percent, p.cpu_percent),
                 ram_percent: hi(acc.ram_percent, p.ram_percent),
                 disk_percent: hi(acc.disk_percent, p.disk_percent),
+                event_log_bytes: acc.event_log_bytes.max(p.event_log_bytes),
             },
         )
     };
@@ -424,6 +425,7 @@ impl Sampler {
                 cpu_percent: cpu,
                 ram_percent: ram,
                 disk_percent: disk_percent(&self.data_dir),
+                event_log_bytes: Some(crate::event_log::total_bytes()),
             },
             container,
         }
@@ -620,6 +622,7 @@ mod tests {
             cpu_percent: cpu,
             ram_percent: ram,
             disk_percent: disk,
+            event_log_bytes: None,
         }
     }
 
