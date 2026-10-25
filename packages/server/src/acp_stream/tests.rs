@@ -34,7 +34,7 @@ fn replay(path: &str) -> Stream {
                         crate::acp::permission_options(&m["params"]),
                     );
                 }
-                "" if m["result"].get("sessionId").is_some() => st.session_state(&m["result"]),
+                "" if m["result"].get("sessionId").is_some() => st.workspace_state(&m["result"]),
                 "" if m["result"].get("stopReason").is_some() => {
                     st.turn_end(m["result"]["stopReason"].as_str(), None)
                 }

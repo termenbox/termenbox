@@ -25,7 +25,7 @@ async fn send(link: &Link, msg: &ServerMessage) -> bool {
     link.tx.send(serde_json::to_string(msg).unwrap()).await
 }
 
-/// What a claim would add: the name, how sessions run, as which OS user, and the version. Nothing secret.
+/// What a claim would add: the name, how workspaces run, as which OS user, and the version. Nothing secret.
 fn claim_preview(state: &AppState) -> ServerMessage {
     let (mode, run_user) = split_mode(&state.mode);
     ServerMessage::ClaimPreview {
@@ -138,11 +138,11 @@ pub async fn run(mut link: Link, state: AppState) {
         server_name: state.server_name.clone(),
         mode: state.mode.clone(),
         version: crate::version(),
-        backends: state.sessions.backends(),
-        control_mode: state.sessions.control_mode(),
-        tmux_version: state.sessions.tmux_version().to_string(),
-        prefix: state.sessions.prefix().to_string(),
-        acp_agents: state.sessions.acp_agents(),
+        backends: state.workspaces.backends(),
+        control_mode: state.workspaces.control_mode(),
+        tmux_version: state.workspaces.tmux_version().to_string(),
+        prefix: state.workspaces.prefix().to_string(),
+        acp_agents: state.workspaces.acp_agents(),
     };
     if !send(&link, &ok).await {
         return;
@@ -159,8 +159,8 @@ pub async fn run(mut link: Link, state: AppState) {
         link.tx.enable_lanes();
     }
 
-    if let Err(e) = state.sessions.serve(link, identity, &state.auth).await {
-        tracing::error!("Session error: {e}");
+    if let Err(e) = state.workspaces.serve(link, identity, &state.auth).await {
+        tracing::error!("Workspace error: {e}");
     }
 }
 

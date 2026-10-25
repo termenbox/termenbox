@@ -18,7 +18,7 @@
     servers: HubServer[]; history: HistoryMap; now: number; onask: (range: Range) => void;
     /** What each server said about its health (U14), the request for it, and this device's round trip to a server. */
     health?: HealthMap; onhealth?: (restart?: boolean) => void; rttOf?: (id: string) => number | null;
-    /** Claude Code sessions that are idle with a warm prompt cache right now, with the estimated time left (decision 0083). */
+    /** Claude Code workspaces that are idle with a warm prompt cache right now, with the estimated time left (decision 0083). */
     caches?: { key: string; name: string; server: string; remainingMs: number }[]; ttlMs?: number;
   } = $props();
 
@@ -121,7 +121,7 @@
 
         <section aria-labelledby="activity-usage" class="flex flex-col gap-3" data-activity-usage>
           <h2 id="activity-usage" class="text-sm font-semibold text-soft">Usage and cost</h2>
-          <p class="text-sm text-soft">What each agent reported, counted per task. Termenbox works out no prices: a cost appears only when the agent reported one, in its own currency. Claude Code counts are a lower bound: subagents, very long messages and anything before this server first saw the session are not counted.</p>
+          <p class="text-sm text-soft">What each agent reported, counted per task. Termenbox works out no prices: a cost appears only when the agent reported one, in its own currency. Claude Code counts are a lower bound: subagents, very long messages and anything before this server first saw the workspace are not counted.</p>
           {#if anyTokens}
             <ChartFrame title={mode === 'day' ? 'Tokens by hour' : 'Tokens by day'} caption={`${exact(tokenTotal)} input and output tokens in all, from the agents that report them.`}>
               <BarChart label={mode === 'day' ? 'Tokens by hour' : 'Tokens by day'} bars={tokenBars(buckets, mode)} />
@@ -169,7 +169,7 @@
           {#if caches.length}
             <div class="flex flex-col gap-2" data-usage-caches>
               <h3 class="text-sm font-semibold text-fg">Prompt cache now</h3>
-              <ul class="flex flex-col divide-y divide-line rounded-card border border-line bg-panel" aria-label="Prompt cache of idle Claude Code sessions">
+              <ul class="flex flex-col divide-y divide-line rounded-card border border-line bg-panel" aria-label="Prompt cache of idle Claude Code workspaces">
                 {#each caches as c (c.key)}
                   <li class="flex items-baseline justify-between gap-3 p-3"><span class="min-w-0 text-base break-words">{c.name}{many ? ` · ${c.server}` : ''}</span><span class="shrink-0 text-sm text-soft" data-cache>{cacheText(c.remainingMs)}</span></li>
                 {/each}
@@ -185,12 +185,12 @@
             <div class="flex flex-col gap-2">
               <h3 class="text-sm font-semibold text-fg">{dayLabel(g.day, now)}</h3>
               <ol class="flex flex-col gap-2">
-                {#each g.rows as r, i (`${r.serverId}|${r.session}|${r.startedAt}|${i}`)}
+                {#each g.rows as r, i (`${r.serverId}|${r.workspace}|${r.startedAt}|${i}`)}
                   <li class="flex gap-3 rounded-card border border-line bg-panel p-3" data-outcome={r.outcome}>
                     <AgentBadge agent={r.agent} state={FLEET[r.outcome]} class="self-start" />
                     <div class="flex min-w-0 flex-1 flex-col gap-1">
-                      <b class="text-base font-semibold break-words">{r.task || r.session}</b>
-                      <p class="text-sm break-words text-soft">{[r.task ? r.session : '', r.agent ?? '', many ? r.serverName : ''].filter(Boolean).join(' · ')}</p>
+                      <b class="text-base font-semibold break-words">{r.task || r.workspace}</b>
+                      <p class="text-sm break-words text-soft">{[r.task ? r.workspace : '', r.agent ?? '', many ? r.serverName : ''].filter(Boolean).join(' · ')}</p>
                       <p class="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-soft">
                         <StatusChip state={FLEET[r.outcome]} label={WORD[r.outcome]} />
                         <span>{when(r)}</span><span>{duration(r.durationMs)}</span>
@@ -210,7 +210,7 @@
       {#each cut as c (c.server.id)}
         <p class="text-sm text-soft">{nameOf(c.server)} had more tasks in this {noun} than fit in one answer: showing the newest {c.answer.runs.length}.</p>
       {/each}
-      <p class="text-sm text-soft">History stays on your servers, for up to {keepDays} days. It holds session names, a short task title (the first line of your prompt, scrubbed), the folder name, times, outcomes and the counts an agent reported (tokens, a cost it gave, rate-limit hits), never the rest of a prompt, replies or terminal text. Delete it under Privacy and your data in Settings.</p>
+      <p class="text-sm text-soft">History stays on your servers, for up to {keepDays} days. It holds workspace names, a short task title (the first line of your prompt, scrubbed), the folder name, times, outcomes and the counts an agent reported (tokens, a cost it gave, rate-limit hits), never the rest of a prompt, replies or terminal text. Delete it under Privacy and your data in Settings.</p>
     {/if}
     <HealthSection servers={connected} {health} {now} onask={onhealth} {rttOf} />
   {/if}

@@ -14,7 +14,7 @@
   <strong>This server is ready to add</strong>
   <dl>
     {#if claim}
-      <dt>Runs sessions</dt>
+      <dt>Runs workspaces</dt>
       <dd>{claim.mode === 'container' ? 'in an isolated container' : `on the machine itself, as ${claim.run_user || 'its own user'}`}</dd>
       <dt>Version</dt>
       <dd>{claim.version}</dd>

@@ -1,4 +1,4 @@
-//! tmux control mode (plan H.3): one `tmux -C` client per session tells us the moment a window is added,
+//! tmux control mode (plan H.3): one `tmux -C` client per workspace tells us the moment a window is added,
 //! closed or renamed, or a pane changes its command or directory, so tabs and the windows dropdown follow
 //! without polling. The control client only says *that* something changed; the content comes from one
 //! `list-panes -s`, so no control-mode output (which can carry pane text) is ever parsed or stored.
@@ -18,10 +18,10 @@ use crate::backend::{valid_name, Runner};
 /// Subscriptions (`refresh-client -B`) and `ignore-size` need tmux 3.2.
 pub const MIN_TMUX: (u32, u32) = (3, 2);
 
-/// Most one session is refreshed: a working agent changes `window_activity` every second.
+/// Most one workspace is refreshed: a working agent changes `window_activity` every second.
 const REFRESH_EVERY: Duration = Duration::from_secs(1);
-/// How often the set of sessions is looked at, to start and stop control clients.
-const SESSIONS_EVERY: Duration = Duration::from_secs(2);
+/// How often the set of workspaces is looked at, to start and stop control clients.
+const WORKSPACES_EVERY: Duration = Duration::from_secs(2);
 
 /// `tmux -V` output (`tmux 3.3a`, `tmux next-3.4`, `tmux master`) as (major, minor).
 pub fn parse_tmux_version(out: &str) -> Option<(u32, u32)> {
@@ -101,7 +101,7 @@ pub fn parse_windows(out: &str) -> Vec<WindowState> {
     all
 }
 
-/// The window a session's tab speaks for: the window tmux has current (the one the user last had open, so a
+/// The window a workspace's tab speaks for: the window tmux has current (the one the user last had open, so a
 /// tab switch lands where they left), else the agent window used last (ties go to the leftmost), else the first.
 pub fn representative(windows: &[WindowState]) -> Option<u32> {
     windows
@@ -123,22 +123,22 @@ pub fn representative(windows: &[WindowState]) -> Option<u32> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowUpdate {
-    pub session: String,
+    pub workspace: String,
     pub windows: Vec<WindowInfo>,
     pub representative: Option<u32>,
 }
 
-/// The latest windows of every tmux session, and a stream of changes.
+/// The latest windows of every tmux workspace, and a stream of changes.
 #[derive(Clone)]
 pub struct WindowHub {
-    sessions: Arc<Mutex<HashMap<String, WindowUpdate>>>,
+    workspaces: Arc<Mutex<HashMap<String, WindowUpdate>>>,
     tx: broadcast::Sender<WindowUpdate>,
 }
 
 impl Default for WindowHub {
     fn default() -> Self {
         Self {
-            sessions: Arc::default(),
+            workspaces: Arc::default(),
             tx: broadcast::channel(256).0,
         }
     }
@@ -150,37 +150,37 @@ impl WindowHub {
     }
 
     /// Stores the windows of `session` and tells subscribers only when something a client shows has changed.
-    pub fn publish(&self, session: &str, states: &[WindowState]) -> bool {
+    pub fn publish(&self, workspace: &str, states: &[WindowState]) -> bool {
         let update = WindowUpdate {
-            session: session.to_string(),
+            workspace: workspace.to_string(),
             windows: states.iter().map(|w| w.info.clone()).collect(),
             representative: representative(states),
         };
-        let mut sessions = self.sessions.lock().unwrap();
-        if sessions.get(session) == Some(&update) {
+        let mut workspaces = self.workspaces.lock().unwrap();
+        if workspaces.get(workspace) == Some(&update) {
             return false;
         }
-        sessions.insert(session.to_string(), update.clone());
+        workspaces.insert(workspace.to_string(), update.clone());
         let _ = self.tx.send(update);
         true
     }
 
     pub fn all(&self) -> Vec<WindowUpdate> {
-        let mut all: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
-        all.sort_by(|a, b| a.session.cmp(&b.session));
+        let mut all: Vec<_> = self.workspaces.lock().unwrap().values().cloned().collect();
+        all.sort_by(|a, b| a.workspace.cmp(&b.workspace));
         all
     }
 
-    pub fn representative(&self, session: &str) -> Option<u32> {
-        self.sessions
+    pub fn representative(&self, workspace: &str) -> Option<u32> {
+        self.workspaces
             .lock()
             .unwrap()
-            .get(session)
+            .get(workspace)
             .and_then(|u| u.representative)
     }
 
-    pub fn forget(&self, session: &str) {
-        self.sessions.lock().unwrap().remove(session);
+    pub fn forget(&self, workspace: &str) {
+        self.workspaces.lock().unwrap().remove(workspace);
     }
 }
 
@@ -201,10 +201,10 @@ pub fn is_trigger(line: &str) -> bool {
     )
 }
 
-/// `list-panes -s` of one session, parsed; an error means the session is gone.
+/// `list-panes -s` of one workspace, parsed; an error means the workspace is gone.
 pub async fn read_windows(runner: &Runner, name: &str) -> Result<Vec<WindowState>> {
     if !valid_name(name) {
-        return Err(anyhow!("Unknown session"));
+        return Err(anyhow!("Unknown workspace"));
     }
     let args = [
         "list-panes",
@@ -217,12 +217,12 @@ pub async fn read_windows(runner: &Runner, name: &str) -> Result<Vec<WindowState
     .map(String::from);
     let out = runner.run("tmux", &args).await?;
     if !out.status.success() {
-        return Err(anyhow!("the session has no windows"));
+        return Err(anyhow!("the workspace has no windows"));
     }
     Ok(parse_windows(&String::from_utf8_lossy(&out.stdout)))
 }
 
-/// Watches one session until it ends or its control client exits.
+/// Watches one workspace until it ends or its control client exits.
 async fn watch(hub: WindowHub, runner: Runner, prefix: String, name: String) {
     let key = format!("{prefix}{name}");
     let args = [
@@ -268,7 +268,7 @@ async fn watch(hub: WindowHub, runner: Runner, prefix: String, name: String) {
     hub.forget(&key);
 }
 
-/// Starts and stops one control client per tmux session. Without tmux or with an old one nothing runs and the
+/// Starts and stops one control client per tmux workspace. Without tmux or with an old one nothing runs and the
 /// caller keeps the scan.
 pub fn spawn(hub: WindowHub, runner: Runner, prefix: String) {
     tokio::spawn(async move {
@@ -299,7 +299,7 @@ pub fn spawn(hub: WindowHub, runner: Runner, prefix: String) {
                     );
                 }
             }
-            tokio::time::sleep(SESSIONS_EVERY).await;
+            tokio::time::sleep(WORKSPACES_EVERY).await;
         }
     });
 }
@@ -360,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn the_current_window_then_the_agent_used_last_speaks_for_the_session() {
+    fn the_current_window_then_the_agent_used_last_speaks_for_the_workspace() {
         let w = parse_windows(
             &[
                 row(0, 0, 500, 1, "bash", "/a", "sh"),

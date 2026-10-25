@@ -4,13 +4,13 @@ import { render } from 'svelte/server';
 import AcpView from './AcpView.svelte';
 import AcpEntryView from './AcpEntryView.svelte';
 import AcpMarkdown from './AcpMarkdown.svelte';
-import NewSessionSheet from './NewSessionSheet.svelte';
+import NewWorkspaceSheet from './NewWorkspaceSheet.svelte';
 import { Composer } from './lib/ds';
 import { ServerHub, type HubConnection, type HubServer } from './lib/hub';
 import type { ClientMessage, ServerListItem, ServerMessage } from './lib/protocol';
 import type { ConnectionOptions } from './lib/connection';
 import { decisionFor } from './lib/decision';
-import type { SessionAgent } from './lib/agents';
+import type { WorkspaceAgent } from './lib/agents';
 import { applyEvents } from './lib/agents';
 import { applyView, emptyStream, entryFrom, type Entry, type StreamState } from './lib/acpStream';
 import { parseBlocks } from './lib/markdown';
@@ -18,7 +18,7 @@ import type { AcpEntryWire, AcpViewMessage } from './lib/protocol';
 
 const html = (c: unknown, props: Record<string, unknown>) => (render as unknown as (c: unknown, o: { props: Record<string, unknown> }) => { body: string })(c, { props }).body;
 const wire = (e: Record<string, unknown>) => entryFrom(e as AcpEntryWire) as Entry;
-const base = { opened: new Set<string>(), ontoggle: () => {}, onanswer: () => {}, sessionKey: 'srv/acp:work', name: 'work', agent: 'claude', now: 0 };
+const base = { opened: new Set<string>(), ontoggle: () => {}, onanswer: () => {}, workspaceKey: 'srv/acp:work', name: 'work', agent: 'claude', now: 0 };
 
 describe('entries are drawn as text', () => {
   it('hostile agent text never becomes markup, in any kind of entry', () => {
@@ -90,33 +90,33 @@ describe('entries are drawn as text', () => {
   });
 });
 
-describe('the session view', () => {
+describe('the workspace view', () => {
   it('a history with an old error announces nothing when it is opened', () => {
     const v = { type: 'acp_view' as const, session: 'acp:work', epoch: 1, rev: 2, reset: true, first: 1, entries: [{ id: 1, rev: 2, kind: 'notice', level: 'error', text: 'Old failure' }] as AcpEntryWire[],
       info: { agent: 'claude', dir: '/w', status: 'running', working: false } };
-    const out = html(AcpView, { sessionKey: 'srv/acp:work', name: 'work', agent: 'claude', stream: applyView(emptyStream('acp:work'), v), onprompt: () => {}, oninterrupt: () => {}, onanswer: () => {}, onmode: () => {}, onshell: () => {} });
+    const out = html(AcpView, { workspaceKey: 'srv/acp:work', name: 'work', agent: 'claude', stream: applyView(emptyStream('acp:work'), v), onprompt: () => {}, oninterrupt: () => {}, onanswer: () => {}, onmode: () => {}, onshell: () => {} });
     expect(out).toContain('Old failure');
     expect(out).not.toContain('role="alert"');
   });
 
   const view = (over: Partial<AcpViewMessage> = {}): AcpViewMessage => ({ type: 'acp_view', session: 'acp:work', epoch: 1, rev: 3, reset: true, first: 1, entries: [{ id: 1, rev: 1, kind: 'user', text: 'hello' }, { id: 2, rev: 3, kind: 'message', text: 'Hi **there**' }],
     info: { agent: 'claude', dir: '/w', status: 'running', working: false, mode: 'ask', modes: [{ id: 'ask', name: 'Ask' }, { id: 'plan', name: 'Plan' }], commands: [{ name: 'compact' }], usage: { used: 250, size: 1000 } }, ...over });
-  const props = (stream?: StreamState, extra: Record<string, unknown> = {}) => ({ sessionKey: 'srv/acp:work', name: 'work', agent: 'claude', stream, onprompt: () => {}, oninterrupt: () => {}, onanswer: () => {}, onmode: () => {}, onshell: () => {}, ...extra });
+  const props = (stream?: StreamState, extra: Record<string, unknown> = {}) => ({ workspaceKey: 'srv/acp:work', name: 'work', agent: 'claude', stream, onprompt: () => {}, oninterrupt: () => {}, onanswer: () => {}, onmode: () => {}, onshell: () => {}, ...extra });
 
   it('labels the tier, lists the stream, the agent’s modes, the context use and the prompt line', () => {
     const out = html(AcpView, props(applyView(emptyStream('acp:work'), view())));
-    for (const t of ['T0 · ACP', 'work', 'hello', 'Hi', 'there', 'Ask', 'Plan', '25%', 'Search this session', 'Copy the whole session', 'Shell', 'aria-label="Prompt"', 'Prompt keys', 'role="log"']) expect(out).toContain(t);
+    for (const t of ['T0 · ACP', 'work', 'hello', 'Hi', 'there', 'Ask', 'Plan', '25%', 'Search this workspace', 'Copy the whole workspace', 'Shell', 'aria-label="Prompt"', 'Prompt keys', 'role="log"']) expect(out).toContain(t);
     expect(out).not.toContain('Stop the agent');
   });
   it('shows a Stop key while the agent works, and closes the prompt line when it has ended', () => {
     const working = html(AcpView, props(applyView(emptyStream('s'), view({ info: { ...view().info!, working: true } }))));
     expect(working).toContain('Stop the agent');
     const ended = html(AcpView, props(applyView(emptyStream('s'), view({ info: { ...view().info!, status: 'ended' } }))));
-    expect(ended).toContain('This session has ended.');
+    expect(ended).toContain('This workspace has ended.');
     expect(ended).toMatch(/<textarea[^>]*disabled/);
   });
-  it('says what it is waiting for: opening, an empty session, a lost connection', () => {
-    expect(html(AcpView, props(undefined))).toContain('Opening the session');
+  it('says what it is waiting for: opening, an empty workspace, a lost connection', () => {
+    expect(html(AcpView, props(undefined))).toContain('Opening the workspace');
     expect(html(AcpView, props(undefined, { connState: 'reconnecting' }))).toContain('Waiting for the connection');
     expect(html(AcpView, props(applyView(emptyStream('s'), view({ entries: [] }))))).toContain('Say what you want done');
     const lost = html(AcpView, props(applyView(emptyStream('s'), view()), { connState: 'reconnecting' }));
@@ -142,7 +142,7 @@ describe('the prompt line is the shared composer', () => {
 });
 
 describe('T0 in the shared pieces', () => {
-  const a = (source?: string): SessionAgent => ({ state: 'needs_input', seq: 4, stale: false, ts: 10, agent: 'claude', serverStatus: true,
+  const a = (source?: string): WorkspaceAgent => ({ state: 'needs_input', seq: 4, stale: false, ts: 10, agent: 'claude', serverStatus: true,
     attention: { id: 'a1', session: 's', kind: 'needs_input', raised_at: 5, prompt: 'Write a.txt' },
     prompt: { id: 'acp-1', kind: 'permission', choices: ['Yes', 'No'], seq: 4, confidence: 'high', source } });
   it('Home’s card says T0 for an ACP prompt and T1 for a hook one', () => {
@@ -157,21 +157,21 @@ describe('T0 in the shared pieces', () => {
   });
 });
 
-describe('starting an ACP session', () => {
+describe('starting an ACP workspace', () => {
   const server = (backends: string[], acpAgents: string[]): HubServer => ({ id: 'a', state: 'connected', reason: '', version: '0.1.34+dev', backends, acpAgents, controlMode: true, tmuxVersion: '3.6', prefix: 'C-b',
     server: { server_url: '', server_id: 'a', server_name: 'alpha', registered_at: 0 } as HubServer['server'] });
-  const sheet = (s: HubServer) => html(NewSessionSheet, { servers: [s], initialServerId: 'a', locked: true, sessions: [], windows: {}, oncreate: () => {}, onclose: () => {} });
+  const sheet = (s: HubServer) => html(NewWorkspaceSheet, { servers: [s], initialServerId: 'a', locked: true, workspaces: [], windows: {}, oncreate: () => {}, onclose: () => {} });
   it('offers the owner’s agents under the ACP manager, and the tmux ones otherwise', () => {
     const both = sheet(server(['tmux', 'acp'], ['claude', 'kilo']));
     expect(both).toContain('data-testid="view"'); // tmux and acp are one View choice, not a Manager dropdown
-    expect(both).not.toContain('Agent session (ACP)');
+    expect(both).not.toContain('Agent workspace (ACP)');
     expect(both).toContain('Codex'); // the Terminal view is the default, so every tmux agent is offered
     const acpOnly = sheet(server(['acp'], ['claude', 'kilo']));
     expect(acpOnly).toContain('Claude Code');
     expect(acpOnly).toContain('Kilo');
     expect(acpOnly).not.toContain('Codex');
     expect(acpOnly).toContain('Choose the directory the agent works in');
-    expect(sheet(server(['acp'], []))).toContain('This server allows no agent sessions yet.');
+    expect(sheet(server(['acp'], []))).toContain('This server allows no agent workspaces yet.');
   });
   it('the hub keeps the agent list the server announced', () => {
     const connections: { opts: ConnectionOptions }[] = [];

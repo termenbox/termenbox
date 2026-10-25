@@ -6,7 +6,7 @@ const view = (over: Partial<AcpViewMessage> = {}): AcpViewMessage => ({ type: 'a
 const memory = () => { const m = new Map<string, string>(); return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v) }; };
 
 describe('streams held on this device', () => {
-  it('keeps one stream per session and drops the least recently updated beyond the cap', () => {
+  it('keeps one stream per workspace and drops the least recently updated beyond the cap', () => {
     let map = {};
     for (let i = 0; i < MAX_STREAMS + 3; i++) map = applyAcp(map, `k${i}`, `s${i}`, view());
     expect(Object.keys(map)).toHaveLength(MAX_STREAMS);
@@ -14,7 +14,7 @@ describe('streams held on this device', () => {
     map = applyAcp(map, 'k4', 's4', view({ reset: false, rev: 2, entries: [] }));
     expect(Object.keys(map).at(-1)).toBe('k4');
   });
-  it('forgets the streams of that server’s sessions that no longer exist, and no other server’s', () => {
+  it('forgets the streams of that server’s workspaces that no longer exist, and no other server’s', () => {
     const map = applyAcp(applyAcp(applyAcp({}, 'one/a', 's', view()), 'one/b', 's', view()), 'two/a', 's', view());
     expect(Object.keys(forgetAcp(map, 'one/', new Set(['one/b'])))).toEqual(['one/b', 'two/a']);
     expect(forgetAcp(map, 'one/', new Set(['one/a', 'one/b']))).toBe(map);
@@ -37,7 +37,7 @@ describe('what the view remembers across a reload', () => {
     const odd = { getItem: () => JSON.stringify({ k: { draft: 5, place: { entry: 'x' }, opened: [1, 'a'] } }), setItem: () => {} };
     expect(loadSaved('k', odd)).toEqual({ draft: undefined, place: undefined, opened: ['a'] });
   });
-  it('keeps only the newest sessions', () => {
+  it('keeps only the newest workspaces', () => {
     const st = memory();
     for (let i = 0; i < 40; i++) save(`k${i}`, { draft: String(i) }, st);
     expect(loadSaved('k0', st).draft).toBeUndefined();

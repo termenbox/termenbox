@@ -278,7 +278,7 @@ describe('after a network change (decision 0123)', () => {
     return { c, made, win, net, doc, paths, winners, states, login };
   }
 
-  it('shows the path that carries the session and remembers it as the winner once authenticated', async () => {
+  it('shows the path that carries the workspace and remembers it as the winner once authenticated', async () => {
     const { c, paths, winners } = await setup();
     expect(paths).toEqual(['Direct, LAN']);
     expect(c.pathLabel).toBe('Direct, LAN');

@@ -6,7 +6,7 @@
   import { keyRowConfig, rowMode } from './lib/keyrow';
   import { nextVoiceLang, parseVoiceLang, pickLanguage, recognizerFactory, Voice, type VoiceLang } from './lib/terminal/voice';
 
-  /** The prompt line of an ACP session (U07b): one multi-line field above the key row, in the dock the soft keyboard
+  /** The prompt line of an ACP workspace (U07b): one multi-line field above the key row, in the dock the soft keyboard
    *  never covers (guardrail soft-keyboard-never-hides-input: the shell is sized by AppShell and this sits at its
    *  bottom). Enter sends (`session/prompt`), Shift+Enter or the ↵ key breaks the line, Esc or the Stop key interrupts a
    *  turn, `/` offers the agent's own commands. Paste and the keyboard's dictation work in the field as in any field;

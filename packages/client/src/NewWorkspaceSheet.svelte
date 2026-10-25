@@ -2,16 +2,16 @@
   import { onMount } from 'svelte';
   import { NativeSelect } from './lib/ui/native-select';
   import AgentIcon from './AgentIcon.svelte';
-  import { backendFor, hasViews, loadView, managerOptions, recentDirs, resolveView, saveView, suggestName, TEMPLATES, validDir, validName, viewControl, viewStore, type View } from './lib/newsession';
-  import type { HubServer, HubSession } from './lib/hub';
+  import { backendFor, hasViews, loadView, managerOptions, recentDirs, resolveView, saveView, suggestName, TEMPLATES, validDir, validName, viewControl, viewStore, type View } from './lib/newworkspace';
+  import type { HubServer, HubWorkspace } from './lib/hub';
   import type { WindowMap } from './lib/windows';
 
-  /** Servers a session can be created on (connected ones). */
+  /** Servers a workspace can be created on (connected ones). */
   export let servers: HubServer[];
   /** The server to start with, and whether the sheet is fixed to it (opened from that server's own "+ New"). */
   export let initialServerId = '';
   export let locked = false;
-  export let sessions: HubSession[];
+  export let workspaces: HubWorkspace[];
   export let windows: WindowMap;
   export let oncreate: (req: { serverId: string; backend?: string; dir?: string; template?: string; name: string }) => void;
   export let onclose: () => void;
@@ -45,16 +45,16 @@
   $: control = viewControl(server, template);
   $: view = resolveView(server, template, wanted);
   $: backend = server ? backendFor(server, manager, template, wanted) : '';
-  // An ACP session (T0): the server starts the agent itself, in a directory, from the owner's list of agents.
+  // An ACP workspace (T0): the server starts the agent itself, in a directory, from the owner's list of agents.
   $: acp = !!server && backend === 'acp';
   function pick(v: View) { wanted = v; saveView(viewStore(), serverId, template, v); }
   $: dirs = recentDirs(windows, `${serverId}/`);
-  $: taken = sessions.filter(s => s.serverId === serverId).map(s => s.id);
+  $: taken = workspaces.filter(s => s.serverId === serverId).map(s => s.id);
   $: if (!nameTouched) name = suggestName(dir, template, taken);
   // Only tmux can start in a directory or run an agent; the sheet says so for other managers instead of ignoring them.
   $: tmux = !server || server.backends.length === 0 || backend === 'tmux';
   $: ok = !!server && validName(name) && validDir(dir) && !taken.includes(name) && (!acp || (!!template && dir !== ''));
-  $: problem = acp && !template ? 'This server allows no agent sessions yet.' : acp && dir === '' ? 'Choose the directory the agent works in, like /home/you/project.' : !validDir(dir) ? 'The directory must be an absolute path, like /home/you/project.' : taken.includes(name) ? 'That name is taken.' : !validName(name) ? 'Use letters, digits, - and _ (up to 64).' : '';
+  $: problem = acp && !template ? 'This server allows no agent workspaces yet.' : acp && dir === '' ? 'Choose the directory the agent works in, like /home/you/project.' : !validDir(dir) ? 'The directory must be an absolute path, like /home/you/project.' : taken.includes(name) ? 'That name is taken.' : !validName(name) ? 'Use letters, digits, - and _ (up to 64).' : '';
 
   function create() {
     if (!ok || !server) return;
@@ -63,14 +63,14 @@
   }
 </script>
 
-<dialog bind:this={dialog} aria-label="New session" on:cancel|preventDefault={onclose} on:click={(e) => { if (e.target === dialog) onclose(); }}>
+<dialog bind:this={dialog} aria-label="New workspace" on:cancel|preventDefault={onclose} on:click={(e) => { if (e.target === dialog) onclose(); }}>
   <form on:submit|preventDefault={create}>
-    <h2>{locked && server ? `New session on ${server.server.server_name || 'Server'}` : 'New session'}</h2>
+    <h2>{locked && server ? `New workspace on ${server.server.server_name || 'Server'}` : 'New workspace'}</h2>
     {#if servers.length > 1 && !locked}
       <label>Server <NativeSelect bind:value={serverId}>{#each servers as s}<option value={s.id}>{s.server.server_name || 'Server'}</option>{/each}</NativeSelect></label>
     {/if}
     {#if managers.length > 1}
-      <label>Manager <NativeSelect bind:value={manager}>{#each managers as b}<option value={b}>{b === 'acp' ? 'Agent session (ACP)' : b}</option>{/each}</NativeSelect></label>
+      <label>Manager <NativeSelect bind:value={manager}>{#each managers as b}<option value={b}>{b === 'acp' ? 'Agent workspace (ACP)' : b}</option>{/each}</NativeSelect></label>
     {/if}
     {#if tmux || acp}
       <div class="templates" role="radiogroup" aria-label="Start with">
@@ -91,7 +91,7 @@
         <div class="dirs" aria-label="Directories in use">{#each dirs as d}<button type="button" class="secondary" on:click={() => dir = d}>{d}</button>{/each}</div>
       {/if}
     {:else}
-      <p class="note">{backend} starts sessions in its own default directory.</p>
+      <p class="note">{backend} starts workspaces in its own default directory.</p>
     {/if}
     <label class="stack">Name <input bind:value={name} on:input={() => nameTouched = true} autocapitalize="off" autocomplete="off" spellcheck="false" /></label>
     {#if problem}<p class="problem" role="alert">{problem}</p>{/if}

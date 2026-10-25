@@ -2,11 +2,11 @@
   import { onDestroy, onMount } from 'svelte';
   import { rememberFocus } from './lib/focus';
   import AgentIcon from './AgentIcon.svelte';
-  import { shortPath, type SessionWindows } from './lib/windows';
-  import type { HubSession } from './lib/hub';
+  import { shortPath, type WorkspaceWindows } from './lib/windows';
+  import type { HubWorkspace } from './lib/hub';
 
-  export let session: HubSession;
-  export let data: SessionWindows | undefined;
+  export let workspace: HubWorkspace;
+  export let data: WorkspaceWindows | undefined;
   /** False when the server cannot list windows (an old server): the menu then only offers Detach/Close. */
   export let supported = true;
   export let onselect: (index: number) => void;
@@ -15,7 +15,7 @@
   export let canNewWindow = true;
   export let onclosewindow: (index: number) => void;
   export let ondetach: () => void;
-  export let onclosesession: () => void;
+  export let oncloseworkspace: () => void;
   export let onclose: () => void;
 
   let dialog: HTMLDialogElement;
@@ -37,11 +37,11 @@
   }
 </script>
 
-<dialog bind:this={dialog} aria-label="Windows of {session.name}" on:cancel|preventDefault={onclose} on:click={(e) => { if (e.target === dialog) onclose(); }}>
+<dialog bind:this={dialog} aria-label="Windows of {workspace.name}" on:cancel|preventDefault={onclose} on:click={(e) => { if (e.target === dialog) onclose(); }}>
   <header>
-    <div class="who"><strong>{session.name}</strong>{#if session.serverName}<span>{session.serverName}</span>{/if}</div>
+    <div class="who"><strong>{workspace.name}</strong>{#if workspace.serverName}<span>{workspace.serverName}</span>{/if}</div>
     <button class="secondary" on:click={() => { onclose(); ondetach(); }}>Detach</button>
-    <button class="danger" on:click={() => { onclose(); onclosesession(); }}>Close session</button>
+    <button class="danger" on:click={() => { onclose(); oncloseworkspace(); }}>Close workspace</button>
   </header>
   {#if supported}
     <ul role="list">
@@ -53,7 +53,7 @@
             {#if w.active}<span class="here" aria-label="current window">●</span>{/if}
           </button>
           <button class="x" class:ask={confirming === w.index} aria-label={confirming === w.index ? `Confirm closing window ${w.index}` : `Close window ${w.index}`} on:click={() => closeTapped(w.index, w.command)}>
-            {confirming === w.index ? (last ? 'Ends session' : 'Close?') : '✕'}
+            {confirming === w.index ? (last ? 'Ends workspace' : 'Close?') : '✕'}
           </button>
         </li>
       {:else}
@@ -66,7 +66,7 @@
       <p class="none">Opening a window from here needs a newer server. Update it from its host.</p>
     {/if}
   {:else}
-    <p class="none">This session manager has no windows to list.</p>
+    <p class="none">This workspace manager has no windows to list.</p>
   {/if}
 </dialog>
 

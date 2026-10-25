@@ -1,9 +1,9 @@
 // The hook state of each agent on each server (U10, decisions 0079 and 0106), as the server reports it, and which card or
 // row that gives Home and Settings. Claude Code has hooks and OpenCode has plugins (fact 0038); every other agent is
 // simply never offered. Text from the server (a preview, an error) is shown as text only.
-import type { AgentMap, SessionAgent } from './agents';
-import type { HubServer, HubSession } from './hub';
-import { sessionKey } from './hub';
+import type { AgentMap, WorkspaceAgent } from './agents';
+import type { HubServer, HubWorkspace } from './hub';
+import { workspaceKey } from './hub';
 import type { HookOffers } from './hookOffer';
 import type { ClientMessage, ServerMessage } from './protocol';
 
@@ -37,13 +37,13 @@ export interface HookOffer { serverId: string; serverName: string; agent: string
 
 /** The one card Home shows: a connected server that has an agent with a hook surface running, hooks not yet on, and an
  *  offer that is due. The scan names the agent, so no hook is needed to detect it. */
-export function pendingOffer(servers: HubServer[], sessions: HubSession[], agents: AgentMap, hooks: HookMap, offers: HookOffers): HookOffer | undefined {
+export function pendingOffer(servers: HubServer[], workspaces: HubWorkspace[], agents: AgentMap, hooks: HookMap, offers: HookOffers): HookOffer | undefined {
   for (const s of servers) {
     if (s.state !== 'connected') continue;
     for (const agent of HOOK_AGENTS) {
       const info = hooks[s.id]?.[agent];
       if (!info || info.state !== 'not_connected') continue;
-      const seen = sessions.some((x) => x.serverId === s.id && agents[sessionKey(s.id, x.id)]?.agent === agent);
+      const seen = workspaces.some((x) => x.serverId === s.id && agents[workspaceKey(s.id, x.id)]?.agent === agent);
       if (!seen || !offers.due(s.id, agent)) continue;
       return { serverId: s.id, serverName: s.server.server_name || 'Server', agent, label: HOOK_LABEL[agent] ?? agent, info };
     }
@@ -69,4 +69,4 @@ export function hookRows(servers: HubServer[], hooks: HookMap, offers: HookOffer
 
 /** The agent is waiting on a prompt, with or without hooks (the screen scan alone also reads it as blocked): keys typed in
  *  the terminal now are the user answering by hand, which is what brings a "Not now" back (decision 0106). */
-export const waitingOnPrompt = (a: SessionAgent | undefined): boolean => a?.state === 'needs_input';
+export const waitingOnPrompt = (a: WorkspaceAgent | undefined): boolean => a?.state === 'needs_input';

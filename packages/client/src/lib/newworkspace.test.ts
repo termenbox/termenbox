@@ -1,18 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { backendFor, loadView, managerOptions, recentDirs, resolveView, saveView, suggestName, TEMPLATES, validDir, validName, viewControl } from './newsession';
+import { backendFor, loadView, managerOptions, recentDirs, resolveView, saveView, suggestName, TEMPLATES, validDir, validName, viewControl } from './newworkspace';
 
 const w = (path: string) => ({ index: 0, name: 'n', command: 'bash', path, active: false });
 
-describe('new session', () => {
+describe('new workspace', () => {
   it('offers every agent the server recognises, plus a plain shell', () => {
     const ids = TEMPLATES.map(t => t.id);
     for (const a of ['claude', 'codex', 'copilot', 'opencode', 'kilo', 'gemini', 'aider', 'cursor-agent', 'amp', 'goose', 'qwen', 'shell']) expect(ids).toContain(a);
   });
-  it('names a session after its directory and agent, and keeps the name unique and valid', () => {
+  it('names a workspace after its directory and agent, and keeps the name unique and valid', () => {
     expect(suggestName('/home/u/my app', 'claude', [])).toBe('my-app-claude');
     expect(suggestName('/srv/api', 'shell', [])).toBe('api');
     expect(suggestName('/srv/api', 'shell', ['api', 'api-2'])).toBe('api-3');
-    expect(suggestName('', '', [])).toBe('session');
+    expect(suggestName('', '', [])).toBe('workspace');
     expect(validName(suggestName('/x/' + 'a'.repeat(200), 'claude', []))).toBe(true);
     expect(validName(suggestName('/x/ünï', 'codex', []))).toBe(true);
   });

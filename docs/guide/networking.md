@@ -10,7 +10,7 @@ Back to the [README](../../README.md).
 ```
 
 - **Direct connection.** The browser talks to your server over a WebRTC data channel on one UDP port. No tunnel, domain, certificate or relay is needed. The channel is encrypted (DTLS) and the browser pins the server's fingerprint.
-- **Persistence = tmux.** The server attaches a tmux client per connection. If your phone drops off the network, the session keeps running and reconnecting repaints the screen. Any session manager with a CLI can be used instead (see Session backends).
+- **Persistence = tmux.** The server attaches a tmux client per connection. If your phone drops off the network, the workspace keeps running and reconnecting repaints the screen. Any workspace manager with a CLI can be used instead (see Workspace backends).
 - **Owner only.** The first GitHub user to connect becomes the server's owner; everyone else is refused.
 - **Free to run.** The client and a small signed directory run on Cloudflare's free tier. Your server needs a VPS with 512 MB of RAM and a public IP.
 

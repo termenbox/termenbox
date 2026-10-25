@@ -1,5 +1,5 @@
-// The ACP sessions this device holds (U07b): the stream of each, so switching sessions or leaving the view keeps its
-// place, and what the view remembers about a session on this device (draft, scroll place, opened diffs) across a
+// The ACP workspaces this device holds (U07b): the stream of each, so switching workspaces or leaving the view keeps its
+// place, and what the view remembers about a workspace on this device (draft, scroll place, opened diffs) across a
 // reload. The stream itself lives on the server; a reload asks for it again with `acp_open`.
 import { writable } from 'svelte/store';
 import { applyView, emptyStream, type StreamState } from './acpStream';
@@ -10,8 +10,8 @@ export const MAX_STREAMS = 8;
 
 export const acpStreams = writable<Record<string, StreamState>>({});
 
-export function applyAcp(map: Record<string, StreamState>, key: string, session: string, msg: AcpViewMessage): Record<string, StreamState> {
-  const held = map[key] ?? emptyStream(session);
+export function applyAcp(map: Record<string, StreamState>, key: string, workspace: string, msg: AcpViewMessage): Record<string, StreamState> {
+  const held = map[key] ?? emptyStream(workspace);
   const next: Record<string, StreamState> = { ...map };
   delete next[key]; // reinserted last: the most recently updated
   next[key] = applyView(held, msg);
@@ -20,7 +20,7 @@ export function applyAcp(map: Record<string, StreamState>, key: string, session:
   return next;
 }
 
-/** After a server's session list: drops the streams of that server's sessions that are no longer in it. */
+/** After a server's workspace list: drops the streams of that server's workspaces that are no longer in it. */
 export function forgetAcp(map: Record<string, StreamState>, serverPrefix: string, live: Set<string>): Record<string, StreamState> {
   const gone = Object.keys(map).filter((k) => k.startsWith(serverPrefix) && !live.has(k));
   if (!gone.length) return map;
@@ -29,7 +29,7 @@ export function forgetAcp(map: Record<string, StreamState>, serverPrefix: string
   return next;
 }
 
-// ---- What this device remembers per session
+// ---- What this device remembers per workspace
 
 /** Where the reader was: the entry at the top of the screen and how far into it, or at the end (following). Entry ids
  *  restart with each epoch (a server restart), so a place belongs to the epoch it was taken in. */
@@ -66,7 +66,7 @@ export function loadSaved(key: string, storage = store()): Saved {
   };
 }
 
-/** Merges `patch` into the saved state of a session. Best effort: private mode or a full store just forgets. */
+/** Merges `patch` into the saved state of a workspace. Best effort: private mode or a full store just forgets. */
 export function save(key: string, patch: Partial<Saved>, storage = store()): void {
   const all = read(storage);
   const merged: Saved = { ...all[key], ...patch };

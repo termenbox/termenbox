@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 /// The socket name (`tmux -L`) of termenbox's own server.
 pub const SOCKET: &str = "termenbox";
 
-/// Which tmux server the sessions live on.
+/// Which tmux server the workspaces live on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Socket {
     /// Termenbox's own server (`-L termenbox`, `-f` the config below).
@@ -43,7 +43,7 @@ pub fn save(dir: &Path, socket: Socket) -> std::io::Result<()> {
 }
 
 /// The private server, unless the owner explicitly asked for the default socket (decision 0121). Neither the saved
-/// choice nor sessions already running on the default socket decide it: the tmux the server runs is pinned, and
+/// choice nor workspaces already running on the default socket decide it: the tmux the server runs is pinned, and
 /// it can only attach to a server of its own version, which a tmux the user started earlier may not be.
 pub fn decide(explicit: Option<Socket>) -> Socket {
     explicit.unwrap_or(Socket::Private)
@@ -59,7 +59,7 @@ pub fn render(term: &str, local: Option<&Path>) -> String {
     // Copying works across the browser: a drag in tmux copies, and tmux and the programs in it put the text on the
     // clipboard of the machine the browser runs on (OSC 52). Shift+drag still makes the browser's own selection.
     out.push_str("set -g mouse on\nset -g set-clipboard on\nset -gq allow-passthrough on\n");
-    // The client draws its own session chrome, so tmux's status line only costs a row of the terminal.
+    // The client draws its own workspace chrome, so tmux's status line only costs a row of the terminal.
     out.push_str("set -g status off\n");
     if let Some(local) = local {
         out.push_str(&format!("source-file -q \"{}\"\n", local.display()));

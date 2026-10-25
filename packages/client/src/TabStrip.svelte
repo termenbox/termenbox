@@ -5,18 +5,18 @@
   import { representativeWindow, tabTexts, type TabText, type WindowMap } from './lib/windows';
   import AgentIcon from './AgentIcon.svelte';
   import type { AgentMap } from './lib/agents';
-  import type { HubSession, HubServer } from './lib/hub';
+  import type { HubWorkspace, HubServer } from './lib/hub';
 
-  export let sessions: HubSession[] = [];
+  export let workspaces: HubWorkspace[] = [];
   export let agents: AgentMap = {};
   export let servers: HubServer[] = [];
   export let activeKey: string | null = null;
   export let held = false;
   export let windows: WindowMap = {};
-  /** Sessions whose prompt cache goes cold within a minute: the tab gets a thin ring. */
+  /** Workspaces whose prompt cache goes cold within a minute: the tab gets a thin ring. */
   export let expiring: Set<string> = new Set();
   export let onopen: (key: string) => void;
-  /** Tapping the tab that is already open lists the windows of its session. */
+  /** Tapping the tab that is already open lists the windows of its workspace. */
   export let onmenu: (key: string) => void = () => {};
   export let onpeek: (key: string) => void = () => {};
   export let onactions: (key: string) => void;
@@ -24,7 +24,7 @@
   const frozen = new FrozenOrder();
   let now = Date.now();
   let revision = 0;
-  let shown: HubSession[] = [];
+  let shown: HubWorkspace[] = [];
   let live = new Set<string>();
   let strip: HTMLDivElement;
   let visibleActive: string | null = null;
@@ -37,29 +37,34 @@
   let texts: Record<string, TabText> = {};
   let shownWindows: WindowMap = {};
   $: if (!frozen.frozen(now) || !Object.keys(shownWindows).length) { shownWindows = windows; }
-  $: texts = tabTexts(sessions, shownWindows);
+  $: texts = tabTexts(workspaces, shownWindows);
 
   let wasHeld = false;
   $: if (held !== wasHeld) { frozen.sheet(held); wasHeld = held; revision++; }
   $: {
     revision;
-    const order = frozen.order(tabIds(sessions, agents), {}, now);
+    const order = frozen.order(tabIds(workspaces, agents), {}, now);
     // A tab opened during a hold still gets a tab; a removed one stays in place (disabled) until the hold ends.
-    if (activeKey && !order.includes(activeKey) && sessions.some(s => s.key === activeKey)) order.push(activeKey);
-    live = new Set(sessions.map(s => s.key));
-    const known = new Map([...shown, ...sessions].map(s => [s.key, s]));
-    shown = order.map(key => known.get(key)).filter((s): s is HubSession => !!s);
+    if (activeKey && !order.includes(activeKey) && workspaces.some(s => s.key === activeKey)) order.push(activeKey);
+    live = new Set(workspaces.map(s => s.key));
+    const known = new Map([...shown, ...workspaces].map(s => [s.key, s]));
+    shown = order.map(key => known.get(key)).filter((s): s is HubWorkspace => !!s);
   }
   $: if (strip && activeKey && activeKey !== visibleActive && !frozen.frozen(now)) scrollActive(activeKey, shown);
 
-  async function scrollActive(key: string, _shown: HubSession[]) {
+  async function scrollActive(key: string, _shown: HubWorkspace[]) {
     await tick();
     if (key !== activeKey || frozen.frozen(Date.now())) return;
     const tab = [...strip.querySelectorAll<HTMLButtonElement>('[role=tab]')].find(el => el.dataset.key === key);
     if (!tab) return;
-    const a = tab.getBoundingClientRect(), b = strip.getBoundingClientRect();
-    if (a.left < b.left) strip.scrollLeft -= b.left - a.left;
-    else if (a.right > b.right) strip.scrollLeft += a.right - b.right;
+    // A tab as wide as the strip (max-width: 100%) moves with every resize: measure again on the next frame until it fits.
+    for (let tries = 0; tries < 4; tries++) {
+      const a = tab.getBoundingClientRect(), b = strip.getBoundingClientRect();
+      if (a.left >= b.left - 1 && a.right <= b.right + 1) break;
+      if (a.left < b.left) strip.scrollLeft -= b.left - a.left;
+      else strip.scrollLeft += a.right - b.right;
+      await new Promise(requestAnimationFrame);
+    }
     visibleActive = key;
     edges();
   }
@@ -91,31 +96,31 @@
 </script>
 
 <div class="tabs" class:left class:right>
-  <div class="strip" bind:this={strip} role="tablist" aria-label="Sessions across servers" on:scroll={() => { frozen.scrolled(Date.now()); cancelPress(); edges(); }}>
-    {#each shown as session (session.key)}
-      {@const agent = agents[session.key]}
+  <div class="strip" bind:this={strip} role="tablist" aria-label="Workspaces across servers" on:scroll={() => { frozen.scrolled(Date.now()); cancelPress(); edges(); }}>
+    {#each shown as workspace (workspace.key)}
+      {@const agent = agents[workspace.key]}
       {@const chip = agent ? chipFor(agent, now) : { icon: '·', label: 'No status', tone: 'none' }}
-      {@const server = servers.find(s => s.id === session.serverId)}
-      {@const rep = representativeWindow(shownWindows[session.key])}
-      {@const text = texts[session.key] ?? { label: session.name, hint: session.name }}
-      <button type="button" role="tab" data-key={session.key} aria-selected={activeKey === session.key}
-        aria-label={`${text.label}${servers.length > 1 ? ' · ' + session.serverName : ''} · ${agent ? chip.label : 'No status'}${server && server.state !== 'connected' ? ' · ' + server.state + (server.reason ? ': ' + server.reason : '') : ''}`}
-        title={text.hint} class:ring={expiring.has(session.key)} class:active={activeKey === session.key} class:degraded={server?.state !== 'connected'} disabled={!live.has(session.key)}
-        on:mousedown|preventDefault on:pointerdown={(e) => down(e, session.key)} on:pointermove={move}
+      {@const server = servers.find(s => s.id === workspace.serverId)}
+      {@const rep = representativeWindow(shownWindows[workspace.key])}
+      {@const text = texts[workspace.key] ?? { label: workspace.name, hint: workspace.name }}
+      <button type="button" role="tab" data-key={workspace.key} aria-selected={activeKey === workspace.key}
+        aria-label={`${text.label}${servers.length > 1 ? ' · ' + workspace.serverName : ''} · ${agent ? chip.label : 'No status'}${server && server.state !== 'connected' ? ' · ' + server.state + (server.reason ? ': ' + server.reason : '') : ''}`}
+        title={text.hint} class:ring={expiring.has(workspace.key)} class:active={activeKey === workspace.key} class:degraded={server?.state !== 'connected'} disabled={!live.has(workspace.key)}
+        on:mousedown|preventDefault on:pointerdown={(e) => down(e, workspace.key)} on:pointermove={move}
         on:click={(e) => {
-          const suppress = e.detail > 0 && longPressed === session.key;
+          const suppress = e.detail > 0 && longPressed === workspace.key;
           longPressed = null;
           if (suppress) return;
-          if (session.key === activeKey) onmenu(session.key); else onopen(session.key);
+          if (workspace.key === activeKey) onmenu(workspace.key); else onopen(workspace.key);
         }}
-        on:contextmenu|preventDefault={() => onactions(session.key)}>
-        <span class="mark"><AgentIcon command={rep?.command} agent={rep ? rep.agent : agent?.agent} size={22} /><span class="state-icon state-{chip.tone}" aria-hidden="true">{chip.icon}</span></span><span class="session-name">{text.label}</span>
-        {#if servers.length > 1}<span class="badge">{session.serverName}</span>{/if}
+        on:contextmenu|preventDefault={() => onactions(workspace.key)}>
+        <span class="mark"><AgentIcon command={rep?.command} agent={rep ? rep.agent : agent?.agent} size={22} /><span class="state-icon state-{chip.tone}" aria-hidden="true">{chip.icon}</span></span><span class="workspace-name">{text.label}</span>
+        {#if servers.length > 1}<span class="badge">{workspace.serverName}</span>{/if}
         <span class="need" aria-hidden="true">{needsYou(agent) ? '●' : ''}</span>
         <span class="sr">{chip.label}</span>
       </button>
     {/each}
-    {#if !shown.length}<span class="empty">No sessions</span>{/if}
+    {#if !shown.length}<span class="empty">No workspaces</span>{/if}
   </div>
 </div>
 
@@ -130,7 +135,7 @@
   button { flex: 0 0 auto; max-width: 100%; min-height: 44px; min-width: 44px; display: flex; align-items: center; gap: 6px; white-space: nowrap; background: var(--bg); color: var(--fg); border: 1px solid var(--border); }
   button.active { border-color: var(--accent); }
   button.degraded { color: var(--fg-muted); border-style: dashed; }
-  .session-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .workspace-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .badge { font-size: 0.65rem; background: var(--border); border-radius: 4px; padding: 2px 4px; max-width: 64px; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
   .mark { position: relative; display: inline-flex; flex-shrink: 0; }
   .state-icon { position: absolute; right: -6px; bottom: -6px; min-width: 14px; height: 14px; border-radius: 7px; background: var(--bg); border: 1px solid var(--border); font-size: 0.6rem; line-height: 12px; text-align: center; }

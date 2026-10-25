@@ -15,8 +15,8 @@ describe('the servers page', () => {
     expect(out).not.toContain('Remove server');
     expect(out).not.toContain('Send to another device');
   });
-  it('counts the sessions of a connected server', () => {
-    expect(out).toContain('3 sessions');
+  it('counts the workspaces of a connected server', () => {
+    expect(out).toContain('3 workspaces');
   });
   it('keeps the connection error out of the row, behind an icon only a failing server has', () => {
     expect((out.match(/data-testid="server-issue"/g) ?? []).length).toBe(1);
@@ -24,8 +24,8 @@ describe('the servers page', () => {
     expect(out).not.toContain('No route to host');
     expect(out).not.toContain('Why can&#39;t I connect');
   });
-  it('does not lead back to Sessions or draw an icon before the name', () => {
-    expect(out).not.toContain('← Sessions');
+  it('does not lead back to Workspaces or draw an icon before the name', () => {
+    expect(out).not.toContain('← Workspaces');
     expect(out).not.toContain('linear-gradient');
   });
 });

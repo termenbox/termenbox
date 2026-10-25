@@ -1,4 +1,4 @@
-//! The turn-and-obligation reducer: one small state machine per session that turns what an agent says (hooks,
+//! The turn-and-obligation reducer: one small state machine per workspace that turns what an agent says (hooks,
 //! ACP requests) into `working`, `needs_input` or an ending, the way ACP does by construction.
 //!
 //! * A **turn** is open from the prompt until the agent answers; `working` means a turn is open and nothing waits
@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 
 use termenbox_core::events::AgentState;
 
-/// Obligations kept per session; the oldest are never dropped silently, new ones past this are not tracked.
+/// Obligations kept per workspace; the oldest are never dropped silently, new ones past this are not tracked.
 const MAX_BLOCKS: usize = 32;
 /// A screen must disagree this many scans in a row before it closes anything.
 const DISAGREE_SCANS: u8 = 2;
@@ -51,7 +51,7 @@ pub struct Reducer {
     blocks: BTreeSet<String>,
     /// The state the reducer last derived, so only a change is reported.
     last: Option<AgentState>,
-    /// A real request hook (not a notification) has opened a block in this session.
+    /// A real request hook (not a notification) has opened a block in this workspace.
     request_hook_seen: bool,
     /// ms of the last edge, on the server's clock.
     last_edge_at: u64,

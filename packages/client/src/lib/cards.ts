@@ -1,7 +1,7 @@
-// Session cards (plan v8): what a card shows and how the list is ordered. Pure functions, so the rules (a state is
+// Workspace cards (plan v8): what a card shows and how the list is ordered. Pure functions, so the rules (a state is
 // never colour alone, the order holds still under a finger) are tested without a browser. Text from agents is
 // plain text: nothing here builds markup.
-import { isStale, type AgentMap, type SessionAgent } from './agents';
+import { isStale, type AgentMap, type WorkspaceAgent } from './agents';
 import type { AgentState } from './protocol';
 
 export interface Chip {
@@ -20,7 +20,7 @@ const CHIPS: Record<AgentState, Chip> = {
   unknown: { label: 'No status', icon: '·', tone: 'idle' },
 };
 
-export function chipFor(a: SessionAgent, nowMs: number): Chip & { stale: boolean } {
+export function chipFor(a: WorkspaceAgent, nowMs: number): Chip & { stale: boolean } {
   const stale = isStale(a, nowMs);
   return { ...(CHIPS[a.state] ?? CHIPS.unknown), stale };
 }
@@ -28,7 +28,7 @@ export function chipFor(a: SessionAgent, nowMs: number): Chip & { stale: boolean
 export const isDone = (status: string) => /^(done|completed|complete|finished)$/i.test(status);
 
 /** "3/7" from a plan, counting finished items; null without a plan. */
-export function progress(plan: SessionAgent['plan']): string | null {
+export function progress(plan: WorkspaceAgent['plan']): string | null {
   if (!plan || plan.length === 0) return null;
   const done = plan.filter((i) => isDone(i.status)).length;
   return `${done}/${plan.length}`;
@@ -43,13 +43,13 @@ export function ageText(ts: number, nowMs: number): string {
 }
 
 /** "Edit src/app.ts" for a tool that is running, "Last: Bash ls" once it finished. */
-export function toolLine(a: SessionAgent): string {
+export function toolLine(a: WorkspaceAgent): string {
   if (!a.tool || !a.tool.name) return '';
   const what = [a.tool.name, a.tool.summary].filter(Boolean).join(' ');
   return a.tool.phase === 'finished' ? `Last: ${what}` : what;
 }
 
-export function staleText(a: SessionAgent, nowMs: number): string {
+export function staleText(a: WorkspaceAgent, nowMs: number): string {
   return `no update for ${Math.max(1, Math.floor((nowMs - a.ts) / 60_000))} min`;
 }
 

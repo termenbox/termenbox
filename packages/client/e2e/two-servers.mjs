@@ -66,7 +66,7 @@ const root = mkdtempSync(join(tmpdir(), 'termenbox-two-'));
 const fakeBin = join(root, 'bin');
 mkdirSync(fakeBin);
 symlinkSync('/bin/bash', join(fakeBin, 'aider'));
-// Sessions start the user's shell, whose profile may rewrite the PATH: a private HOME puts the fake agent first.
+// Workspaces start the user's shell, whose profile may rewrite the PATH: a private HOME puts the fake agent first.
 const homeDir = join(root, 'home');
 mkdirSync(homeDir);
 writeFileSync(join(homeDir, '.bashrc'), `export PATH=${fakeBin}:$PATH\nPS1='$ '\n`);
@@ -122,8 +122,8 @@ try {
   const [a, b] = [await startServer('alpha'), await startServer('beta')];
   browser = await launch(['--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection']);
 
-  // The first connection to each server carries its claim secret and creates the sessions, with a real agent window.
-  const createSessions = async (server, names) => {
+  // The first connection to each server carries its claim secret and creates the workspaces, with a real agent window.
+  const createWorkspaces = async (server, names) => {
     const page = await (await browser.newContext(contextOptions())).newPage();
     page.on('pageerror', (e) => fail(`page error: ${e.message}`));
     await page.goto(`http://127.0.0.1:${webPort}/`);
@@ -133,11 +133,11 @@ try {
     for (const name of names) {
       await page.evaluate((o) => window.__e2e.send({ type: 'new_session', name: o.name, dir: o.dir, template: 'aider' }), { name, dir: repo });
     }
-    await waitFor(() => page.evaluate((n) => window.__e2e.sessions.length >= n, names.length), `${server.label} sessions`);
+    await waitFor(() => page.evaluate((n) => window.__e2e.workspaces.length >= n, names.length), `${server.label} workspaces`);
     await page.close();
   };
-  await createSessions(a, ['api', 'web', 'docs']);
-  await createSessions(b, ['infra']);
+  await createWorkspaces(a, ['api', 'web', 'docs']);
+  await createWorkspaces(b, ['infra']);
   for (const s of [a, b]) {
     await waitFor(() => s.tmux('list-panes', '-a', '-F', '#{pane_current_command}').includes('aider'), `${s.label} agents`);
   }
@@ -175,15 +175,15 @@ try {
   );
   await page.reload();
 
-  // 1. Three sessions in one repo, each running an agent, get distinct tabs; the second server's session is there too.
-  await page.locator('[data-shell=bottom-bar] [data-destination=sessions]').click(); // the app opens on Home (U05); the strip is on Sessions
+  // 1. Three workspaces in one repo, each running an agent, get distinct tabs; the second server's workspace is there too.
+  await page.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click(); // the app opens on Home (U05); the strip is on Workspaces
   const tabs = page.getByRole('tab');
   await waitFor(async () => (await tabs.count()) === 4, 'four tabs (3 + 1 on two servers)', 30000);
   const labels = await tabs.evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')));
   if (new Set(labels).size !== 4) fail(`tabs are not distinct: ${JSON.stringify(labels)}`);
-  for (const name of ['api', 'web', 'docs']) if (!labels.some((l) => l.includes(name))) fail(`no tab names session ${name}: ${JSON.stringify(labels)}`);
+  for (const name of ['api', 'web', 'docs']) if (!labels.some((l) => l.includes(name))) fail(`no tab names workspace ${name}: ${JSON.stringify(labels)}`);
   if (!labels.some((l) => l.includes('infra') && l.includes('beta'))) fail(`the second server's tab is missing: ${JSON.stringify(labels)}`);
-  ok('three agent sessions in one repo and one on a second server give four distinct tabs');
+  ok('three agent workspaces in one repo and one on a second server give four distinct tabs');
 
   const tab = (name) => page.locator(`[role=tab][aria-label*="${name}"]`).first();
   const menu = (name) => page.getByRole('dialog', { name: `Windows of ${name}` });
@@ -209,9 +209,9 @@ try {
   if (await confirmButton.count()) await confirmButton.click(); // an idle shell closes at once; a busy one asks
   await waitFor(() => windowsOf(a, 'api') === 1, 'the window to close');
   await page.keyboard.press('Escape');
-  ok('+ New window and the per-window close act on the real tmux session');
+  ok('+ New window and the per-window close act on the real tmux workspace');
 
-  // 3. A session that needs you shows the banner without changing the tab the user is on.
+  // 3. A workspace that needs you shows the banner without changing the tab the user is on.
   // The label ends with the agent's status, which moves by itself; the tab is told apart by what comes before it.
   const activeTab = async () => ((await page.locator('[role=tab][aria-selected=true]').getAttribute('aria-label')) ?? '').split(' · ').slice(0, -1).join(' · ');
   const activeBefore = await activeTab();
@@ -226,7 +226,7 @@ try {
   if (activeAfter !== activeBefore) fail(`the banner changed the tab: ${activeBefore} -> ${activeAfter}`);
   ok('the needs-you banner appears without a tab change');
 
-  // 4. A tab switch shows the last screen of the other session before the live repaint.
+  // 4. A tab switch shows the last screen of the other workspace before the live repaint.
   await page.evaluate(() => {
     window.__previewSeen = false;
     new MutationObserver(() => {
@@ -241,10 +241,10 @@ try {
   await page.waitForFunction(() => document.querySelector('[role=tab][aria-selected=true]')?.getAttribute('aria-label')?.includes('web'));
   await page.waitForFunction(() => !!document.querySelector('.xterm-screen'), null, { timeout: 15000 });
   await sleep(500);
-  if (!(await page.evaluate(() => window.__previewSeen))) fail('switching tabs never showed the preview of the other session');
-  else ok('a session switch shows a snapshot before the live repaint');
+  if (!(await page.evaluate(() => window.__previewSeen))) fail('switching tabs never showed the preview of the other workspace');
+  else ok('a workspace switch shows a snapshot before the live repaint');
 
-  // 4b. Switching back to sessions already visited never shows a blank screen: the saved screen is drawn in the
+  // 4b. Switching back to workspaces already visited never shows a blank screen: the saved screen is drawn in the
   // same write that clears the terminal, and the live repaint lands on the same cells.
   const switchTo = async (name) => {
     await tab(name).click();
@@ -252,7 +252,7 @@ try {
     await sleep(700);
   };
   await switchTo('docs');
-  await switchTo('web'); // both sessions have now been shown once
+  await switchTo('web'); // both workspaces have now been shown once
   await page.evaluate(() => {
     window.__blank = 0;
     window.__frames = 0;
@@ -272,24 +272,24 @@ try {
   await switchTo('web');
   const { blank, frames } = await page.evaluate(() => ({ blank: window.__blank, frames: window.__frames }));
   if (!frames) fail('no terminal rows to sample (the DOM renderer is not in use)');
-  else if (blank) fail(`${blank} of ${frames} frames were blank while switching between visited sessions`);
+  else if (blank) fail(`${blank} of ${frames} frames were blank while switching between visited workspaces`);
   else ok(`tab 1 - tab 2 - tab 1 shows no blank frame (${frames} frames sampled)`);
 
-  // 5. Detach closes the tab and keeps the session; Close session confirms, then ends it.
+  // 5. Detach closes the tab and keeps the workspace; Close workspace confirms, then ends it.
   await tab('web').click();
   await menu('web').waitFor();
   await menu('web').getByRole('button', { name: 'Detach', exact: true }).click();
   await tab('web').waitFor({ state: 'detached' });
-  if (!a.tmux('list-sessions', '-F', '#{session_name}').split('\n').includes('web')) fail('Detach ended the session');
+  if (!a.tmux('list-sessions', '-F', '#{session_name}').split('\n').includes('web')) fail('Detach ended the workspace');
   await tap(tab('docs'));
   await page.waitForFunction(() => document.querySelector('[role=tab][aria-selected=true]')?.getAttribute('aria-label')?.includes('docs'));
   await tab('docs').click();
   await menu('docs').waitFor();
-  await menu('docs').getByRole('button', { name: 'Close session', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Session actions' }).getByRole('button', { name: 'Close session', exact: true }).click();
+  await menu('docs').getByRole('button', { name: 'Close workspace', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Workspace actions' }).getByRole('button', { name: 'Close workspace', exact: true }).click();
   await waitFor(() => !a.tmux('list-sessions', '-F', '#{session_name}').split('\n').includes('docs'), 'docs to end');
-  if (!b.tmux('list-sessions', '-F', '#{session_name}').split('\n').includes('infra')) fail('the other server lost its session');
-  ok('Detach keeps the session running; Close session asks and ends only that session');
+  if (!b.tmux('list-sessions', '-F', '#{session_name}').split('\n').includes('infra')) fail('the other server lost its workspace');
+  ok('Detach keeps the workspace running; Close workspace asks and ends only that workspace');
 
   if (errors.length) fail(`page errors: ${errors.join(' | ')}`);
 } catch (e) {

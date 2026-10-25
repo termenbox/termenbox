@@ -1,8 +1,8 @@
 export { default as StatusChip } from './StatusChip.svelte';
 export { default as AgentBadge } from './AgentBadge.svelte';
 export { default as FleetTile } from './FleetTile.svelte';
-export { default as SessionStrip } from './SessionStrip.svelte';
-export type { StripItem } from './SessionStrip.svelte';
+export { default as WorkspaceStrip } from './WorkspaceStrip.svelte';
+export type { StripItem } from './WorkspaceStrip.svelte';
 export { default as DecisionCard } from './DecisionCard.svelte';
 export { default as OptionButton } from './OptionButton.svelte';
 export { default as QueueItem } from './QueueItem.svelte';

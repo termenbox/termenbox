@@ -23,7 +23,7 @@ All builds and image publishing run in CI (`.github/workflows/`). Layout:
 
 ```
 packages/core     shared protocol types (Rust)
-packages/server   termenbox-server: auth, sessions, WebRTC + WebSocket transports, directory announcer
+packages/server   termenbox-server: auth, workspaces, WebRTC + WebSocket transports, directory announcer
 packages/client   Svelte 5 + xterm.js client, Pages Functions (OAuth exchange, signed directory)
 packages/agent    parked (agent detection moves into the server, issue #19)
 docker/           image (built by CI), dev build container, sample compose file

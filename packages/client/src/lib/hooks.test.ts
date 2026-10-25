@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import type { AgentMap, SessionAgent } from './agents';
-import type { HubServer, HubSession } from './hub';
+import type { AgentMap, WorkspaceAgent } from './agents';
+import type { HubServer, HubWorkspace } from './hub';
 import { HookOffers } from './hookOffer';
 import { applyHookReply, hookQueries, hookRows, markBusy, pendingOffer, waitingOnPrompt, type HookMap } from './hooks';
 
 const server = (id: string, state = 'connected'): HubServer => ({ id, state, server: { server_name: id.toUpperCase() } }) as unknown as HubServer;
-const sess = (serverId: string, id: string): HubSession => ({ id, name: id, agent: null, serverId, serverName: serverId, key: `${serverId}/${id}` });
-const agentOf = (agent: string, extra: Partial<SessionAgent> = {}): SessionAgent => ({ state: 'idle', seq: 1, stale: false, ts: 1, agent, ...extra });
+const sess = (serverId: string, id: string): HubWorkspace => ({ id, name: id, agent: null, serverId, serverName: serverId, key: `${serverId}/${id}` });
+const agentOf = (agent: string, extra: Partial<WorkspaceAgent> = {}): WorkspaceAgent => ({ state: 'idle', seq: 1, stale: false, ts: 1, agent, ...extra });
 const memory = () => { const m = new Map<string, string>(); return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v) }; };
 const reply = (state: string, extra = {}) => ({ type: 'agent_hooks' as const, agent: 'claude', action: 'preview', state, ...extra });
 
@@ -35,12 +35,12 @@ describe('server hook state', () => {
 
 describe('the offer on Home', () => {
   const servers = [server('s1')];
-  const sessions = [sess('s1', 'a')];
+  const workspaces = [sess('s1', 'a')];
   const hooks: HookMap = { s1: { claude: { state: 'not_connected', preview: '{}' } } };
   const agents: AgentMap = { 's1/a': agentOf('claude') };
 
   it('shows on the first detection of Claude Code with hooks off', () => {
-    const o = pendingOffer(servers, sessions, agents, hooks, new HookOffers(memory(), () => 0));
+    const o = pendingOffer(servers, workspaces, agents, hooks, new HookOffers(memory(), () => 0));
     expect(o?.agent).toBe('claude');
     expect(o?.label).toBe('Claude Code');
     expect(o?.serverName).toBe('S1');
@@ -48,27 +48,27 @@ describe('the offer on Home', () => {
   it('shows OpenCode with its own label', () => {
     const agents: AgentMap = { 's1/a': agentOf('opencode') };
     const hooks: HookMap = { s1: { opencode: { state: 'not_connected', preview: 'plugin' } } };
-    const o = pendingOffer(servers, sessions, agents, hooks, new HookOffers(memory(), () => 0));
+    const o = pendingOffer(servers, workspaces, agents, hooks, new HookOffers(memory(), () => 0));
     expect(o?.agent).toBe('opencode');
     expect(o?.label).toBe('OpenCode');
   });
   it('does not show without a detected agent, for another agent, with hooks on, or on a server that is not connected', () => {
     const offers = new HookOffers(memory(), () => 0);
-    expect(pendingOffer(servers, sessions, {}, hooks, offers)).toBeUndefined();
-    expect(pendingOffer(servers, sessions, { 's1/a': agentOf('codex') }, hooks, offers)).toBeUndefined();
-    expect(pendingOffer(servers, sessions, agents, { s1: { claude: { state: 'connected' } } }, offers)).toBeUndefined();
-    expect(pendingOffer(servers, sessions, agents, { s1: { claude: { state: 'unsupported' } } }, offers)).toBeUndefined();
-    expect(pendingOffer([server('s1', 'reconnecting')], sessions, agents, hooks, offers)).toBeUndefined();
-    expect(pendingOffer(servers, sessions, agents, {}, offers)).toBeUndefined(); // an older server never answers
+    expect(pendingOffer(servers, workspaces, {}, hooks, offers)).toBeUndefined();
+    expect(pendingOffer(servers, workspaces, { 's1/a': agentOf('codex') }, hooks, offers)).toBeUndefined();
+    expect(pendingOffer(servers, workspaces, agents, { s1: { claude: { state: 'connected' } } }, offers)).toBeUndefined();
+    expect(pendingOffer(servers, workspaces, agents, { s1: { claude: { state: 'unsupported' } } }, offers)).toBeUndefined();
+    expect(pendingOffer([server('s1', 'reconnecting')], workspaces, agents, hooks, offers)).toBeUndefined();
+    expect(pendingOffer(servers, workspaces, agents, {}, offers)).toBeUndefined(); // an older server never answers
   });
   it('stops after Not now and Never, per server', () => {
     const offers = new HookOffers(memory(), () => 0);
     offers.notNow('s1', 'claude');
-    expect(pendingOffer(servers, sessions, agents, hooks, offers)).toBeUndefined();
+    expect(pendingOffer(servers, workspaces, agents, hooks, offers)).toBeUndefined();
     offers.manualAnswer('s1', 'claude');
-    expect(pendingOffer(servers, sessions, agents, hooks, offers)).toBeDefined();
+    expect(pendingOffer(servers, workspaces, agents, hooks, offers)).toBeDefined();
     offers.never('s1', 'claude');
-    expect(pendingOffer(servers, sessions, agents, hooks, offers)).toBeUndefined();
+    expect(pendingOffer(servers, workspaces, agents, hooks, offers)).toBeUndefined();
   });
   it('treats the agent waiting on a prompt as the user answering by hand', () => {
     expect(waitingOnPrompt(agentOf('claude', { state: 'needs_input' }))).toBe(true);

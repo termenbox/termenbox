@@ -28,8 +28,8 @@ pub enum Request {
         delete_user: bool,
         #[serde(default)]
         remove_tmux: bool,
-        #[serde(default)]
-        kill_sessions: bool,
+        #[serde(default, rename = "kill_sessions")]
+        kill_workspaces: bool,
     },
 }
 
@@ -118,7 +118,7 @@ mod tests {
                 Request::Uninstall {
                     delete_user: true,
                     remove_tmux: false,
-                    kill_sessions: false
+                    kill_workspaces: false
                 },
                 Request::UpdateNow {}
             ]

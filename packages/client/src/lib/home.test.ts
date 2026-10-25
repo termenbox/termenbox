@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { continueTarget, fleetCounts, heroChoices, queueOf, rowOf, sessionGroups, Settle, splitQueue } from './home';
-import type { AgentMap, SessionAgent } from './agents';
-import type { HubSession } from './hub';
+import { continueTarget, fleetCounts, heroChoices, queueOf, rowOf, workspaceGroups, Settle, splitQueue } from './home';
+import type { AgentMap, WorkspaceAgent } from './agents';
+import type { HubWorkspace } from './hub';
 import type { AttentionKind } from './protocol';
 
-const sess = (name: string, serverId = 's1'): HubSession => ({ id: name, name, agent: null, serverId, key: `${serverId}/${name}`, serverName: serverId.toUpperCase() });
-const withAtt = (kind: AttentionKind, at: number, extra: Partial<SessionAgent> = {}): SessionAgent =>
+const sess = (name: string, serverId = 's1'): HubWorkspace => ({ id: name, name, agent: null, serverId, key: `${serverId}/${name}`, serverName: serverId.toUpperCase() });
+const withAtt = (kind: AttentionKind, at: number, extra: Partial<WorkspaceAgent> = {}): WorkspaceAgent =>
   ({ state: 'unknown', seq: 1, stale: false, ts: at, serverStatus: true, attention: { id: `a${at}`, session: 'x', kind, raised_at: at, task: { title: `task ${at}`, started_at: 0, source: 'hook' } }, ...extra });
-const quiet = (activity: SessionAgent['activity'] = 'idle'): SessionAgent => ({ state: activity === 'working' ? 'working' : 'idle', seq: 1, stale: false, ts: 1, serverStatus: true, activity });
+const quiet = (activity: WorkspaceAgent['activity'] = 'idle'): WorkspaceAgent => ({ state: activity === 'working' ? 'working' : 'idle', seq: 1, stale: false, ts: 1, serverStatus: true, activity });
 
 describe('queue order', () => {
   it('puts needs_input, then failed, then finished_unseen, oldest wait first inside a kind', () => {
@@ -18,7 +18,7 @@ describe('queue order', () => {
     };
     expect(queueOf(ss, agents).map((r) => r.name)).toEqual(['n-old', 'n-new', 'f-old', 'f-new', 'fin']);
   });
-  it('spans servers and ignores sessions with no open item or an unknown kind', () => {
+  it('spans servers and ignores workspaces with no open item or an unknown kind', () => {
     const ss = [sess('a', 's1'), sess('b', 's2'), sess('c', 's2')];
     const agents: AgentMap = { 's1/a': withAtt('needs_input', 300), 's2/b': withAtt('needs_input', 100), 's2/c': withAtt('unknown', 1) };
     expect(queueOf(ss, agents).map((r) => `${r.serverName}:${r.name}`)).toEqual(['S2:b', 'S1:a']);
@@ -40,7 +40,7 @@ describe('queue order', () => {
     expect(none.hero).toBeUndefined();
     expect(none.rest).toHaveLength(1);
   });
-  it('puts the session a push named in the hero while it still waits, and falls back to the oldest when it does not', () => {
+  it('puts the workspace a push named in the hero while it still waits, and falls back to the oldest when it does not', () => {
     const ss = [sess('a'), sess('b'), sess('c')];
     const agents = { 's1/a': withAtt('needs_input', 9), 's1/b': withAtt('needs_input', 3), 's1/c': withAtt('failed', 1) };
     const q = splitQueue(queueOf(ss, agents), 's1/a');
@@ -57,7 +57,7 @@ describe('queue order', () => {
 });
 
 describe('fleet counts', () => {
-  it('counts the four states from the same items as the queue; idle sessions are not counted', () => {
+  it('counts the four states from the same items as the queue; idle workspaces are not counted', () => {
     const ss = Array.from({ length: 20 }, (_, i) => sess(`s${i}`));
     const agents: AgentMap = {};
     ss.forEach((s, i) => { agents[s.key] = i < 3 ? withAtt('needs_input', i) : i < 5 ? withAtt('failed', i) : i < 9 ? withAtt('finished_unseen', i) : i < 14 ? quiet('working') : quiet(); });
@@ -78,11 +78,11 @@ describe('hero options', () => {
   });
 });
 
-describe('the Sessions groups', () => {
-  it('groups every session by state in a fixed order and drops empty groups', () => {
+describe('the Workspaces groups', () => {
+  it('groups every workspace by state in a fixed order and drops empty groups', () => {
     const ss = ['i', 'w', 'n2', 'n1', 'f'].map((n) => sess(n));
     const agents: AgentMap = { 's1/i': quiet(), 's1/w': quiet('working'), 's1/n2': withAtt('needs_input', 9), 's1/n1': withAtt('needs_input', 2), 's1/f': withAtt('failed', 3) };
-    const g = sessionGroups(ss, agents);
+    const g = workspaceGroups(ss, agents);
     expect(g.map((x) => x.title)).toEqual(['Needs you', 'Failed', 'Working', 'Idle']);
     expect(g[0].rows.map((r) => r.name)).toEqual(['n1', 'n2']);
   });
@@ -91,7 +91,7 @@ describe('the Sessions groups', () => {
 describe('Continue card', () => {
   const ss = [sess('a'), sess('b', 's2')];
   const connected = new Set(['s1']);
-  it('shows the last session when nothing needs a decision', () => {
+  it('shows the last workspace when nothing needs a decision', () => {
     expect(continueTarget('s1/a', ss, connected, [])?.name).toBe('a');
   });
   it('is hidden while a decision waits, though failed or finished items do not hide it', () => {
@@ -99,7 +99,7 @@ describe('Continue card', () => {
     expect(continueTarget('s1/a', ss, connected, queueOf(ss, agents))).toBeNull();
     expect(continueTarget('s1/a', ss, connected, queueOf(ss, { 's2/b': withAtt('failed', 1) }))?.name).toBe('a');
   });
-  it('is hidden without a last session, when it is gone, or when its server is not connected', () => {
+  it('is hidden without a last workspace, when it is gone, or when its server is not connected', () => {
     expect(continueTarget(null, ss, connected, [])).toBeNull();
     expect(continueTarget('s1/gone', ss, connected, [])).toBeNull();
     expect(continueTarget('s2/b', ss, connected, [])).toBeNull();
@@ -145,13 +145,13 @@ describe('server health on rows (U14)', () => {
     const agents: AgentMap = { 's1/a': withAtt('failed', 1), 's2/b': withAtt('failed', 2) };
     const q = queueOf(ss, agents, new Set(['s2']));
     expect(q.map((r) => [r.name, r.unhealthy])).toEqual([['a', undefined], ['b', true]]);
-    expect(sessionGroups(ss, agents, new Set(['s1'])).flatMap((g) => g.rows).map((r) => [r.name, r.unhealthy])).toEqual([['a', true], ['b', undefined]]);
+    expect(workspaceGroups(ss, agents, new Set(['s1'])).flatMap((g) => g.rows).map((r) => [r.name, r.unhealthy])).toEqual([['a', true], ['b', undefined]]);
   });
   it('works for callers that know nothing of health', () => {
     const ss = [sess('a')];
     const agents: AgentMap = { 's1/a': withAtt('failed', 1) };
     expect(queueOf(ss, agents)[0].unhealthy).toBeUndefined();
-    expect(sessionGroups(ss, agents)[0].rows[0].unhealthy).toBeUndefined();
+    expect(workspaceGroups(ss, agents)[0].rows[0].unhealthy).toBeUndefined();
     expect(rowOf(ss[0], agents['s1/a']).unhealthy).toBeUndefined();
   });
 });

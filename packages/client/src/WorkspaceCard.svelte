@@ -1,27 +1,27 @@
 <script lang="ts">
-  import type { SessionInfo } from './lib/protocol';
-  import { runningMs, type SessionAgent } from './lib/agents';
+  import type { WorkspaceInfo } from './lib/protocol';
+  import { runningMs, type WorkspaceAgent } from './lib/agents';
   import { ageText, chipFor, isDone, progress, staleText, toolLine } from './lib/cards';
   import { cacheRemaining, cacheText, expiringSoon } from './lib/cache';
-  import { representativeWindow, shortPath, type SessionWindows } from './lib/windows';
+  import { representativeWindow, shortPath, type WorkspaceWindows } from './lib/windows';
   import AgentIcon from './AgentIcon.svelte';
 
-  export let session: SessionInfo;
-  export let agent: SessionAgent;
+  export let workspace: WorkspaceInfo;
+  export let agent: WorkspaceAgent;
   export let now: number;
   export let active = false;
   export let expanded = false;
   export let onopen: () => void;
   export let ontoggle: () => void;
-  export let onanswer: (choice: number, prompt: NonNullable<SessionAgent['prompt']>) => void;
+  export let onanswer: (choice: number, prompt: NonNullable<WorkspaceAgent['prompt']>) => void;
   export let serverName = '';
-  export let windows: SessionWindows | undefined = undefined;
+  export let windows: WorkspaceWindows | undefined = undefined;
   export let ttlMs = 300000;
   /** What Keep warm sends; the button is hidden while it is empty. */
   export let keepWarm = '';
   export let onwarm: () => void = () => {};
   export let onpeek: () => void = () => {};
-  let pressedAnswer: { choice: number; prompt: NonNullable<SessionAgent['prompt']> } | null = null;
+  let pressedAnswer: { choice: number; prompt: NonNullable<WorkspaceAgent['prompt']> } | null = null;
 
   $: chip = chipFor(agent, now);
   $: prog = progress(agent.plan);
@@ -33,13 +33,13 @@
   $: canAnswer = !!agent.prompt && agent.prompt.confidence === 'high' && !chip.stale && agent.state === 'needs_input';
 </script>
 
-<div class="sc" class:active role="group" aria-label={`${session.name}: ${chip.label}${chip.stale ? ', ' + staleText(agent, now) : ''}`}>
+<div class="sc" class:active role="group" aria-label={`${workspace.name}: ${chip.label}${chip.stale ? ', ' + staleText(agent, now) : ''}`}>
   <button type="button" class="open" on:pointerdown={() => !active && onpeek()} on:click={onopen}>
     <span class="top">
       <AgentIcon command={rep?.command} agent={rep ? rep.agent : agent.agent} size={20} />
-      <strong class="name">{session.name}</strong>
+      <strong class="name">{workspace.name}</strong>
       {#if serverName}<span class="badge">{serverName}</span>{/if}
-      {#if session.backend}<span class="badge">{session.backend}</span>{/if}
+      {#if workspace.backend}<span class="badge">{workspace.backend}</span>{/if}
       <span class="chip {chip.tone}" class:stale={chip.stale}><span aria-hidden="true">{chip.icon}</span> {chip.label}</span>
     </span>
     {#if agent.task}<span class="task">{agent.task.title}</span>{/if}

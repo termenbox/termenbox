@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { cacheRemaining, cacheText, expiringSoon } from './cache';
-import type { SessionAgent } from './agents';
+import type { WorkspaceAgent } from './agents';
 
-const a = (patch: Partial<SessionAgent>): SessionAgent => ({ state: 'idle', seq: 1, stale: false, ts: 0, agent: 'claude', lastResponseAt: 0, ...patch });
+const a = (patch: Partial<WorkspaceAgent>): WorkspaceAgent => ({ state: 'idle', seq: 1, stale: false, ts: 0, agent: 'claude', lastResponseAt: 0, ...patch });
 
 describe('cache estimate', () => {
   it('counts down from the last answer of an idle agent and stops at zero', () => {

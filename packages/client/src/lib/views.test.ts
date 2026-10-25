@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { adaptiveDefault, applyView, loadView, presetView, saveView, withServerStatus } from './views';
-import { applyEvents, applySnapshot, type AgentMap, type SessionAgent } from './agents';
-import type { HubSession } from './hub';
+import { applyEvents, applySnapshot, type AgentMap, type WorkspaceAgent } from './agents';
+import type { HubWorkspace } from './hub';
 
-const session = (serverId: string, id: string): HubSession => ({ id, name: id, agent: null, serverId, serverName: `Host ${serverId}`, key: `${serverId}/${id}` });
-const agent = (state: SessionAgent['state'], ts: number, extra: Partial<SessionAgent> = {}): SessionAgent => ({ state, ts, seq: 1, stale: false, ...extra });
-const sessions = [session('a', 'newer'), session('b', 'oldest'), session('a', 'error'), session('b', 'working'), session('a', 'idle'), session('b', 'shell')];
+const workspace = (serverId: string, id: string): HubWorkspace => ({ id, name: id, agent: null, serverId, serverName: `Host ${serverId}`, key: `${serverId}/${id}` });
+const agent = (state: WorkspaceAgent['state'], ts: number, extra: Partial<WorkspaceAgent> = {}): WorkspaceAgent => ({ state, ts, seq: 1, stale: false, ...extra });
+const workspaces = [workspace('a', 'newer'), workspace('b', 'oldest'), workspace('a', 'error'), workspace('b', 'working'), workspace('a', 'idle'), workspace('b', 'shell')];
 const agents: AgentMap = {
   'a/newer': agent('needs_input', 5000, { agent: 'claude', lastResponseAt: 4000 }),
   'b/oldest': agent('needs_input', 1000, { agent: 'codex', lastResponseAt: 2000 }),
@@ -14,9 +14,9 @@ const agents: AgentMap = {
   'a/idle': agent('idle', 2000, { agent: 'claude', lastResponseAt: 1000 }),
   'b/shell': agent('idle', 2000, { agent: 'shell' }),
 };
-const keys = (view: ReturnType<typeof presetView>, map = agents) => applyView(sessions, map, view, 10000).flatMap(g => g.sessions.map(s => s.key));
+const keys = (view: ReturnType<typeof presetView>, map = agents) => applyView(workspaces, map, view, 10000).flatMap(g => g.workspaces.map(s => s.key));
 
-describe('session view presets', () => {
+describe('workspace view presets', () => {
   it('Needs me includes errors and orders by longest wait across servers', () => {
     expect(keys(presetView('needs'))).toEqual(['b/oldest', 'a/error', 'a/newer']);
   });
@@ -38,30 +38,30 @@ describe('session view presets', () => {
     ]);
     expect(keys(presetView('needs'), cold)).toEqual(['b/oldest', 'a/newer']);
   });
-  it('Working includes only working sessions', () => {
+  it('Working includes only working workspaces', () => {
     expect(keys(presetView('working'))).toEqual(['b/working']);
   });
-  it('Recent uses last_response_at, with sessions that have never answered last', () => {
+  it('Recent uses last_response_at, with workspaces that have never answered last', () => {
     expect(keys(presetView('recent'))).toEqual(['b/working', 'a/error', 'a/newer', 'b/oldest', 'a/idle', 'b/shell']);
   });
   it('Cache expiring includes idle agents, excludes shells and unknown/expired caches, sorts by remaining time', () => {
-    const extra = [...sessions, session('b', 'idle'), session('a', 'expired')];
+    const extra = [...workspaces, workspace('b', 'idle'), workspace('a', 'expired')];
     const map = { ...agents, 'b/idle': agent('done', 0, { agent: 'codex', lastResponseAt: 2000 }), 'a/expired': agent('idle', 0, { agent: 'claude', lastResponseAt: 1 }) };
     const groups = applyView(extra, map, presetView('cache'), 10000, { remaining: (_a, key) => ({ 'a/idle': 200000, 'b/idle': 1000, 'a/expired': 0 }[key] ?? null) });
-    expect(groups.flatMap(g => g.sessions.map(s => s.key))).toEqual(['b/idle', 'a/idle']);
+    expect(groups.flatMap(g => g.workspaces.map(s => s.key))).toEqual(['b/idle', 'a/idle']);
   });
   it('the default cache estimate uses the device TTL and excludes agents without a last response', () => {
     expect(keys(presetView('cache'))).toEqual(['a/idle']);
-    expect(applyView(sessions, agents, presetView('cache'), 400000)).toEqual([]);
-    expect(applyView(sessions, agents, presetView('cache'), 400000, { ttlMs: 3600000 })[0].sessions[0].key).toBe('a/idle');
+    expect(applyView(workspaces, agents, presetView('cache'), 400000)).toEqual([]);
+    expect(applyView(workspaces, agents, presetView('cache'), 400000, { ttlMs: 3600000 })[0].workspaces[0].key).toBe('a/idle');
   });
-  it('By server groups every session with a stable server id and readable name', () => {
-    const groups = applyView(sessions, agents, presetView('server'), 10000);
+  it('By server groups every workspace with a stable server id and readable name', () => {
+    const groups = applyView(workspaces, agents, presetView('server'), 10000);
     expect(groups.map(g => [g.key, g.label, g.serverId])).toEqual([['server:b', 'Host b', 'b'], ['server:a', 'Host a', 'a']]);
-    expect(groups.flatMap(g => g.sessions)).toHaveLength(6);
+    expect(groups.flatMap(g => g.workspaces)).toHaveLength(6);
   });
   it('a server group header carries that server’s state and reason for Retry', () => {
-    const groups = applyView(sessions, agents, presetView('server'), 10000);
+    const groups = applyView(workspaces, agents, presetView('server'), 10000);
     const status = { id: 'b', server: { server_id: 'b', server_name: 'Host b', server_url: '', registered_at: 0 }, state: 'unreachable' as const, reason: 'No route', version: '', backends: [], acpAgents: [], controlMode: false, tmuxVersion: '', prefix: '' };
     expect(withServerStatus(groups, [status])[0].server).toEqual(status);
     expect(withServerStatus(groups, [status])[1].server).toBeUndefined();
@@ -69,13 +69,13 @@ describe('session view presets', () => {
 });
 
 describe('free controls and adaptive default', () => {
-  it('groups by agent, status or none, without changing session identities', () => {
+  it('groups by agent, status or none, without changing workspace identities', () => {
     const view = presetView('server');
-    const byAgent = applyView(sessions, agents, { ...view, group: 'agent', sort: 'name' }, 10000);
+    const byAgent = applyView(workspaces, agents, { ...view, group: 'agent', sort: 'name' }, 10000);
     expect(byAgent.map(g => g.label)).toEqual(['claude', 'codex', 'shell']);
-    const byStatus = applyView(sessions, agents, { ...view, group: 'status', sort: 'name' }, 10000);
+    const byStatus = applyView(workspaces, agents, { ...view, group: 'status', sort: 'name' }, 10000);
     expect(byStatus.map(g => g.label)).toEqual(['Error', 'Idle', 'Needs you', 'Working']);
-    expect(applyView(sessions, agents, { ...view, group: 'none' }, 10000)).toHaveLength(1);
+    expect(applyView(workspaces, agents, { ...view, group: 'none' }, 10000)).toHaveLength(1);
   });
   it('combines status, agent, server and text filters', () => {
     const view = { ...presetView('server'), filter: { statuses: ['needs_input' as const], agents: ['claude'], servers: ['a'], query: 'new' } };
@@ -83,26 +83,26 @@ describe('free controls and adaptive default', () => {
     expect(keys({ ...view, filter: { ...view.filter, servers: ['b'] } })).toEqual([]);
   });
   it('sorts by name with a deterministic global-key tie break', () => {
-    const same = [session('b', 'same'), session('a', 'same')];
-    const sorted = applyView(same, {}, { ...presetView('recent'), sort: 'name' }, 0)[0].sessions;
+    const same = [workspace('b', 'same'), workspace('a', 'same')];
+    const sorted = applyView(same, {}, { ...presetView('recent'), sort: 'name' }, 0)[0].workspaces;
     expect(sorted.map(s => s.key)).toEqual(['a/same', 'b/same']);
   });
-  it('sorts sessions without a response time or cache by name instead of failing on infinities', () => {
-    const none = [session('a', 'b'), session('a', 'a'), session('a', 'c')];
+  it('sorts workspaces without a response time or cache by name instead of failing on infinities', () => {
+    const none = [workspace('a', 'b'), workspace('a', 'a'), workspace('a', 'c')];
     for (const sort of ['response', 'cache'] as const) {
-      expect(applyView(none, {}, { ...presetView('recent'), sort }, 0)[0].sessions.map(s => s.id)).toEqual(['a', 'b', 'c']);
+      expect(applyView(none, {}, { ...presetView('recent'), sort }, 0)[0].workspaces.map(s => s.id)).toEqual(['a', 'b', 'c']);
     }
   });
-  it('opens Needs me only for sessions that need a human, otherwise By server', () => {
+  it('opens Needs me only for workspaces that need a human, otherwise By server', () => {
     expect(adaptiveDefault(agents).preset).toBe('needs');
     expect(adaptiveDefault({ 'a': agent('working', 0) }).preset).toBe('server');
     expect(adaptiveDefault({ 'a': agent('error', 0) }).preset).toBe('needs');
     expect(adaptiveDefault({}).preset).toBe('server');
   });
-  it('never mutates source sessions, agent maps or view settings', () => {
-    const view = presetView('server'); const before = JSON.stringify({ sessions, agents, view });
-    applyView(sessions, agents, view, 10000);
-    expect(JSON.stringify({ sessions, agents, view })).toBe(before);
+  it('never mutates source workspaces, agent maps or view settings', () => {
+    const view = presetView('server'); const before = JSON.stringify({ workspaces, agents, view });
+    applyView(workspaces, agents, view, 10000);
+    expect(JSON.stringify({ workspaces, agents, view })).toBe(before);
   });
 });
 

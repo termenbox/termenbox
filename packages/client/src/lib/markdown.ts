@@ -1,4 +1,4 @@
-// A small, safe Markdown reader for agent replies (the ACP session view, U07b). Agent text is untrusted: this builds a
+// A small, safe Markdown reader for agent replies (the ACP workspace view, U07b). Agent text is untrusted: this builds a
 // tree of plain data and nothing else, so the view renders it as text nodes and elements it chose itself. No HTML is
 // ever passed through, a link is shown with the address it goes to, and only http(s) links are links at all.
 // It reads the subset agents actually write: paragraphs, headings, lists, quotes, fenced code, inline code, emphasis,

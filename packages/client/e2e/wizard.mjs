@@ -115,7 +115,7 @@ await page.getByTestId('consent').getByRole('checkbox').check();
 check(await inView(page.getByTestId('copy-command')), 'Install: the Copy button is in the first viewport once consent is given');
 check((await page.getByTestId('steps').locator('li').allInnerTexts()).join('|') === '1 Install|2 Connect|3 Confirm|4 Done', 'the four steps are shown');
 check(!(await page.getByTestId('install-options').evaluate((d) => d.open)), 'Install: Options (name, run mode) is folded');
-check((await page.getByText('Where should sessions run?').isVisible()) === false, 'Install: the run-mode form is not on screen until Options is opened');
+check((await page.getByText('Where should workspaces run?').isVisible()) === false, 'Install: the run-mode form is not on screen until Options is opened');
 
 // Step 2: Connect. The scan button and the camera are in the first viewport; the checklist is live.
 await page.getByTestId('install-next').click();

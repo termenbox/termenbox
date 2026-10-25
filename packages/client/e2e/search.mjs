@@ -76,20 +76,20 @@ try {
   const serverId = serverIdOf(join(home, 'config'));
   browser = await launch(['--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection']);
 
-  // The harness page types into the session, as an agent's shell would receive it.
+  // The harness page types into the workspace, as an agent's shell would receive it.
   const hp = await (await browser.newContext(contextOptions())).newPage();
   hp.on('pageerror', (e) => fail(`harness page error: ${e.message}`));
   await hp.goto(`http://127.0.0.1:${webPort}/`);
   const cert = mint(await hp.evaluate(() => window.__e2e.deviceKey()), 1, 'alice');
   await hp.evaluate((o) => window.__e2e.start(o), { record, cert, serverId, claim });
   await waitFor(() => hp.evaluate(() => window.__e2e.state === 'connected'), 'harness connected');
-  // With `acp` registered next to tmux, session ids are `tmux:<name>`; tmux itself is addressed by the bare name.
+  // With `acp` registered next to tmux, workspace ids are `tmux:<name>`; tmux itself is addressed by the bare name.
   const bare = (sid) => sid.replace(/^tmux:/, '');
-  const newSession = async (name) => {
+  const newWorkspace = async (name) => {
     await hp.evaluate((n) => window.__e2e.send({ type: 'new_session', name: n }), name);
-    return waitFor(() => hp.evaluate((n) => (window.__e2e.send({ type: 'list_sessions' }), window.__e2e.sessions.find((s) => s.name === n)?.id), name), `session ${name}`);
+    return waitFor(() => hp.evaluate((n) => (window.__e2e.send({ type: 'list_sessions' }), window.__e2e.workspaces.find((s) => s.name === n)?.id), name), `workspace ${name}`);
   };
-  const id = await newSession('s1');
+  const id = await newWorkspace('s1');
   await hp.evaluate((id) => window.__e2e.send({ type: 'attach', session_id: id }), id);
   await sleep(500);
   const run = async (cmd, marker) => {
@@ -128,8 +128,8 @@ try {
   }, [mint(deviceKey, 1, 'alice'), { server_url: '', server_id: serverId, server_name: 'e2e-server', registered_at: Date.now(), record }]);
   const open = async (name) => {
     await page.reload();
-    await page.locator('[data-shell=bottom-bar] [data-destination=sessions]').click();
-    const row = page.locator('[data-session-groups] button').filter({ has: page.locator('b', { hasText: new RegExp(`^${name}$`) }) }).first();
+    await page.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click();
+    const row = page.locator('[data-workspace-groups] button').filter({ has: page.locator('b', { hasText: new RegExp(`^${name}$`) }) }).first();
     await row.waitFor({ timeout: 20000 });
     await row.click();
     await page.locator('.xterm-rows').waitFor({ timeout: 20000 });
@@ -158,7 +158,7 @@ try {
   check(seen.includes(N) && !seen.includes(1500), `the browser shows the newest lines only: ${seen[0]}..${seen.at(-1)}`);
   check(m1.historySize > 0 && m1.historyLimit === 2000 && !m1.alternateOn, `tmux holds history for the shell: ${JSON.stringify(m1)}`);
   console.log(`ok  1 browser DOM holds ${shown.length} rows (TOK-${R.viewport.tokenRange[0]}..${R.viewport.tokenRange[1]}); TOK-1500 is not in it`);
-  // The server's own view: every client of the session shares one tmux history.
+  // The server's own view: every client of the workspace shares one tmux history.
   const [snap, snapMs] = timed(() => tmux('capture-pane', '-p', '-J', '-S', '-', '-t', target));
   const snapTokens = tokens(snap.split('\n'));
   R.snapshot = { bytes: Buffer.byteLength(snap), gzipBytes: gzipSync(snap).length, lines: snap.split('\n').length, captureMs: +snapMs.toFixed(1), firstToken: snapTokens[0], lastToken: snapTokens.at(-1), historySize: m1.historySize, historyLimit: m1.historyLimit };
@@ -258,10 +258,10 @@ try {
   check(R.liveOutput.firstTokenAfter > R.liveOutput.firstTokenBefore, `at history-limit the oldest line moves: ${JSON.stringify(R.liveOutput)}`);
   console.log(`ok  7 at the limit the oldest line moved TOK-${R.liveOutput.firstTokenBefore} -> TOK-${R.liveOutput.firstTokenAfter} while history_size went ${R.liveOutput.historySizeBefore} -> ${R.liveOutput.historySizeAfter}: tmux trims in blocks, so size cannot signal staleness, new output must`);
 
-  // 8. Session and window binding.
-  const id2 = await newSession('s2');
+  // 8. Workspace and window binding.
+  const id2 = await newWorkspace('s2');
   tmux('send-keys', '-t', `=${bare(id2)}:`, "echo SWITCH-B-$((20+1))", 'Enter');
-  await waitFor(() => tmux('capture-pane', '-p', '-t', `=${bare(id2)}:`).includes('SWITCH-B-21'), 'second session printed');
+  await waitFor(() => tmux('capture-pane', '-p', '-t', `=${bare(id2)}:`).includes('SWITCH-B-21'), 'second workspace printed');
   const s2 = tmux('capture-pane', '-p', '-J', '-S', '-', '-t', `=${bare(id2)}:`);
   tmux('new-window', '-t', `=${bare(id)}:`);
   tmux('send-keys', '-t', `=${bare(id)}:1`, "echo WIN1-$((20+1))", 'Enter');
@@ -270,10 +270,10 @@ try {
   const w1 = tmux('capture-pane', '-p', '-J', '-S', '-', '-t', `=${bare(id)}:1`);
   const ids = { s1w0: meta(`=${bare(id)}:0`), s1w1: meta(`=${bare(id)}:1`), s2: meta(`=${bare(id2)}:`) };
   R.binding = {
-    otherSessionHasNoToken: !s2.includes('TOK-'), windowsAreSeparate: w0.includes('LATE-25') && !w0.includes('WIN1-21') && w1.includes('WIN1-21') && !w1.includes('LATE-'),
+    otherWorkspaceHasNoToken: !s2.includes('TOK-'), windowsAreSeparate: w0.includes('LATE-25') && !w0.includes('WIN1-21') && w1.includes('WIN1-21') && !w1.includes('LATE-'),
     paneIds: [ids.s1w0.pane, ids.s1w1.pane, ids.s2.pane], windowIds: [ids.s1w0.window, ids.s1w1.window, ids.s2.window],
   };
-  check(R.binding.otherSessionHasNoToken && R.binding.windowsAreSeparate && new Set(R.binding.paneIds).size === 3, `results bind to session and window: ${JSON.stringify(R.binding)}`);
+  check(R.binding.otherWorkspaceHasNoToken && R.binding.windowsAreSeparate && new Set(R.binding.paneIds).size === 3, `results bind to workspace and window: ${JSON.stringify(R.binding)}`);
   // A pane id outlives a rename; a name does not.
   tmux('rename-session', '-t', `=${bare(id2)}`, 'renamed');
   let renamedFails = false;
@@ -281,7 +281,7 @@ try {
   R.binding.renameBreaksNameTarget = renamedFails;
   R.binding.paneIdStillResolves = tmux('capture-pane', '-p', '-t', ids.s2.pane).includes('SWITCH-B-21');
   check(renamedFails && R.binding.paneIdStillResolves, 'a name target fails after a rename; a pane id still resolves');
-  console.log('ok  8 a snapshot is bound by (server, session, window id, pane id); other sessions/windows never leak in; a rename breaks name targets, pane ids survive');
+  console.log('ok  8 a snapshot is bound by (server, workspace, window id, pane id); other workspaces/windows never leak in; a rename breaks name targets, pane ids survive');
 
   // 9. Cost at a larger history: the resource budget (512 MB, FACT-0001).
   const tmuxPid = Number(tmux('display-message', '-p', '#{pid}').trim());
@@ -289,7 +289,7 @@ try {
   tmux('set-option', '-g', 'history-limit', '20000');
   tmux('new-session', '-d', '-s', 'big', '-x', '120', '-y', '30');
   tmux('send-keys', '-t', '=big:', `printf 'BIG-%05d some filler text to look like agent output\\n' $(seq 1 25000); echo bigdone-$((1+1))`, 'Enter');
-  await waitFor(() => tmux('capture-pane', '-p', '-t', '=big:').includes('bigdone-2'), 'big session filled', 60000);
+  await waitFor(() => tmux('capture-pane', '-p', '-t', '=big:').includes('bigdone-2'), 'big workspace filled', 60000);
   const [bigSnap, bigMs] = timed(() => tmux('capture-pane', '-p', '-J', '-S', '-', '-t', '=big:'));
   const bigProbe = await page.evaluate((text) => {
     const t = performance.now();

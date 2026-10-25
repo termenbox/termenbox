@@ -1,27 +1,31 @@
 // The four top-level destinations (decision 0101) and the address bar that mirrors them. The hash carries only the
-// destination (`#/sessions`); claim and server links (`#claim=`, `#server=`) are other hashes and are left alone.
+// destination (`#/workspaces`); claim and server links (`#claim=`, `#server=`) are other hashes and are left alone.
 import { writable, get } from 'svelte/store';
 
 export const DESTINATIONS = [
   { id: 'home', label: 'Home' },
-  { id: 'sessions', label: 'Sessions' },
+  { id: 'workspaces', label: 'Workspaces' },
   { id: 'activity', label: 'Activity' },
   { id: 'settings', label: 'Settings' },
 ] as const;
 export type Destination = (typeof DESTINATIONS)[number]['id'];
-/** The app opens on Home (decision 0100); the session last used is offered there as the Continue card. */
+/** The app opens on Home (decision 0100); the workspace last used is offered there as the Continue card. */
 export const DEFAULT_DESTINATION: Destination = 'home';
 
 export const isDestination = (v: unknown): v is Destination => DESTINATIONS.some((d) => d.id === v);
 
+/** What the address bar said before the workspace rename: a bookmark or a history entry still lands on the right page. */
+const OLD_ROUTES: Record<string, Destination> = { sessions: 'workspaces' };
+
 /** `#/home` -> `home`; anything else (a claim link, an empty hash, an unknown name) -> null. */
 export function parseRoute(hash: string): Destination | null {
   const m = /^#\/([a-z]+)\/?$/.exec(hash);
-  return m && isDestination(m[1]) ? m[1] : null;
+  if (!m) return null;
+  return isDestination(m[1]) ? m[1] : (OLD_ROUTES[m[1]] ?? null);
 }
 export const routeHash = (d: Destination) => `#/${d}`;
 
-/** A push's deep link (U11): `#/home?focus=<session key>`, the key percent-encoded. The key, or null for any other hash. */
+/** A push's deep link (U11): `#/home?focus=<workspace key>`, the key percent-encoded. The key, or null for any other hash. */
 export function parseFocusLink(hash: string): string | null {
   const m = /^#\/home\?focus=([^&]+)$/.exec(hash);
   if (!m) return null;

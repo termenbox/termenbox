@@ -69,7 +69,7 @@ try {
   await page.evaluate((o) => window.__e2e.start(o), { record, cert, serverId: serverIdOf(join(home, 'config')), claim });
   await waitFor(() => page.evaluate(() => window.__e2e.state === 'connected'), 'connected');
   await page.evaluate(() => window.__e2e.send({ type: 'new_session', name: 'h1' }));
-  await waitFor(() => page.evaluate(() => window.__e2e.sessions.some((s) => s.id === 'h1')), 'session listed');
+  await waitFor(() => page.evaluate(() => window.__e2e.workspaces.some((s) => s.id === 'h1')), 'workspace listed');
   await page.evaluate(() => { window.__e2e.mountTerminal('h1'); window.__e2e.send({ type: 'attach', session_id: 'h1' }); });
 
   const screenText = () => page.evaluate(() => [...document.querySelectorAll('.xterm-rows > div')].map((r) => r.textContent.replace(/\s+$/, '')).join('\n'));
@@ -95,7 +95,7 @@ try {
   await sleep(4000);
   const readies = await page.evaluate(() => window.__e2e.ready);
   if (readies !== 1) fail(`the connection was re-established ${readies - 1} time(s) within 4 s of attaching`);
-  else console.log('ok  attaching to a session does not drop the connection');
+  else console.log('ok  attaching to a workspace does not drop the connection');
 
   // A stand-in for a mouse-first app: it switches on SGR mouse reporting and echoes what it receives.
   await sleep(1500);

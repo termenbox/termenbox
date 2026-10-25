@@ -63,7 +63,7 @@ describe('answers send only what the view lists', () => {
   });
 });
 
-describe('session view for an agent with no profile (T3)', () => {
+describe('workspace view for an agent with no profile (T3)', () => {
   it('shows header, tail, composer, tier label and the terminal button', () => {
     const out = html({ name: 'api', agent: 'amp', fleet: 'working', task: 'Fix the build', startedAt: Date.now() - 120_000, view: viewFrom(msg()) });
     for (const t of ['api', 'Fix the build', '2 min', 'Working', '$ make', 'Generic view', 'Open full terminal', 'aria-label="Send a line"']) expect(out).toContain(t);

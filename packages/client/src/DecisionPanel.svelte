@@ -5,7 +5,7 @@
   import { TIER_LABEL } from './lib/sessionView';
   import { ageText } from './lib/cards';
 
-  /** The decision card as every surface uses it (Home, the inbox, the session view; decisions 0100, 0103, 0104).
+  /** The decision card as every surface uses it (Home, the inbox, the workspace view; decisions 0100, 0103, 0104).
    *  A tap sends exactly the option's keys through `onpick`, and the card stays where it is: it resolves only when
    *  the server clears the Attention item and the parent stops passing the decision. Until then it says it is waiting.
    *  If the server has not cleared it after a few seconds, the card says so and the options come back.
@@ -33,7 +33,7 @@
   const labelOf = (i: number) => decision.options[i];
 </script>
 
-<DecisionCard agent={decision.agent} session={decision.name} task={decision.task} waited={decision.since ? ageText(decision.since, now) : undefined}
+<DecisionCard agent={decision.agent} workspace={decision.name} task={decision.task} waited={decision.since ? ageText(decision.since, now) : undefined}
   context={server} {unhealthy} step={decision.step} tier={TIER_LABEL[decision.tier]} question={decision.question} class={className}>
   {#if detail}{@render detail()}{/if}
   {#if decision.options.length}
@@ -50,5 +50,5 @@
   {/if}
   <p class="text-sm text-soft empty:hidden" role="status" data-decision-status>
     {#if sent}{sent.what === 'Reply' ? 'Reply sent.' : `Sent “${labelOf(sent.index ?? -1) ?? 'your answer'}”.`} Waiting for the agent to take it.{:else if slow}Nothing changed yet. The agent may still be busy; try again, or open the terminal.{/if}</p>
-  {#if onopen}<button type="button" onclick={onopen} class="min-h-11 rounded-card bg-raised px-4 text-base font-semibold text-fg">Open session</button>{/if}
+  {#if onopen}<button type="button" onclick={onopen} class="min-h-11 rounded-card bg-raised px-4 text-base font-semibold text-fg">Open workspace</button>{/if}
 </DecisionCard>

@@ -42,7 +42,7 @@
   <p class="err" role="alert">{error}</p>
 {/if}
 {#if connect.notice === 'ws_fallback'}
-  <p class="notice" role="status" data-testid="ws-notice">Connected through the WebSocket fallback because UDP did not work. Sessions work but can feel slower.</p>
+  <p class="notice" role="status" data-testid="ws-notice">Connected through the WebSocket fallback because UDP did not work. Workspaces work but can feel slower.</p>
 {/if}
 
 {#if codeRead && connect.phase === 'looking' && !connect.diagnosis}

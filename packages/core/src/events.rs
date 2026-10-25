@@ -30,7 +30,7 @@ pub enum Source {
     Codex,
     Scan,
     Screen,
-    /// An ACP session the server started itself (tier T0, decision 0111).
+    /// An ACP workspace the server started itself (tier T0, decision 0111).
     Acp,
     #[serde(other)]
     Unknown,
@@ -77,18 +77,18 @@ pub enum EventKind {
     Message {
         summary: String,
     },
-    /// The current task of the session, from the first line of the prompt (decision 0095).
+    /// The current task of the workspace, from the first line of the prompt (decision 0095).
     Task {
         title: String,
     },
-    /// Context use of an ACP session; the percentage is `used / size`.
+    /// Context use of an ACP workspace; the percentage is `used / size`.
     Usage {
         used: u64,
         size: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cost: Option<String>,
     },
-    /// The agent's own title for the session.
+    /// The agent's own title for the workspace.
     Title {
         title: String,
     },
@@ -139,11 +139,12 @@ pub struct Decision {
     pub detail: Option<String>,
 }
 
-/// `seq` is a per-session counter and `ts` the server's clock (ms since the epoch), both stamped by the
+/// `seq` is a per-workspace counter and `ts` the server's clock (ms since the epoch), both stamped by the
 /// server and never taken from the source.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct AgentEvent {
-    pub session: String,
+    #[serde(rename = "session")]
+    pub workspace: String,
     pub seq: u64,
     pub ts: u64,
     pub source: Source,
@@ -152,16 +153,17 @@ pub struct AgentEvent {
     pub kind: EventKind,
 }
 
-/// The latest state of one session, for a client that has just connected.
+/// The latest state of one workspace, for a client that has just connected.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct SessionAgentState {
-    pub session: String,
+pub struct WorkspaceAgentState {
+    #[serde(rename = "session")]
+    pub workspace: String,
     pub state: AgentState,
     pub seq: u64,
     /// No event for a while although the state is `working`: the state may be out of date.
     pub stale: bool,
     pub ts: u64,
-    /// The agent in the session (`claude`, `codex`), from the process scan; absent for a plain shell and
+    /// The agent in the workspace (`claude`, `codex`), from the process scan; absent for a plain shell and
     /// from older servers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
@@ -195,7 +197,7 @@ pub enum AttentionKind {
     Unknown,
 }
 
-/// The current piece of work of a session: the first line of the prompt, or the plan item in progress.
+/// The current piece of work of a workspace: the first line of the prompt, or the plan item in progress.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Task {
     pub title: String,
@@ -208,7 +210,8 @@ pub struct Task {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Attention {
     pub id: String,
-    pub session: String,
+    #[serde(rename = "session")]
+    pub workspace: String,
     pub kind: AttentionKind,
     pub raised_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -218,10 +221,11 @@ pub struct Attention {
     pub prompt: Option<String>,
 }
 
-/// The derived Activity of one session with its task, as the status channel carries it.
+/// The derived Activity of one workspace with its task, as the status channel carries it.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct SessionActivity {
-    pub session: String,
+pub struct WorkspaceActivity {
+    #[serde(rename = "session")]
+    pub workspace: String,
     pub activity: Activity,
     pub ts: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -240,7 +244,7 @@ mod tests {
     #[test]
     fn events_round_trip_with_the_wire_names_the_client_reads() {
         let e = AgentEvent {
-            session: "s".into(),
+            workspace: "s".into(),
             seq: 3,
             ts: 9,
             source: Source::Hook,
@@ -261,15 +265,15 @@ mod tests {
     #[test]
     fn a_snapshot_from_an_older_server_still_parses_and_the_new_fields_stay_off_the_wire_when_empty(
     ) {
-        let old: SessionAgentState =
+        let old: WorkspaceAgentState =
             serde_json::from_str(r#"{"session":"s","state":"idle","seq":1,"stale":false,"ts":5}"#)
                 .unwrap();
         assert_eq!(
             (old.agent, old.last_response_at, old.waiting_since),
             (None, None, None)
         );
-        let v = serde_json::to_value(&SessionAgentState {
-            session: "s".into(),
+        let v = serde_json::to_value(&WorkspaceAgentState {
+            workspace: "s".into(),
             state: AgentState::Idle,
             seq: 1,
             stale: false,
@@ -308,7 +312,7 @@ mod tests {
     fn activity_and_attention_round_trip_with_wire_names_and_ignore_unknown_values() {
         let a = Attention {
             id: "a1".into(),
-            session: "s".into(),
+            workspace: "s".into(),
             kind: AttentionKind::FinishedUnseen,
             raised_at: 7,
             task: Some(Task {
@@ -327,7 +331,7 @@ mod tests {
             serde_json::from_str(r#"{"id":"a","session":"s","kind":"levitating","raised_at":1}"#)
                 .unwrap();
         assert_eq!(u.kind, AttentionKind::Unknown);
-        let act: SessionActivity =
+        let act: WorkspaceActivity =
             serde_json::from_str(r#"{"session":"s","activity":"dreaming","ts":1}"#).unwrap();
         assert_eq!(act.activity, Activity::Unknown);
         assert_eq!(serde_json::to_value(Activity::Blocked).unwrap(), "blocked");

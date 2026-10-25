@@ -10,7 +10,7 @@ const KEY = 'termenbox_inbox';
 export interface InboxItem {
   /** Unique across servers and server restarts. */
   id: string;
-  /** The session key as the hub knows it. */
+  /** The workspace key as the hub knows it. */
   key: string;
   name: string;
   kind: AttentionKind;
@@ -20,7 +20,7 @@ export interface InboxItem {
 }
 
 /** Adds the items not seen before; the list stays newest first and bounded. */
-export function mergeAttention(list: InboxItem[], serverId: string, items: Attention[], keyOf: (session: string) => string, nameOf: (session: string) => string): InboxItem[] {
+export function mergeAttention(list: InboxItem[], serverId: string, items: Attention[], keyOf: (workspace: string) => string, nameOf: (workspace: string) => string): InboxItem[] {
   const have = new Set(list.map((i) => i.id));
   const fresh: InboxItem[] = [];
   for (const it of items) {

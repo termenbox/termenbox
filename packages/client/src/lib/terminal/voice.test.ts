@@ -155,7 +155,7 @@ describe('Voice', () => {
     expect(on.onState).toHaveBeenLastCalledWith(false);
   });
 
-  it('starts a new session without a leading space', async () => {
+  it('starts a new workspace without a leading space', async () => {
     const { rec, on, voice } = setup();
     await voice.toggle();
     rec.onresult?.(ev(0, ['first', true]));

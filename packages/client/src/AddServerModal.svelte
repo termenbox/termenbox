@@ -33,7 +33,7 @@
   let name = '';
   /** The claim secret of a link that arrived alone; the command carries none, so otherwise there is nothing to wait for. */
   let secret: string | null = prefillSecret;
-  /** Where sessions run: this machine, as the current user, by default (decision 0113). Host choices give this browser a shell on the machine, so they need consent. */
+  /** Where workspaces run: this machine, as the current user, by default (decision 0113). Host choices give this browser a shell on the machine, so they need consent. */
   let where: 'container' | 'host' = 'host';
   type HostAs = 'user' | 'me' | 'root';
   const hostMode: Record<HostAs, RunChoice> = { user: 'host-user', me: 'host-me', root: 'host' };

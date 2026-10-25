@@ -1,8 +1,8 @@
-// U07b: the ACP session view (T0, decision 0111) in the real app against a real termenbox-server, with a fake ACP agent built
+// U07b: the ACP workspace view (T0, decision 0111) in the real app against a real termenbox-server, with a fake ACP agent built
 // from the recorded captures (e2e/fake-acp-agent.mjs; the server starts it from its allowlist exactly as it starts a real
 // agent). Covers Done-when: a permission answered from Home with one tap, an interrupt (Esc and the Stop key), search through
 // the scrollback, and the view restored after a reload; and the rest of the step: the companion shell, a view that keeps its
-// place when switching sessions, streaming that does not move the reader, the keyboard guardrail, and a 360 px phone.
+// place when switching workspaces, streaming that does not move the reader, the keyboard guardrail, and a 360 px phone.
 // Desktop Chromium with mobile emulation: this is NOT an iPhone or an Android check (guardrail a-phone-check-names-its-platform).
 // Usage: node e2e/acp.mjs   (needs a built server, `pnpm run build` and `pnpm run e2e:build`, node, tmux, and Chrome)
 import { launch, contextOptions, tap } from './browser.mjs';
@@ -83,7 +83,7 @@ try {
   const serverId = serverIdOf(configDir);
   browser = await launch(['--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection']);
 
-  // The harness page is a second device of the owner: it makes the sessions and sends prompts the phone then shows.
+  // The harness page is a second device of the owner: it makes the workspaces and sends prompts the phone then shows.
   const hp = await (await browser.newContext(contextOptions())).newPage();
   hp.on('pageerror', (e) => fail(`harness page error: ${e.message}`));
   await hp.goto(`http://127.0.0.1:${webPort}/`);
@@ -91,13 +91,13 @@ try {
   await hp.evaluate((o) => window.__e2e.start(o), { record, cert, serverId, claim });
   await waitFor(() => hp.evaluate(() => window.__e2e.state === 'connected'), 'harness connected');
   const send = (m) => hp.evaluate((msg) => window.__e2e.send(msg), m);
-  const sessions = async () => { await send({ type: 'list_sessions' }); await sleep(150); return hp.evaluate(() => window.__e2e.sessions); };
+  const workspaces = async () => { await send({ type: 'list_sessions' }); await sleep(150); return hp.evaluate(() => window.__e2e.workspaces); };
   const createAcp = async (name) => {
     await send({ type: 'new_session', name, backend: 'acp', dir: work, template: 'claude' });
-    await waitFor(async () => (await sessions()).some((s) => s.id === `acp:${name}`), `session ${name}`);
+    await waitFor(async () => (await workspaces()).some((s) => s.id === `acp:${name}`), `workspace ${name}`);
   };
   await createAcp('work');
-  const listed = (await sessions()).find((s) => s.id === 'acp:work');
+  const listed = (await workspaces()).find((s) => s.id === 'acp:work');
   check(listed.backend === 'acp' && listed.agent === 'claude', `the listing does not say it is an ACP claude session: ${JSON.stringify(listed)}`);
 
   // ---- The owner's phone, on Home.
@@ -147,23 +147,23 @@ try {
   const { page } = phone;
   await page.locator('[data-shell=bottom-bar] [data-destination=home]').waitFor();
 
-  // From Home or the list a session opens by its row; from another open session by its tab, else from the Sessions sheet
-  // (after Refresh: a session made on another device is listed when asked for).
-  const openSession = async (p, name) => {
+  // From Home or the list a workspace opens by its row; from another open workspace by its tab, else from the Workspaces sheet
+  // (after Refresh: a workspace made on another device is listed when asked for).
+  const openWorkspace = async (p, name) => {
     const tab = p.locator(`[role=tab][data-key$="/acp:${name}"]`);
-    const inSession = (await p.locator('.xterm, [data-testid=acp-view]').count()) > 0;
-    if (inSession) await tab.waitFor({ timeout: 8000 }).catch(() => {});
+    const inWorkspace = (await p.locator('.xterm, [data-testid=acp-view]').count()) > 0;
+    if (inWorkspace) await tab.waitFor({ timeout: 8000 }).catch(() => {});
     if (await tab.count()) await tab.click();
-    else if (inSession) {
-      const sheet = p.locator('.session-sheet');
-      if ((await sheet.getAttribute('data-height')) === 'closed') await p.locator('button.sessions-button').click();
+    else if (inWorkspace) {
+      const sheet = p.locator('.workspace-sheet');
+      if ((await sheet.getAttribute('data-height')) === 'closed') await p.locator('button.workspaces-button').click();
       await sheet.getByRole('button', { name: 'Refresh' }).click();
       await sheet.locator('button.open, button.plain').filter({ hasText: new RegExp(`(^|\\s)${name}\\s`) }).first().click();
     } else {
-      await p.locator('[data-shell=bottom-bar] [data-destination=sessions]').click();
-      await p.locator('[data-session-groups] button').filter({ has: p.locator('b', { hasText: new RegExp(`^${name}$`) }) }).first().click({ timeout: 20000 });
+      await p.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click();
+      await p.locator('[data-workspace-groups] button').filter({ has: p.locator('b', { hasText: new RegExp(`^${name}$`) }) }).first().click({ timeout: 20000 });
     }
-    await p.locator(`[data-testid=acp-view][data-session$="/acp:${name}"]`).waitFor({ timeout: 20000 });
+    await p.locator(`[data-testid=acp-view][data-workspace$="/acp:${name}"]`).waitFor({ timeout: 20000 });
   };
   const prompt = (p) => p.locator('textarea[aria-label=Prompt]');
   const say = async (p, text) => {
@@ -192,8 +192,8 @@ try {
   await card.waitFor({ state: 'detached', timeout: 15000 });
   ok('Home: the agent asks to write a.txt; one tap on the card answers with exactly the option id the agent offered ("allow-once"); no always-option on the card');
 
-  // 2. The session view: the stream of that turn, with the diff, the tool status and the outcome of the permission.
-  await openSession(page, 'work');
+  // 2. The workspace view: the stream of that turn, with the diff, the tool status and the outcome of the permission.
+  await openWorkspace(page, 'work');
   const tier = await page.locator('[data-testid=tier]').innerText();
   check(tier === 'T0 · ACP', `the tier label is "${tier}"`);
   await page.locator('[data-kind=message]').filter({ hasText: 'Created' }).waitFor({ timeout: 15000 });
@@ -212,7 +212,7 @@ try {
   const mode = page.locator('[data-testid=mode]');
   check((await mode.inputValue()) === 'default', 'the mode is not the agent\'s current one');
   check((await mode.locator('option').allInnerTexts()).join() === 'Manual,Accept edits,Plan,Auto,Bypass permissions', 'the modes are not the agent\'s own list');
-  ok('session view: tier label T0 · ACP, the stream of the turn (prompt, tool with kind and status, diff, outcome of the permission, reply), context meter, the agent\'s own modes');
+  ok('workspace view: tier label T0 · ACP, the stream of the turn (prompt, tool with kind and status, diff, outcome of the permission, reply), context meter, the agent\'s own modes');
 
   // 2b. A permission that arrives while the view is open is the same card as on Home, with the diff in it; the rejected
   // path ends as the agent recorded it.
@@ -324,8 +324,8 @@ try {
   const mdLinks = await page.locator('[data-kind=message] a').evaluateAll((a) => a.map((x) => [x.getAttribute('href'), x.rel, x.target]));
   check(mdLinks.some(([h, r, t]) => h === 'https://example.com/spec' && r.includes('noopener') && t === '_blank'), `the link is not a safe web link: ${JSON.stringify(mdLinks)}`);
   check((await page.locator('[data-kind=message] figure pre').count()) >= 1 && (await page.locator('[data-kind=message] h1, [data-kind=message] [role=heading]').count()) >= 1, 'the markdown reply lacks its code block or heading');
-  await tap(page.getByRole('button', { name: 'Search this session' }));
-  const q = page.getByRole('searchbox', { name: 'Search this session' });
+  await tap(page.getByRole('button', { name: 'Search this workspace' }));
+  const q = page.getByRole('searchbox', { name: 'Search this workspace' });
   await q.fill('lex');
   const count = page.getByTestId('matches');
   await waitFor(async () => (await count.innerText()).trim() === '1 / 3', 'three hits for "lex"');
@@ -383,7 +383,7 @@ try {
   await sleep(700); // the place is saved when scrolling stops
   const place = await page.locator('[data-entry]').evaluateAll((els) => { const box = document.querySelector('[data-testid=stream]').getBoundingClientRect(); const e = els.find((x) => x.getBoundingClientRect().bottom > box.top + 1); return { id: e.dataset.entry, top: Math.round(e.getBoundingClientRect().top - box.top) }; });
   await page.reload();
-  await openSession(page, 'work');
+  await openWorkspace(page, 'work');
   await page.locator('[data-kind=user]').first().waitFor({ timeout: 20000 });
   const after = await waitFor(async () => {
     const r = await page.locator('[data-entry]').evaluateAll((els) => { const box = document.querySelector('[data-testid=stream]').getBoundingClientRect(); const e = els.find((x) => x.getBoundingClientRect().bottom > box.top + 1); return e ? { id: e.dataset.entry, top: Math.round(e.getBoundingClientRect().top - box.top) } : null; });
@@ -398,24 +398,24 @@ try {
   check(big > 48_000, `the reloaded stream is only ${big} characters: the multi-part reset was not exercised`);
   ok(`reload: the whole stream (${big} characters, sent in parts under the 64 KiB message limit) comes back from the server, with the unsent draft and the reader\'s place`);
 
-  // 10. Companion shell: a plain tmux session in the session's directory, one tap, the same one the second time.
+  // 10. Companion shell: a plain tmux workspace in the workspace's directory, one tap, the same one the second time.
   const shellBtn = page.getByTestId('shell');
   check((await shellBtn.boundingBox()).height >= 43.5, 'the Shell key is under 44 pt');
   await tap(shellBtn);
   await page.locator('.xterm').waitFor({ timeout: 20000 });
-  await waitFor(async () => (await sessions()).some((s) => s.id === 'tmux:work-shell'), 'the companion tmux session');
+  await waitFor(async () => (await workspaces()).some((s) => s.id === 'tmux:work-shell'), 'the companion tmux workspace');
   await send({ type: 'attach', session_id: 'tmux:work-shell' });
   await sleep(500);
   await hp.evaluate(() => { window.__e2e.clear(); window.__e2e.type('pwd\r'); });
   await waitFor(() => hp.evaluate((d) => window.__e2e.output.includes(d), work), `the shell starts in ${work}`);
   await send({ type: 'detach' });
-  await openSession(page, 'work');
+  await openWorkspace(page, 'work');
   await tap(page.getByTestId('shell'));
   await page.locator('.xterm').waitFor();
-  check((await sessions()).filter((s) => s.id === 'tmux:work-shell').length === 1, 'a second tap made a second shell');
-  ok('companion shell: one tap opens a plain tmux session in the ACP session\'s directory; the next tap opens the same one');
+  check((await workspaces()).filter((s) => s.id === 'tmux:work-shell').length === 1, 'a second tap made a second shell');
+  ok('companion shell: one tap opens a plain tmux workspace in the ACP workspace\'s directory; the next tap opens the same one');
 
-  // 10b. Leaving a terminal for an ACP session lets the terminal go: its output stops reaching the phone. (Control first:
+  // 10b. Leaving a terminal for an ACP workspace lets the terminal go: its output stops reaching the phone. (Control first:
   // while the phone shows the shell, what the harness types into it does reach the phone.)
   await send({ type: 'attach', session_id: 'tmux:work-shell' });
   await sleep(500);
@@ -423,7 +423,7 @@ try {
   const t1 = await termBytes();
   await hp.evaluate(() => { window.__e2e.clear(); window.__e2e.type('echo control-one\r'); });
   await waitFor(async () => (await termBytes()) > t1, 'the shell\'s output reaches the phone while it shows the shell');
-  await openSession(page, 'work'); // from the shell to the ACP view
+  await openWorkspace(page, 'work'); // from the shell to the ACP view
   await sleep(600);
   const t2 = await termBytes();
   await hp.evaluate(() => { window.__e2e.clear(); window.__e2e.type('echo after-switch\r'); });
@@ -433,20 +433,20 @@ try {
   await send({ type: 'detach' });
   await tap(page.getByTestId('shell')); // back to the shell, where the next step starts
   await page.locator('.xterm').waitFor();
-  ok('leaving a terminal for an ACP session detaches it: the shell\'s output reaches the phone before, and stops after');
+  ok('leaving a terminal for an ACP workspace detaches it: the shell\'s output reaches the phone before, and stops after');
 
-  // 11. Switching sessions keeps the place.
+  // 11. Switching workspaces keeps the place.
   await createAcp('other');
-  await openSession(page, 'work');
+  await openWorkspace(page, 'work');
   await streamBox.evaluate((e) => { e.scrollTop = 120; });
   await sleep(700);
   const keep = await streamBox.evaluate((e) => Math.round(e.scrollTop));
-  await openSession(page, 'other');
-  check((await page.locator('[data-testid=acp-view]').getAttribute('data-session')).endsWith('/acp:other'), 'did not switch to the other session');
-  await openSession(page, 'work');
+  await openWorkspace(page, 'other');
+  check((await page.locator('[data-testid=acp-view]').getAttribute('data-workspace')).endsWith('/acp:other'), 'did not switch to the other workspace');
+  await openWorkspace(page, 'work');
   await page.locator('[data-kind=user]').first().waitFor();
   await waitFor(async () => Math.abs((await streamBox.evaluate((e) => Math.round(e.scrollTop))) - keep) <= 4, `the place after switching back (was ${keep}, now ${await streamBox.evaluate((e) => Math.round(e.scrollTop))}, saved ${await page.evaluate(() => localStorage.getItem('termenbox_acp_view'))})`);
-  ok('switching sessions and back keeps the reader\'s place');
+  ok('switching workspaces and back keeps the reader\'s place');
 
   // 11b. The connection drops and comes back: the view says so, keeps what it shows, and catches up with only what it missed.
   const viewsBefore = await page.evaluate(() => window.__acp.length);
@@ -472,10 +472,10 @@ try {
   // 13. The agent dies: the view says so and the prompt line cannot be sent.
   await createAcp('doomed');
   await send({ type: 'acp_prompt', session: 'acp:doomed', text: 'crash' });
-  await openSession(page, 'doomed');
+  await openWorkspace(page, 'doomed');
   await page.locator('[data-kind=notice][data-level=error]').waitFor({ timeout: 20000 });
   await waitFor(async () => (await page.getByTestId('subtitle').innerText()).startsWith('Stopped'), 'the header says the agent stopped');
-  await waitFor(() => prompt(page).isDisabled(), 'the prompt line closes on a dead session');
+  await waitFor(() => prompt(page).isDisabled(), 'the prompt line closes on a dead workspace');
   ok('a crashed agent: the view says it stopped, with an error line, and the prompt line is closed');
   await phone.ctx.close();
 
@@ -492,7 +492,7 @@ try {
     window.__vv = (patch, ev) => { Object.assign(set, patch); vv.dispatchEvent(new Event(ev)); };
   });
   await small.page.reload();
-  await openSession(small.page, 'work');
+  await openWorkspace(small.page, 'work');
   const sp = small.page;
   check((await sp.evaluate(() => document.documentElement.scrollWidth - innerWidth)) <= 0, 'horizontal overflow at 360 px');
   // Every control is 44 pt each way, except the keys of the key row: 44 pt tall and a ninth of the width each, as in the terminal's row.

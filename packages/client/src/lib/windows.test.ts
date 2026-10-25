@@ -5,7 +5,7 @@ import type { WindowInfo } from './protocol';
 const w = (index: number, path: string, extra: Partial<WindowInfo> = {}): WindowInfo => ({ index, name: 'n', command: 'bash', path, active: false, ...extra });
 
 describe('window state', () => {
-  it('stores a window list per session and forgets the sessions that are gone', () => {
+  it('stores a window list per workspace and forgets the workspaces that are gone', () => {
     let map = applyWindowList({}, { type: 'window_list', session: 'a', windows: [w(0, '/x')], representative: 0 });
     map = applyWindowList(map, { type: 'window_list', session: 'b', windows: [w(0, '/y')] });
     expect(map.b.representative).toBeNull();
@@ -32,14 +32,14 @@ describe('short paths', () => {
 });
 
 describe('tab text', () => {
-  const sessions = [{ key: 's/a', name: 'a' }, { key: 's/b', name: 'b' }, { key: 's/c', name: 'c' }, { key: 's/d', name: 'd' }];
+  const workspaces = [{ key: 's/a', name: 'a' }, { key: 's/b', name: 'b' }, { key: 's/c', name: 'c' }, { key: 's/d', name: 'd' }];
   const windows = {
     's/a': { windows: [w(0, '/srv/app')], representative: 0 },
     's/b': { windows: [w(0, '/srv/app')], representative: 0 },
     's/c': { windows: [w(0, '/srv/other')], representative: 0 },
   };
-  it('tells tabs that read the same apart by session name, and falls back to the name without a path', () => {
-    const t = tabTexts(sessions, windows);
+  it('tells tabs that read the same apart by workspace name, and falls back to the name without a path', () => {
+    const t = tabTexts(workspaces, windows);
     expect(t['s/a'].label).toBe('/srv/app · a');
     expect(t['s/b'].label).toBe('/srv/app · b');
     expect(t['s/c'].label).toBe('/srv/other');
@@ -48,7 +48,7 @@ describe('tab text', () => {
   });
 });
 
-describe('opening a session that needs you', () => {
+describe('opening a workspace that needs you', () => {
   it('goes to the agent window when another one is current, and leaves the current one alone otherwise', () => {
     const list = [w(0, '/a', { active: true }), w(2, '/b', { agent: 'claude' })];
     expect(windowToOpen({ windows: list, representative: 2 })).toBe(2);

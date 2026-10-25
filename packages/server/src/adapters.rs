@@ -15,7 +15,7 @@ pub fn adapt(adapter: &str, data: &Value) -> Option<Adapted> {
     }
 }
 
-/// The agent's own id for the conversation an event belongs to: Claude's and Codex's `session_id`, OpenCode's
+/// The agent's own id for the conversation an event belongs to: Claude's and Codex's `workspace_id`, OpenCode's
 /// `sessionID` (on the plugin's frame, or inside its data).
 pub fn agent_session_id(adapter: &str, data: &Value) -> Option<String> {
     let id = match adapter {
@@ -63,7 +63,7 @@ pub fn claude(d: &Value) -> Option<Adapted> {
     let tool = || text(d, "tool_name").to_string();
     let block = |key: String, open: bool| EventKind::Block { key, open };
     let kinds = match text(d, "hook_event_name") {
-        // A compaction restarts the session mid-turn.
+        // A compaction restarts the workspace mid-turn.
         "SessionStart" if text(d, "source") == "compact" => return None,
         "SessionStart" | "SessionEnd" => vec![turn_end(AgentState::Idle)],
         "UserPromptSubmit" => {
@@ -333,18 +333,18 @@ pub fn opencode(d: &Value) -> Option<Adapted> {
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Process scan (decision 0061): which agent runs in a session and whether it is busy
+// Process scan (decision 0061): which agent runs in a workspace and whether it is busy
 // ---------------------------------------------------------------------------------------------------
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct PaneScan {
-    pub session: String,
+    pub workspace: String,
     pub command: String,
     /// Seconds since the window last produced output.
     pub quiet_for: u64,
     /// tmux's id of the pane (`%12`), empty when the listing did not give one.
     pub pane_id: String,
-    /// The pane the session shows: the active pane of its active window.
+    /// The pane the workspace shows: the active pane of its active window.
     pub active: bool,
 }
 
@@ -354,14 +354,14 @@ pub fn parse_panes(output: &str, now_s: u64) -> Vec<PaneScan> {
         .lines()
         .filter_map(|l| {
             let mut f = l.split('|');
-            let session = f.next()?.to_string();
+            let workspace = f.next()?.to_string();
             let command = f.next()?.to_string();
             let activity: u64 = f.next()?.trim().parse().ok()?;
             let pane_id = f.next().unwrap_or("").trim().to_string();
             let active =
                 f.next().map(str::trim) == Some("1") && f.next().map(str::trim) == Some("1");
             Some(PaneScan {
-                session,
+                workspace,
                 command,
                 quiet_for: now_s.saturating_sub(activity),
                 pane_id,
@@ -798,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn a_listing_with_pane_ids_says_which_pane_the_session_shows() {
+    fn a_listing_with_pane_ids_says_which_pane_the_workspace_shows() {
         let panes = parse_panes(
             "s|claude|1000|%3|0|1\ns|opencode|1000|%4|1|1\ns|opencode|1000|%5|1|0\n",
             1002,
@@ -814,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    fn the_agents_own_session_id_is_read_from_each_adapters_payload() {
+    fn the_agents_own_workspace_id_is_read_from_each_adapters_payload() {
         assert_eq!(
             agent_session_id("claude", &json!({"session_id": "c1"})).as_deref(),
             Some("c1")

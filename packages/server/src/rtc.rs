@@ -1,6 +1,6 @@
 //! WebRTC-direct transport (DECISION-0057): one UDP port, ICE-lite, no signaling, no STUN/TURN.
 //!
-//! The browser builds the remote session description itself from the server's IP, port and DTLS
+//! The browser builds the remote workspace description itself from the server's IP, port and DTLS
 //! fingerprint (from the signed directory record) and rewrites its own ICE ufrag/pwd to one random
 //! string. A peer is created when an unknown source sends a STUN binding request whose username is
 //! `termenbox:<client ufrag>`. The client's certificate is not verified (identity comes from the
@@ -41,7 +41,7 @@ const MAX_MESSAGE: usize = 64 * 1024;
 /// Sent in place of a reply longer than `MAX_MESSAGE`.
 const OVERSIZE_REPLY: &str =
     r#"{"type":"error","message":"A reply was too large for this connection and was not sent."}"#;
-/// Client messages the session has not read yet wait here, bounded by bytes: a terminal answers a palette query with
+/// Client messages the workspace has not read yet wait here, bounded by bytes: a terminal answers a palette query with
 /// one message per colour (about 260 at once after an attach), which must not cost the peer its connection.
 const BACKLOG_BYTES: usize = 256 * 1024;
 const BACKLOG_MESSAGES: usize = 4096;
@@ -201,16 +201,16 @@ struct Server {
 
 struct Peer {
     rtc: Rtc,
-    /// Present once the data channel is open (the session task starts then).
+    /// Present once the data channel is open (the workspace task starts then).
     end: Option<LinkEnd>,
     cid: Option<ChannelId>,
     term_cid: Option<ChannelId>,
-    /// Terminal bytes taken from the session that the channel had no room for yet.
+    /// Terminal bytes taken from the workspace that the channel had no room for yet.
     term_pending: Option<Vec<u8>>,
     created: Instant,
     last_rx: Instant,
     queue: VecDeque<String>,
-    /// Inbound messages the session had no room for yet.
+    /// Inbound messages the workspace had no room for yet.
     backlog: VecDeque<Inbound>,
     backlog_bytes: usize,
     closing: bool,
@@ -435,10 +435,10 @@ impl Peer {
 
         self.hand_over();
 
-        // Session -> client, with backpressure: a full SCTP buffer leaves messages queued.
+        // Workspace -> client, with backpressure: a full SCTP buffer leaves messages queued.
         if let (Some(cid), Some(end)) = (self.cid, self.end.as_mut()) {
             while self.queue.len() < 32 {
-                match end.from_session.try_recv() {
+                match end.from_workspace.try_recv() {
                     // A message the channel cannot carry would fail the write and take the connection down with it; the
                     // client is told instead, and everything else keeps flowing.
                     Ok(text) if text.len() > MAX_MESSAGE => {
@@ -478,7 +478,7 @@ impl Peer {
                 if self.term_pending.is_none() {
                     let mut buf = Vec::new();
                     while buf.len() < TERM_MESSAGE {
-                        match end.term_from_session.try_recv() {
+                        match end.term_from_workspace.try_recv() {
                             Ok(chunk) => buf.extend(chunk),
                             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
                             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
@@ -532,11 +532,11 @@ impl Peer {
         }
         let _ = transmits;
         if !self.backlog.is_empty() {
-            // Look again soon: the session is reading, and these are waiting for it.
+            // Look again soon: the workspace is reading, and these are waiting for it.
             self.timeout = self.timeout.min(now + Duration::from_millis(5));
         }
 
-        // The session finished (for example after an auth error): let the last messages out first.
+        // The workspace finished (for example after an auth error): let the last messages out first.
         if self.closing && self.queue.is_empty() && self.term_pending.is_none() {
             let drained = match self.cid.and_then(|c| self.rtc.channel(c)) {
                 Some(mut ch) => ch.buffered_amount() == 0,
@@ -552,18 +552,18 @@ impl Peer {
         true
     }
 
-    /// Gives the session as many waiting client messages as it has room for.
+    /// Gives the workspace as many waiting client messages as it has room for.
     fn hand_over(&mut self) {
         let Some(end) = &self.end else { return };
         while let Some(front) = self.backlog.pop_front() {
-            match end.to_session.try_send(front) {
+            match end.to_workspace.try_send(front) {
                 Ok(()) => {}
                 Err(tokio::sync::mpsc::error::TrySendError::Full(text)) => {
                     self.backlog.push_front(text);
                     break;
                 }
                 Err(_) => {
-                    // The session ended: nothing will read these.
+                    // The workspace ended: nothing will read these.
                     self.backlog.clear();
                     self.backlog_bytes = 0;
                     return;
@@ -613,7 +613,7 @@ impl Peer {
                 };
                 self.backlog_bytes += inbound_len(&msg);
                 self.backlog.push_back(msg);
-                // More than this waiting means the client floods faster than the session reads.
+                // More than this waiting means the client floods faster than the workspace reads.
                 if self.backlog_bytes > BACKLOG_BYTES || self.backlog.len() > BACKLOG_MESSAGES {
                     return false;
                 }

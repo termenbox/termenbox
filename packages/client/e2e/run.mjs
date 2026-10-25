@@ -12,7 +12,7 @@ import { randomBytes, generateKeyPairSync, sign, createPrivateKey, createPublicK
 
 const here = import.meta.dirname;
 const BIN = process.env.TERMENBOX_BIN ?? resolve(here, '../../../target/release/termenbox-server');
-const LIMITS = { rssMb: 300, cpuShare: 0.5 }; // issue #21: RSS with 10 sessions, CPU for 10k lines/s
+const LIMITS = { rssMb: 300, cpuShare: 0.5 }; // issue #21: RSS with 10 workspaces, CPU for 10k lines/s
 const TICKS = 100; // clock ticks per second on Linux
 
 const fail = (msg) => {
@@ -86,7 +86,7 @@ const claim = randomBytes(32).toString('base64url');
 const server = spawn(BIN, [], {
   env: {
     ...process.env,
-    TMUX_TMPDIR: home, // a private tmux server: never touches the developer's sessions
+    TMUX_TMPDIR: home, // a private tmux server: never touches the developer's workspaces
     TERMENBOX_CONFIG_DIR: join(home, 'config'),
     TERMENBOX_HOST: '127.0.0.1',
     TERMENBOX_PORT: String(httpPort),
@@ -95,7 +95,7 @@ const server = spawn(BIN, [], {
     TERMENBOX_DIRECTORY_URL: '',
     TERMENBOX_DEV_INFO: 'on',
     TERMENBOX_CERT_KEYS: `e2e=${signerPublic}`,
-    LANG: 'C', // sessions must still get a UTF-8 locale from the server
+    LANG: 'C', // workspaces must still get a UTF-8 locale from the server
     LC_ALL: 'C',
     TERMENBOX_CLAIM_SECRET: claim,
   },
@@ -194,10 +194,10 @@ try {
     console.log('ok  the key row stays visible when the keyboard opens, shrinks the view or pans it');
   }
 
-  // 3. Create a session, type, see the output.
+  // 3. Create a workspace, type, see the output.
   await e2e(alice, () => window.__e2e.send({ type: 'new_session', name: 's1' }));
-  await waitFor(() => e2e(alice, () => (window.__e2e.send({ type: 'list_sessions' }), window.__e2e.sessions.length > 0)), 'session listed');
-  const id = await e2e(alice, () => window.__e2e.sessions[0].id);
+  await waitFor(() => e2e(alice, () => (window.__e2e.send({ type: 'list_sessions' }), window.__e2e.workspaces.length > 0)), 'workspace listed');
+  const id = await e2e(alice, () => window.__e2e.workspaces[0].id);
   await e2e(alice, (id) => window.__e2e.send({ type: 'attach', session_id: id }), id);
   await sleep(500);
   await e2e(alice, () => window.__e2e.type('echo marker-$((20+22))\r'));
@@ -218,13 +218,13 @@ try {
   await waitFor(() => e2e(alice, () => window.__e2e.received.some((m) => m.includes('"type":"history_deleted"') && m.includes('"removed":0'))), 'history deleted');
   console.log('ok  the history range query and delete are answered over the real transport');
 
-  // 5. Gate: server RSS with 10 sessions open.
+  // 5. Gate: server RSS with 10 workspaces open.
   for (let i = 2; i <= 10; i++) {
     await e2e(alice, (n) => window.__e2e.send({ type: 'new_session', name: `s${n}` }), i);
     await sleep(150);
   }
-  await waitFor(() => e2e(alice, () => (window.__e2e.send({ type: 'list_sessions' }), window.__e2e.sessions.length >= 10)), '10 sessions');
-  const ids = await e2e(alice, () => window.__e2e.sessions.map((s) => s.id));
+  await waitFor(() => e2e(alice, () => (window.__e2e.send({ type: 'list_sessions' }), window.__e2e.workspaces.length >= 10)), '10 workspaces');
+  const ids = await e2e(alice, () => window.__e2e.workspaces.map((s) => s.id));
   for (const sid of ids) {
     await e2e(alice, (sid) => window.__e2e.send({ type: 'attach', session_id: sid }), sid);
     await sleep(150);
@@ -248,7 +248,7 @@ try {
   if (bytes < 100000) fail(`only ${bytes} bytes of output reached the browser`);
   if (share > LIMITS.cpuShare) fail(`relaying output used ${(share * 100).toFixed(0)}% of a vCPU, over ${LIMITS.cpuShare * 100}%`);
 
-  // 7. The real app on a phone: connect, open a session, go back to the server list and connect again.
+  // 7. The real app on a phone: connect, open a workspace, go back to the server list and connect again.
   // Each lap used to risk a hang or a broken screen, so run several and fail on any page error.
   {
     const paneClients = () => execFileSync('tmux', ['-L', 'termenbox', 'list-clients', '-F', '#{client_control_mode} #{client_pid}'], { env: { ...process.env, TMUX_TMPDIR: home }, encoding: 'utf8' }).trim().split('\n').filter((l) => l.startsWith('0 ')).length; // the server's own control-mode clients (window updates) are not terminals
@@ -309,7 +309,7 @@ try {
       await page.getByRole('button', { name: 'Servers', exact: true }).click();
     };
     await openServers();
-    // Add Server: where sessions run. The container is the default; the host modes show a warning and need consent.
+    // Add Server: where workspaces run. The container is the default; the host modes show a warning and need consent.
     await page.getByRole('button', { name: 'Add Server' }).first().click();
     const cmd = () => page.locator('pre.command').first().textContent();
     // The default is this machine as the current user (host-me); the command waits for consent, which is on the first screen.
@@ -350,11 +350,11 @@ try {
     await page.getByRole('menuitem', { name: 'Remove' }).click();
     if (!(await page.getByRole('heading', { name: 'e2e-server' }).isVisible())) fail('the server was removed without confirmation');
     for (let lap = 1; lap <= 3; lap++) {
-      await page.locator('[data-shell=bottom-bar] [data-destination=sessions]').click(); // Home is the landing page now (U05)
-      // The Sessions destination lists sessions in groups (U05); the row's name starts with its state and agent icons.
-      const s1Row = page.locator('[data-session-groups] button').filter({ has: page.locator('b', { hasText: /^s1$/ }) }).first();
-      const sheetRow = page.locator('.session-sheet').getByRole('button', { name: /^s1(\s|$)/ }).first(); // with a session open, the list is the sheet
-      if (!(await s1Row.isVisible())) await page.locator('.sessions-button').click();
+      await page.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click(); // Home is the landing page now (U05)
+      // The Workspaces destination lists workspaces in groups (U05); the row's name starts with its state and agent icons.
+      const s1Row = page.locator('[data-workspace-groups] button').filter({ has: page.locator('b', { hasText: /^s1$/ }) }).first();
+      const sheetRow = page.locator('.workspace-sheet').getByRole('button', { name: /^s1(\s|$)/ }).first(); // with a workspace open, the list is the sheet
+      if (!(await s1Row.isVisible())) await page.locator('.workspaces-button').click();
       await s1Row.or(sheetRow).first().waitFor();
       await s1Row.or(sheetRow).first().click();
       await page.locator('.dot.ok').waitFor({ timeout: 20000 }).catch(async (e) => {
@@ -379,17 +379,17 @@ try {
       if (lay.font < 16) fail(`the terminal input is ${lay.font}px: iOS would zoom the page when it gets focus`);
       if (lay.scale !== 1) fail(`the page is zoomed (${lay.scale}) after connecting`);
       if (lay.scrolled) fail('a box around the terminal is scrolled after connecting');
-      await page.locator('.sessions-button').click();
+      await page.locator('.workspaces-button').click();
       const heights = await page.evaluate(() => [...document.querySelectorAll('.sheet-header button.icon')].map((b) => Math.round(b.getBoundingClientRect().height)));
       if (heights.length !== 2 || heights[0] !== heights[1]) fail(`Refresh and New differ in size: ${heights}`);
       if (!(await page.getByText(/server 0\.1\.\d+\+/).count())) fail('the sidebar does not show the server version');
-      // #105: every hub update (an agent changing state, a session list) used to rebuild the terminal, which blanked and
-      // flickered the screen. Refresh makes the server answer with a session list; the same xterm must survive it.
+      // #105: every hub update (an agent changing state, a workspace list) used to rebuild the terminal, which blanked and
+      // flickered the screen. Refresh makes the server answer with a workspace list; the same xterm must survive it.
       await page.evaluate(() => { document.querySelector('.xterm').dataset.same = '1'; });
-      await page.locator('.session-sheet').getByRole('button', { name: 'Refresh', exact: true }).click();
+      await page.locator('.workspace-sheet').getByRole('button', { name: 'Refresh', exact: true }).click();
       await sleep(600);
       if (!(await page.evaluate(() => document.querySelector('.xterm')?.dataset.same === '1'))) fail('the terminal was rebuilt by a hub update');
-      await page.locator('.session-sheet').getByRole('button', { name: /^s1(\s|$)/ }).first().click(); // a tab now reads as the directory
+      await page.locator('.workspace-sheet').getByRole('button', { name: /^s1(\s|$)/ }).first().click(); // a tab now reads as the directory
       await page.locator('.xterm').waitFor({ timeout: 5000 });
       if (lap === 3) {
         // The swipe-typing recorder: silent normally, listing the textarea's events when the debug switch is on.
@@ -578,16 +578,16 @@ try {
           window.dispatchEvent(new Event('termenbox-debug'));
         });
       }
-      await page.locator('.sessions-button').click();
+      await page.locator('.workspaces-button').click();
       await page.getByRole('button', { name: 'Menu', exact: true }).click();
       await page.getByRole('dialog', { name: 'Menu', exact: true }).getByRole('button', { name: 'Servers', exact: true }).click();
       await page.getByText('Your Servers').waitFor({ timeout: 5000 });
       await waitFor(() => paneClients() === backgroundClients, 'no background PTY stream in Servers', 5000);
-      console.log(`    lap ${lap}: connect, session, back to servers`);
+      console.log(`    lap ${lap}: connect, workspace, back to servers`);
     }
     if (errors.length) fail(`app flow raised errors: ${errors.slice(0, 3).join(' | ')}`);
     await ctx.close();
-    console.log('ok  connect, open a session and return to the server list, three times, on a phone');
+    console.log('ok  connect, open a workspace and return to the server list, three times, on a phone');
   }
 } catch (e) {
   fail(e.stack ?? String(e));

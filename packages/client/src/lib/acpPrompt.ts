@@ -1,4 +1,4 @@
-// The prompt line of an ACP session (U07b): slash-command completion from the agent's own list, prompt history, and what
+// The prompt line of an ACP workspace (U07b): slash-command completion from the agent's own list, prompt history, and what
 // each key of the key row does here. Pure, so the rules are tested without a browser.
 import type { Info } from './acpStream';
 

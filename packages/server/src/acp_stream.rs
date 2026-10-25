@@ -1,4 +1,4 @@
-//! The T0 session stream (decision 0111): what the ACP session view shows, built from the same `session/update`
+//! The T0 workspace stream (decision 0111): what the ACP workspace view shows, built from the same `session/update`
 //! payloads the event mapper reads, but keeping the structure a screen needs (whole Markdown replies, tool calls
 //! with kind and status, diffs, the plan, permission requests and how they ended) instead of one-line summaries.
 //!
@@ -6,7 +6,7 @@
 //! is the one piece of tool content that is, because it is what a permission asks the owner to approve. Every text is
 //! untrusted agent text: control characters and escape sequences are removed, secrets and addresses are replaced
 //! (`events::sanitize_block`) and every length is capped, so a hostile agent cannot make this grow without bound.
-//! Memory per session is bounded by `MAX_ENTRIES` and `MAX_BYTES`; the oldest entries are dropped first.
+//! Memory per workspace is bounded by `MAX_ENTRIES` and `MAX_BYTES`; the oldest entries are dropped first.
 use std::collections::{HashMap, VecDeque};
 
 use agent_client_protocol_schema::v1 as acp;
@@ -289,7 +289,7 @@ fn fit(e: &mut AcpEntry) {
 /// first part of a reset resets; the facts follow in a message of their own.
 pub fn split(view: AcpView) -> Vec<AcpView> {
     let AcpView {
-        session,
+        workspace,
         epoch,
         rev,
         reset,
@@ -299,7 +299,7 @@ pub fn split(view: AcpView) -> Vec<AcpView> {
     } = view;
     entries.sort_by_key(|e| e.rev);
     let part = |reset: bool, rev: u64, entries: Vec<AcpEntry>, info: Option<AcpInfo>| AcpView {
-        session: session.clone(),
+        workspace: workspace.clone(),
         epoch,
         rev,
         reset,
@@ -525,7 +525,7 @@ impl Stream {
         self.info.working = false;
         let notice = match status {
             "failed" => Some(("error", "The agent stopped unexpectedly.")),
-            "ended" => Some(("info", "The session ended.")),
+            "ended" => Some(("info", "The workspace ended.")),
             _ => None,
         };
         if let Some((level, text)) = notice {
@@ -536,8 +536,9 @@ impl Stream {
 
     /// What `session/new`, `session/resume` or `session/load` returned: the modes and the current one. The three
     /// results share these two fields; `sessionId` is read by the handshake, not here.
-    pub fn session_state(&mut self, result: &Value) {
-        if let Some(r) = crate::acp::decode::<acp::ResumeSessionResponse>(result, "session result")
+    pub fn workspace_state(&mut self, result: &Value) {
+        if let Some(r) =
+            crate::acp::decode::<acp::ResumeSessionResponse>(result, "workspace result")
         {
             if let Some(modes) = &r.modes {
                 let list: Vec<AcpMode> = modes
@@ -913,7 +914,7 @@ impl Stream {
     /// future (the stream was rebuilt) gets everything. `info_seen` is the info revision it already holds.
     pub fn view(
         &mut self,
-        session: &str,
+        workspace: &str,
         after: Option<u64>,
         epoch: Option<u64>,
         info_seen: u64,
@@ -930,7 +931,7 @@ impl Stream {
         let send_info = reset || self.info_rev > info_seen;
         (
             AcpView {
-                session: session.to_string(),
+                workspace: workspace.to_string(),
                 epoch: self.epoch,
                 rev: self.rev,
                 reset,

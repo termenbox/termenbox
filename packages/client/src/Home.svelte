@@ -6,21 +6,21 @@
   import type { HookOffer } from './lib/hooks';
   import { decisionFor, type Decision } from './lib/decision';
   import type { FleetState } from './lib/ds/states';
-  import type { AgentMap, SessionAgent } from './lib/agents';
-  import type { HubServer, HubSession } from './lib/hub';
+  import type { AgentMap, WorkspaceAgent } from './lib/agents';
+  import type { HubServer, HubWorkspace } from './lib/hub';
   import { ageText } from './lib/cards';
   import { continueTarget, fleetCounts, queueOf, rowOf, Settle, splitQueue, type HomeQueue, type Row } from './lib/home';
 
   /** Home (decision 0100): the oldest waiting decision, the rest of the queue, the four fleet counts and Continue. */
-  let { sessions, agents, servers, now, lastKey, offer, focusKey = null, onopen, onanswer, onreply, onservers, onnew, onhook }: {
-    sessions: HubSession[]; agents: AgentMap; servers: HubServer[]; now: number; lastKey: string | null;
+  let { workspaces, agents, servers, now, lastKey, offer, focusKey = null, onopen, onanswer, onreply, onservers, onnew, onhook }: {
+    workspaces: HubWorkspace[]; agents: AgentMap; servers: HubServer[]; now: number; lastKey: string | null;
     onopen: (key: string) => void;
-    onanswer: (key: string, choice: number, prompt: NonNullable<SessionAgent['prompt']>) => void;
+    onanswer: (key: string, choice: number, prompt: NonNullable<WorkspaceAgent['prompt']>) => void;
     onreply: (key: string, text: string) => void;
     onservers: () => void; onnew: (serverId?: string) => void;
     /** The hook offer to show, if one is due (decision 0106), and what the user chose on it. */
     offer?: HookOffer; onhook?: (choice: 'enable' | 'later' | 'never', offer: HookOffer) => void;
-    /** The session a push's deep link named (U11): its decision is shown first and scrolled to, while it still waits. */
+    /** The workspace a push's deep link named (U11): its decision is shown first and scrolled to, while it still waits. */
     focusKey?: string | null;
   } = $props();
 
@@ -34,17 +34,17 @@
   // The servers that say they are unhealthy (U14): a server with no verdict yet, or an older one, is not.
   const unhealthy = $derived(new Set(servers.filter((s) => s.health && !s.health.healthy).map((s) => s.id)));
 
-  const counts = $derived(fleetCounts(sessions, agents));
+  const counts = $derived(fleetCounts(workspaces, agents));
   const live = $derived.by(() => {
-    const q = splitQueue(queueOf(sessions, agents, unhealthy), focusKey);
+    const q = splitQueue(queueOf(workspaces, agents, unhealthy), focusKey);
     return { ...q, decision: q.hero ? decisionFor(q.hero, agents[q.hero.key], now) : undefined, offerKey: offer ? `${offer.serverId}|${offer.agent}` : undefined };
   });
   const view = $derived.by(() => { beat; return settle.view(live, Date.now()); });
   let decisionEl = $state<HTMLElement>();
   $effect(() => { if (focusKey && view.hero?.key === focusKey) decisionEl?.scrollIntoView({ block: 'start' }); });
   const connected = $derived(new Set(servers.filter((s) => s.state === 'connected').map((s) => s.id)));
-  const cont = $derived(continueTarget(lastKey, sessions, connected, [...(view.hero ? [view.hero] : []), ...view.rest]));
-  const filtered = $derived(filter ? sessions.map((s) => rowOf(s, agents[s.key], unhealthy.has(s.serverId))).filter((r) => r.state === filter) : []);
+  const cont = $derived(continueTarget(lastKey, workspaces, connected, [...(view.hero ? [view.hero] : []), ...view.rest]));
+  const filtered = $derived(filter ? workspaces.map((s) => rowOf(s, agents[s.key], unhealthy.has(s.serverId))).filter((r) => r.state === filter) : []);
   const KIND_WORD = { needs_input: 'waiting', failed: 'failed', finished_unseen: 'finished' } as const;
 
   const meta = (r: Row) => [r.serverName, r.kind && r.since ? `${KIND_WORD[r.kind]} ${ageText(r.since, now)}` : ''].filter(Boolean).join(' · ');
@@ -68,11 +68,11 @@
     </div>
 
     {#if filter}
-      <section class="flex flex-col gap-2" aria-label="Filtered sessions" data-home-filter>
+      <section class="flex flex-col gap-2" aria-label="Filtered workspaces" data-home-filter>
         {#each filtered as r (r.key)}
           <QueueItem name={r.name} summary={r.title} meta={meta(r)} state={r.state} agent={r.agent} unhealthy={r.unhealthy} onclick={() => onopen(r.key)} />
         {:else}
-          <p class="py-6 text-center text-base text-soft">No sessions in this state.</p>
+          <p class="py-6 text-center text-base text-soft">No workspaces in this state.</p>
         {/each}
       </section>
     {:else}
@@ -104,9 +104,9 @@
           <QueueItem name={cont.name} meta={`${cont.serverName} · last used`} state={rowOf(cont, agents[cont.key]).state} agent={agents[cont.key]?.agent} unhealthy={unhealthy.has(cont.serverId)} onclick={() => onopen(cont.key)} />
         </section>
       {:else if !view.hero && !view.rest.length}
-        {#if sessions.length === 0}
-          <EmptyState title="No sessions yet" body="Start one and it shows up here.">
-            <button type="button" onclick={() => onnew()} class="min-h-11 rounded-card bg-accent px-4 text-base font-semibold text-on-accent">Start a session</button>
+        {#if workspaces.length === 0}
+          <EmptyState title="No workspaces yet" body="Start one and it shows up here.">
+            <button type="button" onclick={() => onnew()} class="min-h-11 rounded-card bg-accent px-4 text-base font-semibold text-on-accent">Start a workspace</button>
           </EmptyState>
         {:else}
           <EmptyState title="All quiet" body="Nothing needs you right now." />

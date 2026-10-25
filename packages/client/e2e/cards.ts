@@ -1,11 +1,11 @@
-// The real session list on a fake event stream, for screenshots and the cards e2e check.
+// The real workspace list on a fake event stream, for screenshots and the cards e2e check.
 import { mount } from 'svelte';
 import '../src/app.css';
-import SessionList from '../src/SessionList.svelte';
+import WorkspaceList from '../src/WorkspaceList.svelte';
 import { agents, applyActivity, applyEvents } from '../src/lib/agents';
 import type { AgentEvent } from '../src/lib/protocol';
 
-const sessions = [
+const workspaces = [
   { id: 'build', name: 'build', agent: null, backend: 'tmux' },
   { id: 'api-refactor', name: 'api-refactor', agent: null, backend: 'tmux' },
   { id: 'docs', name: 'docs', agent: null, backend: 'tmux' },
@@ -30,5 +30,5 @@ const stream: AgentEvent[] = [
 agents.set(applyActivity(applyEvents({}, stream).map, [{ session: 'build', activity: 'working', ts: now, task: { title: 'Wire the touch controller in', started_at: now - 95_000, source: 'hook' } }], now));
 const sent: unknown[] = [];
 (window as unknown as { __sent: unknown[]; __agents: typeof agents }).__sent = sent;
-mount(SessionList, { target: document.body, props: { sessions, activeSessionId: 'build', onopen: (id: string) => sent.push({ open: id }), send: (m: unknown) => sent.push(m) } });
+mount(WorkspaceList, { target: document.body, props: { workspaces, activeWorkspaceId: 'build', onopen: (id: string) => sent.push({ open: id }), send: (m: unknown) => sent.push(m) } });
 document.body.style.cssText = 'padding:12px;max-width:390px;background:var(--bg-secondary)';

@@ -4,7 +4,7 @@
   import StatusChip from './StatusChip.svelte';
   import type { FleetState } from './states';
   import { cn } from '../ui/utils';
-  /** A session in the queue or the fleet list: name, one line of what it is doing, its state. */
+  /** A workspace in the queue or the fleet list: name, one line of what it is doing, its state. */
   let { name, summary, meta, state, agent, command, onclick, unhealthy, class: className = '' }:
     { name: string; summary?: string; meta?: string; state: FleetState; agent?: string; command?: string; onclick?: () => void; unhealthy?: boolean; class?: string } = $props();
 </script>

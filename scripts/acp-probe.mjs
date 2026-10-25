@@ -8,7 +8,7 @@
 // Steps (comma separated, run in order; a ':' argument may not contain ','):
 //   init                      initialize (we advertise fs and terminal only with --fs / --terminal)
 //   auth:<methodId>           authenticate
-//   new | load | resume | close | list | fork   session/* against the current session
+//   new | load | resume | close | list | fork   workspace/* against the current workspace
 //   prompt:<text>             session/prompt, waits for the response
 //   promptbg:<text>           session/prompt without waiting (pair with cancel / wait)
 //   cancel                    session/cancel notification
@@ -20,8 +20,8 @@
 //   raw:<method>=<json>       any request
 //   restart                   kill the agent and spawn a fresh one (re-init needed)
 //   kill                      SIGKILL the agent and record what the client sees
-// --session <id>                   start with this session id (for load/resume in a fresh process)
-//   use:<id> switches the current session id; uselatest picks sessions[0] of the last list
+// --session <id>                   start with this workspace id (for load/resume in a fresh process)
+//   use:<id> switches the current workspace id; uselatest picks workspaces[0] of the last list
 // --perm reject|allow|always|none  how to answer session/request_permission (none = never answer)
 // --perm-extra <json>              extra top-level fields in the permission reply (e.g. qwen '{"answers":{...}}')
 // --perm-pick <optionId>           choose this option id when offered
@@ -85,12 +85,12 @@ const log = (dir, msg) => appendFileSync(wire, redact(JSON.stringify({ t: Date.n
 const unanswered = []; // permission requests left open by --perm none
 let child, buf = '', nextId = 1;
 const pending = new Map();
-let sessionId = opt('session', null), caps = null;
+let sessionId = opt('workspace', null), caps = null;
 const exits = [];
 
 function start() {
   buf = '';
-  const env = { ...process.env }; delete env.CLAUDECODE; // adapters refuse to start inside a Claude Code session
+  const env = { ...process.env }; delete env.CLAUDECODE; // adapters refuse to start inside a Claude Code workspace
   child = spawn(cmd[0], cmd.slice(1), { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
   child.stdout.on('data', (d) => {
     buf += d;
@@ -178,7 +178,7 @@ async function step(s) {
     case 'resume': r = await request('session/resume', { sessionId, cwd, mcpServers: [] }); break;
     case 'fork': r = await request('session/fork', { sessionId, cwd, mcpServers: [] }); break;
     case 'close': r = await request('session/close', { sessionId }); break;
-    case 'list': r = await request('session/list', { cwd }); lastList = r.result?.sessions || []; break;
+    case 'list': r = await request('session/list', { cwd }); lastList = r.result?.workspaces || []; break;
     case 'uselatest': sessionId = lastList[0]?.sessionId; r = { result: 'using ' + sessionId }; break;
     case 'prompt': r = await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: a }] }, Number(opt('timeout', 180000))); break;
     case 'promptbg': request('session/prompt', { sessionId, prompt: [{ type: 'text', text: a }] }, 600000).then((x) => { log('bg-result', x); results.push({ step: 'promptbg-done', ok: !x.error, error: x.error, result: x.result }); }); r = { result: 'started' }; break;

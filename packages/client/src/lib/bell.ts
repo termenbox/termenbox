@@ -45,8 +45,8 @@ export function unlockAudio(): boolean {
   try {
     const Ctx = audioCtor();
     if (!Ctx) { audioState.set('unsupported'); return false; }
-    const session = (navigator as AudioSessionNav).audioSession;
-    if (session) session.type = 'playback'; // audible even with the ringer switch off
+    const workspace = (navigator as AudioSessionNav).audioSession;
+    if (workspace) workspace.type = 'playback'; // audible even with the ringer switch off
     if (!ctx) {
       ctx = new Ctx();
       ctx.addEventListener('statechange', publish);

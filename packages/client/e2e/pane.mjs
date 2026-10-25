@@ -1,6 +1,6 @@
-// The in-session screen: the Decision / Terminal switch (U04 item 7) and the T1 timeline (U09), in the real app against a
+// The in-workspace screen: the Decision / Terminal switch (U04 item 7) and the T1 timeline (U09), in the real app against a
 // real termenbox-server and tmux. A Claude Code hook is simulated by running the server's own `--hook claude` command
-// inside the session, with a transcript made from the recorded fixture under a private Claude config directory.
+// inside the workspace, with a transcript made from the recorded fixture under a private Claude config directory.
 // Usage: node e2e/pane.mjs   (needs a built server, `pnpm run build` and `pnpm run e2e:build`, and Chrome)
 import { launch, contextOptions } from './browser.mjs';
 import { spawn } from 'node:child_process';
@@ -77,7 +77,7 @@ try {
   const serverId = serverIdOf(join(home, 'config'));
   browser = await launch(['--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection']);
 
-  // The harness page owns the server and types into the session (it plays the agent's shell).
+  // The harness page owns the server and types into the workspace (it plays the agent's shell).
   const hp = await (await browser.newContext(contextOptions())).newPage();
   hp.on('pageerror', (e) => fail(`harness page error: ${e.message}`));
   await hp.goto(`http://127.0.0.1:${webPort}/`);
@@ -85,8 +85,8 @@ try {
   await hp.evaluate((o) => window.__e2e.start(o), { record, cert, serverId, claim });
   await waitFor(() => hp.evaluate(() => window.__e2e.state === 'connected'), 'harness connected');
   await hp.evaluate(() => window.__e2e.send({ type: 'new_session', name: 's1' }));
-  await waitFor(() => hp.evaluate(() => (window.__e2e.send({ type: 'list_sessions' }), window.__e2e.sessions.length > 0)), 'session listed');
-  const id = await hp.evaluate(() => window.__e2e.sessions[0].id);
+  await waitFor(() => hp.evaluate(() => (window.__e2e.send({ type: 'list_sessions' }), window.__e2e.workspaces.length > 0)), 'workspace listed');
+  const id = await hp.evaluate(() => window.__e2e.workspaces[0].id);
   await hp.evaluate((id) => window.__e2e.send({ type: 'attach', session_id: id }), id);
   await sleep(500);
   const hook = async (path) => {
@@ -119,18 +119,18 @@ try {
     localStorage.setItem('termenbox_servers', JSON.stringify([item]));
   }, [mint(deviceKey, 1, 'alice'), { server_url: '', server_id: serverId, server_name: 'e2e-server', registered_at: Date.now(), record }]);
   await page.reload();
-  await page.locator('[data-shell=bottom-bar] [data-destination=sessions]').click();
-  const row = page.locator('[data-session-groups] button').filter({ has: page.locator('b', { hasText: /^s1$/ }) }).first();
+  await page.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click();
+  const row = page.locator('[data-workspace-groups] button').filter({ has: page.locator('b', { hasText: /^s1$/ }) }).first();
   await row.waitFor({ timeout: 20000 });
   await row.click();
   await page.locator('.xterm').waitFor({ timeout: 20000 });
 
-  const radios = page.getByRole('radiogroup', { name: 'Session view' }).getByRole('radio');
+  const radios = page.getByRole('radiogroup', { name: 'Workspace view' }).getByRole('radio');
   check((await radios.count()) === 2, 'the switch has two options');
   check((await radios.evaluateAll((r) => r.filter((b) => b.tabIndex === 0).length)) === 1, 'the switch is one tab stop');
   check((await radios.evaluateAll((r) => r.every((b) => b.getBoundingClientRect().height >= 44))), 'the switch targets are 44 pt');
   check((await page.getByRole('radio', { name: 'Terminal' }).getAttribute('aria-checked')) === 'true', 'the terminal is the default');
-  check(!(await page.locator('[data-testid=session-view]').count()), 'the session view is not shown by default');
+  check(!(await page.locator('[data-testid=session-view]').count()), 'the workspace view is not shown by default');
   console.log('ok  the switch is a two-option, one-tab-stop control and the terminal is the default');
 
   // Switching keeps the very same xterm element mounted, with its size.
@@ -146,7 +146,7 @@ try {
   const tier = await page.locator('[data-testid=tier]').innerText();
   check(/Generic|Profile/.test(tier), `without hooks the view stays at T2 or T3: ${tier}`);
   check((await page.evaluate(() => localStorage.getItem('termenbox_pane_modes'))).includes('decision'), 'the choice is not kept on this device');
-  console.log(`ok  Decision shows the session view (${tier.split('·')[0].trim()}) and the terminal stays mounted, hidden, at its size`);
+  console.log(`ok  Decision shows the workspace view (${tier.split('·')[0].trim()}) and the terminal stays mounted, hidden, at its size`);
 
   // A hook names the transcript: T1 with the timeline.
   await hook(transcript);

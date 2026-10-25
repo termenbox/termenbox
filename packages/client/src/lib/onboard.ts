@@ -9,9 +9,9 @@ import { openTransport, Unreachable, type Target, type Transport } from './trans
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
 
 /**
- * Where sessions run (DECISION-0058, 0075). The installer takes it as a word after `sh -s --`: none for `host-me`, `container` for the isolated container,
+ * Where workspaces run (DECISION-0058, 0075). The installer takes it as a word after `sh -s --`: none for `host-me`, `container` for the isolated container,
  * `host-user` for this machine as a dedicated unprivileged user, `host-me` as the user who runs the
- * installer (sessions open on their behalf, in their home), `host` for this machine as root.
+ * installer (workspaces open on their behalf, in their home), `host` for this machine as root.
  */
 export type RunChoice = 'container' | 'host-user' | 'host-me' | 'host';
 

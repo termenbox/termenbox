@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { ageText, chipFor, FrozenOrder, progress, sortIds, staleText, toolLine } from './cards';
-import type { AgentMap, SessionAgent } from './agents';
+import type { AgentMap, WorkspaceAgent } from './agents';
 
-const a = (state: SessionAgent['state'], extra: Partial<SessionAgent> = {}): SessionAgent => ({ state, seq: 1, stale: false, ts: 1000, ...extra });
+const a = (state: WorkspaceAgent['state'], extra: Partial<WorkspaceAgent> = {}): WorkspaceAgent => ({ state, seq: 1, stale: false, ts: 1000, ...extra });
 
 describe('chips', () => {
   it('always carry a word and an icon, for every state', () => {
@@ -37,7 +37,7 @@ describe('card text', () => {
 
 describe('order', () => {
   const agents: AgentMap = { x: a('idle'), y: a('needs_input'), z: a('working') };
-  it('puts needs-you first, then error, working, done, idle, and sessions without events last', () => {
+  it('puts needs-you first, then error, working, done, idle, and workspaces without events last', () => {
     expect(sortIds(['x', 'y', 'z', 'w'], agents)).toEqual(['y', 'z', 'x', 'w']);
   });
 

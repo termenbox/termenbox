@@ -6,13 +6,13 @@
   import { decorate, type Part } from './lib/markdown';
   import type { Decision } from './lib/decision';
 
-  /** One entry of the session stream (U07b). Agent text is drawn as text only. A permission that is open is the same
+  /** One entry of the workspace stream (U07b). Agent text is drawn as text only. A permission that is open is the same
    *  decision card as on Home, answered with one tap; once answered it is one line of the log. `current` is the search
    *  hit (0-based, within this entry) that stands out, or -1. `announce`: an error line is read out at once (an alert) only
    *  when it is new, not when it is history that arrives with the stream. */
-  let { entry, query = '', current = -1, asking = false, announce = false, opened, ontoggle, onanswer, sessionKey, name, agent, now }: {
+  let { entry, query = '', current = -1, asking = false, announce = false, opened, ontoggle, onanswer, workspaceKey, name, agent, now }: {
     entry: Entry; query?: string; current?: number; asking?: boolean; announce?: boolean; opened: Set<string>; ontoggle: (key: string) => void;
-    onanswer: (promptId: string, optionId: string) => void; sessionKey: string; name: string; agent?: string; now: number;
+    onanswer: (promptId: string, optionId: string) => void; workspaceKey: string; name: string; agent?: string; now: number;
   } = $props();
 
   const marks = $derived(entryMarks(entry, query, current, asking));
@@ -24,7 +24,7 @@
     execute: 'Wants to run a command', think: 'Wants to think', fetch: 'Wants to fetch a page', switch_mode: 'Wants to switch mode', other: 'Wants to use a tool',
   };
   const decision = (e: Extract<Entry, { kind: 'permission' }>): Decision => ({
-    key: sessionKey, promptId: e.promptId, name, agent, question: e.title || 'The agent asks permission', tier: 't0', options: e.options.map((o) => o.name),
+    key: workspaceKey, promptId: e.promptId, name, agent, question: e.title || 'The agent asks permission', tier: 't0', options: e.options.map((o) => o.name),
   });
 </script>
 

@@ -1,4 +1,4 @@
-//! What the session logic sees of a connection, whatever carries it. Two lanes (decision 0096): JSON text
+//! What the workspace logic sees of a connection, whatever carries it. Two lanes (decision 0096): JSON text
 //! messages (status, control, everything but the terminal) and, once the client asked for it, raw terminal
 //! bytes. A client that did not ask keeps one JSON pipe, with output as base64 inside it. Transports
 //! (WebSocket, WebRTC data channels) are adapters that pump a real connection into a `Link`; dropping the
@@ -29,7 +29,7 @@ pub struct LinkTx {
     wake: Option<Arc<Notify>>,
 }
 
-/// A reserved place for the next terminal output, so the session loop can wait for room without holding up
+/// A reserved place for the next terminal output, so the workspace loop can wait for room without holding up
 /// status messages that use the other queue.
 pub enum OutPermit<'a> {
     Json(mpsc::Permit<'a, String>, Option<Arc<Notify>>),
@@ -99,9 +99,9 @@ pub struct Link {
 
 /// The transport's side of a `Link`.
 pub struct LinkEnd {
-    pub to_session: mpsc::Sender<Inbound>,
-    pub from_session: mpsc::Receiver<String>,
-    pub term_from_session: mpsc::Receiver<Vec<u8>>,
+    pub to_workspace: mpsc::Sender<Inbound>,
+    pub from_workspace: mpsc::Receiver<String>,
+    pub term_from_workspace: mpsc::Receiver<Vec<u8>>,
 }
 
 pub fn pair(peer_ip: Option<String>, wake: Option<Arc<Notify>>) -> (Link, LinkEnd) {
@@ -120,9 +120,9 @@ pub fn pair(peer_ip: Option<String>, wake: Option<Arc<Notify>>) -> (Link, LinkEn
             peer_ip,
         },
         LinkEnd {
-            to_session: in_tx,
-            from_session: out_rx,
-            term_from_session: term_rx,
+            to_workspace: in_tx,
+            from_workspace: out_rx,
+            term_from_workspace: term_rx,
         },
     )
 }
@@ -135,12 +135,12 @@ mod tests {
     async fn output_is_base64_json_until_the_lanes_are_on_then_raw_bytes() {
         let (l, mut end) = pair(None, None);
         l.tx.reserve_output().await.unwrap().send(b"hi".to_vec());
-        let json = end.from_session.recv().await.unwrap();
+        let json = end.from_workspace.recv().await.unwrap();
         assert_eq!(json, r#"{"type":"output","data":"aGk="}"#);
         l.tx.enable_lanes();
         l.tx.reserve_output().await.unwrap().send(b"hi".to_vec());
-        assert_eq!(end.term_from_session.recv().await.unwrap(), b"hi");
-        assert!(end.from_session.try_recv().is_err());
+        assert_eq!(end.term_from_workspace.recv().await.unwrap(), b"hi");
+        assert!(end.from_workspace.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -155,6 +155,6 @@ mod tests {
             tokio::time::timeout(std::time::Duration::from_millis(50), l.tx.reserve_output()).await;
         assert!(blocked.is_err());
         assert!(l.tx.send("status".into()).await);
-        assert_eq!(end.from_session.recv().await.unwrap(), "status");
+        assert_eq!(end.from_workspace.recv().await.unwrap(), "status");
     }
 }

@@ -111,7 +111,7 @@ async function run(label, srv, extraArgs, freeze, expected) {
   await page.getByRole('group', { name: 'What you are adding' }).scrollIntoViewIfNeeded();
   if (freeze) { srv.proc.kill('SIGSTOP'); log('   server suspended (UDP port answers nothing)'); }
   const text = await page.getByRole('group', { name: 'What you are adding' }).innerText();
-  check(/isolated container|on the machine itself/.test(text) && /Version/.test(text), `${label}: preview shows where sessions run and the version`);
+  check(/isolated container|on the machine itself/.test(text) && /Version/.test(text), `${label}: preview shows where workspaces run and the version`);
   check(!existsSync(join(srv.config, 'owner.json')), `${label}: nothing claimed before Add (owner.json absent)`);
   check((await page.locator('#preview-name').inputValue()).length > 0, `${label}: name prefilled`);
   await page.locator('#preview-name').fill(`ui-${label}`);

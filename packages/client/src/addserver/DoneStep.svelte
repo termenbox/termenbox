@@ -26,7 +26,7 @@
   {:else if reach?.state === 'reachable'}
     <p class="note">This device can reach it{pathLabel ? `: ${pathLabel}` : ''}.</p>
   {:else if reach?.state === 'degraded'}
-    <p class="note" data-testid="ws-notice">Connected through the WebSocket fallback because UDP did not work. Sessions work but can feel slower. It stays in your list.</p>
+    <p class="note" data-testid="ws-notice">Connected through the WebSocket fallback because UDP did not work. Workspaces work but can feel slower. It stays in your list.</p>
     <details data-testid="failure-details"><summary>How to open UDP{reach.port ? ` port ${reach.port}` : ''}</summary><PortHelp port={reach.port} /></details>
   {:else if reach?.state === 'unreachable'}
     <Failure diagnosis={unreachable(reach.port)} showAction={false}><PortHelp port={reach.port} /></Failure>

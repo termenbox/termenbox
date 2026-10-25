@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { NativeSelect } from './lib/ui/native-select';
-  import SessionCard from './SessionCard.svelte';
-  import type { ClientMessage, SessionInfo } from './lib/protocol';
+  import WorkspaceCard from './WorkspaceCard.svelte';
+  import type { ClientMessage, WorkspaceInfo } from './lib/protocol';
   import { agents, type AgentMap } from './lib/agents';
   import { chipFor, FrozenOrder } from './lib/cards';
   import * as snippets from './lib/snippets';
@@ -11,8 +11,8 @@
   export let agentMap: AgentMap | undefined = undefined;
   $: states = agentMap ?? $agents;
 
-  export let sessions: SessionInfo[] = [];
-  export let activeSessionId: string | null = null;
+  export let workspaces: WorkspaceInfo[] = [];
+  export let activeWorkspaceId: string | null = null;
   export let onopen: (id: string) => void;
   export let send: (m: ClientMessage) => void;
 
@@ -26,17 +26,17 @@
   let draft = '';
   const frozen = new FrozenOrder();
 
-  let shown: SessionInfo[] = [];
+  let shown: WorkspaceInfo[] = [];
   $: {
-    order = frozen.order(sessions.map(s => s.id), states, now);
-    const cache = new Map([...shown, ...sessions].map(s => [s.id, s]));
-    shown = order.map(id => cache.get(id)).filter((s): s is SessionInfo => !!s);
+    order = frozen.order(workspaces.map(s => s.id), states, now);
+    const cache = new Map([...shown, ...workspaces].map(s => [s.id, s]));
+    shown = order.map(id => cache.get(id)).filter((s): s is WorkspaceInfo => !!s);
   }
   $: byId = new Map(shown.map(s => [s.id, s]));
-  $: replyTo = target && byId.has(target) ? target : (activeSessionId ?? sessions[0]?.id ?? null);
+  $: replyTo = target && byId.has(target) ? target : (activeWorkspaceId ?? workspaces[0]?.id ?? null);
 
   // A change to "needs you" is announced to screen readers, once per change.
-  $: for (const s of sessions) {
+  $: for (const s of workspaces) {
     const a = states[s.id];
     const state = a ? a.state : '';
     if (state === 'needs_input' && known[s.id] !== 'needs_input') announcement = `${s.name} needs you`;
@@ -55,7 +55,7 @@
     onexpanded(!!expanded);
   }
 
-  function answer(id: string, choice: number, p: NonNullable<import('./lib/agents').SessionAgent['prompt']>) {
+  function answer(id: string, choice: number, p: NonNullable<import('./lib/agents').WorkspaceAgent['prompt']>) {
     send({ type: 'answer', session: id, prompt_id: p.id, seq: p.seq, choice });
   }
 
@@ -85,39 +85,39 @@
   on:scroll={() => frozen.scrolled(Date.now())}
 >
   {#each order as id (id)}
-    {@const session = byId.get(id)}
-    {#if session}
+    {@const workspace = byId.get(id)}
+    {#if workspace}
       <li>
         {#if states[id]}
-          <SessionCard
-            {session}
+          <WorkspaceCard
+            {workspace}
             agent={states[id]}
             {now}
-            active={activeSessionId === id}
+            active={activeWorkspaceId === id}
             expanded={expanded === id}
             onopen={() => onopen(id)}
             ontoggle={() => toggle(id)}
             onanswer={(c, p) => answer(id, c, p)}
           />
         {:else}
-          <button type="button" class="plain" class:active={activeSessionId === id} on:click={() => onopen(id)}>
-            <span class="pn">{session.name}</span>
-            {#if session.backend}<span class="pb">{session.backend}</span>{/if}
+          <button type="button" class="plain" class:active={activeWorkspaceId === id} on:click={() => onopen(id)}>
+            <span class="pn">{workspace.name}</span>
+            {#if workspace.backend}<span class="pb">{workspace.backend}</span>{/if}
           </button>
         {/if}
       </li>
     {/if}
   {/each}
-  {#if sessions.length === 0}
-    <li class="empty">No sessions yet</li>
+  {#if workspaces.length === 0}
+    <li class="empty">No workspaces yet</li>
   {/if}
 </ul>
 
-{#if sessions.length > 0}
+{#if workspaces.length > 0}
   <form class="reply" on:submit|preventDefault={() => sendReply(draft)}>
     <label class="lbl" for="reply-to">Quick reply to</label>
     <NativeSelect id="reply-to" value={replyTo} onchange={(e) => (target = e.currentTarget.value)}>
-      {#each sessions as s}<option value={s.id}>{s.name}</option>{/each}
+      {#each workspaces as s}<option value={s.id}>{s.name}</option>{/each}
     </NativeSelect>
     <div class="snips">
       {#each saved as text}

@@ -31,7 +31,7 @@ pub const SUMMARY_CHARS: usize = 120;
 pub const MESSAGE_CHARS: usize = 400;
 /// Text is cut to this many characters before it is scrubbed, so one huge field costs nothing.
 const PRE_CUT: usize = 4_000;
-/// Sessions with a reader at once.
+/// Workspaces with a reader at once.
 const MAX_READERS: usize = 20;
 
 /// The invoking user's Claude config directory: `CLAUDE_CONFIG_DIR` when set (as Claude Code reads it), else the one
@@ -315,7 +315,7 @@ impl Reader {
     }
 }
 
-/// One reader per session, for the sessions whose hooks named a transcript.
+/// One reader per workspace, for the workspaces whose hooks named a transcript.
 #[derive(Default)]
 pub struct Transcripts {
     readers: Mutex<HashMap<String, Reader>>,
@@ -324,17 +324,17 @@ pub struct Transcripts {
 impl Transcripts {
     /// The timeline for `session`, or None when the path is not allowed, cannot be read, or holds nothing yet.
     /// Blocking file work, at most `PASS_BYTES` per call.
-    pub fn timeline(&self, root: &Path, session: &str, raw_path: &str) -> Option<Timeline> {
+    pub fn timeline(&self, root: &Path, workspace: &str, raw_path: &str) -> Option<Timeline> {
         let path = resolve(root, raw_path).ok()?;
         let mut readers = self.readers.lock().ok()?;
-        if !readers.contains_key(session) && readers.len() >= MAX_READERS {
+        if !readers.contains_key(workspace) && readers.len() >= MAX_READERS {
             let evict = readers.keys().next().cloned();
             if let Some(k) = evict {
                 readers.remove(&k);
             }
         }
         let r = readers
-            .entry(session.to_string())
+            .entry(workspace.to_string())
             .or_insert_with(|| Reader::new(path.clone()));
         if r.path != path {
             *r = Reader::new(path);
@@ -350,7 +350,7 @@ impl Transcripts {
 
 /// The most bytes one collection reads (several passes of a turn's worth of transcript).
 const USAGE_PASS_BYTES: u64 = 8 * 1024 * 1024;
-/// Message ids remembered per session, to count a message once however many lines Claude Code wrote for it.
+/// Message ids remembered per workspace, to count a message once however many lines Claude Code wrote for it.
 const SEEN_IDS: usize = 256;
 
 /// The token counts Claude Code writes into its own transcript, one `message.usage` per assistant message (verified on a
@@ -493,11 +493,11 @@ fn growth(had: Tokens, now: Tokens) -> Tokens {
     }
 }
 
-/// A session's reader: when its hooks were last heard, the path as the hook named it, and the reader itself behind a
-/// lock of its own, so one session's file read never holds up another's hooks.
+/// A workspace's reader: when its hooks were last heard, the path as the hook named it, and the reader itself behind a
+/// lock of its own, so one workspace's file read never holds up another's hooks.
 type Watched = (u64, String, Arc<Mutex<UsageReader>>);
 
-/// One usage reader per session, for the sessions whose hooks named a transcript.
+/// One usage reader per workspace, for the workspaces whose hooks named a transcript.
 #[derive(Default)]
 pub struct UsageTracker {
     readers: Mutex<HashMap<String, Watched>>,
@@ -505,22 +505,22 @@ pub struct UsageTracker {
 }
 
 impl UsageTracker {
-    /// Whether `arm` would have to touch the disk: the session is not watched from this path yet.
-    fn needs_arming(&self, session: &str, raw_path: &str) -> bool {
+    /// Whether `arm` would have to touch the disk: the workspace is not watched from this path yet.
+    fn needs_arming(&self, workspace: &str, raw_path: &str) -> bool {
         let Ok(readers) = self.readers.lock() else {
             return false;
         };
         readers
-            .get(session)
+            .get(workspace)
             .is_none_or(|(_, raw, _)| raw != raw_path)
     }
 
-    /// Notes that a session's transcript is watched from here on (a no-op when it already is, without a `stat`).
-    pub fn arm(&self, root: &Path, session: &str, raw_path: &str) {
+    /// Notes that a workspace's transcript is watched from here on (a no-op when it already is, without a `stat`).
+    pub fn arm(&self, root: &Path, workspace: &str, raw_path: &str) {
         let now = self.tick.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if !self.needs_arming(session, raw_path) {
+        if !self.needs_arming(workspace, raw_path) {
             if let Ok(mut readers) = self.readers.lock() {
-                if let Some(w) = readers.get_mut(session) {
+                if let Some(w) = readers.get_mut(workspace) {
                     w.0 = now; // still in use: the last to go
                 }
             }
@@ -534,8 +534,8 @@ impl UsageTracker {
         let Ok(mut readers) = self.readers.lock() else {
             return;
         };
-        if !readers.contains_key(session) && readers.len() >= MAX_READERS {
-            // The session whose hooks were heard longest ago.
+        if !readers.contains_key(workspace) && readers.len() >= MAX_READERS {
+            // The workspace whose hooks were heard longest ago.
             let evict = readers
                 .iter()
                 .min_by_key(|(_, (at, _, _))| *at)
@@ -545,15 +545,15 @@ impl UsageTracker {
             }
         }
         readers.insert(
-            session.to_string(),
+            workspace.to_string(),
             (now, raw_path.to_string(), Arc::new(Mutex::new(reader))),
         );
     }
 
     /// The counts appended since the last collection, or None when nothing is watched, nothing was appended, or the
-    /// file cannot be read. Blocking file work, bounded by `USAGE_PASS_BYTES`, done under the session's own lock only.
-    pub fn collect(&self, session: &str) -> Option<Tokens> {
-        let reader = self.readers.lock().ok()?.get(session)?.2.clone();
+    /// file cannot be read. Blocking file work, bounded by `USAGE_PASS_BYTES`, done under the workspace's own lock only.
+    pub fn collect(&self, workspace: &str) -> Option<Tokens> {
+        let reader = self.readers.lock().ok()?.get(workspace)?.2.clone();
         let t = reader.lock().ok()?.collect().ok()?;
         (!t.is_empty()).then_some(t)
     }
@@ -660,7 +660,7 @@ mod tests {
             .timeline(&home, "s", p.to_str().unwrap())
             .unwrap();
         let msg = termenbox_core::protocol::ServerMessage::SessionView {
-            session: "s".into(),
+            workspace: "s".into(),
             tier: "t1".into(),
             agent: Some("claude".into()),
             tail: vec!["$".into()],
@@ -824,7 +824,7 @@ mod tests {
     }
 
     #[test]
-    fn only_what_was_appended_after_the_session_was_first_seen_counts() {
+    fn only_what_was_appended_after_the_workspace_was_first_seen_counts() {
         let root = dir("usage-since");
         let file = root.join("projects/p/s.jsonl");
         let (old, new) = USAGE.split_at(USAGE.find("{\"parentUuid\":\"u2\"").unwrap());
@@ -907,7 +907,7 @@ mod tests {
     }
 
     #[test]
-    fn the_session_armed_longest_ago_is_the_one_evicted() {
+    fn the_workspace_armed_longest_ago_is_the_one_evicted() {
         let root = dir("usage-evict");
         let t = UsageTracker::default();
         let mut files = Vec::new();

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { bannerChoices, bannerKind, bannerText, type Waiting } from './lib/notify';
-  import type { SessionAgent } from './lib/agents';
+  import type { WorkspaceAgent } from './lib/agents';
 
   export let waiting: Waiting[];
   export let now: number;
@@ -11,7 +11,7 @@
   export let onhome: () => void = () => {};
   /** Clears a finished or failed item for good; a question cannot be dismissed. */
   export let ondismiss: (key: string, attentionId: string) => void = () => {};
-  export let onanswer: (key: string, choice: number, prompt: NonNullable<SessionAgent['prompt']>) => void;
+  export let onanswer: (key: string, choice: number, prompt: NonNullable<WorkspaceAgent['prompt']>) => void;
 
   let dismissed = '';
   $: signature = waiting.map(w => w.key).join(',');

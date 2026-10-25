@@ -1,12 +1,12 @@
 <script lang="ts">
-  // The real app frame (bottom bar / sidebar / palette), NavigationBar, SessionSheet, SessionStrip and
-  // SettingsView around a stand-in terminal, fed by the real ServerHub with two fake servers of ten sessions each.
+  // The real app frame (bottom bar / sidebar / palette), NavigationBar, WorkspaceSheet, WorkspaceStrip and
+  // SettingsView around a stand-in terminal, fed by the real ServerHub with two fake servers of ten workspaces each.
   import AppShell from '../src/AppShell.svelte';
   import AppFrame from '../src/shell/AppFrame.svelte';
   import SettingsView from '../src/shell/SettingsView.svelte';
   import NavigationBar from '../src/NavigationBar.svelte';
-  import SessionSheet from '../src/SessionSheet.svelte';
-  import { EmptyState, SessionStrip, type StripItem } from '../src/lib/ds';
+  import WorkspaceSheet from '../src/WorkspaceSheet.svelte';
+  import { EmptyState, WorkspaceStrip, type StripItem } from '../src/lib/ds';
   import { destination, navigate, startRouter, type Destination } from '../src/lib/router';
   import { fleetOf } from '../src/lib/navlist';
   import { openTabs } from '../src/lib/tabs';
@@ -14,7 +14,7 @@
   import { layout, toggleSidebar } from '../src/lib/panes';
   import { ServerHub, type HubConnection } from '../src/lib/hub';
   import type { ConnectionOptions } from '../src/lib/connection';
-  import type { ClientMessage, ServerMessage, SessionInfo } from '../src/lib/protocol';
+  import type { ClientMessage, ServerMessage, WorkspaceInfo } from '../src/lib/protocol';
   import type { SheetHeight } from '../src/lib/sheet';
 
   const peers = new Map<string, Fake>();
@@ -23,7 +23,7 @@
   const states: Record<string, string> = { 'alpha/svc-2': 'needs_input', 'alpha/svc-5': 'working', 'beta/job-1': 'working' };
   class Fake implements HubConnection {
     listener?: (m: ServerMessage) => void;
-    list: SessionInfo[];
+    list: WorkspaceInfo[];
     opts: ConnectionOptions;
     constructor(opts: ConnectionOptions) {
       this.opts = opts;
@@ -44,7 +44,7 @@
   }
   const hub = new ServerHub({ credentials: async () => ({ cert: '', sign: async () => '' }), factory: (opts) => { const peer = new Fake(opts); peers.set(opts.serverId!, peer); return peer; } });
   hub.start(['alpha', 'beta'].map((id) => ({ server_id: id, server_name: id, server_url: '', registered_at: 0 })));
-  const sessions = hub.allSessions, agents = hub.agents, servers = hub.servers, wins = hub.windows;
+  const workspaces = hub.allWorkspaces, agents = hub.agents, servers = hub.servers, wins = hub.windows;
 
   let activeKey: string | null = $state(null);
   let wide = $state(false);
@@ -54,13 +54,13 @@
   let stripOpened: string[] = $state([]);
   let log: { key: string; ctrl: boolean; prevented: boolean }[] = [];
   let actions: string[] = [];
-  const tabs = $derived(openTabs($sessions, $agents, new Set()));
-  const strip = $derived<StripItem[]>($sessions.filter((s) => !activeKey || s.serverId === activeKey.split('/')[0]).map((s) => ({ id: s.key, name: s.name, agent: 'claude', state: fleetOf($agents[s.key]) })));
+  const tabs = $derived(openTabs($workspaces, $agents, new Set()));
+  const strip = $derived<StripItem[]>($workspaces.filter((s) => !activeKey || s.serverId === activeKey.split('/')[0]).map((s) => ({ id: s.key, name: s.name, agent: 'claude', state: fleetOf($agents[s.key]) })));
 
-  // The probe stands in for the session workspace; the real app opens on Home (its own e2e is cards.mjs).
-  destination.set('sessions');
+  // The probe stands in for the workspace workspace; the real app opens on Home (its own e2e is cards.mjs).
+  destination.set('workspaces');
   onMount(() => startRouter());
-  const open = (key: string) => { activeKey = key; height = 'closed'; navigate('sessions'); };
+  const open = (key: string) => { activeKey = key; height = 'closed'; navigate('workspaces'); };
   const keydown = (e: KeyboardEvent) => { log.push({ key: e.key, ctrl: e.ctrlKey, prevented: false }); };
   onMount(() => {
     const after = (e: KeyboardEvent) => { const last = log[log.length - 1]; if (last && last.key === e.key) last.prevented = e.defaultPrevented; };
@@ -81,21 +81,21 @@
     sheet: (h: SheetHeight) => { height = h; },
     clearKeys: () => { log.length = 0; },
   } });
-  const inSession = $derived(!!activeKey && $destination === 'sessions');
+  const inWorkspace = $derived(!!activeKey && $destination === 'workspaces');
 </script>
 
 <AppShell pinned>
-  <AppFrame current={$destination} onnavigate={(d: Destination) => navigate(d)} servers={$servers} sessions={$sessions} agents={$agents} {activeKey} {inSession} {keyboardOpen}
-    bind:wide bind:helpOpen onopen={open} onserver={(id) => { const s = $sessions.find((x) => x.serverId === id); if (s) open(s.key); }}
+  <AppFrame current={$destination} onnavigate={(d: Destination) => navigate(d)} servers={$servers} workspaces={$workspaces} agents={$agents} {activeKey} {inWorkspace} {keyboardOpen}
+    bind:wide bind:helpOpen onopen={open} onserver={(id) => { const s = $workspaces.find((x) => x.serverId === id); if (s) open(s.key); }}
     onaction={(id) => actions.push(id)} onback={() => (height = 'half')}>
-    {#if $destination === 'sessions'}
-      <NavigationBar sessions={tabs} agents={$agents} servers={$servers} windows={$wins} {activeKey} onopen={open} onactions={() => {}} onmenu={() => {}} expanded={wide ? $layout.sidebarOpen : height !== 'closed'} onsessions={() => { if (wide) toggleSidebar(); else height = height === 'closed' ? 'half' : 'closed'; }} />
+    {#if $destination === 'workspaces'}
+      <NavigationBar workspaces={tabs} agents={$agents} servers={$servers} windows={$wins} {activeKey} onopen={open} onactions={() => {}} onmenu={() => {}} expanded={wide ? $layout.sidebarOpen : height !== 'closed'} onworkspaces={() => { if (wide) toggleSidebar(); else height = height === 'closed' ? 'half' : 'closed'; }} />
       <main class="flex min-h-0 flex-1 flex-col">
         <p data-testid="active">{activeKey ?? 'none'}</p>
-        <SessionStrip items={strip} selected={activeKey ?? undefined} onselect={(id) => { stripOpened.push(id); open(id); }} />
+        <WorkspaceStrip items={strip} selected={activeKey ?? undefined} onselect={(id) => { stripOpened.push(id); open(id); }} />
         <div class="min-h-0 flex-1"><textarea class="xterm-helper-textarea" aria-label="Terminal input" onkeydown={keydown}></textarea></div>
         {#if !wide}
-          <SessionSheet sessions={$sessions} agents={$agents} servers={$servers} {activeKey} mobile bind:height onopen={open} onnew={() => {}} onrefresh={() => {}} onretry={() => {}} send={() => {}} />
+          <WorkspaceSheet workspaces={$workspaces} agents={$agents} servers={$servers} {activeKey} mobile bind:height onopen={open} onnew={() => {}} onrefresh={() => {}} onretry={() => {}} send={() => {}} />
         {/if}
       </main>
     {:else if $destination === 'home'}

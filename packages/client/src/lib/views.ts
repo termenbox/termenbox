@@ -1,8 +1,8 @@
 import { chipFor } from './cards';
 import { needsYou } from './tabs';
-import type { AgentMap, SessionAgent } from './agents';
+import type { AgentMap, WorkspaceAgent } from './agents';
 import type { AgentState } from './protocol';
-import type { HubSession, HubServer } from './hub';
+import type { HubWorkspace, HubServer } from './hub';
 import { shortPath } from './windows';
 
 export type Preset = 'needs' | 'working' | 'cache' | 'recent' | 'server';
@@ -14,9 +14,9 @@ export interface SessionView {
   sort: SortBy;
   filter: { statuses: AgentState[]; agents: string[]; servers: string[]; query: string; cacheExpiring?: boolean };
 }
-export interface SessionGroup { key: string; label: string; serverId?: string; sessions: HubSession[] }
-export interface ViewGroup extends SessionGroup { server?: HubServer }
-export function withServerStatus(groups: SessionGroup[], servers: HubServer[]): ViewGroup[] {
+export interface WorkspaceGroup { key: string; label: string; serverId?: string; workspaces: HubWorkspace[] }
+export interface ViewGroup extends WorkspaceGroup { server?: HubServer }
+export function withServerStatus(groups: WorkspaceGroup[], servers: HubServer[]): ViewGroup[] {
   return groups.map(group => ({ ...group, server: servers.find(s => s.id === group.serverId) }));
 }
 export const PRESETS: { id: Preset; label: string }[] = [
@@ -45,25 +45,25 @@ export function adaptiveDefault(agents: AgentMap): SessionView {
 
 interface CacheOptions {
   ttlMs?: number;
-  /** Working directory per session key (the tab's window); the Project grouping reads it. */
+  /** Working directory per workspace key (the tab's window); the Project grouping reads it. */
   paths?: Record<string, string>;
   /** G.8 supplies exact expiry here; until then use the last-response estimate. Null means unknown. */
-  remaining?: (agent: SessionAgent | undefined, key: string, now: number) => number | null;
+  remaining?: (agent: WorkspaceAgent | undefined, key: string, now: number) => number | null;
 }
 /** Pure grouping, sorting and filtering. Global keys are retained all the way to the card's action. */
 /** Subtraction gives NaN for two equal infinities, which breaks sorting. */
 const cmp = (x: number, y: number) => (x === y ? 0 : x < y ? -1 : 1);
 
-export function applyView(sessions: HubSession[], agents: AgentMap, view: SessionView, now: number, cache: CacheOptions = {}): SessionGroup[] {
-  const agentName = (s: HubSession) => agents[s.key]?.agent ?? s.agent ?? 'shell';
-  const state = (s: HubSession) => agents[s.key]?.state ?? 'unknown';
-  const remaining = (s: HubSession) => {
+export function applyView(workspaces: HubWorkspace[], agents: AgentMap, view: SessionView, now: number, cache: CacheOptions = {}): WorkspaceGroup[] {
+  const agentName = (s: HubWorkspace) => agents[s.key]?.agent ?? s.agent ?? 'shell';
+  const state = (s: HubWorkspace) => agents[s.key]?.state ?? 'unknown';
+  const remaining = (s: HubWorkspace) => {
     const a = agents[s.key];
     if (cache.remaining) return cache.remaining(a, s.key, now);
     return a?.lastResponseAt === undefined ? null : Math.max(0, (cache.ttlMs ?? 300000) - Math.max(0, now - a.lastResponseAt));
   };
   const query = view.filter.query.trim().toLocaleLowerCase();
-  const selected = sessions.filter(s => {
+  const selected = workspaces.filter(s => {
     const f = view.filter;
     if (f.statuses.length && !f.statuses.includes(state(s))) return false;
     if (f.agents.length && !f.agents.includes(agentName(s))) return false;
@@ -72,7 +72,7 @@ export function applyView(sessions: HubSession[], agents: AgentMap, view: Sessio
     if (f.cacheExpiring && (!['idle', 'done'].includes(state(s)) || agentName(s) === 'shell' || (remaining(s) ?? 0) <= 0)) return false;
     return true;
   });
-  const byName = (a: HubSession, b: HubSession) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key);
+  const byName = (a: HubWorkspace, b: HubWorkspace) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key);
   selected.sort((a, b) => {
     const aa = agents[a.key], bb = agents[b.key];
     let order = 0;
@@ -84,18 +84,18 @@ export function applyView(sessions: HubSession[], agents: AgentMap, view: Sessio
     if (view.sort === 'cache') order = cmp(remaining(a) ?? Infinity, remaining(b) ?? Infinity);
     return order || byName(a, b);
   });
-  const groups = new Map<string, SessionGroup>();
+  const groups = new Map<string, WorkspaceGroup>();
   for (const s of selected) {
     const value = view.group === 'server' ? s.serverId : view.group === 'agent' ? agentName(s) : view.group === 'status' ? state(s)
       : view.group === 'project' ? shortPath(cache.paths?.[s.key] ?? '') || 'No directory' : '';
     const key = `${view.group}:${value}`;
     if (!groups.has(key)) groups.set(key, { key,
-      label: view.group === 'server' ? s.serverName : view.group === 'project' ? value : view.group === 'status' ? chipFor({ state: state(s) } as SessionAgent, now).label : value,
-      ...(view.group === 'server' ? { serverId: s.serverId } : {}), sessions: [] });
-    groups.get(key)!.sessions.push(s);
+      label: view.group === 'server' ? s.serverName : view.group === 'project' ? value : view.group === 'status' ? chipFor({ state: state(s) } as WorkspaceAgent, now).label : value,
+      ...(view.group === 'server' ? { serverId: s.serverId } : {}), workspaces: [] });
+    groups.get(key)!.workspaces.push(s);
   }
   const result = [...groups.values()];
-  // Agent/status categories stay easy to find; server groups follow the view's session priority.
+  // Agent/status categories stay easy to find; server groups follow the view's workspace priority.
   return view.group === 'agent' || view.group === 'status' || view.group === 'project' ? result.sort((a, b) => a.label.localeCompare(b.label)) : result;
 }
 

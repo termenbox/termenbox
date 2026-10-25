@@ -26,7 +26,7 @@
   <div class="card">
     <h3>Report a problem</h3>
     <p>Describe it here first: GitHub opens over the app, so you will not be able to look back at it.</p>
-    <label>Steps to reproduce<textarea bind:value={steps} rows="3" placeholder="1. Open a session&#10;2. Tap the Sessions tab" spellcheck="true"></textarea></label>
+    <label>Steps to reproduce<textarea bind:value={steps} rows="3" placeholder="1. Open a workspace&#10;2. Tap the Workspaces tab" spellcheck="true"></textarea></label>
     <label>Actual result<textarea bind:value={actual} rows="2" placeholder="What happened" spellcheck="true"></textarea></label>
     <label>Expected result<textarea bind:value={expected} rows="2" placeholder="What should have happened" spellcheck="true"></textarea></label>
     <p>This opens a new issue on GitHub. Read and edit the diagnostics below first: it has the app version, browser, screen numbers, connection state and recent error messages. Certificates, secrets, tokens and addresses are removed; terminal content is never included.</p>

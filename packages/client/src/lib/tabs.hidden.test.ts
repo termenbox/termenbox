@@ -5,12 +5,12 @@ import type { AgentMap } from './agents';
 const a = (state: 'idle' | 'needs_input'): AgentMap[string] => ({ state, seq: 1, stale: false, ts: 0 });
 
 describe('detached tabs', () => {
-  const sessions = [{ key: 's/a' }, { key: 's/b' }, { key: 's/c' }];
-  it('closes the tabs of detached sessions but brings one back while it needs you', () => {
+  const workspaces = [{ key: 's/a' }, { key: 's/b' }, { key: 's/c' }];
+  it('closes the tabs of detached workspaces but brings one back while it needs you', () => {
     const hidden = new Set(['s/a', 's/b']);
-    expect(openTabs(sessions, {}, hidden).map(s => s.key)).toEqual(['s/c']);
-    expect(openTabs(sessions, { 's/b': a('needs_input') }, hidden).map(s => s.key)).toEqual(['s/b', 's/c']);
-    expect(openTabs(sessions, { 's/b': a('idle') }, hidden).map(s => s.key)).toEqual(['s/c']);
+    expect(openTabs(workspaces, {}, hidden).map(s => s.key)).toEqual(['s/c']);
+    expect(openTabs(workspaces, { 's/b': a('needs_input') }, hidden).map(s => s.key)).toEqual(['s/b', 's/c']);
+    expect(openTabs(workspaces, { 's/b': a('idle') }, hidden).map(s => s.key)).toEqual(['s/c']);
   });
   it('is kept on the device and survives bad data', () => {
     const mem: Record<string, string> = {};

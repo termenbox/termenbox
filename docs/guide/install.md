@@ -1,4 +1,4 @@
-# Install, firewall and where sessions run
+# Install, firewall and where workspaces run
 
 Back to the [README](../../README.md).
 
@@ -20,13 +20,13 @@ Some mobile and corporate networks block UDP. Those clients cannot connect until
 
 Add Server offers these places (decisions 0058, 0075, 0078 and 0113). The bare command uses the first; the others add one word after `sh -s --`.
 
-**In an isolated container** (`curl -fsSL https://app.termenbox.dev/i | sh -s -- container`). Sessions run inside a Docker container, in `/opt/termenbox/home` (mounted as the container's home, so it survives restarts and upgrades). Docker is installed if missing. The container cannot see the rest of your VPS. The image has tmux, git, curl and Node. Install your agents in a Termenbox session, for example:
+**In an isolated container** (`curl -fsSL https://app.termenbox.dev/i | sh -s -- container`). Workspaces run inside a Docker container, in `/opt/termenbox/home` (mounted as the container's home, so it survives restarts and upgrades). Docker is installed if missing. The container cannot see the rest of your VPS. The image has tmux, git, curl and Node. Install your agents in a Termenbox workspace, for example:
 
 ```bash
 npm install -g @anthropic-ai/claude-code @openai/codex
 ```
 
-**On the machine itself** (no Docker; `… | sh -s -- host-user` for a dedicated user, `… | sh -s -- host` for root). The server is a single static binary run as a systemd service, and sessions run directly on your VPS, where your repositories and agent tools already are. You choose who the sessions run as: a dedicated unprivileged user `termenbox` (created for you, recommended), the user who runs the install command (sessions open on your behalf, in your home, with your repositories, keys and agent logins; nothing is created), or `root`. This gives your browser a shell on the server itself, so the app shows a warning and asks you to confirm. Requirements: systemd, `curl`, `ssh-keygen` (package `openssh-client`), x86_64 or aarch64. A pinned static `tmux` (3.2 or newer, decision 0119) is installed next to the server, so none has to be installed first; `TERMENBOX_TMUX` points the server at a tmux of your own instead.
+**On the machine itself** (no Docker; `… | sh -s -- host-user` for a dedicated user, `… | sh -s -- host` for root). The server is a single static binary run as a systemd service, and workspaces run directly on your VPS, where your repositories and agent tools already are. You choose who the workspaces run as: a dedicated unprivileged user `termenbox` (created for you, recommended), the user who runs the install command (workspaces open on your behalf, in your home, with your repositories, keys and agent logins; nothing is created), or `root`. This gives your browser a shell on the server itself, so the app shows a warning and asks you to confirm. Requirements: systemd, `curl`, `ssh-keygen` (package `openssh-client`), x86_64 or aarch64. A pinned static `tmux` (3.2 or newer, decision 0119) is installed next to the server, so none has to be installed first; `TERMENBOX_TMUX` points the server at a tmux of your own instead.
 
 **As your own user, with no root** (the default, `curl -fsSL https://app.termenbox.dev/i | sh`; decision 0113). The same machine-itself install, but as a user service of the account that runs the command: no `sudo`, no new user. The binary lives in `~/.local/bin`, state in `~/.config/termenbox`, and the update check is a timer of your own. Starting at boot needs lingering, which systemd lets you switch on for yourself (`loginctl enable-linger`); if your system refuses, the installer says so and prints the one command root would have to run. A firewall rule is printed the same way, never run. The pinned static `tmux` goes to `~/.local/bin` beside the server, so none has to be installed. The dedicated user and root choices still use a system service and ask for `sudo`.
 
@@ -43,7 +43,7 @@ curl -fsSL https://app.termenbox.dev/uninstall.sh | sudo sh -s -- --yes
 
 An install made for your own user needs no `sudo` to remove: run the same command as that user, without `sudo`.
 
-It handles both install kinds. For the container it removes the container and `/opt/termenbox`. On the machine itself it stops the service and the updater, deletes the server's state and undoes every journaled change (binary, units, firewall rule, and the `termenbox` user and tmux only if the installer added them). It never touches your repositories, or the home of the user your sessions run as. Add `--keep-state` to keep the server's keys and owner, `--delete-home` to also delete the home of a `termenbox` user the installer created. Running tmux sessions are left alone. Then use **Remove server** in the app to drop it from your list; you can also uninstall from there while connected.
+It handles both install kinds. For the container it removes the container and `/opt/termenbox`. On the machine itself it stops the service and the updater, deletes the server's state and undoes every journaled change (binary, units, firewall rule, and the `termenbox` user and tmux only if the installer added them). It never touches your repositories, or the home of the user your workspaces run as. Add `--keep-state` to keep the server's keys and owner, `--delete-home` to also delete the home of a `termenbox` user the installer created. Running tmux sessions are left alone. Then use **Remove server** in the app to drop it from your list; you can also uninstall from there while connected.
 
 Updates: the container updates when you run the install command again. On the machine itself a timer (root-owned, or your own for the no-root install) checks for a new signed release every day; if the new server does not come up healthy the old one is put back. Check now: `sudo termenbox-server --root-helper update`.
 

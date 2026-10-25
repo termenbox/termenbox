@@ -8,7 +8,7 @@ use termenbox_core::protocol::{ClientMessage, ServerMessage};
 
 use std::sync::Arc;
 
-use crate::backend::{RunMode, SessionBackend};
+use crate::backend::{RunMode, WorkspaceBackend};
 use crate::control::WindowHub;
 use crate::events::EventHub;
 use crate::health::HealthCollector;
@@ -22,9 +22,9 @@ const ACP_BATCH: Duration = Duration::from_millis(120);
 /// The longest prompt a client may send (the backend caps it again).
 const ACP_PROMPT_BYTES: usize = 16 * 1024;
 
-/// The ACP session one connection shows (T0): what it holds, and whether an update is waiting to go out.
+/// The ACP workspace one connection shows (T0): what it holds, and whether an update is waiting to go out.
 struct AcpSub {
-    session: String,
+    workspace: String,
     rx: tokio::sync::watch::Receiver<u64>,
     rev: u64,
     epoch: u64,
@@ -34,11 +34,11 @@ struct AcpSub {
     dead: bool,
 }
 
-/// Serves one authenticated WebSocket: lists/creates tmux sessions and bridges one attached session.
-/// Persistence lives in the session backend (tmux by default); a dropped connection only detaches (see pty.rs).
+/// Serves one authenticated WebSocket: lists/creates tmux workspaces and bridges one attached workspace.
+/// Persistence lives in the workspace backend (tmux by default); a dropped connection only detaches (see pty.rs).
 #[derive(Clone)]
-pub struct SessionManager {
-    backend: Arc<dyn SessionBackend>,
+pub struct WorkspaceManager {
+    backend: Arc<dyn WorkspaceBackend>,
     mode: RunMode,
     server_name: String,
     /// Called after an uninstall has wiped the configuration and told the client; stops the process.
@@ -56,14 +56,14 @@ pub struct SessionManager {
     hooks: Option<crate::agent_hooks::Targets>,
     /// Samples of the server's CPU, RAM and disk (U14).
     health: Option<Arc<HealthCollector>>,
-    /// Pinged (with the connection's number) when a connection creates, renames or closes a session, so every other
+    /// Pinged (with the connection's number) when a connection creates, renames or closes a workspace, so every other
     /// connection sends its client the new list (a device that did not ask must not keep showing the old names). The
     /// connection that asked has its own reply and skips the ping.
     list_changed: tokio::sync::broadcast::Sender<u64>,
 }
 
-impl SessionManager {
-    pub fn new(backend: Arc<dyn SessionBackend>, mode: RunMode) -> Self {
+impl WorkspaceManager {
+    pub fn new(backend: Arc<dyn WorkspaceBackend>, mode: RunMode) -> Self {
         Self {
             backend,
             mode,
@@ -82,15 +82,15 @@ impl SessionManager {
         }
     }
 
-    /// The transcript timeline for a session whose hooks named one (tier 1). The path is the hook's, so it is
+    /// The transcript timeline for a workspace whose hooks named one (tier 1). The path is the hook's, so it is
     /// opened only if it resolves under the user's Claude config directory; the read is bounded and runs off the
     /// async threads. Nothing from it is logged.
-    async fn timeline(&self, session: &str) -> Option<termenbox_core::protocol::Timeline> {
-        let path = self.events.as_ref()?.transcript(session)?;
+    async fn timeline(&self, workspace: &str) -> Option<termenbox_core::protocol::Timeline> {
+        let path = self.events.as_ref()?.transcript(workspace)?;
         let root = crate::transcript::claude_root()?;
         let readers = self.transcripts.clone();
-        let session = session.to_string();
-        tokio::task::spawn_blocking(move || readers.timeline(&root, &session, &path))
+        let workspace = workspace.to_string();
+        tokio::task::spawn_blocking(move || readers.timeline(&root, &workspace, &path))
             .await
             .ok()
             .flatten()
@@ -102,12 +102,12 @@ impl SessionManager {
         self
     }
 
-    /// The session managers a client may pick from when it creates a session.
+    /// The workspace managers a client may pick from when it creates a workspace.
     pub fn backends(&self) -> Vec<String> {
         self.backend.kinds()
     }
 
-    /// The agents the owner allows as ACP sessions (decision 0111); empty when none are configured.
+    /// The agents the owner allows as ACP workspaces (decision 0111); empty when none are configured.
     pub fn acp_agents(&self) -> Vec<String> {
         self.backend.acp_agents()
     }
@@ -124,7 +124,7 @@ impl SessionManager {
         self
     }
 
-    /// Lets devices subscribe to Web Push and tell which session they show (plan A.6).
+    /// Lets devices subscribe to Web Push and tell which workspace they show (plan A.6).
     pub fn with_push(mut self, push: Arc<crate::push::Push>) -> Self {
         self.push = Some(push);
         self
@@ -237,9 +237,9 @@ impl SessionManager {
                         }
                     };
                     let Ok(client_msg) = serde_json::from_str::<ClientMessage>(&text) else { continue };
-                    if let (true, ClientMessage::Attach { session_id }) = (self.mode.is_host(), &client_msg) {
+                    if let (true, ClientMessage::Attach { workspace_id }) = (self.mode.is_host(), &client_msg) {
                         // Who got a shell on the host and as whom; never what they typed.
-                        info!(target: "audit", event = "host_session", provider = %identity.provider, account_id = %identity.id, login = %identity.login, run_as = %self.mode.label(), session = %session_id);
+                        info!(target: "audit", event = "host_session", provider = %identity.provider, account_id = %identity.id, login = %identity.login, run_as = %self.mode.label(), session = %workspace_id);
                     }
                     if let Err(e) = self.handle(conn, client_msg, auth, &identity, &mut attachment, &mut cols, &mut rows, &mut acp, &link.tx).await {
                         if !send(&link.tx, &ServerMessage::Error { message: e.to_string() }).await { break; }
@@ -257,11 +257,11 @@ impl SessionManager {
                             permit.send(bytes);
                         }
                         None => {
-                            // The attach client exited: session killed, or detached from inside.
+                            // The attach client exited: workspace killed, or detached from inside.
                             attachment = None;
-                            if !send(&link.tx, &ServerMessage::Error { message: "Session ended".into() }).await { break; }
-                            let sessions = self.backend.list().await.unwrap_or_default();
-                            if !send(&link.tx, &ServerMessage::Sessions { sessions }).await { break; }
+                            if !send(&link.tx, &ServerMessage::Error { message: "Workspace ended".into() }).await { break; }
+                            let workspaces = self.backend.list().await.unwrap_or_default();
+                            if !send(&link.tx, &ServerMessage::Workspaces { workspaces }).await { break; }
                         }
                     }
                 }
@@ -284,10 +284,10 @@ impl SessionManager {
                     }
                 }
                 from = next_list_change(&mut list_rx) => {
-                    // Another connection changed the list of sessions: this one's client gets the new one.
+                    // Another connection changed the list of workspaces: this one's client gets the new one.
                     if from == Some(conn) { continue; }
-                    let sessions = self.backend.list().await.unwrap_or_default();
-                    if !send(&link.tx, &ServerMessage::Sessions { sessions }).await { break; }
+                    let workspaces = self.backend.list().await.unwrap_or_default();
+                    if !send(&link.tx, &ServerMessage::Workspaces { workspaces }).await { break; }
                 }
                 update = next_window(&mut window_rx) => {
                     let msg = match update {
@@ -347,7 +347,7 @@ impl SessionManager {
         sub.due = false;
         match self
             .backend
-            .acp_view(&sub.session, Some(sub.rev), Some(sub.epoch), sub.info_rev)
+            .acp_view(&sub.workspace, Some(sub.rev), Some(sub.epoch), sub.info_rev)
         {
             Ok((mut view, info_rev)) => {
                 if view.reset
@@ -355,7 +355,7 @@ impl SessionManager {
                     || view.info.is_some()
                     || view.rev != sub.rev
                 {
-                    view.session = sub.session.clone();
+                    view.workspace = sub.workspace.clone();
                     (sub.rev, sub.epoch, sub.info_rev) = (view.rev, view.epoch, info_rev);
                     crate::acp_stream::split(view)
                         .into_iter()
@@ -365,7 +365,7 @@ impl SessionManager {
                     Vec::new()
                 }
             }
-            // The session was closed: the client learns it from the session list.
+            // The workspace was closed: the client learns it from the workspace list.
             Err(_) => {
                 *acp = None;
                 Vec::new()
@@ -373,14 +373,14 @@ impl SessionManager {
         }
     }
 
-    /// Every session's Activity and the open Attention items, for a client that is new or fell behind.
+    /// Every workspace's Activity and the open Attention items, for a client that is new or fell behind.
     fn status_messages(&self) -> Vec<ServerMessage> {
         let Some(hub) = &self.events else {
             return Vec::new();
         };
         vec![
             ServerMessage::Activity {
-                sessions: hub.activities(),
+                workspaces: hub.activities(),
             },
             ServerMessage::Attention {
                 items: hub.attention_items(),
@@ -532,9 +532,9 @@ impl SessionManager {
                     .await?;
                 }
             }
-            ClientMessage::Foreground { session } => {
+            ClientMessage::Foreground { workspace } => {
                 if let Some(p) = &self.push {
-                    p.set_foreground(conn, session);
+                    p.set_foreground(conn, workspace);
                 }
             }
             ClientMessage::Ack { attention_id } | ClientMessage::Dismiss { attention_id } => {
@@ -543,7 +543,7 @@ impl SessionManager {
                 }
             }
             ClientMessage::Answer {
-                session,
+                workspace,
                 prompt_id,
                 seq,
                 choice,
@@ -555,24 +555,24 @@ impl SessionManager {
                 answer(
                     self.backend.as_ref(),
                     hub,
-                    &session,
+                    &workspace,
                     &prompt_id,
                     seq,
                     choice,
                 )
                 .await?;
-                info!(target: "audit", event = "answer_sent", provider = %identity.provider, account_id = %identity.id, session = %session, choice);
+                info!(target: "audit", event = "answer_sent", provider = %identity.provider, account_id = %identity.id, session = %workspace, choice);
             }
-            ClientMessage::Reply { session, text } => {
+            ClientMessage::Reply { workspace, text } => {
                 // One line, no control characters: it is typed, then Enter.
                 let line: String = text.chars().filter(|c| !c.is_control()).take(500).collect();
                 if line.trim().is_empty() {
                     return Ok(());
                 }
                 self.backend
-                    .send_text(&session, &format!("{line}\r"))
+                    .send_text(&workspace, &format!("{line}\r"))
                     .await?;
-                info!(target: "audit", event = "reply_sent", provider = %identity.provider, account_id = %identity.id, session = %session);
+                info!(target: "audit", event = "reply_sent", provider = %identity.provider, account_id = %identity.id, session = %workspace);
             }
             ClientMessage::AgentSync { after } => {
                 let Some(hub) = &self.events else {
@@ -581,8 +581,8 @@ impl SessionManager {
                 let states = hub.snapshot();
                 let mut events = Vec::new();
                 for st in &states {
-                    if let Some(seq) = after.get(&st.session) {
-                        events.extend(hub.since(&st.session, *seq));
+                    if let Some(seq) = after.get(&st.workspace) {
+                        events.extend(hub.since(&st.workspace, *seq));
                     }
                 }
                 send_r(tx, &ServerMessage::AgentSnapshot { states }).await?;
@@ -592,82 +592,82 @@ impl SessionManager {
                 if !events.is_empty() {
                     send_r(tx, &ServerMessage::AgentEvents { events }).await?;
                 }
-                // A tab speaks for one window of its session: send them all along with the agent states.
+                // A tab speaks for one window of its workspace: send them all along with the agent states.
                 for u in self.windows.as_ref().map(|h| h.all()).unwrap_or_default() {
                     send_r(tx, &window_message(u)).await?;
                 }
             }
-            ClientMessage::Windows { session } => {
-                let windows = self.backend.windows(&session).await?;
+            ClientMessage::Windows { workspace } => {
+                let windows = self.backend.windows(&workspace).await?;
                 send_r(
                     tx,
                     &ServerMessage::WindowList {
-                        session,
+                        workspace,
                         representative: crate::control::representative(&windows),
                         windows: windows.into_iter().map(|w| w.info).collect(),
                     },
                 )
                 .await?;
             }
-            ClientMessage::SelectWindow { session, index } => {
-                self.backend.select_window(&session, index).await?;
+            ClientMessage::SelectWindow { workspace, index } => {
+                self.backend.select_window(&workspace, index).await?;
             }
-            ClientMessage::NewWindow { session } => {
-                info!(target: "audit", event = "new_window", provider = %identity.provider, account_id = %identity.id, session = %session);
-                self.backend.new_window(&session).await?;
+            ClientMessage::NewWindow { workspace } => {
+                info!(target: "audit", event = "new_window", provider = %identity.provider, account_id = %identity.id, session = %workspace);
+                self.backend.new_window(&workspace).await?;
             }
-            ClientMessage::CloseWindow { session, index } => {
-                info!(target: "audit", event = "close_window", provider = %identity.provider, account_id = %identity.id, session = %session, window = index);
-                self.backend.kill_window(&session, index).await?;
-                // Closing the last window ends the session: the lists follow.
-                let sessions = self.backend.list().await?;
-                send_r(tx, &ServerMessage::Sessions { sessions }).await?;
+            ClientMessage::CloseWindow { workspace, index } => {
+                info!(target: "audit", event = "close_window", provider = %identity.provider, account_id = %identity.id, session = %workspace, window = index);
+                self.backend.kill_window(&workspace, index).await?;
+                // Closing the last window ends the workspace: the lists follow.
+                let workspaces = self.backend.list().await?;
+                send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
                 let _ = self.list_changed.send(conn);
             }
-            ClientMessage::CloseSession { session } => {
-                info!(target: "audit", event = "close_session", provider = %identity.provider, account_id = %identity.id, login = %identity.login, session = %session);
-                self.backend.kill(&session).await?;
-                let sessions = self.backend.list().await?;
-                send_r(tx, &ServerMessage::Sessions { sessions }).await?;
+            ClientMessage::CloseWorkspace { workspace } => {
+                info!(target: "audit", event = "close_session", provider = %identity.provider, account_id = %identity.id, login = %identity.login, session = %workspace);
+                self.backend.kill(&workspace).await?;
+                let workspaces = self.backend.list().await?;
+                send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
                 let _ = self.list_changed.send(conn);
             }
-            ClientMessage::RenameSession { session, name } => {
-                info!(target: "audit", event = "rename_session", provider = %identity.provider, account_id = %identity.id, session = %session);
-                self.backend.rename(&session, &name).await?;
-                let sessions = self.backend.list().await?;
-                send_r(tx, &ServerMessage::Sessions { sessions }).await?;
+            ClientMessage::RenameWorkspace { workspace, name } => {
+                info!(target: "audit", event = "rename_session", provider = %identity.provider, account_id = %identity.id, session = %workspace);
+                self.backend.rename(&workspace, &name).await?;
+                let workspaces = self.backend.list().await?;
+                send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
                 let _ = self.list_changed.send(conn);
             }
-            ClientMessage::Peek { session, hash } => {
+            ClientMessage::Peek { workspace, hash } => {
                 // Only a counter in the audit log: what is on the screen is never logged.
-                audit_peek(&identity.provider, &identity.id, &session);
+                audit_peek(&identity.provider, &identity.id, &workspace);
                 let window = self
                     .windows
                     .as_ref()
-                    .and_then(|h| h.representative(&session));
+                    .and_then(|h| h.representative(&workspace));
                 let reply =
-                    peek_window(self.backend.as_ref(), &session, hash.as_deref(), window).await;
+                    peek_window(self.backend.as_ref(), &workspace, hash.as_deref(), window).await;
                 send_r(tx, &reply).await?;
             }
-            ClientMessage::Scrollback { session } => {
+            ClientMessage::Scrollback { workspace } => {
                 // Only a counter in the audit log, as for a peek: the terminal's text is never logged.
-                audit_peek(&identity.provider, &identity.id, &session);
-                let text = self.backend.capture_history(&session).await?;
-                for part in scrollback_parts(&session, &text) {
+                audit_peek(&identity.provider, &identity.id, &workspace);
+                let text = self.backend.capture_history(&workspace).await?;
+                for part in scrollback_parts(&workspace, &text) {
                     send_r(tx, &part).await?;
                 }
             }
-            ClientMessage::SessionView { session, hash } => {
+            ClientMessage::SessionView { workspace, hash } => {
                 // Only a counter in the audit log, as for a peek: the screen is never logged.
-                audit_peek(&identity.provider, &identity.id, &session);
+                audit_peek(&identity.provider, &identity.id, &workspace);
                 let agent = self
                     .events
                     .as_ref()
-                    .and_then(|h| session_agent(h, &session));
-                let timeline = self.timeline(&session).await;
+                    .and_then(|h| workspace_agent(h, &workspace));
+                let timeline = self.timeline(&workspace).await;
                 let reply = session_view(
                     self.backend.as_ref(),
-                    &session,
+                    &workspace,
                     agent.as_deref(),
                     hash.as_deref(),
                     timeline,
@@ -676,23 +676,23 @@ impl SessionManager {
                 send_r(tx, &reply).await?;
             }
             ClientMessage::SessionAnswer {
-                session,
+                workspace,
                 prompt_id,
                 option,
             } => {
                 let agent = self
                     .events
                     .as_ref()
-                    .and_then(|h| session_agent(h, &session));
+                    .and_then(|h| workspace_agent(h, &workspace));
                 session_answer(
                     self.backend.as_ref(),
-                    &session,
+                    &workspace,
                     agent.as_deref(),
                     &prompt_id,
                     option,
                 )
                 .await?;
-                info!(target: "audit", event = "session_answer_sent", provider = %identity.provider, account_id = %identity.id, session = %session, option);
+                info!(target: "audit", event = "session_answer_sent", provider = %identity.provider, account_id = %identity.id, session = %workspace, option);
             }
             ClientMessage::AgentHooks { agent, action } => {
                 let target = self.hooks.clone();
@@ -723,22 +723,22 @@ impl SessionManager {
                 .await?;
             }
             ClientMessage::AcpOpen {
-                session,
+                workspace,
                 after,
                 epoch,
             } => {
-                // Who looked at which session's stream, never what it held (as for a peek).
-                audit_acp_open(&identity.provider, &identity.id, &session);
+                // Who looked at which workspace's stream, never what it held (as for a peek).
+                audit_acp_open(&identity.provider, &identity.id, &workspace);
                 // Subscribe first: a change between the two calls then still wakes the connection.
-                let rx = self.backend.acp_watch(&session)?;
-                let (mut view, info_rev) = self.backend.acp_view(&session, after, epoch, 0)?;
-                view.session = session.clone();
+                let rx = self.backend.acp_watch(&workspace)?;
+                let (mut view, info_rev) = self.backend.acp_view(&workspace, after, epoch, 0)?;
+                view.workspace = workspace.clone();
                 let (rev, epoch) = (view.rev, view.epoch);
                 for part in crate::acp_stream::split(view) {
                     send_r(tx, &ServerMessage::AcpView(part)).await?;
                 }
                 *acp = Some(AcpSub {
-                    session,
+                    workspace,
                     rx,
                     rev,
                     epoch,
@@ -748,7 +748,7 @@ impl SessionManager {
                 });
             }
             ClientMessage::AcpClose => *acp = None,
-            ClientMessage::AcpPrompt { session, text } => {
+            ClientMessage::AcpPrompt { workspace, text } => {
                 // Lines and indentation stay; every other control character (an escape sequence) goes.
                 let text: String = text
                     .chars()
@@ -757,27 +757,27 @@ impl SessionManager {
                 if text.trim().is_empty() || text.len() > ACP_PROMPT_BYTES {
                     return Err(anyhow::anyhow!("The message is empty or too long"));
                 }
-                self.backend.acp_prompt(&session, &text).await?;
-                // Who sent a prompt to which session, never what it said.
-                info!(target: "audit", event = "acp_prompt_sent", provider = %identity.provider, account_id = %identity.id, session = %session);
+                self.backend.acp_prompt(&workspace, &text).await?;
+                // Who sent a prompt to which workspace, never what it said.
+                info!(target: "audit", event = "acp_prompt_sent", provider = %identity.provider, account_id = %identity.id, session = %workspace);
             }
-            ClientMessage::AcpInterrupt { session } => {
-                self.backend.acp_interrupt(&session).await?;
-                info!(target: "audit", event = "acp_interrupt", provider = %identity.provider, account_id = %identity.id, session = %session);
+            ClientMessage::AcpInterrupt { workspace } => {
+                self.backend.acp_interrupt(&workspace).await?;
+                info!(target: "audit", event = "acp_interrupt", provider = %identity.provider, account_id = %identity.id, session = %workspace);
             }
             ClientMessage::AcpAnswer {
-                session,
+                workspace,
                 prompt_id,
                 option_id,
             } => {
                 self.backend
-                    .acp_answer(&session, &prompt_id, &option_id)
+                    .acp_answer(&workspace, &prompt_id, &option_id)
                     .await?;
-                info!(target: "audit", event = "acp_answer_sent", provider = %identity.provider, account_id = %identity.id, session = %session);
+                info!(target: "audit", event = "acp_answer_sent", provider = %identity.provider, account_id = %identity.id, session = %workspace);
             }
-            ClientMessage::AcpMode { session, mode } => {
-                self.backend.acp_mode(&session, &mode).await?;
-                info!(target: "audit", event = "acp_mode_set", provider = %identity.provider, account_id = %identity.id, session = %session);
+            ClientMessage::AcpMode { workspace, mode } => {
+                self.backend.acp_mode(&workspace, &mode).await?;
+                info!(target: "audit", event = "acp_mode_set", provider = %identity.provider, account_id = %identity.id, session = %workspace);
             }
             ClientMessage::History { from, to } => {
                 let history = self.events.as_ref().and_then(|h| h.history()).cloned();
@@ -826,11 +826,11 @@ impl SessionManager {
                 send_r(tx, &ServerMessage::HistoryDeleted { removed }).await?;
             }
             ClientMessage::Unknown => {}
-            ClientMessage::ListSessions => {
-                let sessions = self.backend.list().await?;
-                send_r(tx, &ServerMessage::Sessions { sessions }).await?;
+            ClientMessage::ListWorkspaces => {
+                let workspaces = self.backend.list().await?;
+                send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
             }
-            ClientMessage::NewSession {
+            ClientMessage::NewWorkspace {
                 name,
                 backend,
                 dir,
@@ -844,22 +844,22 @@ impl SessionManager {
                         template.as_deref(),
                     )
                     .await?;
-                let sessions = self.backend.list().await?;
-                send_r(tx, &ServerMessage::Sessions { sessions }).await?;
+                let workspaces = self.backend.list().await?;
+                send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
                 let _ = self.list_changed.send(conn);
             }
-            ClientMessage::Attach { session_id } => {
+            ClientMessage::Attach { workspace_id } => {
                 *attachment = None; // detach the previous one first
-                                    // Land in the window the tab showed, unless somebody else is looking at the session.
+                                    // Land in the window the tab showed, unless somebody else is looking at the workspace.
                 if let Some(index) = self
                     .windows
                     .as_ref()
-                    .and_then(|h| h.representative(&session_id))
+                    .and_then(|h| h.representative(&workspace_id))
                 {
-                    let _ = self.backend.focus_window(&session_id, index).await;
+                    let _ = self.backend.focus_window(&workspace_id, index).await;
                 }
-                *attachment = Some(self.backend.attach(&session_id, *cols, *rows)?);
-                send_r(tx, &ServerMessage::SessionAttached { session_id }).await?;
+                *attachment = Some(self.backend.attach(&workspace_id, *cols, *rows)?);
+                send_r(tx, &ServerMessage::WorkspaceAttached { workspace_id }).await?;
             }
             ClientMessage::Detach => {
                 *attachment = None;
@@ -905,8 +905,8 @@ async fn next_output(attachment: &mut Option<Attachment>) -> Option<Vec<u8>> {
     }
 }
 
-/// Wakes when the ACP session this connection shows has a new revision. `false` means the stream is gone for
-/// good; it then pends, as do connections that show no ACP session or already owe an update.
+/// Wakes when the ACP workspace this connection shows has a new revision. `false` means the stream is gone for
+/// good; it then pends, as do connections that show no ACP workspace or already owe an update.
 async fn next_acp_change(acp: &mut Option<AcpSub>) -> bool {
     match acp {
         Some(sub) if !sub.dead && !sub.due => sub.rx.changed().await.is_ok(),
@@ -938,7 +938,7 @@ async fn next_events(
     Some(out)
 }
 
-/// Resolves with the connection that changed the list of sessions (`None` after a missed ping, which still means
+/// Resolves with the connection that changed the list of workspaces (`None` after a missed ping, which still means
 /// "changed").
 async fn next_list_change(rx: &mut tokio::sync::broadcast::Receiver<u64>) -> Option<u64> {
     use tokio::sync::broadcast::error::RecvError;
@@ -965,20 +965,22 @@ async fn next_status(
 
 fn status_message(c: crate::events::StatusChange) -> ServerMessage {
     match c {
-        crate::events::StatusChange::Activity(a) => ServerMessage::Activity { sessions: vec![a] },
+        crate::events::StatusChange::Activity(a) => ServerMessage::Activity {
+            workspaces: vec![a],
+        },
         crate::events::StatusChange::Attention(items) => ServerMessage::Attention { items },
     }
 }
 
 fn window_message(u: crate::control::WindowUpdate) -> ServerMessage {
     ServerMessage::WindowList {
-        session: u.session,
+        workspace: u.workspace,
         windows: u.windows,
         representative: u.representative,
     }
 }
 
-/// The next change to any session's windows (`None` when this connection fell behind); pends forever when
+/// The next change to any workspace's windows (`None` when this connection fell behind); pends forever when
 /// control mode is off.
 async fn next_window(
     rx: &mut Option<tokio::sync::broadcast::Receiver<crate::control::WindowUpdate>>,
@@ -997,9 +999,9 @@ async fn next_window(
 /// The most text one `scrollback` part carries, so that a part fits a message of the direct transport (64 KiB).
 const SCROLLBACK_PART: usize = 24 * 1024;
 
-/// A session's history as `scrollback` parts of at most `SCROLLBACK_PART` bytes, cut at line ends where it can (a line
+/// A workspace's history as `scrollback` parts of at most `SCROLLBACK_PART` bytes, cut at line ends where it can (a line
 /// longer than a part is cut at a character). There is always at least one part, and the last one says so.
-pub(crate) fn scrollback_parts(session: &str, text: &str) -> Vec<ServerMessage> {
+pub(crate) fn scrollback_parts(workspace: &str, text: &str) -> Vec<ServerMessage> {
     let mut parts: Vec<String> = Vec::new();
     let mut cur = String::new();
     for line in text.split_inclusive('\n') {
@@ -1026,7 +1028,7 @@ pub(crate) fn scrollback_parts(session: &str, text: &str) -> Vec<ServerMessage> 
         .into_iter()
         .enumerate()
         .map(|(i, text)| ServerMessage::Scrollback {
-            session: session.to_string(),
+            workspace: workspace.to_string(),
             part: i as u32,
             last: i + 1 == n,
             text,
@@ -1034,45 +1036,45 @@ pub(crate) fn scrollback_parts(session: &str, text: &str) -> Vec<ServerMessage> 
         .collect()
 }
 
-fn audit_acp_open(provider: &str, account_id: &str, session: &str) {
-    info!(target: "audit", event = "acp_open", provider, account_id, session = %session);
+fn audit_acp_open(provider: &str, account_id: &str, workspace: &str) {
+    info!(target: "audit", event = "acp_open", provider, account_id, session = %workspace);
 }
 
-fn audit_peek(provider: &str, account_id: &str, session: &str) {
-    info!(target: "audit", event = "peek", provider, account_id, session = %session);
+fn audit_peek(provider: &str, account_id: &str, workspace: &str) {
+    info!(target: "audit", event = "peek", provider, account_id, session = %workspace);
 }
 
 /// The most a snapshot carries; a phone screen is a few KB, this only stops a huge pane from being sent.
 pub const SNAPSHOT_MAX: usize = 16 * 1024;
 
-/// A session's visible screen for the client to draw at once (decision 0084). Never fails: a manager that cannot
+/// A workspace's visible screen for the client to draw at once (decision 0084). Never fails: a manager that cannot
 /// capture (a `command` manager) gets an empty snapshot, which the client reads as "attach normally".
 #[cfg(test)]
 pub async fn peek(
-    backend: &dyn SessionBackend,
-    session: &str,
+    backend: &dyn WorkspaceBackend,
+    workspace: &str,
     known: Option<&str>,
 ) -> ServerMessage {
-    peek_window(backend, session, known, None).await
+    peek_window(backend, workspace, known, None).await
 }
 
-/// `peek` of one window: the one the session's tab speaks for, so the snapshot shows what the tab promised.
+/// `peek` of one window: the one the workspace's tab speaks for, so the snapshot shows what the tab promised.
 pub async fn peek_window(
-    backend: &dyn SessionBackend,
-    session: &str,
+    backend: &dyn WorkspaceBackend,
+    workspace: &str,
     known: Option<&str>,
     window: Option<u32>,
 ) -> ServerMessage {
     use sha2::{Digest, Sha256};
     let none = || ServerMessage::Snapshot {
-        session: session.to_string(),
+        workspace: workspace.to_string(),
         text: String::new(),
         hash: String::new(),
         unchanged: false,
     };
     let captured = match window {
-        Some(i) => backend.capture_window_styled(session, i).await,
-        None => backend.capture_styled(session).await,
+        Some(i) => backend.capture_window_styled(workspace, i).await,
+        None => backend.capture_styled(workspace).await,
     };
     let Ok(raw) = captured else {
         return none();
@@ -1092,14 +1094,14 @@ pub async fn peek_window(
         .collect();
     if known == Some(hash.as_str()) {
         return ServerMessage::Snapshot {
-            session: session.to_string(),
+            workspace: workspace.to_string(),
             text: String::new(),
             hash,
             unchanged: true,
         };
     }
     ServerMessage::Snapshot {
-        session: session.to_string(),
+        workspace: workspace.to_string(),
         text,
         hash,
         unchanged: false,
@@ -1108,19 +1110,19 @@ pub async fn peek_window(
 
 const PROMPT_CHANGED: &str = "That prompt changed";
 
-/// The agent the event layer found in a session, if any.
-fn session_agent(hub: &EventHub, session: &str) -> Option<String> {
+/// The agent the event layer found in a workspace, if any.
+fn workspace_agent(hub: &EventHub, workspace: &str) -> Option<String> {
     hub.snapshot()
         .into_iter()
-        .find(|s| s.session == session)
+        .find(|s| s.workspace == workspace)
         .and_then(|s| s.agent)
 }
 
-/// The session view (decision 0103): the screen read by the agent's profile (T2) or the generic rules (T3). Never
+/// The workspace view (decision 0103): the screen read by the agent's profile (T2) or the generic rules (T3). Never
 /// fails; a manager that cannot capture gives an empty tail, which the client shows with the full-terminal button.
 pub async fn session_view(
-    backend: &dyn SessionBackend,
-    session: &str,
+    backend: &dyn WorkspaceBackend,
+    workspace: &str,
     agent: Option<&str>,
     known: Option<&str>,
     timeline: Option<termenbox_core::protocol::Timeline>,
@@ -1135,7 +1137,7 @@ pub async fn session_view(
     } else {
         tier
     };
-    let screen = backend.capture(session).await.unwrap_or_default();
+    let screen = backend.capture(workspace).await.unwrap_or_default();
     let view = profile.read(&screen);
     let prompt = view.prompt.as_ref().map(|p| ViewPrompt {
         id: p.id(),
@@ -1172,7 +1174,7 @@ pub async fn session_view(
         .collect();
     let unchanged = known == Some(hash.as_str());
     ServerMessage::SessionView {
-        session: session.to_string(),
+        workspace: workspace.to_string(),
         tier: tier.as_str().into(),
         agent: agent.map(str::to_string),
         tail: if unchanged { Vec::new() } else { view.tail },
@@ -1187,14 +1189,14 @@ pub async fn session_view(
 /// A tap on option `option` of the prompt the user saw. The screen is read again and the keys come from that
 /// reading: they are sent only if the prompt on the pane still has the id the client saw and lists that option.
 pub async fn session_answer(
-    backend: &dyn SessionBackend,
-    session: &str,
+    backend: &dyn WorkspaceBackend,
+    workspace: &str,
     agent: Option<&str>,
     prompt_id: &str,
     option: u8,
 ) -> Result<()> {
     let (profile, _) = crate::profile::Profiles::builtin().for_agent(agent);
-    let screen = backend.capture(session).await?;
+    let screen = backend.capture(workspace).await?;
     let prompt = profile
         .read(&screen)
         .prompt
@@ -1203,23 +1205,23 @@ pub async fn session_answer(
     let keys = prompt
         .keys(option as usize)
         .ok_or_else(|| anyhow::anyhow!("No such choice"))?;
-    backend.send_text(session, keys).await
+    backend.send_text(workspace, keys).await
 }
 
-/// A one-tap answer (plan v8, K.4). It acts only on the prompt the user saw: the session's current prompt, with
+/// A one-tap answer (plan v8, K.4). It acts only on the prompt the user saw: the workspace's current prompt, with
 /// the same id and event number, confirmed by the agent's own hook (`confidence=high`), and still on the pane.
 /// The keys are the ones the screen's own choice list defines, never text from the client.
 pub async fn answer(
-    backend: &dyn SessionBackend,
+    backend: &dyn WorkspaceBackend,
     hub: &EventHub,
-    session: &str,
+    workspace: &str,
     prompt_id: &str,
     seq: u64,
     choice: u8,
 ) -> Result<()> {
     use termenbox_core::events::{Confidence, EventKind};
     let current = hub
-        .current_prompt(session)
+        .current_prompt(workspace)
         .ok_or_else(|| anyhow::anyhow!(PROMPT_CHANGED))?;
     let EventKind::Prompt { id, .. } = &current.kind else {
         return Err(anyhow::anyhow!(PROMPT_CHANGED));
@@ -1241,14 +1243,14 @@ pub async fn answer(
             .options
             .get(choice as usize)
             .ok_or_else(|| anyhow::anyhow!("No such choice"))?;
-        return backend.acp_answer(session, id, &option.id).await;
+        return backend.acp_answer(workspace, id, &option.id).await;
     }
     if current.confidence != Confidence::High {
         return Err(anyhow::anyhow!(
             "This prompt is not confirmed by the agent; open the terminal to answer"
         ));
     }
-    let screen = backend.capture(session).await?;
+    let screen = backend.capture(workspace).await?;
     let info = crate::adapters::parse_prompt(&screen)
         .filter(|i| id.ends_with(&crate::agentwatch::hex8(&i.question)))
         .ok_or_else(|| anyhow::anyhow!(PROMPT_CHANGED))?;
@@ -1256,7 +1258,7 @@ pub async fn answer(
         .choices
         .get(choice as usize)
         .ok_or_else(|| anyhow::anyhow!("No such choice"))?;
-    backend.send_text(session, keys).await
+    backend.send_text(workspace, keys).await
 }
 
 #[cfg(test)]
@@ -1271,11 +1273,11 @@ mod answer_tests {
         sent: Mutex<Vec<String>>,
     }
     #[async_trait::async_trait]
-    impl SessionBackend for Fake {
+    impl WorkspaceBackend for Fake {
         fn name(&self) -> &str {
             "fake"
         }
-        async fn list(&self) -> Result<Vec<termenbox_core::protocol::SessionInfo>> {
+        async fn list(&self) -> Result<Vec<termenbox_core::protocol::WorkspaceInfo>> {
             Ok(vec![])
         }
         async fn create(&self, _: &str) -> Result<()> {
@@ -1403,12 +1405,12 @@ mod answer_tests {
                 prompt,
                 ..
             } => (tier, tail, hash, unchanged, prompt),
-            other => panic!("not a session view: {other:?}"),
+            other => panic!("not a workspace view: {other:?}"),
         }
     }
 
     #[tokio::test]
-    async fn the_session_view_lists_labels_only_and_a_tap_sends_the_profiles_keys() {
+    async fn the_workspace_view_lists_labels_only_and_a_tap_sends_the_profiles_keys() {
         let (b, _, _, _) = setup(Confidence::High, SCREEN);
         let (tier, tail, hash, unchanged, prompt) =
             view_of(session_view(&b, "s", None, None, None).await);
@@ -1465,7 +1467,7 @@ mod answer_tests {
     }
 
     #[tokio::test]
-    async fn a_session_answer_for_another_prompt_or_option_sends_nothing() {
+    async fn a_workspace_answer_for_another_prompt_or_option_sends_nothing() {
         let (b, _, _, _) = setup(Confidence::High, SCREEN);
         let (_, _, _, _, prompt) = view_of(session_view(&b, "s", None, None, None).await);
         let id = prompt.unwrap().id;
@@ -1553,11 +1555,11 @@ mod peek_tests {
 
     struct Fake(Mutex<Option<String>>);
     #[async_trait::async_trait]
-    impl SessionBackend for Fake {
+    impl WorkspaceBackend for Fake {
         fn name(&self) -> &str {
             "fake"
         }
-        async fn list(&self) -> Result<Vec<termenbox_core::protocol::SessionInfo>> {
+        async fn list(&self) -> Result<Vec<termenbox_core::protocol::WorkspaceInfo>> {
             Ok(vec![])
         }
         async fn create(&self, _: &str) -> Result<()> {
@@ -1638,7 +1640,7 @@ mod peek_tests {
         }
     }
 
-    /// The audit line the handler writes names the session and nothing from the screen.
+    /// The audit line the handler writes names the workspace and nothing from the screen.
     #[tokio::test]
     async fn the_audit_line_for_a_peek_holds_no_pane_text() {
         let buf = Buf::default();
@@ -1659,9 +1661,9 @@ mod peek_tests {
         );
     }
 
-    /// Opening an ACP session's stream is logged with the session's name and nothing the stream holds.
+    /// Opening an ACP workspace's stream is logged with the workspace's name and nothing the stream holds.
     #[test]
-    fn the_audit_line_for_opening_an_acp_stream_names_the_session_only() {
+    fn the_audit_line_for_opening_an_acp_stream_names_the_workspace_only() {
         let buf = Buf::default();
         let sub = tracing_subscriber::fmt()
             .with_writer(buf.clone())
@@ -1684,15 +1686,15 @@ mod propagation_tests {
     use crate::cert::CertKeys;
     use std::sync::Mutex;
 
-    /// A manager whose one session can be renamed and listed back.
+    /// A manager whose one workspace can be renamed and listed back.
     struct Names(Mutex<String>);
     #[async_trait::async_trait]
-    impl SessionBackend for Names {
+    impl WorkspaceBackend for Names {
         fn name(&self) -> &str {
             "fake"
         }
-        async fn list(&self) -> Result<Vec<termenbox_core::protocol::SessionInfo>> {
-            Ok(vec![termenbox_core::protocol::SessionInfo {
+        async fn list(&self) -> Result<Vec<termenbox_core::protocol::WorkspaceInfo>> {
+            Ok(vec![termenbox_core::protocol::WorkspaceInfo {
                 id: "s".into(),
                 name: self.0.lock().unwrap().clone(),
                 agent: None,
@@ -1711,11 +1713,11 @@ mod propagation_tests {
         }
     }
 
-    /// Reads messages from a connection until one lists the session under `name`.
+    /// Reads messages from a connection until one lists the workspace under `name`.
     async fn sees_name(end: &mut crate::link::LinkEnd, name: &str) -> bool {
         let wanted = format!("\"name\":\"{name}\"");
         let read = async {
-            while let Some(m) = end.from_session.recv().await {
+            while let Some(m) = end.from_workspace.recv().await {
                 if m.contains("\"type\":\"sessions\"") && m.contains(&wanted) {
                     return true;
                 }
@@ -1733,7 +1735,7 @@ mod propagation_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let auth =
             Arc::new(AuthState::new(dir.clone(), CertKeys::default(), "srv".into()).unwrap());
-        let mgr = SessionManager::new(
+        let mgr = WorkspaceManager::new(
             Arc::new(Names(Mutex::new("first".into()))),
             RunMode::Container,
         );
@@ -1753,7 +1755,7 @@ mod propagation_tests {
         }
         // Both devices are connected and neither has asked for anything.
         tokio::time::sleep(Duration::from_millis(200)).await;
-        ea.to_session
+        ea.to_workspace
             .send(Inbound::Json(
                 r#"{"type":"rename_session","session":"s","name":"second"}"#.into(),
             ))
@@ -1825,7 +1827,7 @@ mod scrollback_tests {
     #[test]
     fn a_reply_part_is_far_below_the_limit_of_the_direct_transport() {
         let text = "x".repeat(SCROLLBACK_PART);
-        let msg = &scrollback_parts("session-with-a-long-name", &text)[0];
+        let msg = &scrollback_parts("workspace-with-a-long-name", &text)[0];
         assert!(serde_json::to_string(msg).unwrap().len() < 64 * 1024);
     }
 }

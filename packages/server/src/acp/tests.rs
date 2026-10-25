@@ -213,7 +213,9 @@ fn rig_with(mode: &str, max: usize, dir: PathBuf, state: bool) -> Rig {
     let hub = EventHub::new([7; 32]);
     let mut backend = AcpBackend::new(config).with_events(hub.clone());
     if state {
-        backend = backend.with_state_file(dir.join("sessions.json"));
+        backend = backend
+            .with_state_file(dir.join("workspaces.json"))
+            .with_legacy_state_file(dir.join("sessions.json"));
     }
     Rig {
         backend,
@@ -488,7 +490,7 @@ fn every_update_kind_maps_to_an_additive_event() {
 }
 
 #[tokio::test]
-async fn a_session_starts_with_minimal_capabilities_and_streams_every_update_kind() {
+async fn a_workspace_starts_with_minimal_capabilities_and_streams_every_update_kind() {
     let r = rig("");
     r.create("s1").await;
     let log = r.logged();
@@ -644,7 +646,7 @@ async fn a_permission_round_trip_selects_exactly_the_tapped_option() {
 }
 
 #[tokio::test]
-async fn cancel_answers_the_open_permission_cancelled_and_sends_session_cancel() {
+async fn cancel_answers_the_open_permission_cancelled_and_sends_workspace_cancel() {
     let r = rig("");
     r.create("s1").await;
     r.prompt("s1", "perm").await;
@@ -670,7 +672,7 @@ async fn cancel_answers_the_open_permission_cancelled_and_sends_session_cancel()
         last_state(&r, "s1") == Some(AgentState::Idle)
     })
     .await;
-    // The same session takes the next prompt.
+    // The same workspace takes the next prompt.
     r.prompt("s1", "updates").await;
     until("the next turn", || {
         last_state(&r, "s1") == Some(AgentState::Done)
@@ -692,7 +694,7 @@ fn oversized_text_is_capped_in_the_buffer() {
 }
 
 #[tokio::test]
-async fn hostile_text_is_scrubbed_oversized_lines_are_dropped_and_the_session_survives() {
+async fn hostile_text_is_scrubbed_oversized_lines_are_dropped_and_the_workspace_survives() {
     let r = rig("");
     r.create("s1").await;
     r.prompt("s1", "hostile").await;
@@ -730,7 +732,7 @@ async fn hostile_text_is_scrubbed_oversized_lines_are_dropped_and_the_session_su
             .any(|k| matches!(k, EventKind::Usage { .. }))
     })
     .await;
-    assert_eq!(r.backend.status("s1"), Some(SessionStatus::Running));
+    assert_eq!(r.backend.status("s1"), Some(WorkspaceStatus::Running));
     r.backend.kill("s1").await.unwrap();
 }
 
@@ -740,10 +742,10 @@ async fn a_crash_becomes_failed_with_the_exit_status() {
     r.create("s1").await;
     r.prompt("s1", "crash").await;
     until("the failure", || {
-        matches!(r.backend.status("s1"), Some(SessionStatus::Failed(_)))
+        matches!(r.backend.status("s1"), Some(WorkspaceStatus::Failed(_)))
     })
     .await;
-    let Some(SessionStatus::Failed(why)) = r.backend.status("s1") else {
+    let Some(WorkspaceStatus::Failed(why)) = r.backend.status("s1") else {
         panic!()
     };
     assert!(why.contains('3'), "{why}");
@@ -752,12 +754,12 @@ async fn a_crash_becomes_failed_with_the_exit_status() {
     })
     .await;
     assert!(r.backend.send_text("s1", "again").await.is_err());
-    // A failed session frees its slot.
+    // A failed workspace frees its slot.
     r.backend.kill("s1").await.unwrap();
 }
 
 #[tokio::test]
-async fn concurrent_sessions_are_capped() {
+async fn concurrent_workspaces_are_capped() {
     let r = rig_with("", 1, tmp(), false);
     r.create("a").await;
     let e = r
@@ -772,13 +774,13 @@ async fn concurrent_sessions_are_capped() {
 }
 
 #[tokio::test]
-async fn after_a_restart_sessions_come_back_by_resume_or_load_else_end() {
+async fn after_a_restart_workspaces_come_back_by_resume_or_load_else_end() {
     // resume wins, and replays nothing
     for (mode, method) in [("resume", "session/resume"), ("load", "session/load")] {
         let dir = tmp();
         let a = rig_with(mode, 2, dir.clone(), true);
         a.create("s1").await;
-        let saved = std::fs::read_to_string(dir.join("sessions.json")).unwrap();
+        let saved = std::fs::read_to_string(dir.join("workspaces.json")).unwrap();
         assert!(saved.contains("acp-1") && !saved.contains("hello"));
         // "Restart": a new backend with the same state file and the same agent.
         let b = rig_with(mode, 2, dir.clone(), true);
@@ -792,7 +794,7 @@ async fn after_a_restart_sessions_come_back_by_resume_or_load_else_end() {
         b.backend.restore().await;
         assert_eq!(
             b.backend.status("s1"),
-            Some(SessionStatus::Running),
+            Some(WorkspaceStatus::Running),
             "{mode}"
         );
         let call = b
@@ -813,7 +815,7 @@ async fn after_a_restart_sessions_come_back_by_resume_or_load_else_end() {
         b.backend.kill("s1").await.unwrap();
         a.backend.kill("s1").await.unwrap();
     }
-    // An agent that offers neither: the session stays, failed with the reason, not silently gone and not "Done".
+    // An agent that offers neither: the workspace stays, failed with the reason, not silently gone and not "Done".
     let dir = tmp();
     let a = rig_with("", 2, dir.clone(), true);
     a.create("s1").await;
@@ -821,7 +823,7 @@ async fn after_a_restart_sessions_come_back_by_resume_or_load_else_end() {
     b.backend.restore().await;
     assert!(matches!(
         b.backend.status("s1"),
-        Some(SessionStatus::Failed(_))
+        Some(WorkspaceStatus::Failed(_))
     ));
     assert_eq!(b.backend.list().await.unwrap().len(), 1);
     assert!(b.backend.send_text("s1", "hi").await.is_err());
@@ -836,7 +838,7 @@ async fn after_a_restart_sessions_come_back_by_resume_or_load_else_end() {
 }
 
 // ---------------------------------------------------------------------------------------------------
-// T0 session view: the stream a client opens, the way it is answered, interrupted and switched
+// T0 workspace view: the stream a client opens, the way it is answered, interrupted and switched
 // ---------------------------------------------------------------------------------------------------
 
 fn view(r: &Rig, name: &str) -> AcpView {
@@ -882,7 +884,7 @@ async fn the_stream_keeps_the_whole_turn_and_wakes_the_watcher_when_it_changes()
         r.hub
             .snapshot()
             .into_iter()
-            .find(|s| s.session == "s1")
+            .find(|s| s.workspace == "s1")
             .and_then(|s| s.agent)
             .as_deref(),
         Some("fake"),
@@ -1000,7 +1002,7 @@ async fn a_mode_is_sent_only_if_the_agent_listed_it() {
 }
 
 #[tokio::test]
-async fn a_crash_is_failed_in_the_stream_and_a_closed_session_has_no_stream() {
+async fn a_crash_is_failed_in_the_stream_and_a_closed_workspace_has_no_stream() {
     let r = rig("");
     r.create("s1").await;
     r.prompt("s1", "crash").await;
@@ -1049,7 +1051,7 @@ async fn hostile_text_is_scrubbed_and_capped_in_the_stream_too() {
 }
 
 #[tokio::test]
-async fn a_restored_session_says_that_its_earlier_output_is_not_shown() {
+async fn a_restored_workspace_says_that_its_earlier_output_is_not_shown() {
     let dir = tmp();
     let a = rig_with("load", 2, dir.clone(), true);
     a.create("s1").await;
@@ -1072,7 +1074,7 @@ async fn a_restored_session_says_that_its_earlier_output_is_not_shown() {
 }
 
 #[tokio::test]
-async fn a_refused_session_new_tells_the_owner_to_log_in() {
+async fn a_refused_workspace_new_tells_the_owner_to_log_in() {
     let r = rig("authfail");
     let e = r
         .backend
@@ -1092,7 +1094,7 @@ async fn a_refused_session_new_tells_the_owner_to_log_in() {
 // ---------------------------------------------------------------------------------------------------
 
 fn saved_file(dir: &Path) -> Vec<Value> {
-    serde_json::from_str(&std::fs::read_to_string(dir.join("sessions.json")).unwrap()).unwrap()
+    serde_json::from_str(&std::fs::read_to_string(dir.join("workspaces.json")).unwrap()).unwrap()
 }
 
 /// The hub reduces a closed turn with an error outcome to the Error state (the Failed attention item).
@@ -1114,14 +1116,17 @@ async fn over_the_cap_the_rest_wait_and_survive_a_second_save_and_restore() {
     // The server restarts with room for one.
     let b = rig_with("resume", 1, dir.clone(), true);
     b.backend.restore().await;
-    assert_eq!(b.backend.status("a"), Some(SessionStatus::Running));
+    assert_eq!(b.backend.status("a"), Some(WorkspaceStatus::Running));
     assert!(matches!(
         b.backend.status("b"),
-        Some(SessionStatus::Failed(_))
+        Some(WorkspaceStatus::Failed(_))
     ));
     let v = view(&b, "b").info.unwrap();
     assert_eq!(v.status, "failed");
-    assert!(v.status_text.unwrap().contains("at most 1 agent sessions"));
+    assert!(v
+        .status_text
+        .unwrap()
+        .contains("at most 1 agent workspaces"));
     // A second save keeps the waiting entry, with its id and a retry.
     b.backend.save();
     let file = saved_file(&dir);
@@ -1132,8 +1137,8 @@ async fn over_the_cap_the_rest_wait_and_survive_a_second_save_and_restore() {
     // The next restore, with room, starts it.
     let c = rig_with("resume", 2, dir.clone(), true);
     c.backend.restore().await;
-    assert_eq!(c.backend.status("a"), Some(SessionStatus::Running));
-    assert_eq!(c.backend.status("b"), Some(SessionStatus::Running));
+    assert_eq!(c.backend.status("a"), Some(WorkspaceStatus::Running));
+    assert_eq!(c.backend.status("b"), Some(WorkspaceStatus::Running));
     for n in ["a", "b"] {
         b.backend.kill(n).await.ok();
         c.backend.kill(n).await.unwrap();
@@ -1154,7 +1159,7 @@ async fn a_failed_start_is_retried_at_the_next_restore_and_reports_an_error() {
     // Closing it removes it from the file.
     let again = rig_with("resume", 2, dir.clone(), true);
     again.backend.restore().await;
-    assert_eq!(again.backend.status("s1"), Some(SessionStatus::Running));
+    assert_eq!(again.backend.status("s1"), Some(WorkspaceStatus::Running));
     assert_eq!(saved_file(&dir)[0]["reason"], Value::Null);
     again.backend.kill("s1").await.unwrap();
     assert!(saved_file(&dir).is_empty());
@@ -1166,7 +1171,7 @@ async fn an_invalid_directory_is_kept_with_a_reason_and_an_invalid_name_is_dropp
     let f =
         |name: &str, d: &str| json!({"name": name, "agent": "fake", "dir": d, "acp_id": "acp-1"});
     std::fs::write(
-        dir.join("sessions.json"),
+        dir.join("workspaces.json"),
         json!([
             f("bad-dir", "relative/path"),
             f("a b", "/tmp"),
@@ -1197,7 +1202,7 @@ async fn an_invalid_directory_is_kept_with_a_reason_and_an_invalid_name_is_dropp
     again.backend.restore().await;
     assert!(matches!(
         again.backend.status("bad-dir"),
-        Some(SessionStatus::Failed(_))
+        Some(WorkspaceStatus::Failed(_))
     ));
     again.backend.kill("bad-dir").await.unwrap();
     again.backend.kill("ok").await.unwrap();
@@ -1249,7 +1254,7 @@ async fn a_create_during_restore_respects_the_cap_and_the_names() {
         .any(|e| matches!(e, AcpBody::Notice { text, .. } if text.contains("Restoring"))));
     assert_eq!(listed, 2);
     // Done restoring: the slots are free of the placeholders and still counted by the running agents.
-    assert_eq!(b.backend.status("s1"), Some(SessionStatus::Running));
+    assert_eq!(b.backend.status("s1"), Some(WorkspaceStatus::Running));
     assert!(b
         .backend
         .create_with("s3", None, b.dir.to_str(), Some("fake"))
@@ -1276,12 +1281,12 @@ async fn a_turn_open_at_the_restart_is_said_once_and_raises_one_failure() {
     assert_eq!(saved_file(&dir)[0]["turn_open"], true);
     let b = rig_with("resume", 2, dir.clone(), true);
     b.backend.restore().await;
-    assert_eq!(b.backend.status("s1"), Some(SessionStatus::Running));
+    assert_eq!(b.backend.status("s1"), Some(WorkspaceStatus::Running));
     assert!(bodies(&view(&b, "s1")).iter().any(|e| matches!(e,
         AcpBody::Notice { level, text } if level == "error" && text.contains("interrupted the running turn"))));
     assert_eq!(b.kinds("s1").iter().filter(|k| is_error_turn(k)).count(), 1);
     assert_eq!(last_state(&b, "s1"), Some(AgentState::Error));
-    // The restored session is idle and nothing is open any more.
+    // The restored workspace is idle and nothing is open any more.
     assert_eq!(saved_file(&dir)[0]["turn_open"], false);
     b.backend.kill("s1").await.unwrap();
     a.backend.kill("s1").await.unwrap();
@@ -1292,6 +1297,25 @@ async fn a_restart_without_an_open_turn_says_nothing_of_one_and_an_old_file_load
     let dir = tmp();
     // The file as it was before step 3: four fields only.
     std::fs::write(
+        dir.join("workspaces.json"),
+        json!([{"name": "s1", "agent": "fake", "dir": dir.to_str().unwrap(), "acp_id": "acp-1"}])
+            .to_string(),
+    )
+    .unwrap();
+    let r = rig_with("resume", 2, dir.clone(), true);
+    r.backend.restore().await;
+    assert_eq!(r.backend.status("s1"), Some(WorkspaceStatus::Running));
+    assert!(!r.kinds("s1").iter().any(is_error_turn));
+    assert!(!bodies(&view(&r, "s1")).iter().any(|e| matches!(e,
+        AcpBody::Notice { text, .. } if text.contains("interrupted"))));
+    r.backend.kill("s1").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_state_file_under_the_old_name_loads_and_the_next_save_uses_the_new_name() {
+    let dir = tmp();
+    // What a server before the workspace rename left behind.
+    std::fs::write(
         dir.join("sessions.json"),
         json!([{"name": "s1", "agent": "fake", "dir": dir.to_str().unwrap(), "acp_id": "acp-1"}])
             .to_string(),
@@ -1299,10 +1323,11 @@ async fn a_restart_without_an_open_turn_says_nothing_of_one_and_an_old_file_load
     .unwrap();
     let r = rig_with("resume", 2, dir.clone(), true);
     r.backend.restore().await;
-    assert_eq!(r.backend.status("s1"), Some(SessionStatus::Running));
-    assert!(!r.kinds("s1").iter().any(is_error_turn));
-    assert!(!bodies(&view(&r, "s1")).iter().any(|e| matches!(e,
-        AcpBody::Notice { text, .. } if text.contains("interrupted"))));
+    assert_eq!(r.backend.status("s1"), Some(WorkspaceStatus::Running));
+    assert_eq!(saved_file(&dir)[0]["name"], "s1");
+    assert!(dir.join("workspaces.json").exists());
+    // The old file stays, so a downgrade finds what it expects.
+    assert!(dir.join("sessions.json").exists());
     r.backend.kill("s1").await.unwrap();
 }
 

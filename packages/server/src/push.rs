@@ -1,6 +1,6 @@
 //! Web Push (decision 0095, plan A.6): a push on the rising edge of an Attention item when no device shows the
-//! session. VAPID (RFC 8292) and `aes128gcm` content encryption (RFC 8291) are done here with the crates the
-//! server already has; no paid service. The payload names the session, the kind and a time, and never anything
+//! workspace. VAPID (RFC 8292) and `aes128gcm` content encryption (RFC 8291) are done here with the crates the
+//! server already has; no paid service. The payload names the workspace, the kind and a time, and never anything
 //! an agent wrote (guardrail `notifications-carry-no-agent-text`).
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -250,10 +250,10 @@ fn body(
     Ok(out)
 }
 
-/// What a notification says: the session, the kind, the time, and a deep link. Nothing an agent wrote.
-/// Builds the JSON push body. `session` is the display name (e.g., "work"), `session_key` is the
-/// qualified key the client uses to find the session (e.g., "a/tmux:work").
-pub fn payload(session: &str, kind: AttentionKind, at: u64, session_key: &str) -> Vec<u8> {
+/// What a notification says: the workspace, the kind, the time, and a deep link. Nothing an agent wrote.
+/// Builds the JSON push body. `session` is the display name (e.g., "work"), `workspace_key` is the
+/// qualified key the client uses to find the workspace (e.g., "a/tmux:work").
+pub fn payload(workspace: &str, kind: AttentionKind, at: u64, workspace_key: &str) -> Vec<u8> {
     let kind = match kind {
         AttentionKind::NeedsInput => "needs_input",
         AttentionKind::FinishedUnseen => "finished",
@@ -262,17 +262,17 @@ pub fn payload(session: &str, kind: AttentionKind, at: u64, session_key: &str) -
     };
     // Percent-encode the focus value so special chars don't truncate the deep link.
     let focus =
-        percent_encoding::utf8_percent_encode(session_key, percent_encoding::NON_ALPHANUMERIC)
+        percent_encoding::utf8_percent_encode(workspace_key, percent_encoding::NON_ALPHANUMERIC)
             .to_string();
     let deep_link = format!("/#/home?focus={}", focus);
-    serde_json::json!({"session": session, "kind": kind, "at": at, "tag": session, "deep_link": deep_link})
+    serde_json::json!({"session": workspace, "kind": kind, "at": at, "tag": workspace, "deep_link": deep_link})
         .to_string()
         .into_bytes()
 }
 
-/// The part of a session id a person recognises: without the manager prefix.
-fn display_name(session: &str) -> &str {
-    session.rsplit(':').next().unwrap_or(session)
+/// The part of a workspace id a person recognises: without the manager prefix.
+fn display_name(workspace: &str) -> &str {
+    workspace.rsplit(':').next().unwrap_or(workspace)
 }
 
 pub enum Sent {
@@ -293,7 +293,7 @@ pub struct Push {
     pub grace: Duration,
     /// Escalation ladder configuration (persisted to push_settings.json).
     config: Arc<Mutex<EscalationConfig>>,
-    /// The server id that prefixes a deep link, so the client can find the session across servers.
+    /// The server id that prefixes a deep link, so the client can find the workspace across servers.
     server_id: Mutex<Option<String>>,
 }
 
@@ -352,11 +352,11 @@ impl Push {
         *self.server_id.lock().unwrap() = Some(id);
     }
 
-    /// `server_id/session` when the id is known, the bare session otherwise.
-    fn focus_key(&self, session: &str) -> String {
+    /// `server_id/workspace` when the id is known, the bare workspace otherwise.
+    fn focus_key(&self, workspace: &str) -> String {
         match self.server_id.lock().unwrap().as_deref() {
-            Some(id) if !id.is_empty() => format!("{id}/{session}"),
-            _ => session.to_string(),
+            Some(id) if !id.is_empty() => format!("{id}/{workspace}"),
+            _ => workspace.to_string(),
         }
     }
 
@@ -484,21 +484,21 @@ impl Push {
         }
     }
 
-    /// A connection says which session it shows in the foreground, or none.
-    pub fn set_foreground(&self, conn: u64, session: Option<String>) {
+    /// A connection says which workspace it shows in the foreground, or none.
+    pub fn set_foreground(&self, conn: u64, workspace: Option<String>) {
         let mut fg = self.foreground.lock().unwrap();
-        match session {
+        match workspace {
             Some(s) => fg.insert(conn, s),
             None => fg.remove(&conn),
         };
     }
 
-    fn shown(&self, session: &str) -> bool {
+    fn shown(&self, workspace: &str) -> bool {
         self.foreground
             .lock()
             .unwrap()
             .values()
-            .any(|s| s == session)
+            .any(|s| s == workspace)
     }
 
     async fn send_one(&self, sub: &Subscription, body: &[u8], topic: &str) -> Sent {
@@ -534,12 +534,12 @@ impl Push {
     }
 
     /// Sends to every device; a dead subscription is removed. Returns how many accepted it.
-    pub async fn notify(&self, session: &str, kind: AttentionKind, at: u64) -> usize {
-        let name = display_name(session);
-        let focus_key = self.focus_key(session);
+    pub async fn notify(&self, workspace: &str, kind: AttentionKind, at: u64) -> usize {
+        let name = display_name(workspace);
+        let focus_key = self.focus_key(workspace);
         let body = payload(name, kind, at, &focus_key);
-        // The service keeps one waiting message per topic: a newer one for the session replaces the older.
-        let topic = B64.encode(&Sha256::digest(session.as_bytes())[..16]);
+        // The service keeps one waiting message per topic: a newer one for the workspace replaces the older.
+        let topic = B64.encode(&Sha256::digest(workspace.as_bytes())[..16]);
         let subs = self.subs.lock().unwrap().clone();
         let mut ok = 0;
         for s in subs {
@@ -551,8 +551,8 @@ impl Push {
                 Sent::Failed(why) => warn!("push failed: {why}"),
             }
         }
-        // Session and kind only (audit-logging-no-secrets).
-        info!(target: "audit", event = "push_sent", session = %session, kind = ?kind, accepted = ok);
+        // Workspace and kind only (audit-logging-no-secrets).
+        info!(target: "audit", event = "push_sent", session = %workspace, kind = ?kind, accepted = ok);
         ok
     }
 }
@@ -563,7 +563,7 @@ pub fn next_wait(wait_secs: u64, config: &EscalationConfig) -> u64 {
 }
 
 /// Watches Attention items: for each new one, waits out the grace, and pushes unless it is gone by then or a
-/// device shows the session. A hint never reaches here: only items raised by a hook exist.
+/// device shows the workspace. A hint never reaches here: only items raised by a hook exist.
 /// A question (`needs_input`) is then repeated on the ladder, at growing intervals, until it is answered anywhere
 /// and so leaves the Attention list (decision 0104); quiet hours and a muted agent skip a rung, not the ladder.
 pub fn spawn_watcher(push: Arc<Push>, hub: EventHub) {
@@ -602,9 +602,9 @@ async fn climb(push: Arc<Push>, hub: EventHub, it: Attention) {
         if !hub.attention_items().iter().any(|a| a.id == it.id) {
             return; // answered or acknowledged, on any device
         }
-        let agent = hub.agent(&it.session).unwrap_or_default();
-        if !push.shown(&it.session) && !push.suppressed(&agent, now_ms()) {
-            push.notify(&it.session, it.kind, it.raised_at).await;
+        let agent = hub.agent(&it.workspace).unwrap_or_default();
+        if !push.shown(&it.workspace) && !push.suppressed(&agent, now_ms()) {
+            push.notify(&it.workspace, it.kind, it.raised_at).await;
         }
         if !ladder {
             return;
@@ -916,7 +916,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_device_showing_the_session_suppresses_the_push_and_so_does_a_quick_ack() {
+    async fn a_device_showing_the_workspace_suppresses_the_push_and_so_does_a_quick_ack() {
         use termenbox_core::events::{AgentState, Confidence, EventKind, Source};
         let (ua, auth, _keys) = device();
         let (url, mut rx) = fake_service(Arc::new(Mutex::new(StatusCode::CREATED))).await;
@@ -938,7 +938,7 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(400), rx.recv())
                 .await
                 .is_err(),
-            "viewed session"
+            "viewed workspace"
         );
         push.set_foreground(1, None);
         hub.push(
@@ -962,7 +962,7 @@ mod tests {
         let id = hub
             .attention_items()
             .iter()
-            .find(|a| a.session == "quick")
+            .find(|a| a.workspace == "quick")
             .unwrap()
             .id
             .clone();
@@ -1088,10 +1088,10 @@ mod tests {
         }
     }
 
-    fn state(hub: &EventHub, session: &str, state: termenbox_core::events::AgentState, at: u64) {
+    fn state(hub: &EventHub, workspace: &str, state: termenbox_core::events::AgentState, at: u64) {
         use termenbox_core::events::{Confidence, EventKind, Source};
         hub.push(
-            session,
+            workspace,
             Source::Hook,
             Confidence::High,
             EventKind::State { state },
@@ -1144,7 +1144,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn answering_one_session_does_not_stop_the_ladder_of_another() {
+    async fn answering_one_workspace_does_not_stop_the_ladder_of_another() {
         use termenbox_core::events::AgentState;
         let (ua, auth, _) = device();
         let (url, mut rx) = fake_service(Arc::new(Mutex::new(StatusCode::CREATED))).await;
@@ -1173,7 +1173,7 @@ mod tests {
                 return;
             }
         }
-        panic!("no rung for the session still waiting");
+        panic!("no rung for the workspace still waiting");
     }
 
     #[tokio::test]
@@ -1281,7 +1281,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&plain).unwrap();
         assert_eq!(v["session"], "work");
         assert_eq!(v["kind"], "needs_input");
-        // deep_link uses the qualified key (server_id/session); in tests there's no server_id set
+        // deep_link uses the qualified key (server_id/workspace); in tests there's no server_id set
         assert_eq!(v["deep_link"], "/#/home?focus=work");
         assert!(!v
             .as_object()

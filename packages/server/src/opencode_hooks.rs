@@ -2,8 +2,8 @@
 //! only when asked, only ours, with a backup and a journal; "Disconnect" removes it again.
 //!
 //! OpenCode has no hooks in a settings file. It loads JavaScript/TypeScript plugins from
-//! `<config>/plugins/`; the plugin subscribes to the same session and permission events the TUI sees and feeds
-//! them to `termenbox-server --hook opencode` through the environment Termenbox puts in each session.
+//! `<config>/plugins/`; the plugin subscribes to the same workspace and permission events the TUI sees and feeds
+//! them to `termenbox-server --hook opencode` through the environment Termenbox puts in each workspace.
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -22,10 +22,10 @@ pub const MARKER: &str = "termenbox-opencode-plugin";
 /// The binary is embedded when the owner connects: a later server upgrade rewrites the plugin with the new path
 /// the same way `--connect-claude` rewrites its hook command.
 const TEMPLATE: &str = r#"// termenbox-opencode-plugin: written by `termenbox-server --connect-opencode`; remove with --disconnect-opencode.
-// Reports OpenCode's session, tool, permission and question events to the Termenbox session it was started in.
+// Reports OpenCode's workspace, tool, permission and question events to the Termenbox workspace it was started in.
 // It does nothing when OpenCode runs outside Termenbox (the TERMENBOX_* variables are absent).
 const BINARY = __TERMENBOX_BINARY__;
-// Tool names are remembered between the input event and the call it starts; a long session must not grow it.
+// Tool names are remembered between the input event and the call it starts; a long workspace must not grow it.
 const MAX_TOOLS = 64;
 
 const FORWARD = new Set([
@@ -136,7 +136,7 @@ export default {
             if (event.type !== "session.tool.called") tools.delete(toolKey(data));
           }
           // One OpenCode service can serve several TUIs, so the frame says which conversation it is about; the server
-          // places the conversation in the tmux session whose TUI it is.
+          // places the conversation in the tmux workspace whose TUI it is.
           if (FORWARD.has(event.type)) send({ type: event.type, sessionID: typeof data.sessionID === "string" ? data.sessionID : undefined, data: compact(event.type, data, toolName) });
         }
       } catch {
@@ -698,7 +698,7 @@ mod tests {
         // `session.idle` repeats the turn end that execution.* already carries; forwarding it would let a late
         // event downgrade Done to Idle after the adapter closed the turn.
         assert!(!text.contains("session.idle"));
-        // Bounded frames and a bounded remembered-tool map: neither can grow with a long session.
+        // Bounded frames and a bounded remembered-tool map: neither can grow with a long workspace.
         assert!(text.contains("const cap ="));
         assert!(text.contains("const MAX_TOOLS ="));
         assert!(text.contains("tools.delete(tools.keys().next().value)"));

@@ -63,7 +63,7 @@
     <h2 id="privacy-history" class="text-base font-semibold">What your servers keep</h2>
     <p class="text-base text-soft">Each server keeps a history of what its agents did, so Activity can show a day or a week. It stays on that server and never comes to us. For each task it holds:</p>
     <ul class="list-disc space-y-1 pl-5 text-base text-soft">
-      <li>the session name and the agent;</li>
+      <li>the workspace name and the agent;</li>
       <li>a short title: the first line of your prompt (or the title Codex or an ACP agent gives the task), at most 80 characters. Tokens, passwords after a keyword, IP addresses, host names with a port, email addresses, links and paths in your home folder are replaced; other words stay as you wrote them, so keep sensitive details out of that first line;</li>
       <li>when the task started and ended, how it ended (finished, failed or stopped), and how long the agent waited on you;</li>
       <li>the name of the folder the agent worked in (the name, not the path);</li>
@@ -79,7 +79,7 @@
       <button type="button" class="{btn} bg-raised text-fg" disabled={!historyServers} use:focus={moved} onclick={() => hgo({ name: 'confirm' })}>Delete activity history…</button>
     {:else if hstep.name === 'confirm'}
       <p class="text-base text-fg outline-none" tabindex="-1" use:focus={true}>Delete the activity history of {plural(historyServers, 'server', 'servers')}? This cannot be undone.</p>
-      <p class="text-base text-soft">Your sessions and agents are not touched. Activity starts empty and fills again as tasks run.</p>
+      <p class="text-base text-soft">Your workspaces and agents are not touched. Activity starts empty and fills again as tasks run.</p>
       <div class="flex flex-col gap-2">
         <button type="button" class="{btn} bg-bad/15 text-bad" onclick={removeHistory}>Delete history</button>
         <button type="button" class="{btn} bg-raised text-fg" onclick={() => hgo({ name: 'idle' })}>Keep history</button>
@@ -104,7 +104,7 @@
       <button type="button" class="{btn} bg-raised text-fg" use:focus={moved} onclick={() => go({ name: 'confirm' })}>Delete my data…</button>
     {:else if step.name === 'confirm'}
       <p class="text-base text-fg outline-none" tabindex="-1" use:focus={true}>Delete your records from our directory? This cannot be undone.</p>
-      <p class="text-base text-soft">Your servers keep running and keep their sessions, and this browser keeps its saved copy of each server's address, so it can still reach them. A server registers itself again when it next checks in: within 5 minutes if it has not been claimed yet, otherwise within 7 days. To stop that, uninstall it on its machine.</p>
+      <p class="text-base text-soft">Your servers keep running and keep their workspaces, and this browser keeps its saved copy of each server's address, so it can still reach them. A server registers itself again when it next checks in: within 5 minutes if it has not been claimed yet, otherwise within 7 days. To stop that, uninstall it on its machine.</p>
       <div class="flex flex-col gap-2">
         <button type="button" class="{btn} bg-bad/15 text-bad" onclick={remove}>Delete my data</button>
         <button type="button" class="{btn} bg-raised text-fg" onclick={() => go({ name: 'idle' })}>Keep my data</button>

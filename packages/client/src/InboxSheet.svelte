@@ -3,7 +3,7 @@
   import { rememberFocus } from './lib/focus';
   import { ageText } from './lib/cards';
   import type { InboxItem } from './lib/inbox';
-  import type { AgentMap, SessionAgent } from './lib/agents';
+  import type { AgentMap, WorkspaceAgent } from './lib/agents';
   import DecisionPanel from './DecisionPanel.svelte';
   import { decisionFor } from './lib/decision';
   import { kindOf } from './lib/home';
@@ -11,7 +11,7 @@
   export let items: InboxItem[];
   export let now: number;
   export let agents: AgentMap = {};
-  export let onanswer: (key: string, choice: number, prompt: NonNullable<SessionAgent['prompt']>) => void = () => {};
+  export let onanswer: (key: string, choice: number, prompt: NonNullable<WorkspaceAgent['prompt']>) => void = () => {};
   export let onreply: (key: string, text: string) => void = () => {};
   export let onopen: (key: string) => void;
   export let onhome: () => void = () => {};
@@ -24,7 +24,7 @@
   onMount(() => { dialog.showModal(); });
   // Words, never colour alone; the task title is text from the agent and is shown as text only.
   const WORDS = { needs_input: 'needs you', finished_unseen: 'finished', failed: 'failed', unknown: '' } as const;
-  // A question that is still open is the decision card, answerable here (decision 0104); anything else is a line that opens the session.
+  // A question that is still open is the decision card, answerable here (decision 0104); anything else is a line that opens the workspace.
   function liveCard(it: InboxItem, map: AgentMap) {
     const a = map[it.key];
     if (it.kind !== 'needs_input' || kindOf(a) !== 'needs_input' || (a?.attention && a.attention.raised_at !== it.at)) return null;
@@ -38,7 +38,7 @@
   <div class="box">
     <div class="row"><h2>Inbox</h2><button class="secondary" aria-label="Close inbox" on:click={onclose}>×</button></div>
     {#if items.length === 0}
-      <p>Nothing yet. A session that needs you, finishes or fails shows up here.</p>
+      <p>Nothing yet. A workspace that needs you, finishes or fails shows up here.</p>
     {:else}
       <div class="row"><button class="secondary" on:click={home}>Open Home</button><button class="secondary" on:click={onread}>Mark all read</button><button class="secondary" on:click={onclear}>Clear</button></div>
       <ul>

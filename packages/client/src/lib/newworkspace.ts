@@ -1,4 +1,4 @@
-// Starting a session (plan H.10): which agent, in which directory, under what name. The templates are the agents the
+// Starting a workspace (plan H.10): which agent, in which directory, under what name. The templates are the agents the
 // server recognises; the server refuses any other name, so this list is only what the sheet offers.
 import type { WindowMap } from './windows';
 
@@ -30,7 +30,7 @@ export function recentDirs(windows: WindowMap, serverPrefix: string, limit = 6):
 /** A name the server accepts (letters, digits, - and _; at most 64) that is not taken: `termenbox-claude`, `termenbox-claude-2`. */
 export function suggestName(dir: string, template: string, taken: string[]): string {
   const tail = dir.split('/').filter(Boolean).pop() ?? '';
-  const base = (tail || 'session').replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'session';
+  const base = (tail || 'workspace').replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'workspace';
   const head = (template && template !== 'shell' ? `${base}-${template}` : base).slice(0, 58);
   let name = head, n = 2;
   while (taken.includes(name)) name = `${head}-${n++}`;
@@ -41,8 +41,8 @@ export const validDir = (dir: string) => dir === '' || (dir.startsWith('/') && d
 export const validName = (name: string) => /^[A-Za-z0-9_-]{1,64}$/.test(name);
 
 // ---------------------------------------------------------------------------------------------------------------------
-// The view: how an agent runs. "Terminal" is the agent's own TUI in a tmux session; "Agent view" is an ACP session the
-// server starts and termenbox draws. (Not the agent's own session "mode", which AcpView has a select for.)
+// The view: how an agent runs. "Terminal" is the agent's own TUI in a tmux workspace; "Agent view" is an ACP workspace the
+// server starts and termenbox draws. (Not the agent's own workspace "mode", which AcpView has a select for.)
 // ---------------------------------------------------------------------------------------------------------------------
 export type View = 'terminal' | 'acp';
 type Caps = { backends: string[]; acpAgents: string[] };

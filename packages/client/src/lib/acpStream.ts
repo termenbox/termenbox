@@ -1,4 +1,4 @@
-// The client's copy of an ACP session (T0, decision 0111, U07b): a reducer over the server's `acp_view` messages, kept
+// The client's copy of an ACP workspace (T0, decision 0111, U07b): a reducer over the server's `acp_view` messages, kept
 // bounded, plus the pure helpers the view uses (search, diffs, copy text). Everything from the agent is untrusted: it
 // is cleaned again here, capped, and only ever rendered as text.
 import type { AcpDiff, AcpEntryWire, AcpInfo, AcpLocation, AcpViewMessage, ClientMessage } from './protocol';
@@ -31,7 +31,7 @@ export interface Info {
 }
 
 export interface StreamState {
-  session: string;
+  workspace: string;
   epoch: number;
   rev: number;
   first: number;
@@ -108,7 +108,7 @@ export function infoFrom(i: AcpInfo | undefined): Info | undefined {
   };
 }
 
-export const emptyStream = (session: string): StreamState => ({ session, epoch: 0, rev: 0, first: 0, entries: [] });
+export const emptyStream = (workspace: string): StreamState => ({ workspace, epoch: 0, rev: 0, first: 0, entries: [] });
 
 /** Applies one `acp_view`: a reset replaces everything, otherwise changed entries replace the ones with the same id and
  *  new ones are added at the end. Entries older than the server keeps, and beyond the cap, are dropped. */
@@ -121,23 +121,23 @@ export function applyView(state: StreamState, msg: AcpViewMessage): StreamState 
   }
   let entries = [...byId.values()].filter((e) => e.id >= (msg.first || 0)).sort((a, b) => a.id - b.id);
   if (entries.length > MAX_ENTRIES) entries = entries.slice(-MAX_ENTRIES);
-  return { session: state.session, epoch: msg.epoch, rev: msg.rev, first: msg.first, entries, info: infoFrom(msg.info) ?? (reset ? undefined : state.info) };
+  return { workspace: state.workspace, epoch: msg.epoch, rev: msg.rev, first: msg.first, entries, info: infoFrom(msg.info) ?? (reset ? undefined : state.info) };
 }
 
-/** How long a session may take to answer `acp_open` before the view says the server may be too old for it. */
+/** How long a workspace may take to answer `acp_open` before the view says the server may be too old for it. */
 export const OPEN_WAIT_MS = 8000;
 
 /** What the view says before the first answer arrives. A server older than the ACP view ignores `acp_open`. */
 export function openingText(connected: boolean, silent: boolean): string {
   if (!connected) return 'Waiting for the connection…';
-  return silent ? 'The server has not answered. If it is an older version, update it to see agent sessions.' : 'Opening the session…';
+  return silent ? 'The server has not answered. If it is an older version, update it to see agent workspaces.' : 'Opening the workspace…';
 }
 
 /** An entry the reader has not been given before: newer than the stream when the view had its first full picture
  *  (`base`, or undefined while that picture is still arriving). Only these are announced to a screen reader. */
 export const isNewEntry = (e: { rev: number }, base: number | undefined): boolean => base !== undefined && e.rev > base;
 
-/** The name of the plain tmux session beside an ACP session (decision 0109). A long name is shortened with a hash of
+/** The name of the plain tmux workspace beside an ACP workspace (decision 0109). A long name is shortened with a hash of
  *  the whole, so two long names that share a start do not share a shell. */
 export function shellName(name: string): string {
   if (name.length <= 58) return `${name}-shell`;
@@ -146,9 +146,9 @@ export function shellName(name: string): string {
   return `${name.slice(0, 49)}-${h.toString(36).slice(0, 6)}-shell`;
 }
 
-/** What to send to show a session: the revision held (if any) so only the difference comes back. */
-export const openMessage = (session: string, held?: StreamState): ClientMessage =>
-  held && held.epoch ? { type: 'acp_open', session, after: held.rev, epoch: held.epoch } : { type: 'acp_open', session };
+/** What to send to show a workspace: the revision held (if any) so only the difference comes back. */
+export const openMessage = (workspace: string, held?: StreamState): ClientMessage =>
+  held && held.epoch ? { type: 'acp_open', session: workspace, after: held.rev, epoch: held.epoch } : { type: 'acp_open', session: workspace };
 
 // ---- What the view derives
 

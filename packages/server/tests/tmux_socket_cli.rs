@@ -1,5 +1,5 @@
 //! Termenbox's own tmux server (DECISION-0120), as the real binary sees it: a first start gets the private server
-//! and writes its config, sessions already on the default socket do not make it use that socket (decision 0121),
+//! and writes its config, workspaces already on the default socket do not make it use that socket (decision 0121),
 //! and `termenbox-server tmux` reaches the same server. Every child gets its own TMUX_TMPDIR, so the owner's own tmux
 //! and termenbox service are never touched.
 use std::path::{Path, PathBuf};
@@ -88,7 +88,7 @@ fn a_first_start_gets_the_private_server_and_its_config() {
 }
 
 #[test]
-fn sessions_already_on_the_default_socket_do_not_make_the_install_use_it() {
+fn workspaces_already_on_the_default_socket_do_not_make_the_install_use_it() {
     if !have_tmux() {
         return;
     }

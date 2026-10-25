@@ -1,7 +1,7 @@
 import { derived, writable } from 'svelte/store';
 import { Connection, type ConnectionOptions, type ConnState } from './connection';
 import { applyActivity, applyAttention, applyEvents, applySnapshot, syncRequest, type AgentMap } from './agents';
-import type { ClientMessage, ServerHealth, ServerListItem, ServerMessage, SessionInfo } from './protocol';
+import type { ClientMessage, ServerHealth, ServerListItem, ServerMessage, WorkspaceInfo } from './protocol';
 import type { Target } from './transport';
 import { storedBundle, type PathFailure } from './paths';
 import { BundleRejected, decodeBundle, verifyBundle } from './bundle';
@@ -16,7 +16,7 @@ export interface HubServer {
   reason: string;
   version: string;
   backends: string[];
-  /** The agents the owner allows as ACP sessions (T0); empty when the server runs none. */
+  /** The agents the owner allows as ACP workspaces (T0); empty when the server runs none. */
   acpAgents: string[];
   /** Live window updates run (tmux 3.2+); false shows a notice in the server's status. */
   controlMode: boolean;
@@ -25,16 +25,16 @@ export interface HubServer {
   prefix: string;
   /** Server health (U14). */
   health?: ServerHealth;
-  /** The path carrying the session (`Direct, LAN`, `Tunnel`); empty while there is none. */
+  /** The path carrying the workspace (`Direct, LAN`, `Tunnel`); empty while there is none. */
   path?: string;
   /** Every path tried in the last failed attempt, with why and one fix (decision 0123). */
   failures?: PathFailure[];
 }
-export interface HubSession extends SessionInfo { serverId: string; key: string; serverName: string }
+export interface HubWorkspace extends WorkspaceInfo { serverId: string; key: string; serverName: string }
 interface Entry extends HubServer {
   connection: HubConnection | null;
   unsubscribe?: () => void;
-  sessions: SessionInfo[];
+  workspaces: WorkspaceInfo[];
   agents: AgentMap;
   windows: WindowMap;
   refresh: boolean;
@@ -52,18 +52,18 @@ interface Options {
 }
 
 export const serverKey = (server: ServerListItem) => server.server_id || server.server_url;
-export const sessionKey = (serverId: string, sessionId: string) => `${serverId}/${sessionId}`;
+export const workspaceKey = (serverId: string, sessionId: string) => `${serverId}/${sessionId}`;
 
 /** A usable selection wins; otherwise the owner chooses among available peers. */
-export function sessionDestinations(servers: HubServer[], selected?: HubServer): HubServer[] {
+export function workspaceDestinations(servers: HubServer[], selected?: HubServer): HubServer[] {
   return selected?.state === 'connected' ? [selected] : servers.filter(s => s.state === 'connected');
 }
 
 /**
- * Where a new session can go: every connected server, with the one to preselect. `preferredId` is the server whose own
+ * Where a new workspace can go: every connected server, with the one to preselect. `preferredId` is the server whose own
  * "+ New" was tapped, or else the open one; with several servers the sheet asks, so a plain "+ New" never picks silently.
  */
-export function newSessionTargets(servers: HubServer[], preferredId?: string): { servers: HubServer[]; serverId: string } {
+export function newWorkspaceTargets(servers: HubServer[], preferredId?: string): { servers: HubServer[]; serverId: string } {
   const connected = servers.filter(s => s.state === 'connected');
   return { servers: connected, serverId: (connected.find(s => s.id === preferredId) ?? connected[0])?.id ?? '' };
 }
@@ -72,7 +72,7 @@ export function newSessionTargets(servers: HubServer[], preferredId?: string): {
 export class ServerHub {
   private entries = new Map<string, Entry>();
   readonly servers = writable<HubServer[]>([]);
-  readonly allSessions = writable<HubSession[]>([]);
+  readonly allWorkspaces = writable<HubWorkspace[]>([]);
   readonly agents = writable<AgentMap>({});
   readonly windows = writable<WindowMap>({});
   readonly connectedCount = derived(this.servers, servers => servers.filter(s => s.state === 'connected').length);
@@ -92,7 +92,7 @@ export class ServerHub {
       return;
     }
     const entry: Entry = { id, server, state: 'connecting', reason: '', version: '', backends: [], acpAgents: [], controlMode: false, tmuxVersion: '', prefix: '', connection: null, path: '', failures: [],
-      sessions: [], agents: {}, windows: {}, refresh: !server.record && !server.bundle && !!server.server_id, everReady: false };
+      workspaces: [], agents: {}, windows: {}, refresh: !server.record && !server.bundle && !!server.server_id, everReady: false };
     this.entries.set(id, entry);
     this.connect(entry);
   }
@@ -100,28 +100,28 @@ export class ServerHub {
   /** This device's last round trip to a server, from its heartbeat; null before the first one. */
   rtt(id: string): number | null { return this.entries.get(id)?.connection?.rtt ?? null; }
   send(id: string, message: ClientMessage) { this.connection(id)?.send(message); }
-  /** Global keys stay in the UI; the wire always carries the original server-local session id. */
-  sendToSession(key: string, message: ClientMessage) {
-    const session = this.findSession(key);
-    if (!session) return;
-    const wire = 'session' in message ? { ...message, session: session.id }
-      : 'session_id' in message ? { ...message, session_id: session.id } : message;
-    this.send(session.serverId, wire);
+  /** Global keys stay in the UI; the wire always carries the original server-local workspace id. */
+  sendToWorkspace(key: string, message: ClientMessage) {
+    const workspace = this.findWorkspace(key);
+    if (!workspace) return;
+    const wire = 'session' in message ? { ...message, session: workspace.id }
+      : 'session_id' in message ? { ...message, session_id: workspace.id } : message;
+    this.send(workspace.serverId, wire);
   }
   /** Shows the new name at once and asks the server. The server's list confirms it for every device; a refusal is
    *  put right by asking for the list again, which brings the old name back. */
   rename(key: string, name: string) {
-    const found = this.findSession(key);
+    const found = this.findWorkspace(key);
     if (!found) return;
     const e = this.entries.get(found.serverId);
-    if (e) { e.sessions = e.sessions.map(s => (s.id === found.id ? { ...s, name } : s)); this.publish(); }
-    this.sendToSession(key, { type: 'rename_session', session: key, name });
+    if (e) { e.workspaces = e.workspaces.map(s => (s.id === found.id ? { ...s, name } : s)); this.publish(); }
+    this.sendToWorkspace(key, { type: 'rename_session', session: key, name });
     setTimeout(() => this.send(found.serverId, { type: 'list_sessions' }), 2000);
   }
-  findSession(key: string): HubSession | undefined {
+  findWorkspace(key: string): HubWorkspace | undefined {
     for (const e of this.entries.values()) {
       if (e.state === 'paused') continue;
-      const s = e.sessions.find(s => sessionKey(e.id, s.id) === key);
+      const s = e.workspaces.find(s => workspaceKey(e.id, s.id) === key);
       if (s) return { ...s, serverId: e.id, key, serverName: e.server.server_name || 'Server' };
     }
   }
@@ -191,7 +191,7 @@ export class ServerHub {
     e.unsubscribe = connection.subscribe(msg => {
       if (!current()) return;
       const changed = msg.type === 'sessions' || msg.type === 'agent_snapshot' || msg.type === 'agent_events' || msg.type === 'window_list' || msg.type === 'activity' || msg.type === 'attention';
-      if (msg.type === 'sessions') { e.sessions = msg.sessions; e.windows = forgetWindows(e.windows, msg.sessions.map(s => s.id)); }
+      if (msg.type === 'sessions') { e.workspaces = msg.sessions; e.windows = forgetWindows(e.windows, msg.sessions.map(s => s.id)); }
       if (msg.type === 'window_list') e.windows = applyWindowList(e.windows, msg);
       if (msg.type === 'agent_snapshot') e.agents = applySnapshot(e.agents, msg.states);
       if (msg.type === 'activity') e.agents = applyActivity(e.agents, msg.sessions, Date.now());
@@ -228,16 +228,16 @@ export class ServerHub {
   private isStored(e: Entry, wire: string): boolean {
     try { return decodeBundle(wire).bundle.seq === e.server.bundle_seq; } catch { return false; }
   }
-  /** The server list alone: a health sample every 10 s per server must not rebuild the session, agent and window stores. */
+  /** The server list alone: a health sample every 10 s per server must not rebuild the workspace, agent and window stores. */
   private publishServers(entries = [...this.entries.values()]) {
     this.servers.set(entries.map(({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures }) => ({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures })));
   }
   private publish() {
     const entries = [...this.entries.values()];
     this.publishServers(entries);
-    this.allSessions.set(entries.filter(e => e.state !== 'paused').flatMap(e => e.sessions.map(s => ({ ...s,
-      serverId: e.id, serverName: e.server.server_name || 'Server', key: sessionKey(e.id, s.id) }))));
-    this.agents.set(Object.fromEntries(entries.filter(e => e.state !== 'paused').flatMap(e => Object.entries(e.agents).map(([id, a]) => [sessionKey(e.id, id), a]))));
-    this.windows.set(Object.fromEntries(entries.filter(e => e.state !== 'paused').flatMap(e => Object.entries(e.windows).map(([id, w]) => [sessionKey(e.id, id), w]))));
+    this.allWorkspaces.set(entries.filter(e => e.state !== 'paused').flatMap(e => e.workspaces.map(s => ({ ...s,
+      serverId: e.id, serverName: e.server.server_name || 'Server', key: workspaceKey(e.id, s.id) }))));
+    this.agents.set(Object.fromEntries(entries.filter(e => e.state !== 'paused').flatMap(e => Object.entries(e.agents).map(([id, a]) => [workspaceKey(e.id, id), a]))));
+    this.windows.set(Object.fromEntries(entries.filter(e => e.state !== 'paused').flatMap(e => Object.entries(e.windows).map(([id, w]) => [workspaceKey(e.id, id), w]))));
   }
 }

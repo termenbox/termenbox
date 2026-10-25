@@ -1,6 +1,6 @@
 import type { ClientMessage, SessionViewMessage } from './protocol';
 
-/** The session view (decision 0103): what the client does with a `session_view` message. Everything in it is
+/** The workspace view (decision 0103): what the client does with a `session_view` message. Everything in it is
  *  untrusted text from a terminal: cleaned again here, capped, and only ever rendered as text. */
 
 export type Tier = 't0' | 't1' | 't2' | 't3';
@@ -18,7 +18,7 @@ export const TIMELINE_FILES = 20;
 export const TIMELINE_PLAN = 20;
 export interface TimelineEntryView { kind: 'prompt' | 'tool' | 'message'; name?: string; text: string }
 export interface TimelineView { entries: TimelineEntryView[]; plan: { text: string; status: string }[]; files: string[]; lastMessage?: string }
-export interface ViewModel { session: string; tier: Tier; agent?: string; task?: string; tail: string[]; hash: string; prompt?: ViewPrompt; timeline?: TimelineView }
+export interface ViewModel { workspace: string; tier: Tier; agent?: string; task?: string; tail: string[]; hash: string; prompt?: ViewPrompt; timeline?: TimelineView }
 
 /** The transcript timeline, cleaned and capped again here (it is untrusted text); null when there is nothing to show. */
 export function timelineFrom(t: SessionViewMessage['timeline']): TimelineView | undefined {
@@ -74,7 +74,7 @@ export function viewFrom(msg: SessionViewMessage | null | undefined): ViewModel 
     }
   }
   return {
-    session: msg.session,
+    workspace: msg.session,
     tier: tierOf(msg.tier),
     agent: msg.agent ? cleanText(msg.agent, 32) : undefined,
     task: msg.task ? cleanText(msg.task, 120) : undefined,
@@ -87,7 +87,7 @@ export function viewFrom(msg: SessionViewMessage | null | undefined): ViewModel 
 
 /** Keeps the held view when the server says nothing changed. */
 export function merge(held: ViewModel | null, msg: SessionViewMessage): ViewModel | null {
-  if (msg.unchanged && held && held.session === msg.session) return held;
+  if (msg.unchanged && held && held.workspace === msg.session) return held;
   return viewFrom(msg);
 }
 
@@ -96,8 +96,8 @@ export function merge(held: ViewModel | null, msg: SessionViewMessage): ViewMode
 export function answerFor(view: ViewModel, index: number): ClientMessage | null {
   const p = view.prompt;
   if (!p || !Number.isInteger(index) || index < 0 || index >= p.options.length) return null;
-  return { type: 'session_answer', session: view.session, prompt_id: p.id, option: index };
+  return { type: 'session_answer', session: view.workspace, prompt_id: p.id, option: index };
 }
 
-export const requestView = (session: string, held?: ViewModel | null): ClientMessage =>
-  held && held.session === session && held.hash ? { type: 'session_view', session, hash: held.hash } : { type: 'session_view', session };
+export const requestView = (workspace: string, held?: ViewModel | null): ClientMessage =>
+  held && held.workspace === workspace && held.hash ? { type: 'session_view', session: workspace, hash: held.hash } : { type: 'session_view', session: workspace };
