@@ -1,0 +1,218 @@
+{
+ "negotiate": [
+  {
+   "name": "both know it, lower version wins",
+   "local": {
+    "seq": 2,
+    "tier": 1
+   },
+   "remote_meta": {
+    "termenbox.dev": {
+     "protocol": 3,
+     "extensions": {
+      "seq": 1,
+      "tier": 5,
+      "window": 1
+     }
+    }
+   },
+   "expect": {
+    "protocol": 1,
+    "versions": {
+     "seq": 1,
+     "tier": 1
+    }
+   }
+  },
+  {
+   "name": "no offer is plain ACP",
+   "local": {
+    "seq": 2
+   },
+   "remote_meta": null,
+   "expect": {
+    "protocol": 0,
+    "versions": {}
+   }
+  },
+  {
+   "name": "other namespace only",
+   "local": {
+    "seq": 2
+   },
+   "remote_meta": {
+    "zed.dev": {
+     "protocol": 1
+    }
+   },
+   "expect": {
+    "protocol": 0,
+    "versions": {}
+   }
+  },
+  {
+   "name": "offer of the wrong type",
+   "local": {
+    "seq": 2
+   },
+   "remote_meta": {
+    "termenbox.dev": "yes"
+   },
+   "expect": {
+    "protocol": 0,
+    "versions": {}
+   }
+  },
+  {
+   "name": "one unreadable entry costs only itself",
+   "local": {
+    "seq": 2,
+    "tier": 1
+   },
+   "remote_meta": {
+    "termenbox.dev": {
+     "protocol": 1,
+     "extensions": {
+      "seq": "two",
+      "tier": 1
+     }
+    }
+   },
+   "expect": {
+    "protocol": 1,
+    "versions": {
+     "tier": 1
+    }
+   }
+  },
+  {
+   "name": "older peer protocol",
+   "local": {
+    "seq": 1
+   },
+   "remote_meta": {
+    "termenbox.dev": {
+     "protocol": 0,
+     "extensions": {
+      "seq": 1
+     }
+    }
+   },
+   "expect": {
+    "protocol": 0,
+    "versions": {
+     "seq": 1
+    }
+   }
+  }
+ ],
+ "route": [
+  {
+   "name": "standard request",
+   "method": "session/prompt",
+   "request": true,
+   "supports": [
+    "seq"
+   ],
+   "expect": "core"
+  },
+  {
+   "name": "standard notification",
+   "method": "session/update",
+   "request": false,
+   "supports": [],
+   "expect": "core"
+  },
+  {
+   "name": "negotiated extension request",
+   "method": "_termenbox.dev/seq",
+   "request": true,
+   "supports": [
+    "seq"
+   ],
+   "expect": "extension:seq"
+  },
+  {
+   "name": "extension not negotiated, request",
+   "method": "_termenbox.dev/window",
+   "request": true,
+   "supports": [
+    "seq"
+   ],
+   "expect": "reject"
+  },
+  {
+   "name": "extension not negotiated, notification",
+   "method": "_termenbox.dev/window",
+   "request": false,
+   "supports": [
+    "seq"
+   ],
+   "expect": "skip"
+  },
+  {
+   "name": "foreign extension request",
+   "method": "_zed.dev/x",
+   "request": true,
+   "supports": [
+    "seq"
+   ],
+   "expect": "reject"
+  },
+  {
+   "name": "foreign extension notification",
+   "method": "_zed.dev/x",
+   "request": false,
+   "supports": [
+    "seq"
+   ],
+   "expect": "skip"
+  }
+ ],
+ "strip": [
+  {
+   "name": "mixed keys",
+   "meta": {
+    "termenbox.dev": {
+     "protocol": 1
+    },
+    "termenbox.dev/seq": {
+     "n": 1
+    },
+    "termenbox.dev/tier": {
+     "tier": "T0"
+    },
+    "zed.dev/x": 1,
+    "traceparent": "t"
+   },
+   "negotiated": [
+    "seq"
+   ],
+   "unnegotiated_stripped": {
+    "termenbox.dev": {
+     "protocol": 1
+    },
+    "termenbox.dev/seq": {
+     "n": 1
+    },
+    "zed.dev/x": 1,
+    "traceparent": "t"
+   },
+   "all_stripped": {
+    "zed.dev/x": 1,
+    "traceparent": "t"
+   }
+  },
+  {
+   "name": "nothing negotiated",
+   "meta": {
+    "termenbox.dev/seq": {
+     "n": 1
+    }
+   },
+   "negotiated": [],
+   "unnegotiated_stripped": {},
+   "all_stripped": {}
+  }
+ ]
+}

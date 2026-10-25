@@ -39,6 +39,7 @@ mod locale;
 mod netutil;
 mod opencode_hooks;
 mod owner;
+mod ports;
 mod profile;
 mod pty;
 mod push;
