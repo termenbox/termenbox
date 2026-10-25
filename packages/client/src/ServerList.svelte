@@ -75,6 +75,7 @@
         {#each servers as server, index (serverKey(server))}
           {@const status = states.find(s => s.id === serverKey(server))}
           {@const state = status?.state ?? 'connecting'}
+          {@const available = status?.updateAvailable ?? ''}
           <!-- A row has one height whatever the server is doing: the name, one line of state, and two fixed slots at the end. -->
           <div class="server-card" data-server={serverKey(server)} data-state={state}>
             <div class="info">
@@ -88,9 +89,9 @@
                 {#if status?.version}<span class="version" data-testid="server-version">{shortVersion(status.version)}</span>{/if}
                 {#if status?.updating}
                   <span class="updating" data-testid="server-updating" role="status">Updating…</span>
-                {:else if status && state === 'connected' && status.updateAvailable}
-                  <button type="button" class="update" data-testid="server-update" title={`Update to v${status.updateAvailable}`} aria-label={`Update ${server.server_name || 'Server'} to v${status.updateAvailable}`}
-                    on:click={() => update(server, status.version, status.updateAvailable)}>
+                {:else if status && state === 'connected' && available}
+                  <button type="button" class="update" data-testid="server-update" title={`Update to v${available}`} aria-label={`Update ${server.server_name || 'Server'} to v${available}`}
+                    on:click={() => update(server, status.version, available)}>
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 16V8M8.5 11.5 12 8l3.5 3.5"></path></svg>
                   </button>
                 {/if}
