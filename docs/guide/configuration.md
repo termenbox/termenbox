@@ -14,7 +14,8 @@ Server (environment variables of the container; the installer sets the first two
 | `TERMENBOX_OVERLAY_ADDRS` | Overlay addresses (Tailscale, WireGuard) for the signed list, instead of the ones found |
 | `TERMENBOX_WEBRTC` | `off` for WebSocket only |
 | `TERMENBOX_SERVER_NAME` | Display name; default: the host's short hostname (the installer passes it into the container) |
-| `TERMENBOX_BACKEND` | `tmux` (default), `command`, `acp`, or a comma list such as `tmux,acp` |
+| `TERMENBOX_BACKEND` | `auto` (default: `tmux`, plus `acp` unless `TERMENBOX_ACP=off`), `tmux`, `command`, `acp`, or a comma list such as `tmux,acp`, taken as written |
+| `TERMENBOX_ACP` | `on` (default) offers the built-in agent-view (ACP) agents `claude` and `opencode` once their adapter is installed; `off` removes the `acp` backend from `auto` |
 | `TERMENBOX_CONFIG_DIR` | Owner, keys and certificate (default `~/.config/termenbox`) |
 | `TERMENBOX_HISTORY_DAYS` | Days of agent history kept for the Activity view (default 90) |
 | `TERMENBOX_HISTORY_MAX_MB` | Most disk the history may use, oldest dropped first (default 20) |

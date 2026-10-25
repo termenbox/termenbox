@@ -4,20 +4,20 @@ title: Resource Constraints (512MB RAM, 1 vCPU)
 status: active
 governed-by: 0001
 grounded-in: 0001
-derivation-note: Target deployment fact directly defines resource limits
+derivation-note: Target deployment fact directly defines resource limits; amended by 0137 to cover termenbox's own processes, not agent children
 tags: [deployment, performance, limits]
 ---
 
 # Guardrail: Resource Constraints (512MB RAM, 1 vCPU)
 
 ## Rule
-**MUST** operate within 512 MB RSS and 1 vCPU on the server. **MUST NOT** introduce dependencies or patterns that exceed this envelope.
+**MUST** operate within 512 MB RSS and 1 vCPU on the server. **MUST NOT** introduce dependencies or patterns that exceed this envelope. The envelope covers termenbox's own processes; agent children the owner has termenbox start (ACP adapters, a few hundred MB each) are sized by the box, not by this rule (decision 0137).
 
 ## Limits
 | Resource | Limit | Measurement |
 |---|---|---|
-| Server RSS | ≤ 300 MB (leaves 200 MB for OS/agent) | `ps -o rss= -p $PID` |
-| Agent RSS | ≤ 50 MB | same |
+| Server RSS | ≤ 300 MB, termenbox's own processes only (agent children excluded) | `ps -o rss= -p $PID` |
+| Agent helper RSS | ≤ 50 MB, termenbox's own agent helpers (hooks, `termenbox-agent`); ACP adapter children excluded | same |
 | Hook RSS | ≤ 20 MB | same |
 | CPU (steady) | ≤ 50% of 1 vCPU | `top -p $PID` |
 | CPU (burst) | ≤ 100% for < 5s | same |
