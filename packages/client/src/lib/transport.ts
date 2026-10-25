@@ -17,6 +17,8 @@ export interface Transport {
   onterm?: ((bytes: Uint8Array) => void) | null;
   /** False when the lane is not open (yet): the caller falls back to the JSON `input` message. */
   sendTerm?(bytes: Uint8Array): boolean;
+  /** Control messages on a channel of their own (step 3.3). False when there is none (open): the caller uses `send`. */
+  sendControl?(text: string): boolean;
   /** The path that carried this transport, when it was found by the race over candidate paths. */
   path?: Path;
 }

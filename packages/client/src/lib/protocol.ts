@@ -78,7 +78,7 @@ export type ServerMessage =
   | { type: 'uninstall_done'; mode: string }
   /** Decision 0123: the server's signed candidate bundle, pushed after `auth_ok`; verify it before use (lib/bundle.ts). */
   | { type: 'candidates'; bundle: string }
-  | { type: 'auth_ok'; protocol?: number; channels?: string[]; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string; acp_agents?: string[] }
+  | { type: 'auth_ok'; protocol?: number; control_channel?: boolean; channels?: string[]; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string; acp_agents?: string[] }
   | { type: 'workspaces'; workspaces: WorkspaceInfo[] }
   | { type: 'workspace_attached'; workspace_id: string }
   | { type: 'output'; data: string }
@@ -104,7 +104,9 @@ export type ServerMessage =
   | HistoryMessage
   | { type: 'history_deleted'; removed: number }
   | { type: 'error'; message: string }
-  | { type: 'pong' };
+  | { type: 'pong' }
+  /** The answer to a control message that carried a `req` (step 3.3). */
+  | { type: 'control_ack'; req: number; ok: boolean; error?: string };
 
 /** One health sample in whole percents. A metric the server could not read is absent, never 0 (the first CPU sample is always absent). */
 export interface HealthPoint { ts: number; cpu_percent?: number; ram_percent?: number; disk_percent?: number }
@@ -354,3 +356,10 @@ export interface ServerListItem {
   /** The path that connected last (`lan 192.168.1.20:4443`), tried first next time. */
   winner?: string;
 }
+
+/** Messages that travel on the control channel (decision 0139); a `req` on any of them asks for a `control_ack`. The
+ *  server's copy is `ClientMessage::is_control`; a test checks the two lists agree. */
+export const CONTROL_TYPES: ReadonlySet<string> = new Set([
+  'acp_interrupt', 'acp_answer', 'acp_prompt', 'acp_mode', 'answer', 'workspace_answer', 'detach', 'close_workspace',
+  'rename_workspace', 'new_workspace', 'new_window', 'close_window', 'select_window', 'resize', 'foreground',
+]);

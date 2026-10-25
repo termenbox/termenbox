@@ -236,13 +236,28 @@ impl WorkspaceManager {
                             continue;
                         }
                     };
-                    let Ok(client_msg) = serde_json::from_str::<ClientMessage>(&text) else { continue };
+                    // A control message may carry `req`: the answer is a `control_ack` on the control channel.
+                    let req = serde_json::from_str::<ReqId>(&text).ok().and_then(|r| r.req);
+                    let parsed = serde_json::from_str::<ClientMessage>(&text).ok().filter(|m| *m != ClientMessage::Unknown);
+                    let Some(client_msg) = parsed else {
+                        if let Some(req) = req {
+                            if !send_ack(&link.tx, req, Err("Unknown message".into())).await { break; }
+                        }
+                        continue;
+                    };
                     if let (true, ClientMessage::Attach { workspace_id }) = (self.mode.is_host(), &client_msg) {
                         // Who got a shell on the host and as whom; never what they typed.
                         info!(target: "audit", event = "host_session", provider = %identity.provider, account_id = %identity.id, login = %identity.login, run_as = %self.mode.label(), session = %workspace_id);
                     }
-                    if let Err(e) = self.handle(conn, client_msg, auth, &identity, &mut attachment, &mut cols, &mut rows, &mut acp, &link.tx).await {
-                        if !send(&link.tx, &ServerMessage::Error { message: e.to_string() }).await { break; }
+                    let result = self.handle(conn, client_msg, auth, &identity, &mut attachment, &mut cols, &mut rows, &mut acp, &link.tx).await;
+                    match (req, result) {
+                        (Some(req), result) => {
+                            if !send_ack(&link.tx, req, result.map_err(|e| e.to_string())).await { break; }
+                        }
+                        (None, Err(e)) => {
+                            if !send(&link.tx, &ServerMessage::Error { message: e.to_string() }).await { break; }
+                        }
+                        (None, Ok(())) => {}
                     }
                 }
                 // Room first, then the bytes: a client that reads slowly stops the terminal, not the status messages.
@@ -437,7 +452,7 @@ impl WorkspaceManager {
                 auth.revoke_device(&device)?;
                 send_r(tx, &ServerMessage::DeviceRevoked { device }).await?;
             }
-            ClientMessage::Ping => send_r(tx, &ServerMessage::Pong).await?,
+            ClientMessage::Ping => send_control_r(tx, &ServerMessage::Pong).await?,
             ClientMessage::PushInfo => {
                 let (configured, public_key, devices) = match &self.push {
                     Some(p) => (
@@ -887,6 +902,39 @@ impl WorkspaceManager {
 
 async fn send(tx: &LinkTx, msg: &ServerMessage) -> bool {
     tx.send(serde_json::to_string(msg).unwrap()).await
+}
+
+/// The `req` id a client put on a control message, if any.
+#[derive(serde::Deserialize)]
+struct ReqId {
+    #[serde(default)]
+    req: Option<u64>,
+}
+
+/// Answers a control message on the control channel: success, or the error that stopped it. False when the
+/// connection is gone.
+async fn send_ack(tx: &LinkTx, req: u64, result: std::result::Result<(), String>) -> bool {
+    let msg = match result {
+        Ok(()) => ServerMessage::ControlAck {
+            req,
+            ok: true,
+            error: None,
+        },
+        Err(error) => ServerMessage::ControlAck {
+            req,
+            ok: false,
+            error: Some(error),
+        },
+    };
+    tx.send_control(serde_json::to_string(&msg).unwrap()).await
+}
+
+async fn send_control_r(tx: &LinkTx, msg: &ServerMessage) -> Result<()> {
+    if tx.send_control(serde_json::to_string(msg).unwrap()).await {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("connection closed"))
+    }
 }
 
 async fn send_r(tx: &LinkTx, msg: &ServerMessage) -> Result<()> {

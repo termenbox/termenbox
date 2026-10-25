@@ -139,6 +139,7 @@ pub async fn run(mut link: Link, state: AppState) {
     tracing::info!("Authenticated {}", identity.login);
     let ok = ServerMessage::AuthOk {
         protocol,
+        control_channel: protocol >= 1,
         user: identity.login.clone(),
         channels: if lanes { vec!["term".into()] } else { vec![] },
         server_name: state.server_name.clone(),

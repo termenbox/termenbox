@@ -398,6 +398,32 @@ pub enum ClientMessage {
     Unknown,
 }
 
+impl ClientMessage {
+    /// Messages that travel on the control channel (decision 0139): the ones whose delay the user feels as a stuck
+    /// button. A client may add a numeric `req` to any of them and gets a `control_ack` with the result. The
+    /// TypeScript copy is `CONTROL_TYPES` in `packages/client/src/lib/protocol.ts`; a test checks they agree.
+    pub fn is_control(&self) -> bool {
+        matches!(
+            self,
+            ClientMessage::AcpInterrupt { .. }
+                | ClientMessage::AcpAnswer { .. }
+                | ClientMessage::AcpPrompt { .. }
+                | ClientMessage::AcpMode { .. }
+                | ClientMessage::Answer { .. }
+                | ClientMessage::SessionAnswer { .. }
+                | ClientMessage::Detach
+                | ClientMessage::CloseWorkspace { .. }
+                | ClientMessage::RenameWorkspace { .. }
+                | ClientMessage::NewWorkspace { .. }
+                | ClientMessage::NewWindow { .. }
+                | ClientMessage::CloseWindow { .. }
+                | ClientMessage::SelectWindow { .. }
+                | ClientMessage::Resize { .. }
+                | ClientMessage::Foreground { .. }
+        )
+    }
+}
+
 /// Server → Client (WebSocket)
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -435,6 +461,10 @@ pub enum ServerMessage {
         /// vocabulary.
         #[serde(default)]
         protocol: u32,
+        /// The server answers control messages on a control channel of their own (WebRTC `ctl`, step 3.3) and
+        /// acknowledges those that carry a `req`. Absent from a server that does not.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        control_channel: bool,
         /// The lanes this connection uses besides JSON (`term`); absent means the single pipe.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         channels: Vec<String>,
@@ -594,6 +624,14 @@ pub enum ServerMessage {
         message: String,
     },
     Pong,
+    /// The answer to a control message that carried a `req` id (decision 0139, step 3.3): whether it was carried out.
+    /// Sent on the control channel, so it does not wait behind terminal bytes or agent events.
+    ControlAck {
+        req: u64,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// U14 (decision 0105): the server's health, pushed after sign-in and after each 10 s sample. `healthy` is the
     /// server's own verdict (a level held for several samples, with a lower level to recover), so clients show it and
     /// never decide it. `unhealthy` names the metrics over their level (`cpu`, `ram`, `disk`). An older server sends
@@ -985,10 +1023,24 @@ mod tests {
 
     /// The browser client speaks these exact strings (packages/client/src/lib/protocol.ts).
     #[test]
+    fn control_the_control_messages_are_the_ones_the_shared_vector_lists() {
+        let v: serde_json::Value =
+            serde_json::from_str(include_str!("../testdata/control-vectors.json")).unwrap();
+        for (key, want) in [("control", true), ("bulk_or_other", false)] {
+            for m in v[key].as_array().unwrap() {
+                let parsed: ClientMessage = serde_json::from_value(m.clone()).unwrap();
+                assert_ne!(parsed, ClientMessage::Unknown, "{m}");
+                assert_eq!(parsed.is_control(), want, "{m}");
+            }
+        }
+    }
+
+    #[test]
     fn test_wire_names_match_the_client() {
         let v = serde_json::to_value(ClientMessage::ListWorkspaces).unwrap();
         assert_eq!(v["type"], "list_workspaces");
         let v = serde_json::to_value(ServerMessage::AuthOk {
+            control_channel: true,
             protocol: 1,
             user: "u".into(),
             channels: vec![],
