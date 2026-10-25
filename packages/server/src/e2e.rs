@@ -1438,10 +1438,10 @@ async fn a_control_message_is_acknowledged_with_its_result(kind: Kind) {
     c.recv_type("pong").await;
 }
 
-/// The longest a control message may wait to be acknowledged while an attached terminal floods the connection. Taken
-/// from the baseline measured below (the flood is `seq` in a loop, the client reads continuously): see the printed
-/// `control_ack after` line in the test output.
-const CONTROL_ACK_BOUND: Duration = Duration::from_millis(1);
+/// The longest a control message may wait to be acknowledged while an attached terminal floods the connection: ten
+/// times the baseline measured on CI on 2026-10-25 (54 ms over WebRTC, 53 ms over WebSocket; the flood is `seq` in a
+/// loop and the client reads continuously). A regression that queues the ack behind bulk traffic costs seconds.
+const CONTROL_ACK_BOUND: Duration = Duration::from_millis(500);
 
 /// A cancel (`detach` stops the stream) sent while the terminal floods the connection is acknowledged within the
 /// bound, over both transports (step 3.3, guardrail `control-never-waits-behind-bulk`).
