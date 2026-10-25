@@ -2,7 +2,7 @@
 id: resource-constraints
 title: Resource Constraints (512MB RAM, 1 vCPU)
 status: active
-governed-by: 0001
+governed-by: [0001, 0137, 0139]
 grounded-in: 0001
 derivation-note: Target deployment fact directly defines resource limits; amended by 0137 to cover termenbox's own processes, not agent children
 tags: [deployment, performance, limits]
@@ -11,7 +11,7 @@ tags: [deployment, performance, limits]
 # Guardrail: Resource Constraints (512MB RAM, 1 vCPU)
 
 ## Rule
-**MUST** operate within 512 MB RSS and 1 vCPU on the server. **MUST NOT** introduce dependencies or patterns that exceed this envelope. The envelope covers termenbox's own processes; agent children the owner has termenbox start (ACP adapters, a few hundred MB each) are sized by the box, not by this rule (decision 0137).
+**MUST** keep termenbox's own processes within the reference envelope of 512 MB RSS and 1 vCPU and within the measured budgets below. **MUST NOT** introduce dependencies or patterns that exceed it. The envelope covers termenbox's own processes; agent children the owner has termenbox start (ACP adapters, a few hundred MB each) are sized by the box, not by this rule (decision 0137). It is not a cap on the total workload: every feature that holds per-window state (replay ring, scrollback) has a configurable byte budget with a CI-measured default (decision 0139).
 
 ## Limits
 | Resource | Limit | Measurement |

@@ -59,3 +59,5 @@ a-phone-check-names-its-platform,"A phone check names the platform it ran on, an
 | pairing-code-guesses-are-bounded | The short pairing code is stretched and short-lived, and its guesses are budgeted | 0128 | 0021,0022,0117,0123 | active |
 | manifest-url-resolution | Asset URLs come from the verified manifest and stay on the project's releases | 0132 | 0063,0076,0130 | active |
 | ux-hard-rules-block-the-pr-the-rest-is-advisory | The UX job fails a pull request on objective rule breaks only; trends, diffs and heuristic findings are advisory | 0135 | ux-acceptance-targets,a-phone-check-names-its-platform | active |
+| protocol-core-stays-acp-v1 | The protocol core stays ACP v1; extensions are namespaced, negotiated and ignorable | 0136 | 0111,0136 | active |
+| control-never-waits-behind-bulk | Control messages never wait behind bulk traffic | 0139 | 0096,0139 | active |
