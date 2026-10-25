@@ -2,18 +2,28 @@
 //! speaking Agent Client Protocol (JSON-RPC 2.0, one message per line); the server owns the child, so a client
 //! disconnecting changes nothing. There is no terminal: a session is its event stream and its answers.
 //!
-//! This is a small client instead of the `agent-client-protocol` crate: the crate (Apache-2.0) brings the whole
-//! SDK model and its async runtime glue for the six methods and nine updates used here, which costs binary
-//! size and build time on a 512 MB / 1 vCPU host (`resource-constraints`) for no gain.
+//! The protocol types (requests, results, `session/update` kinds, permission requests) come from the
+//! `agent-client-protocol-schema` crate, built with `default-features = false` (types and serde only, protocol v1).
+//! The transport is ours: the stdio line reader, the request table, the timeouts and the caps below. There is no
+//! SDK runtime glue beside tokio (`resource-constraints`).
+//!
+//! Decoding is lenient. Agents deviate from the schema (fact 0040), so a message that does not decode into its type
+//! is dropped for that message only: it is counted (`DROPPED`) and logged by kind without its content, and it never
+//! fails the turn or the session. An update kind we do not handle stays ignored. Fields we depend on are required by
+//! the schema types, everything else is optional there.
 //!
 //! Text from the agent is untrusted (0095): lines are length-capped, chunks are buffered to a fixed size, and
-//! everything that reaches the hub is cleaned by `events::sanitize_kind`. Nothing the agent says is audit-logged.
+//! everything that reaches the hub is cleaned by `events::sanitize_kind`, after decoding. Nothing the agent says is
+//! audit-logged.
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use agent_client_protocol_schema::v1 as acp;
+use agent_client_protocol_schema::{MaybeUndefined, ProtocolVersion};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -123,6 +133,129 @@ enum Chunk {
     Thought,
 }
 
+/// Messages from the agent that did not decode into their schema type and were dropped (never the turn or the
+/// session). Counted, not stored: what the agent sent is untrusted and is not logged.
+pub(crate) static DROPPED: AtomicU64 = AtomicU64::new(0);
+
+/// Notes one dropped message by its kind (a fixed label, never agent text).
+pub(crate) fn dropped(what: &str) {
+    let total = DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+    tracing::debug!(what, total, "dropped an ACP message that did not decode");
+}
+
+/// Decodes one value into a schema type without copying it. `None` (counted) when it does not fit.
+pub(crate) fn decode<T: serde::de::DeserializeOwned>(v: &Value, what: &str) -> Option<T> {
+    match T::deserialize(v) {
+        Ok(t) => Some(t),
+        Err(_) => {
+            dropped(what);
+            None
+        }
+    }
+}
+
+/// The wire form of a request or result built from schema types.
+fn wire<T: Serialize>(t: &T) -> Value {
+    serde_json::to_value(t).unwrap_or(Value::Null)
+}
+
+/// The wire name of a tool kind (what a client shows and the history keeps).
+pub(crate) fn tool_kind(k: acp::ToolKind) -> &'static str {
+    match k {
+        acp::ToolKind::Read => "read",
+        acp::ToolKind::Edit => "edit",
+        acp::ToolKind::Delete => "delete",
+        acp::ToolKind::Move => "move",
+        acp::ToolKind::Search => "search",
+        acp::ToolKind::Execute => "execute",
+        acp::ToolKind::Think => "think",
+        acp::ToolKind::Fetch => "fetch",
+        acp::ToolKind::SwitchMode => "switch_mode",
+        _ => "other",
+    }
+}
+
+/// The wire name of a tool call status.
+pub(crate) fn tool_status(s: acp::ToolCallStatus) -> &'static str {
+    match s {
+        acp::ToolCallStatus::InProgress => "in_progress",
+        acp::ToolCallStatus::Completed => "completed",
+        acp::ToolCallStatus::Failed => "failed",
+        _ => "pending",
+    }
+}
+
+/// The wire name of a plan entry's status.
+pub(crate) fn plan_status(s: &acp::PlanEntryStatus) -> &'static str {
+    match s {
+        acp::PlanEntryStatus::InProgress => "in_progress",
+        acp::PlanEntryStatus::Completed => "completed",
+        _ => "pending",
+    }
+}
+
+/// The wire name of a stop reason.
+pub(crate) fn stop_reason(r: acp::StopReason) -> &'static str {
+    match r {
+        acp::StopReason::EndTurn => "end_turn",
+        acp::StopReason::MaxTokens => "max_tokens",
+        acp::StopReason::MaxTurnRequests => "max_turn_requests",
+        acp::StopReason::Refusal => "refusal",
+        acp::StopReason::Cancelled => "cancelled",
+        _ => "other",
+    }
+}
+
+/// The update kinds this client handles; one that fails to decode is counted, any other is just not ours.
+const HANDLED_UPDATES: [&str; 11] = [
+    "agent_message_chunk",
+    "agent_thought_chunk",
+    "tool_call",
+    "tool_call_update",
+    "plan",
+    "usage_update",
+    "session_info_update",
+    "current_mode_update",
+    "config_option_update",
+    "available_commands_update",
+    "user_message_chunk",
+];
+
+/// An update that did not decode: counted when it is a kind we handle, ignored when it is not. Returns its kind.
+pub(crate) fn drop_update(u: &Value) -> &str {
+    let kind = s(u, "sessionUpdate");
+    if HANDLED_UPDATES.contains(&kind) {
+        dropped(kind);
+    }
+    kind
+}
+
+/// The commands of an `available_commands_update`. The schema requires a `description`; agents leave it out and
+/// nothing here depends on it, so a missing one reads as empty. An element that is not a command is skipped.
+pub(crate) fn available_commands(u: &Value) -> Vec<acp::AvailableCommand> {
+    u.get("availableCommands")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|c| {
+                    let mut c = c.as_object()?.clone();
+                    c.entry("description").or_insert_with(|| json!(""));
+                    acp::AvailableCommand::deserialize(Value::Object(c)).ok()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The `toolCall` of a `session/request_permission`, decoded on its own so that a request whose tool call is odd
+/// is still shown (with what could be read) and answered.
+pub(crate) fn permission_tool(params: &Value) -> acp::ToolCallUpdate {
+    params
+        .get("toolCall")
+        .and_then(|t| decode(t, "permission tool call"))
+        .unwrap_or_else(|| acp::ToolCallUpdate::new("", acp::ToolCallUpdateFields::new()))
+}
+
 /// Turns `session/update` payloads into the agent event model. Streamed chunks are joined into one event,
 /// flushed when another kind arrives or the turn ends; tool calls are merged by `toolCallId`.
 #[derive(Default)]
@@ -163,40 +296,55 @@ impl UpdateMapper {
         })
     }
 
-    fn chunk(&mut self, kind: Chunk, u: &Value) -> Vec<EventKind> {
+    fn chunk(&mut self, kind: Chunk, c: &acp::ContentChunk) -> Vec<EventKind> {
         let mut out = Vec::new();
         if self.buf.as_ref().map(|(k, _)| *k != kind).unwrap_or(false) {
             out.extend(self.flush());
         }
-        let content = u.get("content").unwrap_or(&Value::Null);
-        if s(content, "type") == "text" {
+        if let acp::ContentBlock::Text(t) = &c.content {
             let buf = &mut self.buf.get_or_insert((kind, String::new())).1;
             let room = MAX_CHUNK_BUFFER.saturating_sub(buf.len());
-            buf.push_str(cap(s(content, "text"), room));
+            buf.push_str(cap(&t.text, room));
         }
         out
     }
 
     pub fn map(&mut self, u: &Value) -> Vec<EventKind> {
-        let kind = s(u, "sessionUpdate");
-        match kind {
-            "agent_message_chunk" => return self.chunk(Chunk::Message, u),
-            "agent_thought_chunk" => return self.chunk(Chunk::Thought, u),
+        let update = match acp::SessionUpdate::deserialize(u) {
+            Ok(update) => update,
+            Err(_) => {
+                // Dropped for this message only. A kind that is not a chunk still ends the chunk in progress.
+                let kind = drop_update(u);
+                if matches!(kind, "agent_message_chunk" | "agent_thought_chunk") {
+                    return Vec::new();
+                }
+                return self.flush().into_iter().collect();
+            }
+        };
+        match &update {
+            acp::SessionUpdate::AgentMessageChunk(c) => return self.chunk(Chunk::Message, c),
+            acp::SessionUpdate::AgentThoughtChunk(c) => return self.chunk(Chunk::Thought, c),
             _ => {}
         }
         let mut out: Vec<EventKind> = self.flush().into_iter().collect();
-        match kind {
-            "tool_call" => {
-                let id = s(u, "toolCallId").to_string();
-                let name = match s(u, "kind") {
-                    "" => "tool".to_string(),
-                    k => k.to_string(),
-                };
-                let summary = first_line(s(u, "title"));
+        match update {
+            acp::SessionUpdate::ToolCall(t) => {
+                let id = t.tool_call_id.to_string();
+                // The schema reads a missing `kind` as `other`; the event keeps saying `tool` for an agent that sends none
+                // (goose does), so the history is unchanged.
+                let name = match u.get("kind") {
+                    Some(Value::String(_)) => tool_kind(t.kind),
+                    _ => "tool",
+                }
+                .to_string();
+                let summary = first_line(&t.title);
                 if self.tools.len() >= MAX_TOOLS {
                     self.tools.clear();
                 }
-                let done = matches!(s(u, "status"), "completed" | "failed");
+                let done = matches!(
+                    t.status,
+                    acp::ToolCallStatus::Completed | acp::ToolCallStatus::Failed
+                );
                 out.push(EventKind::Tool {
                     name: name.clone(),
                     summary: summary.clone(),
@@ -212,76 +360,62 @@ impl UpdateMapper {
                     self.tools.insert(id, (name, summary));
                 }
             }
-            "tool_call_update" => {
-                let id = s(u, "toolCallId");
+            acp::SessionUpdate::ToolCallUpdate(t) => {
+                let id = t.tool_call_id.to_string();
                 let (name, mut summary) = self
                     .tools
-                    .get(id)
+                    .get(&id)
                     .cloned()
                     .unwrap_or_else(|| ("tool".into(), String::new()));
-                if !s(u, "title").is_empty() {
-                    summary = first_line(s(u, "title"));
+                if let Some(title) = t.fields.title.as_deref().filter(|t| !t.is_empty()) {
+                    summary = first_line(title);
                 }
-                if matches!(s(u, "status"), "completed" | "failed") {
-                    self.tools.remove(id);
+                if matches!(
+                    t.fields.status,
+                    Some(acp::ToolCallStatus::Completed | acp::ToolCallStatus::Failed)
+                ) {
+                    self.tools.remove(&id);
                     out.push(EventKind::Tool {
                         name,
                         summary,
                         phase: ToolPhase::Finished,
                     });
-                } else if let Some(t) = self.tools.get_mut(id) {
+                } else if let Some(t) = self.tools.get_mut(&id) {
                     t.1 = summary;
                 }
             }
-            "plan" => {
-                let items: Vec<PlanItem> = u
-                    .get("entries")
-                    .and_then(Value::as_array)
-                    .map(|a| {
-                        a.iter()
-                            .take(crate::events::PLAN_ITEMS)
-                            .map(|e| PlanItem {
-                                text: s(e, "content").to_string(),
-                                status: s(e, "status").to_string(),
-                            })
-                            .collect()
+            acp::SessionUpdate::Plan(p) => {
+                let items: Vec<PlanItem> = p
+                    .entries
+                    .iter()
+                    .take(crate::events::PLAN_ITEMS)
+                    .map(|e| PlanItem {
+                        text: e.content.clone(),
+                        status: plan_status(&e.status).to_string(),
                     })
-                    .unwrap_or_default();
+                    .collect();
                 if !items.is_empty() {
                     out.push(EventKind::Plan { items });
                 }
             }
-            "usage_update" => {
-                if let (Some(used), Some(size)) = (
-                    u.get("used").and_then(Value::as_u64),
-                    u.get("size").and_then(Value::as_u64),
-                ) {
-                    let cost = u.get("cost").filter(|c| c.is_object()).map(|c| {
-                        format!(
-                            "{} {}",
-                            c.get("amount").map(|a| a.to_string()).unwrap_or_default(),
-                            s(c, "currency")
-                        )
-                    });
-                    out.push(EventKind::Usage { used, size, cost });
+            acp::SessionUpdate::UsageUpdate(u) => {
+                let cost = u.cost.map(|c| format!("{} {}", c.amount, c.currency));
+                out.push(EventKind::Usage {
+                    used: u.used,
+                    size: u.size,
+                    cost,
+                });
+            }
+            acp::SessionUpdate::SessionInfoUpdate(i) => {
+                if let MaybeUndefined::Value(title) = i.title {
+                    out.push(EventKind::Title { title });
                 }
             }
-            "session_info_update" => {
-                if let Some(title) = u.get("title").and_then(Value::as_str) {
-                    out.push(EventKind::Title {
-                        title: title.to_string(),
-                    });
-                }
-            }
-            "current_mode_update" => out.push(EventKind::Mode {
-                mode: s(u, "currentModeId").to_string(),
+            acp::SessionUpdate::CurrentModeUpdate(m) => out.push(EventKind::Mode {
+                mode: m.current_mode_id.to_string(),
             }),
-            "available_commands_update" => out.push(EventKind::Commands {
-                names: u
-                    .get("availableCommands")
-                    .and_then(Value::as_array)
-                    .map(|a| a.iter().map(|c| s(c, "name").to_string()).collect())
-                    .unwrap_or_default(),
+            acp::SessionUpdate::AvailableCommandsUpdate(_) => out.push(EventKind::Commands {
+                names: available_commands(u).into_iter().map(|c| c.name).collect(),
             }),
             _ => {}
         }
@@ -290,19 +424,31 @@ impl UpdateMapper {
 }
 
 /// The options of a `session/request_permission` that may be shown: `allow_once` and `reject_once` only
-/// (decision 0104); `allow_always`, `reject_always` and anything unknown are dropped.
+/// (decision 0104); `allow_always`, `reject_always` and anything unknown are dropped. Each option is decoded on its
+/// own, so one the schema does not know costs only itself.
 pub fn permission_options(params: &Value) -> Vec<DecisionOption> {
     params
         .get("options")
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
-                .filter(|o| matches!(s(o, "kind"), "allow_once" | "reject_once"))
-                .filter(|o| !s(o, "optionId").is_empty())
+                .filter_map(|o| acp::PermissionOption::deserialize(o).ok())
+                .filter(|o| {
+                    matches!(
+                        o.kind,
+                        acp::PermissionOptionKind::AllowOnce
+                            | acp::PermissionOptionKind::RejectOnce
+                    )
+                })
+                .filter(|o| !o.option_id.0.is_empty())
                 .map(|o| DecisionOption {
-                    id: s(o, "optionId").to_string(),
-                    kind: s(o, "kind").to_string(),
-                    name: s(o, "name").to_string(),
+                    id: o.option_id.to_string(),
+                    kind: match o.kind {
+                        acp::PermissionOptionKind::AllowOnce => "allow_once",
+                        _ => "reject_once",
+                    }
+                    .into(),
+                    name: o.name,
                 })
                 .collect()
         })
@@ -429,7 +575,12 @@ impl Live {
         };
         match reply {
             Ok(Ok(v)) => Ok(v),
-            Ok(Err(e)) => Err(anyhow!("{method}: {}", cap(s(&e, "message"), 200))),
+            Ok(Err(e)) => {
+                let message = acp::Error::deserialize(&e)
+                    .map(|e| e.message)
+                    .unwrap_or_default();
+                Err(anyhow!("{method}: {}", cap(&message, 200)))
+            }
             Err(_) => Err(anyhow!("the agent exited")),
         }
     }
@@ -452,7 +603,7 @@ impl Live {
             // fs and terminal are not advertised, and extension requests are not ours to answer.
             (_, Some(id)) => self.send(json!({
                 "jsonrpc": "2.0", "id": id,
-                "error": {"code": -32601, "message": "Method not found"}
+                "error": wire(&acp::Error::method_not_found())
             })),
             ("session/update", None) => self.on_update(&v["params"]["update"]),
             _ => {}
@@ -480,7 +631,7 @@ impl Live {
             let mut g = self.inner.lock().unwrap();
             if g.perms.len() >= MAX_PENDING {
                 drop(g);
-                return self.respond(&rpc_id, json!({"outcome": {"outcome": "cancelled"}}));
+                return self.respond(&rpc_id, cancelled());
             }
             g.perm_seq += 1;
             let id = format!("acp-{}", g.perm_seq);
@@ -494,8 +645,14 @@ impl Live {
             id
         };
         self.stream(|st| st.permission(&prompt_id, params, options.clone()));
-        let tool = params.get("toolCall").unwrap_or(&Value::Null);
-        let detail = Some(first_line(s(tool, "title"))).filter(|d| !d.is_empty());
+        let detail = Some(first_line(
+            permission_tool(params)
+                .fields
+                .title
+                .as_deref()
+                .unwrap_or(""),
+        ))
+        .filter(|d| !d.is_empty());
         self.block(&prompt_id, true);
         self.emit(EventKind::Prompt {
             id: prompt_id,
@@ -516,7 +673,7 @@ impl Live {
             .map(|(_, p)| p)
             .collect();
         for p in perms {
-            self.respond(&p.rpc_id, json!({"outcome": {"outcome": "cancelled"}}));
+            self.respond(&p.rpc_id, cancelled());
         }
         self.stream(|st| st.cancel_open_permissions());
     }
@@ -540,6 +697,13 @@ impl Live {
             });
         }
     }
+}
+
+/// The answer to a permission request that nobody is going to take.
+fn cancelled() -> Value {
+    wire(&acp::RequestPermissionResponse::new(
+        acp::RequestPermissionOutcome::Cancelled,
+    ))
 }
 
 /// Reads one line of at most `max` bytes. `Ok(None)` is end of input; `Ok(Some(None))` a line that was too long
@@ -666,45 +830,80 @@ fn spawn_agent(
     Ok(live)
 }
 
+/// No file system and no terminal: the agent runs its own tools (decision 0111).
+fn initialize_request() -> acp::InitializeRequest {
+    acp::InitializeRequest::new(ProtocolVersion::V1)
+        .client_capabilities(
+            acp::ClientCapabilities::new()
+                .fs(acp::FileSystemCapabilities::new()
+                    .read_text_file(false)
+                    .write_text_file(false))
+                .terminal(false),
+        )
+        .client_info(acp::Implementation::new(
+            "termenbox",
+            env!("CARGO_PKG_VERSION"),
+        ))
+}
+
+/// The `initialize` params. The schema always writes `auth: {terminal: false}` (the default); it is left out, as it
+/// has always been, so the agents are sent the same bytes as before.
+fn initialize_params(req: &acp::InitializeRequest) -> Value {
+    let mut params = wire(req);
+    if let Some(caps) = params
+        .get_mut("clientCapabilities")
+        .and_then(Value::as_object_mut)
+    {
+        caps.remove("auth");
+    }
+    params
+}
+
 /// `initialize`, then `session/new` or (after a restart) `session/resume` / `session/load`.
 async fn handshake(live: &Live, dir: &str, resume: Option<&str>) -> Result<String> {
     let init = live
         .request(
             "initialize",
-            json!({
-                "protocolVersion": 1,
-                // No file system and no terminal: the agent runs its own tools (decision 0111).
-                "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false},
-                "clientInfo": {"name": "termenbox", "version": env!("CARGO_PKG_VERSION")},
-            }),
+            initialize_params(&initialize_request()),
             Some(SETUP_TIMEOUT),
         )
         .await?;
-    let caps = &init["agentCapabilities"];
-    let params = |id: &str| json!({"sessionId": id, "cwd": dir, "mcpServers": []});
+    // An `initialize` result that does not decode offers nothing: the session can be new, but not resumed.
+    let caps = decode::<acp::InitializeResponse>(&init, "initialize result")
+        .map(|r| r.agent_capabilities)
+        .unwrap_or_default();
     match resume {
         None => {
             let r = live
                 .request(
                     "session/new",
-                    json!({"cwd": dir, "mcpServers": []}),
+                    wire(&acp::NewSessionRequest::new(dir)),
                     Some(SETUP_TIMEOUT),
                 )
                 .await?;
+            let new: acp::NewSessionResponse = decode(&r, "session/new result")
+                .ok_or_else(|| anyhow!("the agent's session/new answer has no session id"))?;
             live.stream(|st| st.session_state(&r));
-            Ok(s(&r, "sessionId").to_string())
+            Ok(new.session_id.to_string())
         }
-        Some(id) if caps["sessionCapabilities"].get("resume").is_some() => {
+        Some(id) if caps.session_capabilities.resume.is_some() => {
+            // `mcpServers` is always sent (the schema leaves an empty list out), as every agent has been sent it.
+            let mut params = wire(&acp::ResumeSessionRequest::new(id.to_string(), dir));
+            params["mcpServers"] = json!([]);
             let r = live
-                .request("session/resume", params(id), Some(SETUP_TIMEOUT))
+                .request("session/resume", params, Some(SETUP_TIMEOUT))
                 .await?;
             live.stream(|st| st.session_state(&r));
             Ok(id.to_string())
         }
-        Some(id) if caps["loadSession"].as_bool() == Some(true) => {
+        Some(id) if caps.load_session => {
             live.inner.lock().unwrap().replaying = true;
             let r = live
-                .request("session/load", params(id), Some(SETUP_TIMEOUT))
+                .request(
+                    "session/load",
+                    wire(&acp::LoadSessionRequest::new(id.to_string(), dir)),
+                    Some(SETUP_TIMEOUT),
+                )
                 .await;
             let r = {
                 let mut g = live.inner.lock().unwrap();
@@ -943,7 +1142,11 @@ impl AcpBackend {
             let perm = g.perms.remove(prompt_id).unwrap();
             live.respond(
                 &perm.rpc_id,
-                json!({"outcome": {"outcome": "selected", "optionId": option_id}}),
+                wire(&acp::RequestPermissionResponse::new(
+                    acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                        option_id.to_string(),
+                    )),
+                )),
             );
         }
         live.stream(|st| st.permission_answered(prompt_id, option_id));
@@ -998,7 +1201,10 @@ impl AcpBackend {
             ModeVia::Modes => {
                 live.request(
                     "session/set_mode",
-                    json!({"sessionId": acp_id, "modeId": mode}),
+                    wire(&acp::SetSessionModeRequest::new(
+                        acp_id.clone(),
+                        mode.to_string(),
+                    )),
                     Some(SETUP_TIMEOUT),
                 )
                 .await?
@@ -1006,7 +1212,11 @@ impl AcpBackend {
             ModeVia::Config(config_id) => {
                 live.request(
                     "session/set_config_option",
-                    json!({"sessionId": acp_id, "configId": config_id, "value": mode}),
+                    wire(&acp::SetSessionConfigOptionRequest::new(
+                        acp_id.clone(),
+                        config_id.clone(),
+                        acp::SessionConfigOptionValue::value_id(mode.to_string()),
+                    )),
                     Some(SETUP_TIMEOUT),
                 )
                 .await?
@@ -1022,9 +1232,10 @@ impl AcpBackend {
         let live = self.live(id)?;
         live.cancel_pending();
         let acp_id = live.inner.lock().unwrap().acp_id.clone();
-        live.send(
-            json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": acp_id}}),
-        );
+        live.send(json!({
+            "jsonrpc": "2.0", "method": "session/cancel",
+            "params": wire(&acp::CancelNotification::new(acp_id.clone()))
+        }));
         Ok(())
     }
 }
@@ -1133,7 +1344,10 @@ impl SessionBackend for AcpBackend {
             let r = live
                 .request(
                     "session/prompt",
-                    json!({"sessionId": acp_id, "prompt": [{"type": "text", "text": text}]}),
+                    wire(&acp::PromptRequest::new(
+                        acp_id.clone(),
+                        vec![acp::ContentBlock::Text(acp::TextContent::new(text.clone()))],
+                    )),
                     None,
                 )
                 .await;
@@ -1148,7 +1362,8 @@ impl SessionBackend for AcpBackend {
                 live.emit(k);
             }
             // What the agent says this turn used, as it says it. `thoughtTokens` is reported apart from the output
-            // count and is not added to it.
+            // count and is not added to it. `usage` is read from the raw result: the schema types it only behind
+            // `unstable_end_turn_token_usage`, which stays off.
             if let (Ok(v), Some(hub)) = (&r, &live.hub) {
                 if let Some(u) = v.get("usage").filter(|u| u.is_object()) {
                     let n = |k: &str| u.get(k).and_then(Value::as_u64);
@@ -1166,12 +1381,18 @@ impl SessionBackend for AcpBackend {
             if live.inner.lock().unwrap().status != SessionStatus::Running {
                 return;
             }
+            // A result whose stop reason does not decode ends the turn as `Idle`, without a notice.
+            let stop = r
+                .as_ref()
+                .ok()
+                .and_then(|v| decode::<acp::PromptResponse>(v, "session/prompt result"))
+                .map(|p| stop_reason(p.stop_reason));
             live.stream(|st| match &r {
-                Ok(v) => st.turn_end(v["stopReason"].as_str(), None),
+                Ok(_) => st.turn_end(stop, None),
                 Err(e) => st.turn_end(None, Some(&e.to_string())),
             });
             live.turn_close(match r {
-                Ok(v) if s(&v, "stopReason") == "end_turn" => AgentState::Done,
+                Ok(_) if stop == Some("end_turn") => AgentState::Done,
                 Ok(_) => AgentState::Idle,
                 Err(_) => AgentState::Error,
             });
@@ -1238,5 +1459,7 @@ impl SessionBackend for AcpBackend {
     }
 }
 
+#[cfg(test)]
+mod golden;
 #[cfg(test)]
 mod tests;
