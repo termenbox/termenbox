@@ -83,6 +83,8 @@ try {
   const cert = mint(await hp.evaluate(() => window.__e2e.deviceKey()), 1, 'alice');
   await hp.evaluate((o) => window.__e2e.start(o), { record, cert, serverId, claim });
   await waitFor(() => hp.evaluate(() => window.__e2e.state === 'connected'), 'harness connected');
+  // With `acp` registered next to tmux, session ids are `tmux:<name>`; tmux itself is addressed by the bare name.
+  const bare = (sid) => sid.replace(/^tmux:/, '');
   const newSession = async (name) => {
     await hp.evaluate((n) => window.__e2e.send({ type: 'new_session', name: n }), name);
     return waitFor(() => hp.evaluate((n) => (window.__e2e.send({ type: 'list_sessions' }), window.__e2e.sessions.find((s) => s.name === n)?.id), name), `session ${name}`);
@@ -95,7 +97,7 @@ try {
     await hp.evaluate((c) => window.__e2e.type(c), `${cmd}; echo ${marker}-$((1+1))\r`);
     await waitFor(() => hp.evaluate((m) => window.__e2e.output.includes(`${m}-2`), marker), `${marker} done`, 30000);
   };
-  const target = `=${id}:`;
+  const target = `=${bare(id)}:`;
   const meta = (t = target) => {
     const [hs, hl, pane, win, alt, cols, rows, mode] = tmux('display-message', '-p', '-t', t, '#{history_size}|#{history_limit}|#{pane_id}|#{window_id}|#{alternate_on}|#{window_width}|#{window_height}|#{pane_in_mode}').trim().split('|');
     return { historySize: +hs, historyLimit: +hl, pane, window: win, alternateOn: alt === '1', cols: +cols, rows: +rows, inCopyMode: mode === '1' };
@@ -258,24 +260,24 @@ try {
 
   // 8. Session and window binding.
   const id2 = await newSession('s2');
-  tmux('send-keys', '-t', `=${id2}:`, "echo SWITCH-B-$((20+1))", 'Enter');
-  await waitFor(() => tmux('capture-pane', '-p', '-t', `=${id2}:`).includes('SWITCH-B-21'), 'second session printed');
-  const s2 = tmux('capture-pane', '-p', '-J', '-S', '-', '-t', `=${id2}:`);
-  tmux('new-window', '-t', `=${id}:`);
-  tmux('send-keys', '-t', `=${id}:1`, "echo WIN1-$((20+1))", 'Enter');
-  await waitFor(() => tmux('capture-pane', '-p', '-t', `=${id}:1`).includes('WIN1-21'), 'window 1 printed');
-  const w0 = tmux('capture-pane', '-p', '-J', '-S', '-', '-t', `=${id}:0`);
-  const w1 = tmux('capture-pane', '-p', '-J', '-S', '-', '-t', `=${id}:1`);
-  const ids = { s1w0: meta(`=${id}:0`), s1w1: meta(`=${id}:1`), s2: meta(`=${id2}:`) };
+  tmux('send-keys', '-t', `=${bare(id2)}:`, "echo SWITCH-B-$((20+1))", 'Enter');
+  await waitFor(() => tmux('capture-pane', '-p', '-t', `=${bare(id2)}:`).includes('SWITCH-B-21'), 'second session printed');
+  const s2 = tmux('capture-pane', '-p', '-J', '-S', '-', '-t', `=${bare(id2)}:`);
+  tmux('new-window', '-t', `=${bare(id)}:`);
+  tmux('send-keys', '-t', `=${bare(id)}:1`, "echo WIN1-$((20+1))", 'Enter');
+  await waitFor(() => tmux('capture-pane', '-p', '-t', `=${bare(id)}:1`).includes('WIN1-21'), 'window 1 printed');
+  const w0 = tmux('capture-pane', '-p', '-J', '-S', '-', '-t', `=${bare(id)}:0`);
+  const w1 = tmux('capture-pane', '-p', '-J', '-S', '-', '-t', `=${bare(id)}:1`);
+  const ids = { s1w0: meta(`=${bare(id)}:0`), s1w1: meta(`=${bare(id)}:1`), s2: meta(`=${bare(id2)}:`) };
   R.binding = {
     otherSessionHasNoToken: !s2.includes('TOK-'), windowsAreSeparate: w0.includes('LATE-25') && !w0.includes('WIN1-21') && w1.includes('WIN1-21') && !w1.includes('LATE-'),
     paneIds: [ids.s1w0.pane, ids.s1w1.pane, ids.s2.pane], windowIds: [ids.s1w0.window, ids.s1w1.window, ids.s2.window],
   };
   check(R.binding.otherSessionHasNoToken && R.binding.windowsAreSeparate && new Set(R.binding.paneIds).size === 3, `results bind to session and window: ${JSON.stringify(R.binding)}`);
   // A pane id outlives a rename; a name does not.
-  tmux('rename-session', '-t', `=${id2}`, 'renamed');
+  tmux('rename-session', '-t', `=${bare(id2)}`, 'renamed');
   let renamedFails = false;
-  try { tmux('capture-pane', '-p', '-t', `=${id2}:`); } catch { renamedFails = true; }
+  try { tmux('capture-pane', '-p', '-t', `=${bare(id2)}:`); } catch { renamedFails = true; }
   R.binding.renameBreaksNameTarget = renamedFails;
   R.binding.paneIdStillResolves = tmux('capture-pane', '-p', '-t', ids.s2.pane).includes('SWITCH-B-21');
   check(renamedFails && R.binding.paneIdStillResolves, 'a name target fails after a rename; a pane id still resolves');

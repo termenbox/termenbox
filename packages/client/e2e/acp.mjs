@@ -179,6 +179,7 @@ try {
   await send({ type: 'acp_prompt', session: 'acp:work', text: 'edit a.txt' });
   const card = page.getByRole('region', { name: 'Decision' });
   await card.waitFor({ timeout: 20000 });
+  await waitFor(async () => (await card.innerText()).includes('Write a.txt'), 'the Home card shows the tool'); // the card mounts before its text
   const cardText = await card.innerText();
   for (const w of ['work', 'Write a.txt', 'T0 · ACP', 'Yes', 'No']) check(cardText.includes(w), `the Home card lacks "${w}": ${cardText}`);
   check(!/always|all edits/i.test(cardText), `a standing rule is offered on the card: ${cardText}`);
