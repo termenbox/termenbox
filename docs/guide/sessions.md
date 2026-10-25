@@ -30,7 +30,7 @@ The attach command runs in a PTY. It must repaint the session when it starts and
 
 New session lets you pick, per agent, a **Terminal** view (the agent's own TUI in tmux, the default) or an **Agent view** (ACP): the server starts the agent itself and the app draws Markdown replies, tool calls, diffs, the plan and permission questions you answer with one tap. The choice is remembered per server and agent. The control shows only for an agent the server lists and only while `tmux` is also offered; a server with only `acp` lists just the ACP agents.
 
-Two agents are built in (`TERMENBOX_ACP=on`, the default; `off` hides the Agent view): `claude`, which runs `claude-agent-acp`, and `opencode`, which runs `opencode acp`. An agent is offered when its command is on the server's `PATH`, checked on every connection, so an install shows up without a restart. The adapters are not part of the image. Install and log in inside the container, for example:
+The Agent view is off by default. Set `TERMENBOX_ACP=on` (or list `acp` in `TERMENBOX_BACKEND`) to turn it on; it adds a second session manager, so session ids become `tmux:<name>` and anything saved under the old id (hidden tabs, earlier push links) no longer matches. Two agents are built in: `claude`, which runs `claude-agent-acp`, and `opencode`, which runs `opencode acp`. An agent is offered when its command is on the server's `PATH`, checked on every connection, so an install shows up without a restart. The adapters are not part of the image. Install and log in inside the container, for example:
 
 ```
 docker exec -it <container> npm i -g @agentclientprotocol/claude-agent-acp

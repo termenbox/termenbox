@@ -64,14 +64,14 @@ mkdirSync(bin);
 const agentLog = join(home, 'agent.log');
 const work = join(home, 'work-dir');
 mkdirSync(work);
-// The adapter the owner "installed": no acp-agents.toml, no TERMENBOX_BACKEND, no TERMENBOX_ACP. The built-in `claude` profile
+// The adapter the owner "installed": no acp-agents.toml, no TERMENBOX_BACKEND; TERMENBOX_ACP=on because the default is off. The built-in `claude` profile
 // runs this command from PATH.
 writeFileSync(join(bin, 'claude-agent-acp'), `#!/bin/sh\nexec node "${join(here, 'fake-acp-agent.mjs')}" "$@"\n`);
 chmodSync(join(bin, 'claude-agent-acp'), 0o755);
 const httpPort = 30000 + Math.floor(Math.random() * 30000);
 const claim = randomBytes(32).toString('base64url');
 const serverEnv = {
-  ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, FAKE_ACP_LOG: agentLog, TMUX_TMPDIR: home, TERMENBOX_CONFIG_DIR: configDir,
+  ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, FAKE_ACP_LOG: agentLog, TMUX_TMPDIR: home, TERMENBOX_CONFIG_DIR: configDir, TERMENBOX_ACP: 'on',
   TERMENBOX_HOST: '127.0.0.1', TERMENBOX_PORT: String(httpPort), TERMENBOX_UDP_PORT: String(httpPort + 1), TERMENBOX_PUBLIC_IP: '127.0.0.1',
   TERMENBOX_DIRECTORY_URL: '', TERMENBOX_DEV_INFO: 'on', TERMENBOX_CERT_KEYS: `e2e=${signerPublic}`, LANG: 'C', LC_ALL: 'C', TERMENBOX_CLAIM_SECRET: claim,
 };

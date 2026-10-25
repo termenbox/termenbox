@@ -87,12 +87,13 @@ struct Args {
     client_url: String,
 
     /// Session manager: `tmux` (built in), `acp` (agents the server starts), `command` (any CLI, see
-    /// TERMENBOX_BACKEND_*), a comma list of them, or `auto` (tmux, plus acp unless TERMENBOX_ACP=off).
+    /// TERMENBOX_BACKEND_*), a comma list of them, or `auto` (tmux, plus acp when TERMENBOX_ACP=on).
     #[arg(long, env = "TERMENBOX_BACKEND", default_value = "auto")]
     backend: String,
 
-    /// `on` (default) lets `auto` offer the built-in ACP agents that are installed; `off` is the kill switch.
-    #[arg(long, env = "TERMENBOX_ACP", default_value = "on")]
+    /// `on` lets `auto` offer the built-in ACP agents that are installed; `off` (default) keeps `auto` at tmux, so session
+    /// ids stay bare (with two managers they are `tmux:<name>`). Off until the adapters' terms of use are settled (0137).
+    #[arg(long, env = "TERMENBOX_ACP", default_value = "off")]
     acp: String,
 
     /// For `command`: a label shown in logs, e.g. zellij.
