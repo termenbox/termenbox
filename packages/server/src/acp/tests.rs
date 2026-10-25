@@ -208,6 +208,7 @@ fn rig_with(mode: &str, max: usize, dir: PathBuf, state: bool) -> Rig {
     let config = AcpConfig {
         max_sessions: max,
         builtin: false,
+        event_ring_bytes: crate::event_log::DEFAULT_BUDGET_BYTES,
         agents: HashMap::from([("fake".to_string(), profile(mode, &log))]),
     };
     let hub = EventHub::new([7; 32]);
@@ -377,6 +378,7 @@ async fn an_adapter_installed_later_shows_up_and_a_missing_one_is_refused() {
     let config = AcpConfig {
         max_sessions: 2,
         builtin: false,
+        event_ring_bytes: crate::event_log::DEFAULT_BUDGET_BYTES,
         agents: HashMap::from([(
             "late".to_string(),
             AgentProfile {
@@ -1497,4 +1499,79 @@ async fn an_acp_window_is_addressed_by_id_and_an_unknown_workspace_is_refused() 
     assert!(host.create("s1", terminal_spec()).await.is_err());
     assert_eq!(host.list("s1").await.unwrap().len(), 1);
     backend.kill("s1").await.unwrap();
+}
+
+// ---- the event log of a live workspace (step 3.4) --------------------------------------------------------------
+
+#[tokio::test]
+async fn replay_a_live_workspace_logs_its_updates_and_a_client_resumes_from_a_seq() {
+    let r = rig("");
+    r.create("s1").await;
+    r.prompt("s1", "updates").await;
+    until("the turn to finish", || {
+        last_state(&r, "s1") == Some(AgentState::Done)
+    })
+    .await;
+    // A client with nothing gets a compacted replay, flagged reset, of standard session/update frames.
+    let first = r.backend.acp_events("s1", None, None).unwrap();
+    assert!(first.reset && !first.frames.is_empty());
+    assert!(first.last >= first.frames.len() as u64 - 1);
+    let kinds: Vec<&str> = first
+        .frames
+        .iter()
+        .map(|f| f["update"]["sessionUpdate"].as_str().unwrap())
+        .collect();
+    assert!(kinds.contains(&"agent_message_chunk"), "{kinds:?}");
+    assert!(first.frames.iter().all(|f| f["sessionId"] == "acp-1"));
+    for f in &first.frames {
+        serde_json::from_value::<acp::SessionUpdate>(f["update"].clone())
+            .unwrap_or_else(|e| panic!("{e}: {f}"));
+    }
+    // Caught up: the tail after `last` is empty and not a reset; a new turn adds exactly the new frames.
+    let caught_up = r
+        .backend
+        .acp_events("s1", Some(first.last), Some(first.epoch))
+        .unwrap();
+    assert!(!caught_up.reset && caught_up.frames.is_empty());
+    r.prompt("s1", "updates").await;
+    until("the second turn to finish", || {
+        r.backend
+            .acp_events("s1", Some(first.last), Some(first.epoch))
+            .map(|t| t.last > first.last)
+            .unwrap_or(false)
+    })
+    .await;
+    let tail = r
+        .backend
+        .acp_events("s1", Some(first.last), Some(first.epoch))
+        .unwrap();
+    assert!(!tail.reset && !tail.frames.is_empty());
+    let seqs: Vec<u64> = tail
+        .frames
+        .iter()
+        .map(|f| crate::event_log::stamp_of(f).unwrap().seq)
+        .collect();
+    assert_eq!(seqs.first().copied(), Some(first.last + 1), "no gap");
+    assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1));
+    // Another epoch (a restarted server) is a reset.
+    assert!(
+        r.backend
+            .acp_events("s1", Some(first.last), Some(first.epoch + 1))
+            .unwrap()
+            .reset
+    );
+    assert!(r.backend.acp_events("nope", None, None).is_err());
+    r.backend.kill("s1").await.unwrap();
+}
+
+#[test]
+fn replay_the_ring_size_is_a_config_value_with_a_checked_range() {
+    let c = AcpConfig::parse("event_ring_bytes = 262144").unwrap();
+    assert_eq!(c.event_ring_bytes, 262_144);
+    assert_eq!(
+        AcpConfig::parse("").unwrap().event_ring_bytes,
+        crate::event_log::DEFAULT_BUDGET_BYTES
+    );
+    assert!(AcpConfig::parse("event_ring_bytes = 100").is_err());
+    assert!(AcpConfig::parse("event_ring_bytes = 99999999999").is_err());
 }

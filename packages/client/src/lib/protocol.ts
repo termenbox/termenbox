@@ -42,6 +42,8 @@ export type ClientMessage =
   | { type: 'agent_hooks'; agent: string; action: 'status' | 'preview' | 'apply' | 'remove' }
   /** T0 (decision 0111): shows this ACP workspace on this connection; `after` and `epoch` are the revision and stream the client holds. */
   | { type: 'acp_open'; workspace: string; after?: number; epoch?: number }
+  /** Resumes the conversation's `session/update` log (step 3.4); the reducer that consumes it is step 5.1. */
+  | { type: 'acp_events'; workspace: string; after?: number; epoch?: number }
   | { type: 'acp_close' }
   /** The owner's next prompt (`session/prompt`); several lines allowed. */
   | { type: 'acp_prompt'; workspace: string; text: string }
@@ -106,10 +108,12 @@ export type ServerMessage =
   | { type: 'error'; message: string }
   | { type: 'pong' }
   /** The answer to a control message that carried a `req` (step 3.3). */
+  /** `session/update` frames of an ACP conversation, each stamped with the `seq` extension; `reset` on the first message of a compacted replay (step 3.4). */
+  | { type: 'acp_events'; workspace: string; epoch: number; last: number; reset?: boolean; frames: unknown[] }
   | { type: 'control_ack'; req: number; ok: boolean; error?: string };
 
 /** One health sample in whole percents. A metric the server could not read is absent, never 0 (the first CPU sample is always absent). */
-export interface HealthPoint { ts: number; cpu_percent?: number; ram_percent?: number; disk_percent?: number }
+export interface HealthPoint { ts: number; cpu_percent?: number; ram_percent?: number; disk_percent?: number; event_log_bytes?: number }
 
 /** U14: pushed after sign-in and every 10 s. `healthy` is the server's own verdict (hysteresis included): clients show it and never recompute it. */
 export interface ServerHealth extends HealthPoint {

@@ -127,6 +127,31 @@ impl Negotiated {
     }
 }
 
+/// The `seq` extension (decision 0139): the position of a `session/update` in its session's log and the server run
+/// (`epoch`) that numbered it. A client that holds a different epoch starts over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeqStamp {
+    pub seq: u64,
+    pub epoch: u64,
+}
+
+impl Extension for SeqStamp {
+    const NAME: &'static str = "seq";
+    const VERSION: u32 = 1;
+}
+
+/// The `reset` extension: set on a replay that is not the tail of what the client holds but a compacted rebuild of
+/// the whole session, so the client drops its copy first. It covers everything up to and including `last`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reset {
+    pub last: u64,
+}
+
+impl Extension for Reset {
+    const NAME: &'static str = "reset";
+    const VERSION: u32 = 1;
+}
+
 /// A `_meta` object. Wraps the raw map so that keys of other namespaces (`zed.dev/...`, `traceparent`) travel
 /// through untouched while ours are read and written by type.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

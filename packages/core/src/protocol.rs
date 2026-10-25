@@ -363,6 +363,15 @@ pub enum ClientMessage {
     },
     /// Stops the `acp_view` updates of this connection.
     AcpClose,
+    /// Resumes the conversation's `session/update` log (decision 0139, step 3.4): everything after `after` in `epoch`
+    /// when the server still holds it, else a compacted replay marked `reset`. Live frames follow as `acp_events`.
+    AcpEvents {
+        workspace: String,
+        #[serde(default)]
+        after: Option<u64>,
+        #[serde(default)]
+        epoch: Option<u64>,
+    },
     /// The owner's next prompt (`session/prompt`); several lines are allowed, up to 16 KiB.
     AcpPrompt {
         workspace: String,
@@ -624,6 +633,17 @@ pub enum ServerMessage {
         message: String,
     },
     Pong,
+    /// `session/update` frames of an ACP workspace's conversation, in order, each stamped with the `seq` extension in
+    /// its `_meta`. `reset` is set on the first message of a compacted replay: the client drops what it held. `last` is
+    /// the newest `seq` the server has; a client that applied up to it asks `after = last` next time.
+    AcpEvents {
+        workspace: String,
+        epoch: u64,
+        last: u64,
+        #[serde(default)]
+        reset: bool,
+        frames: Vec<serde_json::Value>,
+    },
     /// The answer to a control message that carried a `req` id (decision 0139, step 3.3): whether it was carried out.
     /// Sent on the control channel, so it does not wait behind terminal bytes or agent events.
     ControlAck {
@@ -836,6 +856,9 @@ pub struct HealthPoint {
     pub ram_percent: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk_percent: Option<u8>,
+    /// Bytes the agent event logs hold in memory now (decision 0139: memory is a budget measured, not a fit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_log_bytes: Option<u64>,
 }
 
 /// A health level: a metric turns unhealthy at `enter` and healthy again at or below `exit`.
@@ -1036,6 +1059,44 @@ mod tests {
     }
 
     #[test]
+    fn replay_the_event_messages_have_their_wire_names() {
+        let m: ClientMessage =
+            serde_json::from_str(r#"{"type":"acp_events","workspace":"s","after":3,"epoch":9}"#)
+                .unwrap();
+        assert_eq!(
+            m,
+            ClientMessage::AcpEvents {
+                workspace: "s".into(),
+                after: Some(3),
+                epoch: Some(9)
+            }
+        );
+        let m: ClientMessage =
+            serde_json::from_str(r#"{"type":"acp_events","workspace":"s"}"#).unwrap();
+        assert_eq!(
+            m,
+            ClientMessage::AcpEvents {
+                workspace: "s".into(),
+                after: None,
+                epoch: None
+            }
+        );
+        assert!(!m.is_control());
+        let v = serde_json::to_value(ServerMessage::AcpEvents {
+            workspace: "s".into(),
+            epoch: 9,
+            last: 12,
+            reset: true,
+            frames: vec![serde_json::json!({"sessionId": "a", "update": {}})],
+        })
+        .unwrap();
+        assert_eq!(
+            (v["type"].as_str(), v["last"].as_u64(), v["reset"].as_bool()),
+            (Some("acp_events"), Some(12), Some(true))
+        );
+    }
+
+    #[test]
     fn test_wire_names_match_the_client() {
         let v = serde_json::to_value(ClientMessage::ListWorkspaces).unwrap();
         assert_eq!(v["type"], "list_workspaces");
@@ -1070,6 +1131,7 @@ mod tests {
                 cpu_percent: None,
                 ram_percent: Some(93),
                 disk_percent: Some(40),
+                event_log_bytes: None,
             },
         })
         .unwrap();

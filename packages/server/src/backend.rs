@@ -112,6 +112,16 @@ pub trait WorkspaceBackend: Send + Sync {
     ) -> Result<(termenbox_core::protocol::AcpView, u64)> {
         Err(anyhow!("This workspace is not an ACP workspace"))
     }
+    /// Resume the conversation's `session/update` log after `after` in `epoch`: the tail, or a compacted reset replay
+    /// (`event_log.rs`).
+    fn acp_events(
+        &self,
+        _id: &str,
+        _after: Option<u64>,
+        _epoch: Option<u64>,
+    ) -> Result<crate::event_log::Replay> {
+        Err(anyhow!("This workspace is not an ACP workspace"))
+    }
     /// The owner's next prompt (`session/prompt`).
     async fn acp_prompt(&self, _id: &str, _text: &str) -> Result<()> {
         Err(anyhow!("This workspace is not an ACP workspace"))
@@ -1119,6 +1129,18 @@ impl WorkspaceBackend for CompositeBackend {
             .split_once(':')
             .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.acp_view(name, after, epoch, info_seen)
+    }
+
+    fn acp_events(
+        &self,
+        id: &str,
+        after: Option<u64>,
+        epoch: Option<u64>,
+    ) -> Result<crate::event_log::Replay> {
+        let (kind, name) = id
+            .split_once(':')
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
+        self.part(kind)?.acp_events(name, after, epoch)
     }
 
     async fn acp_prompt(&self, id: &str, text: &str) -> Result<()> {
