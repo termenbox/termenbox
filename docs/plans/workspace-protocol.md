@@ -82,11 +82,12 @@ Context: Decision 0136. Shared types are in `packages/core/src/protocol.rs` (mir
 Do: In `termenbox-core` add the extension registry: namespace, version, capability negotiation at `initialize`, a typed wrapper that carries extensions in `_meta` and custom methods per fact from 2.1, unknown-extension skipping, and the protocol version number. In `packages/server` define traits: `AgentAdapter` (agent window ↔ protocol, states its tier), `WindowHost` (create, list, focus, close, resize windows; implemented later by tmux and by the ACP child), `Transport` (send on control, bytes and events channels). Do not wire anything in yet. Mirror the TypeScript types and add a parity test between Rust and TS shapes in the style `packages/client/src/protocol.test.ts` already uses.
 Done-when: unit tests show an unknown extension is skipped in both directions, a known one round-trips, the ports have a fake implementation used by a test, and the TS parity test passes.
 
-### 2.3 Conformance harness — [ ]
+### 2.3 Conformance harness — [x]
 Class: implement · Needs: 2.2 · Check: `scripts/dev.sh cargo test --workspace -- conformance`
 Context: Guardrail `protocol-core-stays-acp-v1` is enforced by CI. Fixtures are in `packages/server/testdata/acp/`.
 Do: Add a test (name containing `conformance`) that replays every fixture through the server adapter, strips all extensions, and validates each message against the schema crate. Add a client test (`packages/client/src/lib/*.test.ts`) that feeds every standard `session/update` kind and an unknown extension and content type to the client reducer and asserts a rendered or generic result, never an exception. Step 5.1 makes the client side non-trivial; here the test is written against the current ACP reducer and extended there.
 Done-when: both tests exist and pass, and temporarily changing a core shape makes the server test fail.
+Done (PR on `test/acp-conformance`): server `packages/server/src/acp/conformance.rs` (tests named `conformance_*`), client `packages/client/src/lib/acpConformance.test.ts`, shared vector `packages/server/testdata/acp-wire/standard-kinds.json` (the adapter's `acp_view` for each of the 14 kinds; `UPDATE_VECTORS=1` rewrites it). The current client reducer takes `acp_view` entries, not raw `session/update`, so the client test feeds it what the adapter makes of each kind; step 5.1 moves it onto the protocol reducer and feeds raw updates.
 
 ---
 

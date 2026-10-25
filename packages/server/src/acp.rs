@@ -1725,6 +1725,8 @@ impl WorkspaceBackend for AcpBackend {
 }
 
 #[cfg(test)]
+mod conformance;
+#[cfg(test)]
 mod golden;
 #[cfg(test)]
 mod tests;
