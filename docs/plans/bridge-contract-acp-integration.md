@@ -1,6 +1,6 @@
 # Bridge Contract on the ACP path: review and integration plan
 
-Status legend: `[ ]` pending, `[~]` in progress, `[x]` done. Builds on `bridge-contract-crate.md` (steps 1-2 done: vendored crate, `termenbox-core::governance::Governor`). This plan replaces that plan's steps 3-6. Read decisions 0136, 0139, 0138, guardrails `protocol-core-stays-acp-v1`, `kill-session-needs-confirmation`, `security-secrets-handling`, `audit-logging-no-secrets`.
+Status legend: `[ ]` pending, `[~]` in progress, `[x]` done. Builds on `bridge-contract-crate.md` (steps 1-2 done: vendored crate, `termenbox-core::governance::Governor`). This plan replaces that plan's steps 3-6. It depends on spec changes in the paper repository, listed in its `docs/plans/bridge-contract-integration-findings.md` (E.1-E.9); where this plan says "upstream", that is meant. Read decisions 0136, 0139, 0138, guardrails `protocol-core-stays-acp-v1`, `kill-session-needs-confirmation`, `security-secrets-handling`, `audit-logging-no-secrets`.
 
 ## 1. How ACP interaction works today
 
@@ -28,42 +28,48 @@ Termenbox's server **is** the Bridge: it sits between the agent runtime (the thi
 |---|---|
 | session `sid` | workspace id (the ACP workspace; one governance session per ACP `sessionId` once 0138 lands) |
 | principal | `Identity{provider, id}` of the owner connection |
-| client key, proof of possession (I11) | the **device key** (ECDSA P-256, non-extractable): it already signs a per-connection challenge; the bridge nonce is signed the same way. No new browser key. |
+| client keys, proof of possession (I11) | the owner's **device keys** (ECDSA P-256, non-extractable, one per certified device): each already signs a per-connection challenge; the bridge nonce is signed the same way. The key set belongs to the principal (upstream E.2). No new browser key. |
 | `ATTACHED` | first `acp_open` of a workspace by a new connection when no governance session exists |
-| `client_disconnect` -> `Det` | the last connection showing the workspace closes or goes silent |
-| resume token R, `begin_resume`/`complete_resume` | `acp_open` carrying the token and proof (see 3); `complete_resume` runs before the view is sent |
+| `client_disconnect` -> `Det` | the **last** connection showing the workspace closes or goes silent (several devices may be attached; upstream E.2) |
+| resume (challenge, `begin_resume`/`complete_resume`) | `acp_open` carrying nonce, last-seen `(seq, hash)` and proof (see 3); `complete_resume` runs before the view is sent. No token is held by the client (upstream E.1). |
 | `escalate_to_human` / `human_resolve` | `on_permission` (first open perm) / `answer_permission` (last open perm answered or cancelled); already mirrored by `Block` events |
 | tool queue, `T_call`, `q_max` (I13) | open `Perm`s: `q_max` replaces `MAX_PENDING`; `T_call` is a new expiry that answers `cancelled` |
 | narrow-only scope (I3, I10) | modes and permission tiers: `set_mode` to a more permissive mode is an *extension attempt* and needs a fresh grant; narrowing is always allowed |
 | `TERMINATION` | **not** a kill. It closes the governance session: open perms answered `cancelled`, prompts refused, the agent stopped only with the owner's confirmation (`kill-session-needs-confirmation`). A new attach (a fresh grant) opens a new governance session. |
 | durable log, recovery (I12) | per-workspace append-only file beside the ACP state file; `restore()` calls `Bridge::recover` before `session/resume` |
-| `T_detach` | owner-configurable; **default off or long** (see 4), because bounded detach contradicts the persistence promise |
+| `T_detach` | **7 days** (owner decision), configurable; `T_human` defaults to `T_detach`, `T_call` is owner-visible (see 4) |
 
 Not governed: terminal bytes and tmux workspaces (no agent decisions flow through the bridge). A later step may govern hook-adapter agents the same way, through the same ports (0136).
 
 ## 3. Wire shape
 
-Stage A (now, before the ACP-wire migration lands): optional fields, ignored by old peers, as `after`/`epoch` were added.
-- `acp_open` gains `resume: {token, proof}` (absent on a first attach).
-- `acp_view` (first part) gains `governance: {state, token?, nonce}` where `token` is the freshly issued R after `complete_resume`, `nonce` the challenge for the next re-attach.
+Why not a held token: the contract's token is minted when the client detaches and again on every later human-wait change, so an abruptly dropped phone never holds the current one (finding 1 in the paper plan). Resume is therefore challenge-response, pinned to what the client last saw.
 
-Stage B (with the ACP wire, 0136): the same two objects ride as extension `termenbox.dev/resume` (version 1) in `_meta` of the open/initialize exchange, negotiated through `ext::Registry`. A client or agent that does not list it is spoken to in plain ACP: the bridge then runs with the *implicit* client of the connection and no resume token (degraded, stated in the `tier`-style capability, never silently). Stripping the extension must leave valid ACP (`protocol-core-stays-acp-v1`). The token's `pending_tool_calls` carries prompt ids only, never tool text (`notifications-carry-no-agent-text`, `audit-logging-no-secrets`).
+Flow (upstream E.1):
+1. The client keeps `(gseq, ghash)`: the last governance event it saw, carried in `acp_view` beside `(epoch, rev)`.
+2. To reconnect it sends `acp_resume_begin{workspace, key_id}`; the server answers `nonce` (random, 60 s, single use).
+3. The client sends `acp_open{workspace, after, epoch, resume:{nonce, gseq, ghash, proof}}`; `proof` is the device key's signature over `(server_id, workspace, nonce, gseq, ghash)` (same shape as `cert.rs::challenge_message`).
+4. The server accepts iff the signature verifies against a key of the principal, the nonce is live and unused, and `ghash` equals the hash of the event at `gseq` in its chain. Events after `gseq` (scope changes, human waits) arrive in the view; the client reconciles. Otherwise `RESUME_REJECTED{reason}` and no view.
 
-Token and view cursor stay separate: the token authorises (control plane, I4/I11), `(epoch, rev)` replays data (0139). A valid token with a stale cursor gets a compacted `reset`; a stale token with a valid cursor is rejected.
+Stage A (before the ACP wire migration): `resume_begin` and `nonce` are new messages, `resume` an optional field on `acp_open`, `governance:{gseq, ghash, standing}` an optional field on `acp_view`; old peers ignore them, as they ignored `after`/`epoch`.
 
-## 4. Conflicts to settle with the owner before step 5
+Stage B (with the ACP wire, 0136): the same objects ride as extension `termenbox.dev/resume` v1 (`_meta`, plus the method `_termenbox.dev/resume_begin`), negotiated through `ext::Registry`. A peer without it is spoken to in plain ACP and the bridge runs with the connection's own authenticated client and no resume challenge (degraded, stated in the capability, never silent). Stripping the extension leaves valid ACP (`protocol-core-stays-acp-v1`). Governance events carry ids, hashes and reasons only, never tool text (`notifications-carry-no-agent-text`, `audit-logging-no-secrets`).
 
-1. **`T_detach` vs persistence.** Crate defaults (`T_detach` 30 min, `T_token` 15 min) terminate a phone that is away for 31 minutes. Proposed: `T_detach` default 7 days (config `TERMENBOX_GOV_DETACH`), `T_token = T_detach` is not required but `T_token <= T_detach` is; and since a token older than `T_token` ends the session (I9, `begin_resume`), re-issue the token on every `tick` while detached, bounded by `T_detach`. This needs a **crate change** (rolling token), not a Termenbox workaround.
-2. **MAC key custody.** The crate needs a bridge-only key that survives restart; `security-secrets-handling` says secrets stay in memory. Proposed: derive it with HKDF from the server's persisted signing key (already on disk for pairing/directory), label `termenbox.dev/bridge-mac/v1`; nothing new is stored. Amend the guardrail text to name this derivation.
-3. **Proof algorithm.** The crate's HMAC stand-in becomes a verifier callback; Termenbox supplies ECDSA P-256 verification (`cert.rs::verify_challenge` already does raw r||s over a message). Ed25519 is not an option for the client key: WebCrypto Ed25519 needs Safari 17, the floor is 16.4 (decision 0112).
-4. **Mode changes as authority.** Decide which modes widen. Start with: any change to a mode the agent lists as permission-bypassing needs a fresh grant; everything else is not scope.
+The proof authorises (control plane); `(epoch, rev)` replays data (0139). A valid proof with a stale cursor gets a compacted `reset`; a mismatching `ghash` is rejected.
+
+## 4. Decisions
+
+1. **`T_detach` = 7 days** (owner, 2026-10-25). With challenge-response there is no token TTL to couple to it. `T_human` defaults to `T_detach`, so a permission left unanswered does not end the session after 24 h. `T_call` (an open permission is answered `cancelled` after it) is shown to the owner in settings; default proposed 24 h, owner to confirm. Config: `TERMENBOX_GOV_DETACH`, `_HUMAN`, `_CALL`.
+2. **MAC key custody** (proposed, open): HKDF from the server's persisted signing key, label `termenbox.dev/bridge-mac/v1`; nothing new on disk. Amend `security-secrets-handling` to name the derivation.
+3. **Proof algorithm** (proposed, open): a `Verifier` trait in the crate (upstream E.7); Termenbox supplies ECDSA P-256 (`cert.rs`). Ed25519 is not the client key: WebCrypto Ed25519 needs Safari 17, the floor is 16.4 (0112).
+4. **Mode widening** (proposed, open): bypass modes only at first. The owner's `set_mode` is *enforced* (refused without a fresh grant); an agent's own mode update is *observed*: log `AUTHORITY_EXTENSION_REJECTED` and send `session/set_mode` back to the granted mode (upstream E.4).
 
 ## 5. Steps
 
-### 5.1 Upstream crate changes — [ ]
-Class: implement (in the paper repo) · Needs: owner decisions 4.1-4.3 · Check: `cd paper/supplementary/rust-bridge && cargo test` there, then re-vendor
-Do: (a) `Storage` trait + `FileStorage`-friendly API, `Send + Sync` (`Arc`, `Mutex`), `Clock: Send + Sync`; (b) rolling resume token while detached; (c) proof verifier trait (`fn verify(&self, key_id, nonce, seq, proof) -> bool`) with the HMAC one as the test default; (d) a vector for each (rolling token, bad-algorithm proof). Keep the independence caveats in the README; bump to 0.5.1; update `VENDOR.md`.
-Done-when: vectors pass on Python and Rust; vendored copy matches upstream except the listed local changes.
+### 5.1 Upstream spec and crate changes — [ ]
+Class: implement (in the paper repo) · Needs: owner decisions 4.2-4.4 · Check: in the paper repo, `cd paper/supplementary && python3 -I run_vectors.py && (cd rust-bridge && cargo test)`
+Do: paper plan steps E.1-E.7 (mint-on-reconnect with prefix pinning, multiple clients, answer binding, coverage and I3 split, timer derivation, vectors/TLC/mutants, crate API: `Storage` trait, `Send + Sync`, `Verifier` trait). Then re-vendor here and update `VENDOR.md`.
+Done-when: the vendored crate passes the upstream vectors and exposes a `Send` bridge over a pluggable storage.
 
 ### 5.2 Durable governance log — [ ]
 Class: implement · Needs: 5.1 · Check: `cargo test -p termenbox-server governance_log`
@@ -72,17 +78,17 @@ Done-when: kill -9 during a transition leaves the log at a transition boundary; 
 
 ### 5.3 Attach, detach and human wait — [ ]
 Class: implement · Needs: 5.2 · Check: `cargo test -p termenbox-server`
-Do: `Live` holds a governor; hook `acp_open` (attach / resume), connection close (`client_disconnect`), `on_permission` / `answer_permission` / `cancel_pending` (`escalate_to_human` / `human_resolve`), `tick` from the existing 1 s loop. Replace `MAX_PENDING` with the bridge `q_max`; add `T_call` expiry answering `cancelled`. Emit audit lines (`event = "gov_*"`, no text) for each committed event kind. Stage A wire fields in `protocol.rs` with round-trip tests that old messages still parse.
-Done-when: scripted test: drop connection -> ask permission -> reconnect with token -> permission still open and answerable; wrong proof -> `RESUME_REJECTED`, no view sent.
+Do: `Live` holds a governor with a client set (one entry per attached connection; detach only when the set empties); hook `acp_open` (attach / resume), connection close, `on_permission` / `answer_permission` / `cancel_pending` (`escalate_to_human` / `human_resolve`), `tick` from the existing 1 s loop. Replace `MAX_PENDING` with the bridge `q_max`; add `T_call` expiry answering `cancelled`. Bind each answer to the content shown: store `h(prompt_id, options, tool title)` at `on_permission` and require it on `acp_answer` (upstream E.3); write the governance event before `respond` (event before ack). Add a per-workspace cap on permission requests per minute (one event, one push each) beside `q_max`. Emit audit lines (`event = "gov_*"`, no text) for each committed event kind. Stage A wire fields in `protocol.rs` with round-trip tests that old messages still parse.
+Done-when: scripted test: drop connection -> ask permission -> reconnect with a signed nonce -> permission still open and answerable; wrong proof -> `RESUME_REJECTED`, no view sent.
 
 ### 5.4 Client — [ ]
 Class: implement · Needs: 5.3 · Check: `pnpm -r test` (via `scripts/dev.sh --full`)
-Do: `AcpView` store keeps the latest token per workspace in memory (and IndexedDB for a reload, bound to the device key); sign the nonce with the device key; send `resume` on `acp_open`; on `RESUME_REJECTED` fall back to a fresh attach that asks the owner (never silently widens).
-Done-when: reload and phone-sleep paths in the e2e suite resume without a prompt; a tampered token shows the fresh-attach prompt.
+Do: `AcpView` store keeps `(gseq, ghash)` per workspace (memory, and IndexedDB for a reload); on reconnect request a nonce, sign it with the device key, send `resume` on `acp_open`; on `RESUME_REJECTED` fall back to a fresh attach that asks the owner (never silently widens). A second device simply attaches; it needs no token from the first.
+Done-when: reload and phone-sleep paths in the e2e suite resume without a prompt; a tampered `ghash` shows the fresh-attach prompt.
 
 ### 5.5 Narrow-only modes — [ ]
 Class: implement · Needs: 5.3, owner decision 4.4 · Check: `cargo test -p termenbox-server mode_widening`
-Do: `set_mode` calls `attempt_authority_extension` first; a widening is refused with a visible notice unless the owner re-grants through the confirmation flow.
+Do: the owner's `set_mode` calls `attempt_authority_extension` first; a widening is refused with a visible notice unless the owner re-grants through the confirmation flow. An agent-announced mode update that widens is logged and reverted with `session/set_mode` (observed, not prevented; say so in the UI text).
 
 ### 5.6 Extension stage B — [ ]
 Class: implement · Needs: 5.3 and the ACP-wire migration (`workspace-protocol` phase 3) · Check: `cargo test -p termenbox-core ext` and the stripped-stream CI check
@@ -101,4 +107,18 @@ Do: log detach/resume/permission incidents from real use with the owner's consen
 - **Overgovernance.** A rejected resume on a flaky phone link is a worse product than today. Mitigation: rejection reasons are specific, the fallback is one tap, and `T_detach` defaults long.
 - **Two sources of truth for "waiting on human".** `Block` events and bridge `Human` must not diverge. Mitigation: the bridge cell is derived from the same calls (5.3), and the `Governor` projection (already built) feeds `Block`, so the hub never sees a block the bridge did not commit.
 - **Same-author evidence.** The crate, the Python reference and this integration share an author; the case study (5.8) is the first independent-in-practice check and must report incidents where the governance got in the way.
-- **Scope of claims.** Only ACP workspaces (T0) are governed in this plan; say so wherever the feature is described.
+- **Scope of claims.** Only ACP workspaces (T0) are governed in this plan, and only calls that pass `session/request_permission`: tools an agent runs without asking are outside the contract. Say so wherever the feature is described.
+- **Multi-device races.** Two devices answering the same permission: the first answer wins, the second gets "no longer open" (existing behaviour); the answer-binding hash makes sure each saw the same content.
+
+## 7. Proposals considered and not taken
+
+| Proposal | Decision | Reason |
+|---|---|---|
+| Resume token encryption envelope | skip | Transport is encrypted; the client holds no token. |
+| Bridge operator attestation (I-ATTEST) | skip | One owner runs their own server; releases are already signed. |
+| Concurrent session coordination | later | A group scope will matter with several agent windows per workspace (0138); separate spec. |
+| Policy enforcement hooks | later | Real need (agent blocked on permissions while detached) but it is widening; must be a pre-granted narrow scope, local rules rather than OPA. |
+| QUIC 0-RTT replay (I8) | skip | No QUIC; the single-use nonce covers reconnect replay. |
+| I-SIGN-JWKS | n/a | The client pins the server key. |
+| I-SIGN-EVENT / checkpoints | later, cheap | Sign checkpoints with the server Ed25519 key so a client can detect a rolled-back server; also bounds log growth. |
+| Five-state vocabulary | skip | The product model is exposed through the existing `Activity` / `Attention` state, not a second state machine. |
