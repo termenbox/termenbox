@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { recentDirs, suggestName, TEMPLATES, validDir, validName } from './newsession';
+import { backendFor, loadView, managerOptions, recentDirs, resolveView, saveView, suggestName, TEMPLATES, validDir, validName, viewControl } from './newsession';
 
 const w = (path: string) => ({ index: 0, name: 'n', command: 'bash', path, active: false });
 
@@ -30,5 +30,75 @@ describe('new session', () => {
     expect(validDir('/srv/app')).toBe(true);
     expect(validDir('app')).toBe(false);
     expect(validDir('/a\nb')).toBe(false);
+  });
+});
+
+const mem = (initial: Record<string, string> = {}) => {
+  const m = { ...initial };
+  return { getItem: (k: string) => m[k] ?? null, setItem: (k: string, v: string) => { m[k] = v; }, raw: m };
+};
+const throwing = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } };
+const both = { backends: ['tmux', 'acp'], acpAgents: ['claude', 'opencode', 'mine'] };
+
+describe('the view', () => {
+  it('is a choice only where the server has both views and the agent has an ACP form', () => {
+    expect(viewControl(both, 'claude')).toBe('choose');
+    expect(viewControl(both, 'shell')).toBe('terminal');
+    expect(viewControl(both, 'codex')).toBe('terminal');
+    expect(viewControl({ backends: ['tmux'], acpAgents: ['claude'] }, 'claude')).toBe('terminal');
+    expect(viewControl({ backends: ['acp'], acpAgents: ['claude'] }, 'claude')).toBe('terminal');
+    expect(viewControl(undefined, 'claude')).toBe('terminal');
+  });
+  it('is always the agent view for an ACP agent that tmux cannot start', () => {
+    expect(viewControl(both, 'mine')).toBe('acp');
+    expect(resolveView(both, 'mine', 'terminal')).toBe('acp');
+  });
+  it('applies the wanted view only where there is a choice, so a remembered acp for a gone agent is the terminal', () => {
+    expect(resolveView(both, 'claude', 'acp')).toBe('acp');
+    expect(resolveView(both, 'claude', 'terminal')).toBe('terminal');
+    expect(resolveView(both, 'codex', 'acp')).toBe('terminal');
+    expect(resolveView({ backends: ['tmux', 'acp'], acpAgents: [] }, 'claude', 'acp')).toBe('terminal');
+  });
+  it('derives the backend from the view and leaves other managers alone', () => {
+    expect(backendFor(both, 'tmux', 'claude', 'acp')).toBe('acp');
+    expect(backendFor(both, 'tmux', 'claude', 'terminal')).toBe('tmux');
+    expect(backendFor(both, 'tmux', 'shell', 'acp')).toBe('tmux');
+    const withCommand = { backends: ['tmux', 'acp', 'command'], acpAgents: ['claude'] };
+    expect(backendFor(withCommand, 'command', 'claude', 'acp')).toBe('command');
+    expect(managerOptions(withCommand)).toEqual(['tmux', 'command']);
+    expect(managerOptions(both)).toEqual(['tmux']);
+    // acp and command, no tmux: the Manager dropdown stays and lists both.
+    const noTmux = { backends: ['command', 'acp'], acpAgents: ['claude'] };
+    expect(managerOptions(noTmux)).toEqual(['command', 'acp']);
+    expect(backendFor(noTmux, 'acp', 'claude', 'acp')).toBe('acp');
+    expect(backendFor(noTmux, 'command', 'claude', 'acp')).toBe('command');
+  });
+  it('defaults to the terminal and remembers the choice per server and agent', () => {
+    const st = mem();
+    expect(loadView(st, 's1', 'claude')).toBe('terminal');
+    saveView(st, 's1', 'claude', 'acp');
+    expect(loadView(st, 's1', 'claude')).toBe('acp');
+    expect(loadView(st, 's1', 'opencode')).toBe('terminal');
+    expect(loadView(st, 's2', 'claude')).toBe('terminal');
+    saveView(st, 's1', 'opencode', 'acp');
+    saveView(st, 's1', 'claude', 'terminal');
+    expect(loadView(st, 's1', 'claude')).toBe('terminal');
+    expect(loadView(st, 's1', 'opencode')).toBe('acp');
+  });
+  it('ignores a corrupt or hostile stored value', () => {
+    expect(loadView(mem({ termenbox_new_session_view: 'not json' }), 's1', 'claude')).toBe('terminal');
+    expect(loadView(mem({ termenbox_new_session_view: '{"s1/claude":"root"}' }), 's1', 'claude')).toBe('terminal');
+    expect(loadView(mem({ termenbox_new_session_view: '[1]' }), 's1', 'claude')).toBe('terminal');
+    const st = mem({ termenbox_new_session_view: 'not json' });
+    saveView(st, 's1', 'claude', 'acp');
+    expect(loadView(st, 's1', 'claude')).toBe('acp');
+  });
+  it('keeps the choice in memory where storage is missing or throws', () => {
+    expect(loadView(throwing, 'a', 'claude')).toBe('terminal');
+    saveView(throwing, 'a', 'claude', 'acp');
+    expect(loadView(throwing, 'a', 'claude')).toBe('acp');
+    expect(loadView(undefined, 'a', 'claude')).toBe('terminal');
+    saveView(undefined, 'a', 'claude', 'acp');
+    expect(loadView(undefined, 'a', 'claude')).toBe('acp');
   });
 });

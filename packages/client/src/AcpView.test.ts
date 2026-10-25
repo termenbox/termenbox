@@ -163,8 +163,9 @@ describe('starting an ACP session', () => {
   const sheet = (s: HubServer) => html(NewSessionSheet, { servers: [s], initialServerId: 'a', locked: true, sessions: [], windows: {}, oncreate: () => {}, onclose: () => {} });
   it('offers the owner’s agents under the ACP manager, and the tmux ones otherwise', () => {
     const both = sheet(server(['tmux', 'acp'], ['claude', 'kilo']));
-    expect(both).toContain('Agent session (ACP)');
-    expect(both).toContain('Codex'); // tmux first: the owner's call whether new sessions default to ACP is not made
+    expect(both).toContain('data-testid="view"'); // tmux and acp are one View choice, not a Manager dropdown
+    expect(both).not.toContain('Agent session (ACP)');
+    expect(both).toContain('Codex'); // the Terminal view is the default, so every tmux agent is offered
     const acpOnly = sheet(server(['acp'], ['claude', 'kilo']));
     expect(acpOnly).toContain('Claude Code');
     expect(acpOnly).toContain('Kilo');
