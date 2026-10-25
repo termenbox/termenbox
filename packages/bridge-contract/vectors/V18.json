@@ -1,0 +1,51 @@
+{
+  "id": "V18",
+  "title": "Widening rejected in (Res,None)",
+  "covers": [
+    "T15",
+    "I3"
+  ],
+  "session": {
+    "session_id": "sess-18",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "reattach",
+      "token": "current",
+      "proof": "valid",
+      "complete": false
+    },
+    {
+      "do": "extend",
+      "error": true,
+      "scope": [
+        "read:docs",
+        "exec:shell",
+        "exec:sudo"
+      ]
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "RESUME_STARTED",
+      "AUTHORITY_EXTENSION_REJECTED"
+    ],
+    "cell": [
+      "Res",
+      "None"
+    ],
+    "scope_version": 0
+  }
+}

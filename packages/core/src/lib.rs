@@ -5,6 +5,7 @@
 pub mod bundle;
 pub mod events;
 pub mod ext;
+pub mod governance;
 pub mod protocol;
 
 pub use protocol::*;

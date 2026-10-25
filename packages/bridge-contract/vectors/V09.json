@@ -1,0 +1,44 @@
+{
+  "id": "V09",
+  "title": "A reported 0-RTT replay is rejected",
+  "covers": [
+    "I8"
+  ],
+  "session": {
+    "session_id": "sess-09",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "reattach",
+      "error": true,
+      "token": "current",
+      "proof": "valid",
+      "transport_replay": true
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "RESUME_REJECTED"
+    ],
+    "cell": [
+      "Det",
+      "None"
+    ],
+    "scope_version": 0,
+    "last_event_payload": {
+      "reason": "transport_replay"
+    }
+  }
+}

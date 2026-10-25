@@ -1,0 +1,49 @@
+{
+  "id": "V04",
+  "title": "Widening rejected in (Det,Pend)",
+  "covers": [
+    "T12",
+    "I3"
+  ],
+  "session": {
+    "session_id": "sess-04",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "escalate"
+    },
+    {
+      "do": "extend",
+      "error": true,
+      "scope": [
+        "read:docs",
+        "exec:shell",
+        "exec:sudo"
+      ]
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "HUMAN_PENDING",
+      "RESUME_PREPARED",
+      "AUTHORITY_EXTENSION_REJECTED"
+    ],
+    "cell": [
+      "Det",
+      "Pend"
+    ],
+    "scope_version": 0
+  }
+}

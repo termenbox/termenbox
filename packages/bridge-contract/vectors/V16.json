@@ -1,0 +1,50 @@
+{
+  "id": "V16",
+  "title": "Re-issuing the token does not restart T_detach",
+  "covers": [
+    "L1"
+  ],
+  "session": {
+    "session_id": "sess-16",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "advance",
+      "seconds": 1000
+    },
+    {
+      "do": "escalate"
+    },
+    {
+      "do": "advance",
+      "seconds": 800
+    },
+    {
+      "do": "tick"
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "HUMAN_PENDING",
+      "RESUME_PREPARED",
+      "DETACH_TIMEOUT",
+      "TERMINATION"
+    ],
+    "cell": [
+      "Terminated"
+    ],
+    "scope_version": 0
+  }
+}

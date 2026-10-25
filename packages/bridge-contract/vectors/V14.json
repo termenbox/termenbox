@@ -1,0 +1,68 @@
+{
+  "id": "V14",
+  "title": "An approval that lapsed before drain is not honoured",
+  "covers": [
+    "I13"
+  ],
+  "config": {
+    "t_approve": 100
+  },
+  "session": {
+    "session_id": "sess-14",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "escalate"
+    },
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "tool_call",
+      "key": "k1",
+      "tool": "shell:git push"
+    },
+    {
+      "do": "resolve"
+    },
+    {
+      "do": "advance",
+      "seconds": 200
+    },
+    {
+      "do": "reattach",
+      "token": "current",
+      "proof": "valid"
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "HUMAN_PENDING",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "TOOL_CALL_QUEUED",
+      "HUMAN_RESOLVED",
+      "RESUME_PREPARED",
+      "RESUME_STARTED",
+      "RESUME_VERIFIED",
+      "TOOL_CALL_EXPIRED"
+    ],
+    "cell": [
+      "Att",
+      "None"
+    ],
+    "scope_version": 0,
+    "queue": [],
+    "forwarded": [],
+    "last_event_payload": {
+      "reason": "approval_ttl"
+    }
+  }
+}

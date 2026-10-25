@@ -1,0 +1,43 @@
+{
+  "id": "V08",
+  "title": "A token without proof of possession is rejected",
+  "covers": [
+    "I11"
+  ],
+  "session": {
+    "session_id": "sess-08",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "reattach",
+      "error": true,
+      "token": "current",
+      "proof": "invalid"
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "RESUME_REJECTED"
+    ],
+    "cell": [
+      "Det",
+      "None"
+    ],
+    "scope_version": 0,
+    "last_event_payload": {
+      "reason": "bad_proof"
+    }
+  }
+}

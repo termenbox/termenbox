@@ -1,0 +1,66 @@
+{
+  "id": "V12",
+  "title": "Human resolves while detached: queue drains only after resume (Rule D)",
+  "covers": [
+    "I13",
+    "rule D"
+  ],
+  "session": {
+    "session_id": "sess-12",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "escalate"
+    },
+    {
+      "do": "tool_call",
+      "key": "k1",
+      "tool": "shell:ls"
+    },
+    {
+      "do": "resolve",
+      "then_cell": [
+        "Det",
+        "None"
+      ]
+    },
+    {
+      "do": "reattach",
+      "token": "current",
+      "proof": "valid"
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "HUMAN_PENDING",
+      "RESUME_PREPARED",
+      "TOOL_CALL_QUEUED",
+      "HUMAN_RESOLVED",
+      "RESUME_PREPARED",
+      "RESUME_STARTED",
+      "RESUME_VERIFIED",
+      "TOOL_CALL_DRAINED"
+    ],
+    "cell": [
+      "Att",
+      "None"
+    ],
+    "scope_version": 0,
+    "queue": [],
+    "forwarded": [
+      "k1"
+    ]
+  }
+}

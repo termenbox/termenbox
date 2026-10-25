@@ -1,0 +1,45 @@
+{
+  "id": "V11",
+  "title": "Restart applies an elapsed human timeout",
+  "covers": [
+    "I12",
+    "L2",
+    "recovery"
+  ],
+  "config": {
+    "t_human": 100
+  },
+  "session": {
+    "session_id": "sess-11",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "escalate"
+    },
+    {
+      "do": "restart",
+      "downtime": 500
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "HUMAN_PENDING",
+      "BRIDGE_RECOVERED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "HUMAN_TIMEOUT",
+      "TERMINATION"
+    ],
+    "cell": [
+      "Terminated"
+    ],
+    "scope_version": 0
+  }
+}

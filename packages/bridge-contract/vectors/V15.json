@@ -1,0 +1,63 @@
+{
+  "id": "V15",
+  "title": "Drain revalidates the current scope",
+  "covers": [
+    "I13",
+    "I10"
+  ],
+  "session": {
+    "session_id": "sess-15",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "escalate"
+    },
+    {
+      "do": "tool_call",
+      "key": "k1",
+      "tool": "shell:ls",
+      "permission": "exec:shell"
+    },
+    {
+      "do": "tool_call",
+      "key": "k2",
+      "tool": "docs:read",
+      "permission": "read:docs"
+    },
+    {
+      "do": "narrow",
+      "scope": [
+        "read:docs"
+      ]
+    },
+    {
+      "do": "resolve"
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "HUMAN_PENDING",
+      "TOOL_CALL_QUEUED",
+      "TOOL_CALL_QUEUED",
+      "AUTHORITY_NARROWED",
+      "HUMAN_RESOLVED",
+      "TOOL_CALL_REJECTED",
+      "TOOL_CALL_DRAINED"
+    ],
+    "cell": [
+      "Att",
+      "None"
+    ],
+    "scope_version": 1,
+    "forwarded": [
+      "k2"
+    ]
+  }
+}
