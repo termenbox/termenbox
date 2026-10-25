@@ -4,6 +4,8 @@ import { openTransport, Unreachable, type Openers, type Target, type Transport }
 import { openWs } from './ws';
 import type { Credentials } from './device';
 import type { PathFailure } from './paths';
+import { PROTOCOL_VERSION } from './extensions';
+import { fromLegacy, toLegacy } from './legacy';
 
 /** `checking`: still connected on paper, but the server has not answered for a few seconds (input may be lost). */
 export type ConnState = 'connecting' | 'connected' | 'checking' | 'reconnecting' | 'unreachable' | 'closed';
@@ -91,6 +93,8 @@ export class Connection {
   private retryAt = 0;
   private listeners = new Set<(msg: ServerMessage) => void>();
   private authed = false;
+  /** The server predates protocol versions: messages are translated to and from the old vocabulary (legacy.ts). */
+  private legacy = false;
   /** The server put terminal bytes on their own lane for this connection (`auth_ok.channels`). */
   private lanes = false;
   private everReady = false;
@@ -154,7 +158,7 @@ export class Connection {
     if (!this.transport || !this.authed) return;
     // Keystrokes go as raw bytes on the lane when there is one, and as JSON otherwise.
     if (msg.type === 'input' && this.lanes && this.transport.sendTerm?.(b64ToBytes(msg.data))) return;
-    this.transport.send(JSON.stringify(msg));
+    this.transport.send(JSON.stringify(this.legacy ? toLegacy(msg) : msg));
   }
 
   close() {
@@ -220,6 +224,7 @@ export class Connection {
     this.clearTimers();
     this.retryAt = 0; // an attempt is running now
     this.authed = false;
+    this.legacy = false;
     this.lanes = false;
     this.opts.onState(this.everReady ? 'reconnecting' : 'connecting');
 
@@ -266,12 +271,14 @@ export class Connection {
         this.reconnectNow();
       } else this.scheduleRetry();
     };
-    transport.send(JSON.stringify({ type: 'hello' }));
+    transport.send(JSON.stringify({ type: 'hello', protocol: PROTOCOL_VERSION }));
   }
 
   private onText(transport: Transport, text: string) {
     if (this.transport !== transport) return;
-    const msg: ServerMessage = JSON.parse(text);
+    const raw: ServerMessage = JSON.parse(text);
+    // A server whose `auth_ok` names no protocol version speaks the old wire vocabulary (legacy.ts, step 3.2).
+    const msg: ServerMessage = this.legacy ? fromLegacy(raw) : raw;
     if (msg.type === 'pong') {
       this.pingsOut = Math.max(0, this.pingsOut - 1);
       if (this.pingsOut === 0 && this.proving) {
@@ -287,6 +294,7 @@ export class Connection {
     if (msg.type === 'auth_ok') {
       const isReconnect = this.everReady;
       this.authed = true;
+      this.legacy = !(msg.protocol && msg.protocol >= 1);
       this.pingsOut = 0;
       this.proving = false;
       this.fastReconnect = false;

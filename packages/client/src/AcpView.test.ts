@@ -92,14 +92,14 @@ describe('entries are drawn as text', () => {
 
 describe('the workspace view', () => {
   it('a history with an old error announces nothing when it is opened', () => {
-    const v = { type: 'acp_view' as const, session: 'acp:work', epoch: 1, rev: 2, reset: true, first: 1, entries: [{ id: 1, rev: 2, kind: 'notice', level: 'error', text: 'Old failure' }] as AcpEntryWire[],
+    const v = { type: 'acp_view' as const, workspace: 'acp:work', epoch: 1, rev: 2, reset: true, first: 1, entries: [{ id: 1, rev: 2, kind: 'notice', level: 'error', text: 'Old failure' }] as AcpEntryWire[],
       info: { agent: 'claude', dir: '/w', status: 'running', working: false } };
     const out = html(AcpView, { workspaceKey: 'srv/acp:work', name: 'work', agent: 'claude', stream: applyView(emptyStream('acp:work'), v), onprompt: () => {}, oninterrupt: () => {}, onanswer: () => {}, onmode: () => {}, onshell: () => {} });
     expect(out).toContain('Old failure');
     expect(out).not.toContain('role="alert"');
   });
 
-  const view = (over: Partial<AcpViewMessage> = {}): AcpViewMessage => ({ type: 'acp_view', session: 'acp:work', epoch: 1, rev: 3, reset: true, first: 1, entries: [{ id: 1, rev: 1, kind: 'user', text: 'hello' }, { id: 2, rev: 3, kind: 'message', text: 'Hi **there**' }],
+  const view = (over: Partial<AcpViewMessage> = {}): AcpViewMessage => ({ type: 'acp_view', workspace: 'acp:work', epoch: 1, rev: 3, reset: true, first: 1, entries: [{ id: 1, rev: 1, kind: 'user', text: 'hello' }, { id: 2, rev: 3, kind: 'message', text: 'Hi **there**' }],
     info: { agent: 'claude', dir: '/w', status: 'running', working: false, mode: 'ask', modes: [{ id: 'ask', name: 'Ask' }, { id: 'plan', name: 'Plan' }], commands: [{ name: 'compact' }], usage: { used: 250, size: 1000 } }, ...over });
   const props = (stream?: StreamState, extra: Record<string, unknown> = {}) => ({ workspaceKey: 'srv/acp:work', name: 'work', agent: 'claude', stream, onprompt: () => {}, oninterrupt: () => {}, onanswer: () => {}, onmode: () => {}, onshell: () => {}, ...extra });
 
@@ -143,7 +143,7 @@ describe('the prompt line is the shared composer', () => {
 
 describe('T0 in the shared pieces', () => {
   const a = (source?: string): WorkspaceAgent => ({ state: 'needs_input', seq: 4, stale: false, ts: 10, agent: 'claude', serverStatus: true,
-    attention: { id: 'a1', session: 's', kind: 'needs_input', raised_at: 5, prompt: 'Write a.txt' },
+    attention: { id: 'a1', workspace: 's', kind: 'needs_input', raised_at: 5, prompt: 'Write a.txt' },
     prompt: { id: 'acp-1', kind: 'permission', choices: ['Yes', 'No'], seq: 4, confidence: 'high', source } });
   it('Home’s card says T0 for an ACP prompt and T1 for a hook one', () => {
     const s = { key: 'k/s', name: 's', since: 5, question: 'Write a.txt' };
@@ -152,7 +152,7 @@ describe('T0 in the shared pieces', () => {
     expect(decisionFor(s, a('acp'), 20).options).toEqual(['Yes', 'No']);
   });
   it('a prompt event keeps where it came from, so the card can say so', () => {
-    const r = applyEvents({}, [{ session: 's', seq: 1, ts: 1, source: 'acp', confidence: 'high', kind: 'prompt', id: 'acp-1', prompt_kind: 'permission', choices: ['Yes'] } as never]);
+    const r = applyEvents({}, [{ workspace: 's', seq: 1, ts: 1, source: 'acp', confidence: 'high', kind: 'prompt', id: 'acp-1', prompt_kind: 'permission', choices: ['Yes'] } as never]);
     expect(r.map.s.prompt?.source).toBe('acp');
   });
 });

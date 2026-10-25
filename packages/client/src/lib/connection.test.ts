@@ -365,3 +365,74 @@ describe('after a network change (decision 0123)', () => {
     c.close();
   });
 });
+
+describe('version negotiation and the legacy shim (step 3.2)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** A connection to a server whose `auth_ok` is `authOk`. */
+  async function against(authOk: object) {
+    vi.useFakeTimers();
+    vi.stubGlobal('document', Object.assign(new EventTarget(), { visibilityState: 'visible' }));
+    vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
+    const sent: string[] = [];
+    const t: Transport = { kind: 'ws', onmessage: null, onclose: null, send: (x) => void sent.push(x), close: () => {} };
+    const c = new Connection({
+      target: async () => ({ wsUrl: 'ws://x' }),
+      openers: { rtc: async () => t, ws: async () => t },
+      credentials: async () => ({ cert: 'c', sign: async () => 's' }),
+      onState: () => {},
+      onReady: () => {},
+      onFatal: () => {},
+      onDrop: () => {},
+    });
+    const heard: unknown[] = [];
+    c.subscribe((m) => heard.push(m));
+    c.start();
+    await vi.advanceTimersByTimeAsync(10);
+    t.onmessage!(JSON.stringify({ type: 'challenge', nonce: 'n', server_id: 's' }));
+    await vi.advanceTimersByTimeAsync(10);
+    t.onmessage!(JSON.stringify(authOk));
+    return { c, t, sent, heard };
+  }
+
+  it('announces the protocol version in its hello', async () => {
+    const { c, sent } = await against({ type: 'auth_ok', protocol: 1, user: 'u', server_name: 's' });
+    expect(JSON.parse(sent[0])).toEqual({ type: 'hello', protocol: 1 });
+    c.close();
+  });
+
+  it('a current server is spoken to in the workspace vocabulary, unchanged', async () => {
+    const { c, t, sent, heard } = await against({ type: 'auth_ok', protocol: 1, user: 'u', server_name: 's' });
+    c.send({ type: 'list_workspaces' });
+    expect(JSON.parse(sent.at(-1)!)).toEqual({ type: 'list_workspaces' });
+    t.onmessage!(JSON.stringify({ type: 'workspaces', workspaces: [{ id: 'a', name: 'a', agent: null }] }));
+    expect(heard.at(-1)).toEqual({ type: 'workspaces', workspaces: [{ id: 'a', name: 'a', agent: null }] });
+    c.close();
+  });
+
+  // LEGACY SHIM test: deleted with the shim in step 8.1. The hello is the recorded one of a server before step 3.2.
+  it('an old server (its auth_ok names no protocol) is translated both ways', async () => {
+    const recorded = { type: 'auth_ok', user: 'alice', channels: ['term'], server_name: 'vps', mode: 'container', version: '0.1.52+abc', backends: ['tmux'], control_mode: true, tmux_version: '3.4', prefix: 'C-b' };
+    const { c, t, sent, heard } = await against(recorded);
+    c.send({ type: 'list_workspaces' });
+    c.send({ type: 'close_workspace', workspace: 'a' });
+    c.send({ type: 'attach', workspace_id: 'a' });
+    expect(sent.slice(-3).map((s) => JSON.parse(s))).toEqual([
+      { type: 'list_sessions' },
+      { type: 'close_session', session: 'a' },
+      { type: 'attach', session_id: 'a' },
+    ]);
+    t.onmessage!(JSON.stringify({ type: 'sessions', sessions: [{ id: 'a', name: 'a', agent: null }] }));
+    t.onmessage!(JSON.stringify({ type: 'session_attached', session_id: 'a' }));
+    t.onmessage!(JSON.stringify({ type: 'snapshot', session: 'a', text: 'session', hash: 'h' }));
+    expect(heard.slice(-3)).toEqual([
+      { type: 'workspaces', workspaces: [{ id: 'a', name: 'a', agent: null }] },
+      { type: 'workspace_attached', workspace_id: 'a' },
+      { type: 'snapshot', workspace: 'a', text: 'session', hash: 'h' },
+    ]);
+    c.close();
+  });
+});

@@ -12,7 +12,7 @@
   $: replyTo = workspaces.find(s => s.key === target)?.key ?? workspaces.find(s => s.key === activeKey)?.key ?? workspaces[0]?.key;
   function reply(text: string) {
     const clean = snippets.clean(text);
-    if (clean && replyTo) { send({ type: 'reply', session: replyTo, text: clean }); draft = ''; }
+    if (clean && replyTo) { send({ type: 'reply', workspace: replyTo, text: clean }); draft = ''; }
   }
 </script>
 {#if workspaces.length}

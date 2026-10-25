@@ -35,6 +35,7 @@ mod helper;
 mod history;
 mod journal;
 mod layout;
+mod legacy;
 mod link;
 mod locale;
 mod netutil;

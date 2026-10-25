@@ -6,8 +6,8 @@ const w = (index: number, path: string, extra: Partial<WindowInfo> = {}): Window
 
 describe('window state', () => {
   it('stores a window list per workspace and forgets the workspaces that are gone', () => {
-    let map = applyWindowList({}, { type: 'window_list', session: 'a', windows: [w(0, '/x')], representative: 0 });
-    map = applyWindowList(map, { type: 'window_list', session: 'b', windows: [w(0, '/y')] });
+    let map = applyWindowList({}, { type: 'window_list', workspace: 'a', windows: [w(0, '/x')], representative: 0 });
+    map = applyWindowList(map, { type: 'window_list', workspace: 'b', windows: [w(0, '/y')] });
     expect(map.b.representative).toBeNull();
     expect(Object.keys(forgetWindows(map, ['b']))).toEqual(['b']);
   });

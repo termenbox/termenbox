@@ -28,7 +28,7 @@ const shared = await startShared();
 const failures = [];
 const phone = { width: 390, height: 844 };
 /** The hooks' confirmed question on a workspace, as the server's event stream carries it: it gives the Home card its buttons. */
-const ask = (server, workspace, seq = 2) => server.broadcast({ type: 'agent_events', events: [{ session: workspace, seq, ts: Date.now(), source: 'hook', confidence: 'high', kind: 'prompt', id: `p-${workspace}`, prompt_kind: 'choice', choices: ['Yes', 'No'] }] });
+const ask = (server, workspace, seq = 2) => server.broadcast({ type: 'agent_events', events: [{ workspace: workspace, seq, ts: Date.now(), source: 'hook', confidence: 'high', kind: 'prompt', id: `p-${workspace}`, prompt_kind: 'choice', choices: ['Yes', 'No'] }] });
 const heroKey = (t) => t.page.locator('[data-decision-card]').first().getAttribute('data-decision-card');
 
 try {
@@ -44,7 +44,7 @@ try {
     const card = t.page.locator('[data-decision-card="one/s1"]');
     await card.getByRole('button', { name: 'Yes', exact: true }).click();
     const answers = t.server.of('answer');
-    t.check(answers.length === 1 && answers[0].session === 's1' && answers[0].choice === 0, `one tap on the card did not send the answer: ${JSON.stringify(answers)}`);
+    t.check(answers.length === 1 && answers[0].workspace === 's1' && answers[0].choice === 0, `one tap on the card did not send the answer: ${JSON.stringify(answers)}`);
     t.check(t.server.of('attach').length === 0, 'answering attached a terminal');
     t.ok('cold start: the push opens the named decision, no terminal, one tap on an option sends the answer');
     if (!(await t.end())) failures.push('cold start');

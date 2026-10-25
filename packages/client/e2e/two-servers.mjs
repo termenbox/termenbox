@@ -131,7 +131,7 @@ try {
     await page.evaluate((o) => window.__e2e.start(o), { record: server.record, cert, serverId: server.serverId, claim: server.claim });
     await waitFor(() => page.evaluate(() => window.__e2e.ready > 0), `${server.label} login`);
     for (const name of names) {
-      await page.evaluate((o) => window.__e2e.send({ type: 'new_session', name: o.name, dir: o.dir, template: 'aider' }), { name, dir: repo });
+      await page.evaluate((o) => window.__e2e.send({ type: 'new_workspace', name: o.name, dir: o.dir, template: 'aider' }), { name, dir: repo });
     }
     await waitFor(() => page.evaluate((n) => window.__e2e.workspaces.length >= n, names.length), `${server.label} workspaces`);
     await page.close();

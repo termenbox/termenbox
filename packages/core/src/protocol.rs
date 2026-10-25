@@ -173,8 +173,13 @@ fn parse_hhmm(text: &str) -> Option<u32> {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
-    /// Opens the handshake; the server answers with a `challenge`.
-    Hello,
+    /// Opens the handshake; the server answers with a `challenge`. `protocol` is the termenbox protocol version the
+    /// client speaks (`termenbox_core::ext::PROTOCOL_VERSION`); a client that sends none is an older one and is
+    /// answered in the legacy vocabulary (step 3.2).
+    Hello {
+        #[serde(default)]
+        protocol: u32,
+    },
     /// Device certificate plus a signature over the challenge (DECISION-0062); no GitHub token.
     Auth {
         cert: String,
@@ -203,7 +208,6 @@ pub enum ClientMessage {
         #[serde(default)]
         remove_tmux: bool,
         #[serde(default)]
-        #[serde(rename = "kill_sessions")]
         kill_workspaces: bool,
     },
     /// Asks for the agent state of every workspace and for the events after `after[workspace]` (plan v6, P.6).
@@ -214,7 +218,6 @@ pub enum ClientMessage {
     /// A one-tap answer to a prompt the user saw: accepted only while that prompt (`prompt_id` at event `seq`) is
     /// still the workspace's current one, reliable (hook-confirmed) and still on the pane (plan v8, K.4).
     Answer {
-        #[serde(rename = "session")]
         workspace: String,
         prompt_id: String,
         seq: u64,
@@ -222,14 +225,12 @@ pub enum ClientMessage {
     },
     /// Types a short reply into a workspace's pane without attaching to it (plan v8, K.5).
     Reply {
-        #[serde(rename = "session")]
         workspace: String,
         text: String,
     },
     /// Asks for a snapshot of a workspace's screen without attaching to it (decision 0084). `hash` is the one the
     /// client already holds: the server answers `unchanged` instead of sending the same text again.
     Peek {
-        #[serde(rename = "session")]
         workspace: String,
         #[serde(default)]
         hash: Option<String>,
@@ -237,50 +238,39 @@ pub enum ClientMessage {
     /// Asks for everything a workspace's terminal still holds, history included, as text (answered with `scrollback`
     /// parts). It is what select-all selects when the cursor is not in the prompt.
     Scrollback {
-        #[serde(rename = "session")]
         workspace: String,
     },
     /// Asks for the windows of a workspace (answered with `window_list`; later changes are pushed).
     Windows {
-        #[serde(rename = "session")]
         workspace: String,
     },
     /// Makes window `index` the one a client sees when it attaches (plan H.6).
     SelectWindow {
-        #[serde(rename = "session")]
         workspace: String,
         index: u32,
     },
     /// Opens a new window in the workspace, in the directory of its current window, and makes it the one
     /// attached terminals show.
     NewWindow {
-        #[serde(rename = "session")]
         workspace: String,
     },
     /// Closes one window of a workspace; closing the last one ends the workspace.
     CloseWindow {
-        #[serde(rename = "session")]
         workspace: String,
         index: u32,
     },
     /// Ends the workspace and everything in it (the client has asked the user first). Different from `Detach`,
     /// which only stops streaming and leaves the workspace running.
-    #[serde(rename = "close_session")]
     CloseWorkspace {
-        #[serde(rename = "session")]
         workspace: String,
     },
     /// Gives the workspace a display name; its id (what hooks, tabs and layouts key on) is unchanged. An empty name
     /// takes the label off again.
-    #[serde(rename = "rename_session")]
     RenameWorkspace {
-        #[serde(rename = "session")]
         workspace: String,
         name: String,
     },
-    #[serde(rename = "list_sessions")]
     ListWorkspaces,
-    #[serde(rename = "new_session")]
     NewWorkspace {
         name: String,
         /// Which workspace manager to create it in (`tmux`, `command`); the first one when absent.
@@ -295,7 +285,6 @@ pub enum ClientMessage {
     },
     Ping,
     Attach {
-        #[serde(rename = "session_id")]
         workspace_id: String,
     },
     /// Stop streaming the current pane while keeping authentication and agent events alive.
@@ -328,7 +317,6 @@ pub enum ClientMessage {
     /// sends no push for a workspace someone is looking at.
     Foreground {
         #[serde(default)]
-        #[serde(rename = "session")]
         workspace: Option<String>,
     },
     /// A device shows this workspace in the foreground: clears its `finished_unseen` and `failed` items, never
@@ -342,16 +330,16 @@ pub enum ClientMessage {
     },
     /// Asks for the workspace view (decision 0103): the cleaned screen tail, the parsed prompt and the tier in use.
     /// `hash` is the one the client already holds; the server then answers `unchanged`.
+    #[serde(rename = "workspace_view")]
     SessionView {
-        #[serde(rename = "session")]
         workspace: String,
         #[serde(default)]
         hash: Option<String>,
     },
     /// Taps option `option` (0-based, into the options the last `session_view` listed) of prompt `prompt_id`. The
     /// server sends the keys its profile lists for that option and nothing the client supplies.
+    #[serde(rename = "workspace_answer")]
     SessionAnswer {
-        #[serde(rename = "session")]
         workspace: String,
         prompt_id: String,
         option: u8,
@@ -367,7 +355,6 @@ pub enum ClientMessage {
     /// after `after` when `epoch` is the one the client holds, else everything it keeps) and then pushes `acp_view`
     /// updates, a few per second at most, until `acp_close` or another `acp_open`.
     AcpOpen {
-        #[serde(rename = "session")]
         workspace: String,
         #[serde(default)]
         after: Option<u64>,
@@ -378,25 +365,21 @@ pub enum ClientMessage {
     AcpClose,
     /// The owner's next prompt (`session/prompt`); several lines are allowed, up to 16 KiB.
     AcpPrompt {
-        #[serde(rename = "session")]
         workspace: String,
         text: String,
     },
     /// Interrupts the turn: open requests are answered `cancelled`, then `session/cancel`.
     AcpInterrupt {
-        #[serde(rename = "session")]
         workspace: String,
     },
     /// Answers permission `prompt_id` with exactly the option id the agent offered (only one-time options are shown).
     AcpAnswer {
-        #[serde(rename = "session")]
         workspace: String,
         prompt_id: String,
         option_id: String,
     },
     /// Switches to a mode the agent listed in `acp_view.info.modes`.
     AcpMode {
-        #[serde(rename = "session")]
         workspace: String,
         mode: String,
     },
@@ -447,6 +430,11 @@ pub enum ServerMessage {
     },
     AuthOk {
         user: String,
+        /// The termenbox protocol version this server speaks to this client (`ext::PROTOCOL_VERSION`); absent (0)
+        /// from a server that predates versions, or when the client announced none and is spoken to in the legacy
+        /// vocabulary.
+        #[serde(default)]
+        protocol: u32,
         /// The lanes this connection uses besides JSON (`term`); absent means the single pipe.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         channels: Vec<String>,
@@ -474,14 +462,10 @@ pub enum ServerMessage {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         acp_agents: Vec<String>,
     },
-    #[serde(rename = "sessions")]
     Workspaces {
-        #[serde(rename = "sessions")]
         workspaces: Vec<WorkspaceInfo>,
     },
-    #[serde(rename = "session_attached")]
     WorkspaceAttached {
-        #[serde(rename = "session_id")]
         workspace_id: String,
     },
     Output {
@@ -492,14 +476,12 @@ pub enum ServerMessage {
     /// One part of the answer to `scrollback`, in order from 0; `last` closes it. A part is a few KB so that it fits
     /// one message of the direct transport; the client joins the parts. Text is the terminal's, never logged.
     Scrollback {
-        #[serde(rename = "session")]
         workspace: String,
         part: u32,
         last: bool,
         text: String,
     },
     Snapshot {
-        #[serde(rename = "session")]
         workspace: String,
         text: String,
         hash: String,
@@ -508,7 +490,6 @@ pub enum ServerMessage {
     },
     /// The windows of one workspace; sent for `windows` and again whenever they change.
     WindowList {
-        #[serde(rename = "session")]
         workspace: String,
         windows: Vec<WindowInfo>,
         /// The window the workspace's tab speaks for (plan H.3): the agent window used last, else the active one.
@@ -547,7 +528,6 @@ pub enum ServerMessage {
     },
     /// The derived Activity (with task) of every workspace; answers `agent_sync`, then follows each change.
     Activity {
-        #[serde(rename = "sessions")]
         workspaces: Vec<crate::events::WorkspaceActivity>,
     },
     /// The open attention items, and again whenever one is raised or cleared.
@@ -558,12 +538,11 @@ pub enum ServerMessage {
     AgentEvent {
         event: AgentEventType,
         agent: String,
-        #[serde(rename = "session_id")]
         workspace_id: String,
     },
     /// The workspace view (decision 0103); answers `session_view`.
+    #[serde(rename = "workspace_view")]
     SessionView {
-        #[serde(rename = "session")]
         workspace: String,
         /// `t1` (structured), `t2` (agent profile) or `t3` (generic). Clients read any other value as `t3`.
         tier: String,
@@ -656,7 +635,6 @@ pub enum ServerMessage {
 /// A change to apply to what the client holds of one ACP workspace.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct AcpView {
-    #[serde(rename = "session")]
     pub workspace: String,
     /// Names this run of the workspace's stream. A client that holds another epoch starts over.
     pub epoch: u64,
@@ -833,7 +811,8 @@ pub struct HealthLevel {
 /// One task an agent worked on: metadata only, never a prompt or terminal text (decision 0105).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct HistoryRun {
-    #[serde(rename = "session")]
+    /// Older history files wrote this as `session`; they are still read.
+    #[serde(alias = "session")]
     pub workspace: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
@@ -1008,8 +987,9 @@ mod tests {
     #[test]
     fn test_wire_names_match_the_client() {
         let v = serde_json::to_value(ClientMessage::ListWorkspaces).unwrap();
-        assert_eq!(v["type"], "list_sessions");
+        assert_eq!(v["type"], "list_workspaces");
         let v = serde_json::to_value(ServerMessage::AuthOk {
+            protocol: 1,
             user: "u".into(),
             channels: vec![],
             server_name: "s".into(),
@@ -1127,14 +1107,14 @@ mod tests {
             hash: None,
         })
         .unwrap();
-        assert_eq!(v["type"], "session_view");
+        assert_eq!(v["type"], "workspace_view");
         let v = serde_json::to_value(ClientMessage::SessionAnswer {
             workspace: "s".into(),
             prompt_id: "v-ab".into(),
             option: 2,
         })
         .unwrap();
-        assert_eq!(v["type"], "session_answer");
+        assert_eq!(v["type"], "workspace_answer");
         assert_eq!(v["option"], 2);
         let v = serde_json::to_value(ServerMessage::Snapshot {
             workspace: "s".into(),
@@ -1169,7 +1149,7 @@ mod tests {
             workspace_id: "x".into(),
         })
         .unwrap();
-        assert_eq!(v["type"], "session_attached");
+        assert_eq!(v["type"], "workspace_attached");
         let v = serde_json::to_value(ClientMessage::NewWorkspace {
             name: "n".into(),
             backend: None,
@@ -1177,7 +1157,7 @@ mod tests {
             template: Some("claude".into()),
         })
         .unwrap();
-        assert_eq!(v["type"], "new_session");
+        assert_eq!(v["type"], "new_workspace");
         assert_eq!(v["dir"], "/srv/app");
         // The new messages the client speaks (packages/client/src/lib/protocol.ts).
         for (msg, name) in [
@@ -1211,14 +1191,14 @@ mod tests {
                 ClientMessage::CloseWorkspace {
                     workspace: "s".into(),
                 },
-                "close_session",
+                "close_workspace",
             ),
             (
                 ClientMessage::RenameWorkspace {
                     workspace: "s".into(),
                     name: "n".into(),
                 },
-                "rename_session",
+                "rename_workspace",
             ),
         ] {
             assert_eq!(serde_json::to_value(msg).unwrap()["type"], name);
@@ -1240,7 +1220,7 @@ mod tests {
         assert_eq!(v["windows"][0]["agent"], "claude");
         // An older client's NewWorkspace has neither field.
         let old: ClientMessage =
-            serde_json::from_str(r#"{"type":"new_session","name":"n"}"#).unwrap();
+            serde_json::from_str(r#"{"type":"new_workspace","name":"n"}"#).unwrap();
         assert_eq!(
             old,
             ClientMessage::NewWorkspace {
@@ -1250,7 +1230,21 @@ mod tests {
                 template: None
             }
         );
-        let v = serde_json::to_value(ClientMessage::Hello).unwrap();
+        // A hello without a version is an older client's; one with it parses on an older server, whose `hello` is a
+        // unit variant (extra fields are ignored there).
+        let old: ClientMessage = serde_json::from_str(r#"{"type":"hello"}"#).unwrap();
+        assert_eq!(old, ClientMessage::Hello { protocol: 0 });
+        #[derive(Deserialize, Debug, PartialEq)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum OldClient {
+            Hello,
+        }
+        assert_eq!(
+            serde_json::from_str::<OldClient>(r#"{"type":"hello","protocol":1}"#).unwrap(),
+            OldClient::Hello
+        );
+        let v = serde_json::to_value(ClientMessage::Hello { protocol: 1 }).unwrap();
+        assert_eq!(v["protocol"], 1);
         assert_eq!(v["type"], "hello");
         let v = serde_json::to_value(ServerMessage::Challenge {
             nonce: "n".into(),
@@ -1331,7 +1325,8 @@ mod tests {
         let m: ServerMessage = serde_json::from_str(r#"{"type":"from_the_future"}"#).unwrap();
         assert_eq!(m, ServerMessage::Unknown);
         let m: ClientMessage =
-            serde_json::from_str(r#"{"type":"session_view","session":"s","extra":true}"#).unwrap();
+            serde_json::from_str(r#"{"type":"workspace_view","workspace":"s","extra":true}"#)
+                .unwrap();
         assert_eq!(
             m,
             ClientMessage::SessionView {
@@ -1345,7 +1340,7 @@ mod tests {
     #[test]
     fn acp_messages_use_the_wire_names_the_client_reads() {
         let m: ClientMessage =
-            serde_json::from_str(r#"{"type":"acp_open","session":"s"}"#).unwrap();
+            serde_json::from_str(r#"{"type":"acp_open","workspace":"s"}"#).unwrap();
         assert_eq!(
             m,
             ClientMessage::AcpOpen {

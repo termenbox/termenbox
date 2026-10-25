@@ -63,7 +63,7 @@ export const TIER_LABEL: Record<Tier, { name: string; detail: string }> = {
 
 /** The view model from a wire message, or null when it is not a usable view. */
 export function viewFrom(msg: SessionViewMessage | null | undefined): ViewModel | null {
-  if (!msg || typeof msg.session !== 'string' || !Array.isArray(msg.tail)) return null;
+  if (!msg || typeof msg.workspace !== 'string' || !Array.isArray(msg.tail)) return null;
   const tail = msg.tail.slice(-TAIL_LINES).map((l) => cleanText(l));
   const p = msg.prompt;
   let prompt: ViewPrompt | undefined;
@@ -74,7 +74,7 @@ export function viewFrom(msg: SessionViewMessage | null | undefined): ViewModel 
     }
   }
   return {
-    workspace: msg.session,
+    workspace: msg.workspace,
     tier: tierOf(msg.tier),
     agent: msg.agent ? cleanText(msg.agent, 32) : undefined,
     task: msg.task ? cleanText(msg.task, 120) : undefined,
@@ -87,7 +87,7 @@ export function viewFrom(msg: SessionViewMessage | null | undefined): ViewModel 
 
 /** Keeps the held view when the server says nothing changed. */
 export function merge(held: ViewModel | null, msg: SessionViewMessage): ViewModel | null {
-  if (msg.unchanged && held && held.workspace === msg.session) return held;
+  if (msg.unchanged && held && held.workspace === msg.workspace) return held;
   return viewFrom(msg);
 }
 
@@ -96,8 +96,8 @@ export function merge(held: ViewModel | null, msg: SessionViewMessage): ViewMode
 export function answerFor(view: ViewModel, index: number): ClientMessage | null {
   const p = view.prompt;
   if (!p || !Number.isInteger(index) || index < 0 || index >= p.options.length) return null;
-  return { type: 'session_answer', session: view.workspace, prompt_id: p.id, option: index };
+  return { type: 'workspace_answer', workspace: view.workspace, prompt_id: p.id, option: index };
 }
 
 export const requestView = (workspace: string, held?: ViewModel | null): ClientMessage =>
-  held && held.workspace === workspace && held.hash ? { type: 'session_view', session: workspace, hash: held.hash } : { type: 'session_view', session: workspace };
+  held && held.workspace === workspace && held.hash ? { type: 'workspace_view', workspace: workspace, hash: held.hash } : { type: 'workspace_view', workspace: workspace };

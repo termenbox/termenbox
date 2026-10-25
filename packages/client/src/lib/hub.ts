@@ -104,8 +104,8 @@ export class ServerHub {
   sendToWorkspace(key: string, message: ClientMessage) {
     const workspace = this.findWorkspace(key);
     if (!workspace) return;
-    const wire = 'session' in message ? { ...message, session: workspace.id }
-      : 'session_id' in message ? { ...message, session_id: workspace.id } : message;
+    const wire = 'workspace' in message ? { ...message, workspace: workspace.id }
+      : 'workspace_id' in message ? { ...message, workspace_id: workspace.id } : message;
     this.send(workspace.serverId, wire);
   }
   /** Shows the new name at once and asks the server. The server's list confirms it for every device; a refusal is
@@ -115,8 +115,8 @@ export class ServerHub {
     if (!found) return;
     const e = this.entries.get(found.serverId);
     if (e) { e.workspaces = e.workspaces.map(s => (s.id === found.id ? { ...s, name } : s)); this.publish(); }
-    this.sendToWorkspace(key, { type: 'rename_session', session: key, name });
-    setTimeout(() => this.send(found.serverId, { type: 'list_sessions' }), 2000);
+    this.sendToWorkspace(key, { type: 'rename_workspace', workspace: key, name });
+    setTimeout(() => this.send(found.serverId, { type: 'list_workspaces' }), 2000);
   }
   findWorkspace(key: string): HubWorkspace | undefined {
     for (const e of this.entries.values()) {
@@ -169,7 +169,7 @@ export class ServerHub {
         e.version = msg.version ?? ''; e.backends = msg.backends ?? []; e.acpAgents = msg.acp_agents ?? [];
         e.controlMode = !!msg.control_mode; e.tmuxVersion = msg.tmux_version ?? ''; e.prefix = msg.prefix ?? '';
         this.publish(); this.opts.onSaved?.(e.server);
-        connection.send({ type: 'list_sessions' });
+        connection.send({ type: 'list_workspaces' });
         connection.send({ type: 'agent_sync', after: syncRequest(e.agents) });
         this.opts.onReady?.(e.id, msg, restoring);
       },
@@ -190,11 +190,11 @@ export class ServerHub {
     e.connection = connection;
     e.unsubscribe = connection.subscribe(msg => {
       if (!current()) return;
-      const changed = msg.type === 'sessions' || msg.type === 'agent_snapshot' || msg.type === 'agent_events' || msg.type === 'window_list' || msg.type === 'activity' || msg.type === 'attention';
-      if (msg.type === 'sessions') { e.workspaces = msg.sessions; e.windows = forgetWindows(e.windows, msg.sessions.map(s => s.id)); }
+      const changed = msg.type === 'workspaces' || msg.type === 'agent_snapshot' || msg.type === 'agent_events' || msg.type === 'window_list' || msg.type === 'activity' || msg.type === 'attention';
+      if (msg.type === 'workspaces') { e.workspaces = msg.workspaces; e.windows = forgetWindows(e.windows, msg.workspaces.map(s => s.id)); }
       if (msg.type === 'window_list') e.windows = applyWindowList(e.windows, msg);
       if (msg.type === 'agent_snapshot') e.agents = applySnapshot(e.agents, msg.states);
-      if (msg.type === 'activity') e.agents = applyActivity(e.agents, msg.sessions, Date.now());
+      if (msg.type === 'activity') e.agents = applyActivity(e.agents, msg.workspaces, Date.now());
       if (msg.type === 'attention') e.agents = applyAttention(e.agents, msg.items);
       if (msg.type === 'agent_events') {
         const result = applyEvents(e.agents, msg.events); e.agents = result.map;

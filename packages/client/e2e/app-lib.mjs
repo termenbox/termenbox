@@ -42,11 +42,11 @@ export class ScriptedServer {
     this.views.set('s3', this.view('s3', { tail: ['$'] }));
   }
   view(workspace, extra) {
-    return { type: 'session_view', session: workspace, tier: 't1', agent: 'claude', tail: [], hash: `h${Math.random().toString(36).slice(2)}`, task: 'Fix the login test', ...extra };
+    return { type: 'workspace_view', workspace: workspace, tier: 't1', agent: 'claude', tail: [], hash: `h${Math.random().toString(36).slice(2)}`, task: 'Fix the login test', ...extra };
   }
   workspaces() { return Object.keys(this.names).map((id) => ({ id, name: this.names[id], agent: null })); }
   snapshot() {
-    return { type: 'agent_snapshot', states: Object.keys(this.names).map((workspace) => ({ session: workspace, state: this.states[workspace], seq: 1, ts: Date.now(), stale: false, agent: 'claude', waiting_since: this.states[workspace] === 'needs_input' ? Date.now() - (workspace === 's2' ? 90000 : 30000) : undefined })) };
+    return { type: 'agent_snapshot', states: Object.keys(this.names).map((workspace) => ({ workspace: workspace, state: this.states[workspace], seq: 1, ts: Date.now(), stale: false, agent: 'claude', waiting_since: this.states[workspace] === 'needs_input' ? Date.now() - (workspace === 's2' ? 90000 : 30000) : undefined })) };
   }
   send(ws, m) { ws.send(JSON.stringify(m)); }
   broadcast(m) { for (const ws of this.sockets) this.send(ws, m); }
@@ -59,24 +59,24 @@ export class ScriptedServer {
       case 'hello': this.send(ws, { type: 'challenge', nonce: 'nonce', server_id: 'one' }); break;
       case 'auth':
         this.send(ws, { type: 'auth_ok', user: 'tester', server_name: 'one', version: '0.1.31', backends: ['tmux'], control_mode: true, prefix: 'C-b' });
-        this.send(ws, { type: 'sessions', sessions: this.workspaces() });
+        this.send(ws, { type: 'workspaces', workspaces: this.workspaces() });
         this.send(ws, this.snapshot());
         break;
-      case 'list_sessions': this.send(ws, { type: 'sessions', sessions: this.workspaces() }); break;
+      case 'list_workspaces': this.send(ws, { type: 'workspaces', workspaces: this.workspaces() }); break;
       case 'ping': this.send(ws, { type: 'pong' }); break;
       case 'attach':
-        this.send(ws, { type: 'session_attached', session_id: m.session_id });
-        this.send(ws, { type: 'output', data: b64text(`attached to ${m.session_id}\r\n$ `) });
+        this.send(ws, { type: 'workspace_attached', workspace_id: m.workspace_id });
+        this.send(ws, { type: 'output', data: b64text(`attached to ${m.workspace_id}\r\n$ `) });
         break;
-      case 'session_view': {
-        const v = this.views.get(m.session);
-        if (v) this.send(ws, m.hash === v.hash ? { type: 'session_view', session: m.session, tier: v.tier, tail: [], hash: v.hash, unchanged: true } : v);
+      case 'workspace_view': {
+        const v = this.views.get(m.workspace);
+        if (v) this.send(ws, m.hash === v.hash ? { type: 'workspace_view', workspace: m.workspace, tier: v.tier, tail: [], hash: v.hash, unchanged: true } : v);
         break;
       }
-      case 'session_answer':
+      case 'workspace_answer':
         // The agent takes the answer: the prompt clears and the workspace goes back to work.
-        this.states[m.session] = 'working';
-        this.setView(m.session, { prompt: undefined, tail: ['answered option ' + m.option] });
+        this.states[m.workspace] = 'working';
+        this.setView(m.workspace, { prompt: undefined, tail: ['answered option ' + m.option] });
         this.broadcast(this.snapshot());
         break;
       default: break;

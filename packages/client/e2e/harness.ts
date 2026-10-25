@@ -57,8 +57,8 @@ const api = {
       onReady: (_msg, isReconnect) => {
         api.ready++;
         if (isReconnect) {
-          connection?.send({ type: 'list_sessions' });
-          if (activeWorkspace) connection?.send({ type: 'attach', session_id: activeWorkspace });
+          connection?.send({ type: 'list_workspaces' });
+          if (activeWorkspace) connection?.send({ type: 'attach', workspace_id: activeWorkspace });
         }
       },
       onFatal: (m) => (api.fatal = m),
@@ -67,15 +67,15 @@ const api = {
       if (m.type !== 'output' && m.type !== 'term') api.received.push(JSON.stringify(m).slice(0, 160));
       if (m.type === 'output') api.output += decoder.decode(b64ToBytes(m.data), { stream: true });
       if (m.type === 'term') api.output += decoder.decode(m.bytes, { stream: true });
-      if (m.type === 'sessions') api.workspaces = m.sessions;
-      if (m.type === 'session_attached' && !mounted) connection?.send({ type: 'resize', cols: 120, rows: 30 });
+      if (m.type === 'workspaces') api.workspaces = m.workspaces;
+      if (m.type === 'workspace_attached' && !mounted) connection?.send({ type: 'resize', cols: 120, rows: 30 });
     });
     const realSend = connection.send.bind(connection);
     connection.send = (m: ClientMessage) => {
       if (m.type === 'input') api.sent.push(atob(m.data));
       else {
         api.control.push(JSON.stringify(m));
-        if (m.type === 'attach') activeWorkspace = m.session_id;
+        if (m.type === 'attach') activeWorkspace = m.workspace_id;
       }
       return realSend(m);
     };

@@ -6,7 +6,7 @@ import type { WorkspaceAgent } from './agents';
 
 const waiting = (extra: Partial<WorkspaceAgent> = {}): WorkspaceAgent => ({
   state: 'needs_input', seq: 4, stale: false, ts: 10, agent: 'claude', serverStatus: true,
-  attention: { id: 'a1', session: 's', kind: 'needs_input', raised_at: 5, prompt: 'Allow the edit?', task: { title: 'Fix login', started_at: 0, source: 'hook' } },
+  attention: { id: 'a1', workspace: 's', kind: 'needs_input', raised_at: 5, prompt: 'Allow the edit?', task: { title: 'Fix login', started_at: 0, source: 'hook' } },
   prompt: { id: 'p1', kind: 'choice', choices: ['Yes', 'Yes, always', 'No'], seq: 4, confidence: 'high' },
   tool: { name: 'Edit', summary: 'src/auth.ts +12 -3', phase: 'started' },
   ...extra,

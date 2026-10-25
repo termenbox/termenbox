@@ -245,7 +245,24 @@ impl Conn {
         claim: &str,
         channels: bool,
     ) {
-        self.send(json!({"type":"hello"})).await;
+        self.login_speaking(server_id, who, cert, claim, channels, Some(1))
+            .await
+    }
+
+    /// The handshake announcing protocol version `protocol`; `None` is a client from before versions existed.
+    async fn login_speaking(
+        &mut self,
+        server_id: &str,
+        who: &Who,
+        cert: &str,
+        claim: &str,
+        channels: bool,
+        protocol: Option<u32>,
+    ) {
+        match protocol {
+            Some(p) => self.send(json!({"type":"hello","protocol":p})).await,
+            None => self.send(json!({"type":"hello"})).await,
+        }
         let ch = self.recv_type("challenge").await;
         let nonce = ch["nonce"].as_str().unwrap();
         self.send(json!({
@@ -658,7 +675,7 @@ impl Drop for KillOnDrop {
 async fn nothing_is_served_before_auth(kind: Kind) {
     let f = fixture().await;
     let mut c = Conn::open(kind, &f).await;
-    c.send(json!({"type":"list_sessions"})).await;
+    c.send(json!({"type":"list_workspaces"})).await;
     assert!(c.recv_type("error").await["message"]
         .as_str()
         .unwrap()
@@ -673,23 +690,23 @@ async fn detach_preserves_the_connection_and_workspace(kind: Kind) {
     let mut c = Conn::open(kind, &f).await;
     c.login(&f, &alice, &f.claim).await;
     c.recv_type("auth_ok").await;
-    c.send(json!({"type":"new_session","name":name})).await;
-    c.recv_type("sessions").await;
-    c.send(json!({"type":"attach","session_id":name})).await;
-    c.recv_type("session_attached").await;
+    c.send(json!({"type":"new_workspace","name":name})).await;
+    c.recv_type("workspaces").await;
+    c.send(json!({"type":"attach","workspace_id":name})).await;
+    c.recv_type("workspace_attached").await;
     c.send(json!({"type":"detach"})).await;
     c.send(json!({"type":"input","data":B64.encode("echo DETACHED_INPUT_MUST_NOT_RUN\n")}))
         .await;
     c.send(json!({"type":"ping"})).await;
     c.recv_type("pong").await;
-    c.send(json!({"type":"peek","session":name})).await;
+    c.send(json!({"type":"peek","workspace":name})).await;
     let snapshot = c.recv_type("snapshot").await;
     assert!(!snapshot["text"]
         .as_str()
         .unwrap()
         .contains("DETACHED_INPUT_MUST_NOT_RUN"));
-    c.send(json!({"type":"attach","session_id":name})).await;
-    c.recv_type("session_attached").await;
+    c.send(json!({"type":"attach","workspace_id":name})).await;
+    c.recv_type("workspace_attached").await;
     c.send(json!({"type":"input","data":B64.encode("echo reattached$((40+2))\n")}))
         .await;
     assert!(c.output_contains("reattached42").await);
@@ -715,16 +732,16 @@ async fn reconnect_resumes_the_tmux_workspace_with_its_screen(kind: Kind) {
     let mut c = Conn::open(kind, &f).await;
     c.login(&f, &alice, &f.claim).await;
     c.recv_type("auth_ok").await;
-    c.send(json!({"type":"new_session","name":name})).await;
-    let workspaces = c.recv_type("sessions").await;
-    assert!(workspaces["sessions"]
+    c.send(json!({"type":"new_workspace","name":name})).await;
+    let workspaces = c.recv_type("workspaces").await;
+    assert!(workspaces["workspaces"]
         .as_array()
         .unwrap()
         .iter()
         .any(|s| s["id"] == name.as_str()));
 
-    c.send(json!({"type":"attach","session_id":name})).await;
-    c.recv_type("session_attached").await;
+    c.send(json!({"type":"attach","workspace_id":name})).await;
+    c.recv_type("workspace_attached").await;
     c.send(json!({"type":"input","data":B64.encode("echo resume$((40+2))\n")}))
         .await;
     assert!(c.output_contains("resume42").await);
@@ -736,8 +753,8 @@ async fn reconnect_resumes_the_tmux_workspace_with_its_screen(kind: Kind) {
     let mut c = Conn::open(kind, &f).await;
     c.login(&f, &alice, "").await;
     c.recv_type("auth_ok").await;
-    c.send(json!({"type":"attach","session_id":name})).await;
-    c.recv_type("session_attached").await;
+    c.send(json!({"type":"attach","workspace_id":name})).await;
+    c.recv_type("workspace_attached").await;
     assert!(
         c.output_contains("resume42").await,
         "earlier output is repainted"
@@ -767,10 +784,10 @@ async fn agent_events_flow_from_a_workspace_tool_to_the_client(kind: Kind) {
     let mut c = Conn::open(kind, &f).await;
     c.login(&f, &alice, &f.claim).await;
     c.recv_type("auth_ok").await;
-    c.send(json!({"type":"new_session","name":name})).await;
-    c.recv_type("sessions").await;
-    c.send(json!({"type":"attach","session_id":name})).await;
-    c.recv_type("session_attached").await;
+    c.send(json!({"type":"new_workspace","name":name})).await;
+    c.recv_type("workspaces").await;
+    c.send(json!({"type":"attach","workspace_id":name})).await;
+    c.recv_type("workspace_attached").await;
     c.send(json!({"type":"input","data":B64.encode("echo who:$TERMENBOX_SESSION; test -S \"$TERMENBOX_EVENT_SOCKET\" && echo sock:ok\n")})).await;
     assert!(
         c.output_contains(&format!("who:{name}")).await,
@@ -833,7 +850,7 @@ async fn agent_events_flow_from_a_workspace_tool_to_the_client(kind: Kind) {
     d.send(json!({"type":"agent_sync","after":{name.clone(): 1}}))
         .await;
     let snap = d.recv_type("agent_snapshot").await;
-    assert_eq!(snap["states"][0]["session"], name.as_str());
+    assert_eq!(snap["states"][0]["workspace"], name.as_str());
     assert_eq!(snap["states"][0]["state"], "working");
     assert_eq!(snap["states"][0]["seq"], 2);
     assert_eq!(snap["states"][0]["stale"], false);
@@ -885,14 +902,14 @@ async fn peek_shows_a_workspace_screen_without_attaching(kind: Kind) {
     let mut c = Conn::open(kind, &f).await;
     c.login(&f, &alice, &f.claim).await;
     c.recv_type("auth_ok").await;
-    c.send(json!({"type":"new_session","name":name})).await;
-    c.recv_type("sessions").await;
-    c.send(json!({"type":"reply","session":name,"text":"echo peeked$((40+2))"}))
+    c.send(json!({"type":"new_workspace","name":name})).await;
+    c.recv_type("workspaces").await;
+    c.send(json!({"type":"reply","workspace":name,"text":"echo peeked$((40+2))"}))
         .await;
     let mut snap = json!(null);
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(150)).await;
-        c.send(json!({"type":"peek","session":name})).await;
+        c.send(json!({"type":"peek","workspace":name})).await;
         snap = c.recv_type("snapshot").await;
         if snap["text"].as_str().unwrap_or("").contains("peeked42") {
             break;
@@ -903,7 +920,7 @@ async fn peek_shows_a_workspace_screen_without_attaching(kind: Kind) {
         "{snap}"
     );
     let hash = snap["hash"].as_str().unwrap().to_string();
-    c.send(json!({"type":"peek","session":name,"hash":hash}))
+    c.send(json!({"type":"peek","workspace":name,"hash":hash}))
         .await;
     let again = c.recv_type("snapshot").await;
     assert_eq!(again["unchanged"], true);
@@ -932,15 +949,15 @@ async fn windows_close_window_and_close_workspace_go_through_the_handlers(kind: 
     // These tests share the machine's default tmux server, which exits when another test closes its last
     // workspace at the wrong moment; creating the workspace is retried when that race loses.
     for attempt in 0..3 {
-        c.send(json!({"type":"new_session","name":name})).await;
-        let reply = c.recv_any(&["sessions", "error"]).await;
-        if reply["type"] == "sessions" {
+        c.send(json!({"type":"new_workspace","name":name})).await;
+        let reply = c.recv_any(&["workspaces", "error"]).await;
+        if reply["type"] == "workspaces" {
             break;
         }
         assert!(attempt < 2, "tmux would not start a workspace: {reply}");
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
-    c.send(json!({"type":"windows","session":name})).await;
+    c.send(json!({"type":"windows","workspace":name})).await;
     let one = c.recv_type("window_list").await;
     assert_eq!(one["windows"].as_array().unwrap().len(), 1);
     assert!(std::process::Command::new("tmux")
@@ -948,19 +965,19 @@ async fn windows_close_window_and_close_workspace_go_through_the_handlers(kind: 
         .status()
         .unwrap()
         .success());
-    c.send(json!({"type":"windows","session":name})).await;
+    c.send(json!({"type":"windows","workspace":name})).await;
     let two = c.recv_type("window_list").await;
     assert_eq!(two["windows"].as_array().unwrap().len(), 2);
     assert_eq!(two["windows"][1]["name"], "second");
     // A new window opens in the directory of the current one and becomes the current one.
     // Window 1 was just made and may not have settled in its directory yet: ask from window 0.
-    c.send(json!({"type":"select_window","session":name,"index":0}))
+    c.send(json!({"type":"select_window","workspace":name,"index":0}))
         .await;
     tokio::time::sleep(Duration::from_millis(300)).await;
-    c.send(json!({"type":"new_window","session":name})).await;
+    c.send(json!({"type":"new_window","workspace":name})).await;
     let mut three = serde_json::Value::Null;
     for _ in 0..30 {
-        c.send(json!({"type":"windows","session":name})).await;
+        c.send(json!({"type":"windows","workspace":name})).await;
         three = c.recv_type("window_list").await;
         // A fresh pane reports tmux's own directory until its shell has started: wait for it to settle.
         let w = three["windows"].as_array().unwrap();
@@ -973,13 +990,13 @@ async fn windows_close_window_and_close_workspace_go_through_the_handlers(kind: 
     assert_eq!(w.len(), 3, "{three}");
     assert_eq!(w[2]["path"], w[0]["path"], "{three}");
     assert_eq!(w[2]["active"], true, "{three}");
-    c.send(json!({"type":"close_window","session":name,"index":2}))
+    c.send(json!({"type":"close_window","workspace":name,"index":2}))
         .await;
-    c.recv_type("sessions").await;
-    c.send(json!({"type":"close_window","session":name,"index":1}))
+    c.recv_type("workspaces").await;
+    c.send(json!({"type":"close_window","workspace":name,"index":1}))
         .await;
-    c.recv_type("sessions").await;
-    c.send(json!({"type":"windows","session":name})).await;
+    c.recv_type("workspaces").await;
+    c.send(json!({"type":"windows","workspace":name})).await;
     assert_eq!(
         c.recv_type("window_list").await["windows"]
             .as_array()
@@ -987,10 +1004,11 @@ async fn windows_close_window_and_close_workspace_go_through_the_handlers(kind: 
             .len(),
         1
     );
-    c.send(json!({"type":"close_session","session":name})).await;
-    let list = c.recv_type("sessions").await;
+    c.send(json!({"type":"close_workspace","workspace":name}))
+        .await;
+    let list = c.recv_type("workspaces").await;
     assert!(
-        !list["sessions"]
+        !list["workspaces"]
             .as_array()
             .unwrap()
             .iter()
@@ -998,7 +1016,7 @@ async fn windows_close_window_and_close_workspace_go_through_the_handlers(kind: 
         "{list}"
     );
     // A name that is not a workspace is an error, not a crash.
-    c.send(json!({"type":"close_session","session":"no-such-workspace"}))
+    c.send(json!({"type":"close_workspace","workspace":"no-such-workspace"}))
         .await;
     c.recv_type("error").await;
 }
@@ -1030,10 +1048,10 @@ async fn terminal_bytes_use_their_own_lane_and_status_is_not_held_up_by_output(k
         .await;
     let ok = c.recv_type("auth_ok").await;
     assert_eq!(ok["channels"], json!(["term"]));
-    c.send(json!({"type":"new_session","name":name})).await;
-    c.recv_type("sessions").await;
-    c.send(json!({"type":"attach","session_id":name})).await;
-    c.recv_type("session_attached").await;
+    c.send(json!({"type":"new_workspace","name":name})).await;
+    c.recv_type("workspaces").await;
+    c.send(json!({"type":"attach","workspace_id":name})).await;
+    c.recv_type("workspace_attached").await;
     c.send_term(b"echo lane-$((20+22))\n").await;
     let mut raw = String::new();
     for _ in 0..100 {
@@ -1130,10 +1148,10 @@ async fn a_flood_of_output_on_the_single_pipe_still_reaches_the_client(kind: Kin
     let mut c = Conn::open(kind, &f).await;
     c.login(&f, &alice, &f.claim).await;
     c.recv_type("auth_ok").await;
-    c.send(json!({"type":"new_session","name":name})).await;
-    c.recv_type("sessions").await;
-    c.send(json!({"type":"attach","session_id":name})).await;
-    c.recv_type("session_attached").await;
+    c.send(json!({"type":"new_workspace","name":name})).await;
+    c.recv_type("workspaces").await;
+    c.send(json!({"type":"attach","workspace_id":name})).await;
+    c.recv_type("workspace_attached").await;
     c.send(json!({"type":"input","data":B64.encode("timeout 5 sh -c 'while :; do seq 1 5000; done'; echo end-$((40+2))\n")})).await;
     let start = Instant::now();
     let mut seen = String::new();
@@ -1172,8 +1190,8 @@ async fn a_long_history_is_cut_to_fit_and_the_connection_survives(kind: Kind) {
         "{} bytes",
         h.to_string().len()
     );
-    c.send(json!({"type":"list_sessions"})).await;
-    c.recv_type("sessions").await;
+    c.send(json!({"type":"list_workspaces"})).await;
+    c.recv_type("workspaces").await;
 }
 
 /// `session_view` answers with the cleaned tail, tier and a parsed prompt without attaching; a message the server does
@@ -1194,15 +1212,16 @@ async fn session_view_reads_the_screen_and_unknown_messages_are_ignored(kind: Ki
     let mut c = Conn::open(kind, &f).await;
     c.login(&f, &alice, &f.claim).await;
     c.recv_type("auth_ok").await;
-    c.send(json!({"type":"new_session","name":name})).await;
-    c.recv_type("sessions").await;
-    c.send(json!({"type":"reply","session":name,"text":"echo Deploy$((40+2)) now? '(y/n)'"}))
+    c.send(json!({"type":"new_workspace","name":name})).await;
+    c.recv_type("workspaces").await;
+    c.send(json!({"type":"reply","workspace":name,"text":"echo Deploy$((40+2)) now? '(y/n)'"}))
         .await;
     let mut view = json!(null);
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(150)).await;
-        c.send(json!({"type":"session_view","session":name})).await;
-        view = c.recv_type("session_view").await;
+        c.send(json!({"type":"workspace_view","workspace":name}))
+            .await;
+        view = c.recv_type("workspace_view").await;
         // The typed command line also shows "(y/n)"; wait for its output, the line with the sum worked out.
         if view["prompt"]["question"]
             .as_str()
@@ -1225,9 +1244,9 @@ async fn session_view_reads_the_screen_and_unknown_messages_are_ignored(kind: Ki
         "options carry no keys: {view}"
     );
     let hash = view["hash"].as_str().unwrap().to_string();
-    c.send(json!({"type":"session_view","session":name,"hash":hash}))
+    c.send(json!({"type":"workspace_view","workspace":name,"hash":hash}))
         .await;
-    let again = c.recv_type("session_view").await;
+    let again = c.recv_type("workspace_view").await;
     assert_eq!(again["unchanged"], true);
     assert_eq!(again["tail"], json!([]));
     // an old server would skip this; this one must too, and keep serving
@@ -1235,15 +1254,17 @@ async fn session_view_reads_the_screen_and_unknown_messages_are_ignored(kind: Ki
         .await;
     c.send(json!({"type":"ping"})).await;
     c.recv_type("pong").await;
-    c.send(json!({"type":"session_answer","session":name,"prompt_id":"v-000000000000","option":0}))
-        .await;
+    c.send(
+        json!({"type":"workspace_answer","workspace":name,"prompt_id":"v-000000000000","option":0}),
+    )
+    .await;
     let err = c.recv_type("error").await;
     assert!(
         err["message"].as_str().unwrap().contains("changed"),
         "{err}"
     );
     let id = view["prompt"]["id"].as_str().unwrap();
-    c.send(json!({"type":"session_answer","session":name,"prompt_id":id,"option":9}))
+    c.send(json!({"type":"workspace_answer","workspace":name,"prompt_id":id,"option":9}))
         .await;
     let err = c.recv_type("error").await;
     assert!(
@@ -1279,6 +1300,78 @@ async fn an_authenticated_client_gets_a_signed_candidate_bundle(kind: Kind) {
         .any(|c| c.kind == CandidateKind::Lan && c.addr == "192.168.77.7" && c.port == f.rtc.port));
 }
 
+/// Version negotiation (step 3.2): a client that announces the current protocol gets it named in `auth_ok`, and one
+/// that announces a newer one is answered with ours. Its messages use the workspace vocabulary: closing a workspace
+/// that does not exist is answered with an error (an unknown message is ignored without a reply).
+async fn a_client_that_announces_the_protocol_speaks_the_workspace_vocabulary(kind: Kind) {
+    let f = fixture().await;
+    let alice = f.who(1, "alice");
+    for (announced, claim) in [(1u32, f.claim.as_str()), (99, "")] {
+        let mut c = Conn::open(kind, &f).await;
+        c.login_speaking(
+            &f.server_id,
+            &alice,
+            &alice.cert,
+            claim,
+            false,
+            Some(announced),
+        )
+        .await;
+        let ok = c.recv_type("auth_ok").await;
+        assert_eq!(ok["protocol"], termenbox_core::ext::PROTOCOL_VERSION);
+        c.send(json!({"type":"close_workspace","workspace":"no-such-workspace"}))
+            .await;
+        c.recv_type("error").await;
+    }
+}
+
+/// A client from before versions existed (no `protocol` in its hello) is spoken to in the old wire vocabulary, which
+/// only `legacy.rs` knows. Its old message names are understood: closing a workspace that does not exist is answered
+/// with an error. LEGACY SHIM test: deleted with the shim in step 8.1.
+async fn legacy_an_old_clients_messages_are_understood(kind: Kind) {
+    let f = fixture().await;
+    let alice = f.who(1, "alice");
+    let mut c = Conn::open(kind, &f).await;
+    c.login_speaking(&f.server_id, &alice, &alice.cert, &f.claim, false, None)
+        .await;
+    let ok = c.recv_type("auth_ok").await;
+    assert_eq!(ok.get("protocol").and_then(Value::as_u64).unwrap_or(0), 0);
+    c.send(json!({"type":"close_session","session":"no-such-workspace"}))
+        .await;
+    c.recv_type("error").await;
+}
+
+/// And what it is sent is in the old vocabulary (needs tmux for a workspace to exist). LEGACY SHIM test.
+async fn legacy_an_old_client_is_answered_in_the_old_vocabulary(kind: Kind) {
+    let f = fixture().await;
+    let name = format!("legacy{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let _cleanup = KillOnDrop(name.clone());
+    let alice = f.who(1, "alice");
+    let mut c = Conn::open(kind, &f).await;
+    c.login_speaking(&f.server_id, &alice, &alice.cert, &f.claim, false, None)
+        .await;
+    c.recv_type("auth_ok").await;
+    c.send(json!({"type":"list_sessions"})).await;
+    let list = c.recv_type("sessions").await;
+    assert!(list["sessions"].is_array(), "{list}");
+    assert!(list.get("workspaces").is_none());
+    c.send(json!({"type":"new_session","name":name})).await;
+    let list = c.recv_type("sessions").await;
+    assert!(list["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["id"] == name.as_str()));
+    c.send(json!({"type":"attach","session_id":name})).await;
+    let attached = c.recv_type("session_attached").await;
+    assert_eq!(attached["session_id"], name.as_str());
+    c.send(json!({"type":"windows","session":name})).await;
+    let windows = c.recv_type("window_list").await;
+    assert_eq!(windows["session"], name.as_str());
+    c.send(json!({"type":"close_session","session":name})).await;
+    c.recv_type("sessions").await;
+}
+
 macro_rules! over_both_transports {
     ($($name:ident),*) => {$(
         mod $name {
@@ -1289,6 +1382,9 @@ macro_rules! over_both_transports {
 }
 
 over_both_transports!(
+    a_client_that_announces_the_protocol_speaks_the_workspace_vocabulary,
+    legacy_an_old_clients_messages_are_understood,
+    legacy_an_old_client_is_answered_in_the_old_vocabulary,
     a_long_history_is_cut_to_fit_and_the_connection_survives,
     only_the_claiming_github_user_gets_in,
     an_authenticated_client_gets_a_signed_candidate_bundle,
@@ -1325,7 +1421,7 @@ async fn garbage_and_foreign_stun_create_no_peers_and_the_server_stays_up() {
     }
     // A real client still connects afterwards.
     let mut c = Conn::open(Kind::Rtc, &f).await;
-    c.send(json!({"type":"list_sessions"})).await;
+    c.send(json!({"type":"list_workspaces"})).await;
     c.recv_type("error").await;
 }
 
@@ -1360,6 +1456,6 @@ async fn half_open_flood_is_capped_and_real_clients_still_get_in() {
     // applies to it as well; after the half-open peers expire it must get in again.
     tokio::time::sleep(Duration::from_secs(11)).await;
     let mut c = Conn::open(Kind::Rtc, &f).await;
-    c.send(json!({"type":"list_sessions"})).await;
+    c.send(json!({"type":"list_workspaces"})).await;
     c.recv_type("error").await;
 }

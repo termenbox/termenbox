@@ -5,7 +5,7 @@ import SessionView from '../SessionView.svelte';
 import { cleanText, viewFrom, merge, answerFor, requestView, TAIL_LINES, LINE_CHARS } from './sessionView';
 import type { SessionViewMessage } from './protocol';
 
-const msg = (over: Partial<SessionViewMessage> = {}): SessionViewMessage => ({ type: 'session_view', session: 's', tier: 't3', tail: ['$ make', 'done'], hash: 'h1', ...over });
+const msg = (over: Partial<SessionViewMessage> = {}): SessionViewMessage => ({ type: 'workspace_view', workspace: 's', tier: 't3', tail: ['$ make', 'done'], hash: 'h1', ...over });
 const html = (props: Record<string, unknown>) => (render as unknown as (c: unknown, o: { props: Record<string, unknown> }) => { body: string })(SessionView, { props }).body;
 
 describe('untrusted terminal text', () => {
@@ -38,14 +38,14 @@ describe('wire compatibility', () => {
   });
   it('ignores extra fields and refuses a message that is not a view', () => {
     expect(viewFrom({ ...msg(), extra: 1 } as SessionViewMessage)).not.toBeNull();
-    expect(viewFrom({ type: 'session_view' } as unknown as SessionViewMessage)).toBeNull();
+    expect(viewFrom({ type: 'workspace_view' } as unknown as SessionViewMessage)).toBeNull();
     expect(viewFrom(null)).toBeNull();
   });
   it('keeps the held view when the server says it is unchanged, and asks with its hash', () => {
     const held = viewFrom(msg())!;
     expect(merge(held, msg({ tail: [], unchanged: true }))).toBe(held);
-    expect(requestView('s', held)).toEqual({ type: 'session_view', session: 's', hash: 'h1' });
-    expect(requestView('other', held)).toEqual({ type: 'session_view', session: 'other' });
+    expect(requestView('s', held)).toEqual({ type: 'workspace_view', workspace: 's', hash: 'h1' });
+    expect(requestView('other', held)).toEqual({ type: 'workspace_view', workspace: 'other' });
   });
   it('a prompt with fewer than two options is not offered', () => {
     expect(viewFrom(msg({ prompt: { id: 'p', question: 'q', kind: 'choice', options: [{ label: 'only' }] } }))!.prompt).toBeUndefined();
@@ -55,7 +55,7 @@ describe('wire compatibility', () => {
 describe('answers send only what the view lists', () => {
   const v = viewFrom(msg({ tier: 't2', prompt: { id: 'p1', question: 'Proceed?', kind: 'choice', options: [{ label: 'Yes' }, { label: 'No' }] } }))!;
   it('an option index becomes a session_answer with no keys', () => {
-    expect(answerFor(v, 1)).toEqual({ type: 'session_answer', session: 's', prompt_id: 'p1', option: 1 });
+    expect(answerFor(v, 1)).toEqual({ type: 'workspace_answer', workspace: 's', prompt_id: 'p1', option: 1 });
   });
   it('an index outside the listed options sends nothing', () => {
     for (const i of [-1, 2, 99, 1.5, NaN]) expect(answerFor(v, i)).toBeNull();
@@ -107,6 +107,6 @@ describe('the T1 timeline from a recorded transcript', () => {
     expect(out).not.toContain('<img');
   });
   it('an old message without a timeline field still parses', () => {
-    expect(viewFrom({ type: 'session_view', session: 's', tier: 't1', tail: [], hash: 'h' })!.timeline).toBeUndefined();
+    expect(viewFrom({ type: 'workspace_view', workspace: 's', tier: 't1', tail: [], hash: 'h' })!.timeline).toBeUndefined();
   });
 });

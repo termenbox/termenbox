@@ -51,14 +51,14 @@ try {
   const menu = page.getByRole('dialog', { name: 'Windows of workspace-0' });
   await menu.waitFor();
   const sent = () => page.evaluate(() => window.__navigation.sent().map((m) => m.message));
-  if (!(await sent()).some((m) => m.type === 'windows' && m.session === 'workspace-0')) fail('opening the menu did not ask for the windows');
+  if (!(await sent()).some((m) => m.type === 'windows' && m.workspace === 'workspace-0')) fail('opening the menu did not ask for the windows');
   await menu.getByText('claude', { exact: true }).waitFor();
   await menu.getByRole('button', { name: 'Close window 1' }).click();
   await menu.getByRole('button', { name: 'Confirm closing window 1' }).waitFor(); // an agent is running: it asks first
   if ((await sent()).some((m) => m.type === 'close_window')) fail('a running window closed without asking');
   await menu.getByRole('button', { name: 'Confirm closing window 1' }).click();
   const closed = (await sent()).filter((m) => m.type === 'close_window');
-  if (closed.length !== 1 || closed[0].index !== 1 || closed[0].session !== 'workspace-0') fail(`wrong close_window: ${JSON.stringify(closed)}`);
+  if (closed.length !== 1 || closed[0].index !== 1 || closed[0].workspace !== 'workspace-0') fail(`wrong close_window: ${JSON.stringify(closed)}`);
   await page.keyboard.press('Escape'); // the menu stays open after a window closes, so several can be closed in a row
   await menu.waitFor({ state: 'hidden' });
   console.log('ok  the windows dropdown lists windows; closing a running one asks first and closes only that window');
@@ -82,7 +82,7 @@ try {
   await menu.getByRole('button', { name: '+ New window' }).click();
   await menu.waitFor({ state: 'hidden' });
   const opened = (await sent()).filter((m) => m.type === 'new_window');
-  if (opened.length !== 1 || opened[0].session !== 'workspace-0') fail(`wrong new_window: ${JSON.stringify(opened)}`);
+  if (opened.length !== 1 || opened[0].workspace !== 'workspace-0') fail(`wrong new_window: ${JSON.stringify(opened)}`);
   console.log('ok  + New window in the dropdown asks the server for a window of this workspace');
 
   // Detach closes the tab and keeps the workspace; Close workspace asks, then kills.
@@ -90,15 +90,15 @@ try {
   await menu.waitFor();
   await menu.getByRole('button', { name: 'Detach', exact: true }).click();
   await tab('alpha/workspace-0').waitFor({ state: 'detached' });
-  if ((await sent()).some((m) => m.type === 'close_session')) fail('detach closed the workspace');
+  if ((await sent()).some((m) => m.type === 'close_workspace')) fail('detach closed the workspace');
   await tab('alpha/workspace-2').dispatchEvent('pointerdown', { pointerId: 5, pointerType: 'touch', clientX: 150, clientY: 20 });
   const actions = page.getByRole('dialog', { name: 'Workspace actions' });
   await actions.waitFor();
   await tab('alpha/workspace-2').dispatchEvent('pointerup', { pointerId: 5, pointerType: 'touch' });
   await actions.getByRole('button', { name: 'Close workspace…' }).click();
   await actions.getByRole('button', { name: 'Close workspace', exact: true }).click();
-  const killed = (await sent()).filter((m) => m.type === 'close_session');
-  if (killed.length !== 1 || killed[0].session !== 'workspace-2') fail(`wrong close_workspace: ${JSON.stringify(killed)}`);
+  const killed = (await sent()).filter((m) => m.type === 'close_workspace');
+  if (killed.length !== 1 || killed[0].workspace !== 'workspace-2') fail(`wrong close_workspace: ${JSON.stringify(killed)}`);
   console.log('ok  Detach closes the tab and keeps the workspace; Close workspace confirms, then closes it');
 
   // The banner shows who needs you, never changes the open workspace, and offers confirmed answers.

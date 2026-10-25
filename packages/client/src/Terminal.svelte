@@ -328,7 +328,7 @@
     selectText = '';
     historyLoading = !!activeWorkspaceId;
     if (!activeWorkspaceId) { historyLoading = false; selectText = localText(); return; }
-    connection.send({ type: 'scrollback', session: activeWorkspaceId });
+    connection.send({ type: 'scrollback', workspace: activeWorkspaceId });
     clearTimeout(historyTimer);
     historyTimer = setTimeout(() => { if (historyLoading) { historyLoading = false; selectText = localText(); } }, 4000);
   }
@@ -679,13 +679,13 @@
     cleanups.push(
       connection.subscribe((msg) => {
         if (msg.type === 'scrollback') {
-          const whole = msg.session === activeWorkspaceId ? historyParts.add(msg.part, msg.last, msg.text) : null;
+          const whole = msg.workspace === activeWorkspaceId ? historyParts.add(msg.part, msg.last, msg.text) : null;
           if (whole !== null && selectAllView) { clearTimeout(historyTimer); historyLoading = false; selectText = whole; }
         } else if (msg.type === 'output') {
           receive(b64ToBytes(msg.data));
         } else if (msg.type === 'term') {
           receive(msg.bytes);
-        } else if (msg.type === 'session_attached') {
+        } else if (msg.type === 'workspace_attached') {
           // tmux repaints the screen on attach; start clean so a re-attach never doubles the content.
           // If we just painted a preview, it already reset the terminal; skip the second reset to avoid a flash.
           const wasPreviewing = previewing;

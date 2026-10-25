@@ -53,7 +53,7 @@ describe('the digest and the timeline', () => {
     expect(rows[0].durationMs).toBe(30 * 60_000);
   });
   it('reads an unknown outcome as stopped and ignores nonsense numbers', () => {
-    const [r] = rowsOf(src([{ session: 's', started_at: 5, ended_at: 3, outcome: 'exploded', blocked_ms: -4 }]), NOW);
+    const [r] = rowsOf(src([{ workspace: 's', started_at: 5, ended_at: 3, outcome: 'exploded', blocked_ms: -4 }]), NOW);
     expect([r.outcome, r.durationMs, r.blockedMs]).toEqual(['stopped', 0, 0]);
   });
   it('groups by the day a task ended, newest day first', () => {
@@ -63,7 +63,7 @@ describe('the digest and the timeline', () => {
   });
   it('puts a task that started before the range on the first day shown', () => {
     const r = rangeOf('day', startOfDay(NOW));
-    const rows = rowsOf(src([{ session: 's', started_at: at(13, 22), blocked_ms: 0 }]), NOW);
+    const rows = rowsOf(src([{ workspace: 's', started_at: at(13, 22), blocked_ms: 0 }]), NOW);
     expect(groupByDay(rows, r).map((g) => g.day)).toEqual([r.from]);
   });
 });

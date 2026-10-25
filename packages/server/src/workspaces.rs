@@ -223,7 +223,7 @@ impl WorkspaceManager {
         loop {
             tokio::select! {
                 msg = link.rx.recv() => {
-                    let Some(msg) = msg else { break };
+                    let Some(msg) = msg.map(|m| link.tx.inbound(m)) else { break };
                     idle.as_mut().reset(tokio::time::Instant::now() + IDLE_TIMEOUT);
                     let text = match msg {
                         Inbound::Json(text) => text,
@@ -403,7 +403,7 @@ impl WorkspaceManager {
     ) -> Result<()> {
         match msg {
             // The handshake happens once, before this loop (connection.rs).
-            ClientMessage::Hello
+            ClientMessage::Hello { .. }
             | ClientMessage::Auth { .. }
             | ClientMessage::ClaimPreview { .. } => {}
             ClientMessage::Uninstall { confirm_name, .. } => {
@@ -632,7 +632,7 @@ impl WorkspaceManager {
                 let _ = self.list_changed.send(conn);
             }
             ClientMessage::RenameWorkspace { workspace, name } => {
-                info!(target: "audit", event = "rename_session", provider = %identity.provider, account_id = %identity.id, session = %workspace);
+                info!(target: "audit", event = "rename_workspace", provider = %identity.provider, account_id = %identity.id, session = %workspace);
                 self.backend.rename(&workspace, &name).await?;
                 let workspaces = self.backend.list().await?;
                 send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
@@ -1718,7 +1718,7 @@ mod propagation_tests {
         let wanted = format!("\"name\":\"{name}\"");
         let read = async {
             while let Some(m) = end.from_workspace.recv().await {
-                if m.contains("\"type\":\"sessions\"") && m.contains(&wanted) {
+                if m.contains("\"type\":\"workspaces\"") && m.contains(&wanted) {
                     return true;
                 }
             }
@@ -1757,7 +1757,7 @@ mod propagation_tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
         ea.to_workspace
             .send(Inbound::Json(
-                r#"{"type":"rename_session","session":"s","name":"second"}"#.into(),
+                r#"{"type":"rename_workspace","workspace":"s","name":"second"}"#.into(),
             ))
             .await
             .unwrap();

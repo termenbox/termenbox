@@ -101,7 +101,7 @@ export function rowOf(s: Pick<Source, 'serverId' | 'serverName'>, r: HistoryRun,
   const endedAt = typeof r.ended_at === 'number' ? r.ended_at : undefined;
   const outcome: Outcome = endedAt === undefined ? 'running' : r.outcome === 'finished' || r.outcome === 'failed' ? r.outcome : 'stopped';
   return {
-    serverId: s.serverId, serverName: s.serverName, workspace: r.session, agent: r.agent, task: r.task,
+    serverId: s.serverId, serverName: s.serverName, workspace: r.workspace, agent: r.agent, task: r.task,
     startedAt: r.started_at, endedAt, outcome, blockedMs: nonNegative(r.blocked_ms),
     durationMs: nonNegative((endedAt ?? now) - r.started_at),
     project: r.project || undefined, usage: usageOfRun(r.usage),

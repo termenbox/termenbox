@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { MAX_ENTRIES, OPEN_WAIT_MS, TRUNCATED_NOTE, applyView, isNewEntry, openingText, shellName, cleanBlock, contextPercent, copyText, diffRows, diffStat, emptyStream, entryFrom, infoFrom, openMessage, permissionOutcome, planProgress, search, toolStatus, toolsAsking, transcriptText, type Entry, type StreamState } from './acpStream';
 import type { AcpEntryWire, AcpViewMessage } from './protocol';
 
-const view = (over: Partial<AcpViewMessage> = {}): AcpViewMessage => ({ type: 'acp_view', session: 's', epoch: 7, rev: 1, reset: true, first: 1, entries: [], ...over });
+const view = (over: Partial<AcpViewMessage> = {}): AcpViewMessage => ({ type: 'acp_view', workspace: 's', epoch: 7, rev: 1, reset: true, first: 1, entries: [], ...over });
 const user = (id: number, text: string, rev = id): AcpEntryWire => ({ id, rev, kind: 'user', text });
 const msg = (id: number, text: string, rev = id): AcpEntryWire => ({ id, rev, kind: 'message', text });
 const texts = (s: StreamState) => s.entries.map((e) => ('text' in e ? e.text : e.kind));
@@ -45,9 +45,9 @@ describe('the stream reducer', () => {
   });
 
   it('asks for only what it lacks when it opens a workspace again', () => {
-    expect(openMessage('s')).toEqual({ type: 'acp_open', session: 's' });
+    expect(openMessage('s')).toEqual({ type: 'acp_open', workspace: 's' });
     const s = applyView(emptyStream('s'), view({ rev: 9, entries: [user(1, 'x')] }));
-    expect(openMessage('s', s)).toEqual({ type: 'acp_open', session: 's', after: 9, epoch: 7 });
+    expect(openMessage('s', s)).toEqual({ type: 'acp_open', workspace: 's', after: 9, epoch: 7 });
   });
 });
 

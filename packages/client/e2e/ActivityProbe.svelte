@@ -29,7 +29,7 @@
   }
   const asks: Range[] = [];
   // `?dense`: a busy morning, one task every hour from 08:00 to 13:00, each waiting over an hour, so neighbouring bars carry long labels.
-  const busy = dense ? Array.from({ length: 6 }, (_, i) => ({ session: `s${i}`, started_at: at(14, 8 + i, 0), ended_at: at(14, 8 + i, 50), outcome: 'finished' as const, blocked_ms: (65 + i) * 60_000 })) : [];
+  const busy = dense ? Array.from({ length: 6 }, (_, i) => ({ workspace: `s${i}`, started_at: at(14, 8 + i, 0), ended_at: at(14, 8 + i, 50), outcome: 'finished' as const, blocked_ms: (65 + i) * 60_000 })) : [];
   function onask(r: Range) {
     asks.push(r);
     history = asked(history, 'alpha', r, Date.now());

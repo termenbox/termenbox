@@ -195,10 +195,10 @@ try {
   }
 
   // 3. Create a workspace, type, see the output.
-  await e2e(alice, () => window.__e2e.send({ type: 'new_session', name: 's1' }));
-  await waitFor(() => e2e(alice, () => (window.__e2e.send({ type: 'list_sessions' }), window.__e2e.workspaces.length > 0)), 'workspace listed');
+  await e2e(alice, () => window.__e2e.send({ type: 'new_workspace', name: 's1' }));
+  await waitFor(() => e2e(alice, () => (window.__e2e.send({ type: 'list_workspaces' }), window.__e2e.workspaces.length > 0)), 'workspace listed');
   const id = await e2e(alice, () => window.__e2e.workspaces[0].id);
-  await e2e(alice, (id) => window.__e2e.send({ type: 'attach', session_id: id }), id);
+  await e2e(alice, (id) => window.__e2e.send({ type: 'attach', workspace_id: id }), id);
   await sleep(500);
   await e2e(alice, () => window.__e2e.type('echo marker-$((20+22))\r'));
   await waitFor(() => e2e(alice, () => window.__e2e.output.includes('marker-42')), 'typed output');
@@ -207,7 +207,7 @@ try {
   // 4. Drop the transport; the client must reconnect, re-attach, and the screen must come back.
   await e2e(alice, () => { window.__e2e.clear(); window.__e2e.dropTransport(); });
   await waitFor(() => e2e(alice, () => window.__e2e.ready >= 2 && window.__e2e.state === 'connected'), 'reconnected', 60000);
-  await e2e(alice, (id) => window.__e2e.send({ type: 'attach', session_id: id }), id);
+  await e2e(alice, (id) => window.__e2e.send({ type: 'attach', workspace_id: id }), id);
   await waitFor(() => e2e(alice, () => window.__e2e.output.includes('marker-42')), 'screen replay after reconnect');
   console.log('ok  reconnected and the earlier screen was replayed');
 
@@ -220,13 +220,13 @@ try {
 
   // 5. Gate: server RSS with 10 workspaces open.
   for (let i = 2; i <= 10; i++) {
-    await e2e(alice, (n) => window.__e2e.send({ type: 'new_session', name: `s${n}` }), i);
+    await e2e(alice, (n) => window.__e2e.send({ type: 'new_workspace', name: `s${n}` }), i);
     await sleep(150);
   }
-  await waitFor(() => e2e(alice, () => (window.__e2e.send({ type: 'list_sessions' }), window.__e2e.workspaces.length >= 10)), '10 workspaces');
+  await waitFor(() => e2e(alice, () => (window.__e2e.send({ type: 'list_workspaces' }), window.__e2e.workspaces.length >= 10)), '10 workspaces');
   const ids = await e2e(alice, () => window.__e2e.workspaces.map((s) => s.id));
   for (const sid of ids) {
-    await e2e(alice, (sid) => window.__e2e.send({ type: 'attach', session_id: sid }), sid);
+    await e2e(alice, (sid) => window.__e2e.send({ type: 'attach', workspace_id: sid }), sid);
     await sleep(150);
   }
   const rss = procStat(server.pid).rssMb;

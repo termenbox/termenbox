@@ -6,7 +6,7 @@ import type { AttentionKind } from './protocol';
 
 const sess = (name: string, serverId = 's1'): HubWorkspace => ({ id: name, name, agent: null, serverId, key: `${serverId}/${name}`, serverName: serverId.toUpperCase() });
 const withAtt = (kind: AttentionKind, at: number, extra: Partial<WorkspaceAgent> = {}): WorkspaceAgent =>
-  ({ state: 'unknown', seq: 1, stale: false, ts: at, serverStatus: true, attention: { id: `a${at}`, session: 'x', kind, raised_at: at, task: { title: `task ${at}`, started_at: 0, source: 'hook' } }, ...extra });
+  ({ state: 'unknown', seq: 1, stale: false, ts: at, serverStatus: true, attention: { id: `a${at}`, workspace: 'x', kind, raised_at: at, task: { title: `task ${at}`, started_at: 0, source: 'hook' } }, ...extra });
 const quiet = (activity: WorkspaceAgent['activity'] = 'idle'): WorkspaceAgent => ({ state: activity === 'working' ? 'working' : 'idle', seq: 1, stale: false, ts: 1, serverStatus: true, activity });
 
 describe('queue order', () => {

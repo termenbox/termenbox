@@ -292,7 +292,7 @@ async function split(shared) {
   return ok;
 }
 
-const sentAnswers = (server) => server.of('session_answer').map((m) => `${m.session}:${m.option}`);
+const sentAnswers = (server) => server.of('workspace_answer').map((m) => `${m.workspace}:${m.option}`);
 const typedBytes = (server) => server.of('input').map((m) => Buffer.from(m.data, 'base64').toString('latin1'));
 
 /** The shortcuts, on a decision with Claude Code's options. */

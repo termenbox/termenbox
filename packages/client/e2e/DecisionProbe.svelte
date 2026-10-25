@@ -11,7 +11,7 @@
   const t0 = Date.now() - 4 * 60_000;
   const needs: WorkspaceAgent = {
     state: 'unknown', seq: 3, stale: false, ts: Date.now(), serverStatus: true, agent: 'claude',
-    attention: { id: 'a1', session: 'api', kind: 'needs_input', raised_at: t0, prompt: 'Allow the edit?', task: { title: 'Move login to the workspace store', started_at: t0 - 60_000, source: 'hook' } },
+    attention: { id: 'a1', workspace: 'api', kind: 'needs_input', raised_at: t0, prompt: 'Allow the edit?', task: { title: 'Move login to the workspace store', started_at: t0 - 60_000, source: 'hook' } },
     prompt: { id: 'p1', kind: 'choice', choices: ['Yes', 'Yes, always', 'No'], seq: 3, confidence: 'high' },
     tool: { name: 'Edit', summary: 'src/auth/session.ts +12 -3', phase: 'started' },
   };
@@ -30,12 +30,12 @@
 
 {#if surface === 'inbox'}
   <InboxSheet {items} {now} {agents} onopen={(k) => sent.push({ open: k })} onread={() => {}} onclear={() => {}} onclose={() => {}}
-    onanswer={(key, choice, prompt) => sent.push({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })}
-    onreply={(key, text) => sent.push({ type: 'reply', session: key, text })} />
+    onanswer={(key, choice, prompt) => sent.push({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })}
+    onreply={(key, text) => sent.push({ type: 'reply', workspace: key, text })} />
 {:else}
   <div style="height:100dvh">
     <SessionView name="api" agent="claude" fleet={view?.prompt ? 'needs-you' : 'idle'} task="Move login to the workspace store" waitingSince={t0} {now} {view}
       step={{ name: 'Edit', summary: 'src/auth/session.ts +12 -3' }}
-      onanswer={(m) => sent.push(m)} onreply={(line) => sent.push({ type: 'reply', session: 'api', text: line })} onterminal={() => sent.push({ terminal: true })} />
+      onanswer={(m) => sent.push(m)} onreply={(line) => sent.push({ type: 'reply', workspace: 'api', text: line })} onterminal={() => sent.push({ terminal: true })} />
   </div>
 {/if}
