@@ -436,3 +436,83 @@ describe('version negotiation and the legacy shim (step 3.2)', () => {
     c.close();
   });
 });
+
+describe('the control channel (step 3.3)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  async function against(authOk: object, withControl: boolean) {
+    vi.useFakeTimers();
+    vi.stubGlobal('document', Object.assign(new EventTarget(), { visibilityState: 'visible' }));
+    vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
+    const sent: string[] = [];
+    const control: string[] = [];
+    const t: Transport = {
+      kind: 'rtc', onmessage: null, onclose: null, send: (x) => void sent.push(x), close: () => {},
+      ...(withControl ? { sendControl: (x: string) => { control.push(x); return true; } } : {}),
+    };
+    const c = new Connection({
+      target: async () => ({ wsUrl: 'ws://x' }),
+      openers: { rtc: async () => t, ws: async () => t },
+      credentials: async () => ({ cert: 'c', sign: async () => 's' }),
+      onState: () => {}, onReady: () => {}, onFatal: () => {}, onDrop: () => {},
+    });
+    c.start();
+    await vi.advanceTimersByTimeAsync(10);
+    t.onmessage!(JSON.stringify({ type: 'challenge', nonce: 'n', server_id: 's' }));
+    await vi.advanceTimersByTimeAsync(10);
+    t.onmessage!(JSON.stringify(authOk));
+    return { c, t, sent, control };
+  }
+  const ok = { type: 'auth_ok', protocol: 1, control_channel: true, user: 'u', server_name: 's' };
+
+  it('control messages use the control channel, everything else the first one', async () => {
+    const { c, sent, control } = await against(ok, true);
+    c.send({ type: 'acp_interrupt', workspace: 'w' });
+    c.send({ type: 'list_workspaces' });
+    expect(control.map((x) => JSON.parse(x).type)).toEqual(['acp_interrupt']);
+    expect(sent.map((x) => JSON.parse(x).type)).toEqual(['hello', 'auth', 'list_workspaces']);
+    c.close();
+  });
+
+  it('without a control channel (or on a server that does not offer it) they use the first channel', async () => {
+    const a = await against(ok, false);
+    a.c.send({ type: 'acp_interrupt', workspace: 'w' });
+    expect(a.sent.map((x) => JSON.parse(x).type)).toContain('acp_interrupt');
+    a.c.close();
+    const b = await against({ type: 'auth_ok', protocol: 1, user: 'u', server_name: 's' }, true);
+    b.c.send({ type: 'acp_interrupt', workspace: 'w' });
+    expect(b.control).toEqual([]);
+    expect(b.sent.map((x) => JSON.parse(x).type)).toContain('acp_interrupt');
+    b.c.close();
+  });
+
+  it('a request resolves with the ack, carries a req id, and times out without one', async () => {
+    const { c, t, control } = await against(ok, true);
+    const done = c.request({ type: 'acp_interrupt', workspace: 'w' });
+    const req = JSON.parse(control[0]).req;
+    expect(typeof req).toBe('number');
+    t.onmessage!(JSON.stringify({ type: 'control_ack', req, ok: true }));
+    expect(await done).toEqual({ ok: true, acknowledged: true, error: undefined });
+    const failed = c.request({ type: 'close_workspace', workspace: 'w' });
+    t.onmessage!(JSON.stringify({ type: 'control_ack', req: JSON.parse(control[1]).req, ok: false, error: 'Unknown workspace' }));
+    expect(await failed).toMatchObject({ ok: false, acknowledged: true, error: 'Unknown workspace' });
+    const silent = c.request({ type: 'detach' }, 1000);
+    await vi.advanceTimersByTimeAsync(1001);
+    expect(await silent).toMatchObject({ ok: false, acknowledged: false });
+    c.close();
+  });
+
+  it('a request on a server that does not acknowledge resolves at once, and a closed connection ends waiting ones', async () => {
+    const old = await against({ type: 'auth_ok', user: 'u', server_name: 's' }, false);
+    expect(await old.c.request({ type: 'detach' })).toEqual({ ok: true, acknowledged: false });
+    expect(old.sent.map((x) => JSON.parse(x).type)).toContain('detach');
+    old.c.close();
+    const { c } = await against(ok, true);
+    const pending = c.request({ type: 'detach' });
+    c.close();
+    expect(await pending).toMatchObject({ ok: false, acknowledged: false });
+  });
+});

@@ -34,6 +34,10 @@ pub const SERVER_PWD: &str = "termenbox-direct-v1-0123456789";
 pub const CHANNEL_ID: u16 = 0;
 /// The second negotiated channel, for terminal bytes (decision 0096); unused by a client that did not ask.
 pub const TERM_CHANNEL_ID: u16 = 1;
+/// The third negotiated channel, for control messages (decision 0139): ordered and reliable like the first, but with
+/// its own queue and SCTP stream, so a cancel never waits behind agent events or terminal bytes. A client that does
+/// not open it keeps control on the first channel.
+pub const CONTROL_CHANNEL_ID: u16 = 2;
 /// Queued terminal chunks are joined into messages of about this size (the SCTP limit is 64 KiB).
 const TERM_MESSAGE: usize = 16 * 1024;
 /// A single message above this closes the connection; clients send small JSON.
@@ -205,6 +209,9 @@ struct Peer {
     end: Option<LinkEnd>,
     cid: Option<ChannelId>,
     term_cid: Option<ChannelId>,
+    ctl_cid: Option<ChannelId>,
+    /// Control replies taken from the workspace that the channel had no room for yet.
+    control_queue: VecDeque<String>,
     /// Terminal bytes taken from the workspace that the channel had no room for yet.
     term_pending: Option<Vec<u8>>,
     created: Instant,
@@ -212,6 +219,8 @@ struct Peer {
     queue: VecDeque<String>,
     /// Inbound messages the workspace had no room for yet.
     backlog: VecDeque<Inbound>,
+    /// Inbound control messages (the control channel) the workspace had no room for yet; handed over first.
+    control_backlog: VecDeque<Inbound>,
     backlog_bytes: usize,
     closing: bool,
     dirty: bool,
@@ -384,6 +393,11 @@ impl Server {
                 negotiated: Some(TERM_CHANNEL_ID),
                 ..Default::default()
             });
+            d.create_data_channel(ChannelConfig {
+                label: "ctl".into(),
+                negotiated: Some(CONTROL_CHANNEL_ID),
+                ..Default::default()
+            });
         }
         debug!("new peer {src}");
         Some(Peer {
@@ -391,11 +405,14 @@ impl Server {
             end: None,
             cid: None,
             term_cid: None,
+            ctl_cid: None,
+            control_queue: VecDeque::new(),
             term_pending: None,
             created: now,
             last_rx: now,
             queue: VecDeque::new(),
             backlog: VecDeque::new(),
+            control_backlog: VecDeque::new(),
             backlog_bytes: 0,
             closing: false,
             dirty: true,
@@ -434,6 +451,36 @@ impl Peer {
         }
 
         self.hand_over();
+
+        // Control replies first, on their own channel; a client without that channel gets them on the first one,
+        // ahead of everything queued there.
+        if let Some(end) = self.end.as_mut() {
+            while self.control_queue.len() < 32 {
+                match end.control_from_workspace.try_recv() {
+                    Ok(text) => self.control_queue.push_back(text),
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        self.closing = true;
+                        break;
+                    }
+                }
+            }
+            let via = self.ctl_cid.or(self.cid);
+            if let Some(mut ch) = via.and_then(|c| self.rtc.channel(c)) {
+                while let Some(front) = self.control_queue.front() {
+                    match ch.write(false, front.as_bytes()) {
+                        Ok(true) => {
+                            self.control_queue.pop_front();
+                        }
+                        Ok(false) => break,
+                        Err(_) => {
+                            self.rtc.disconnect();
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
 
         // Workspace -> client, with backpressure: a full SCTP buffer leaves messages queued.
         if let (Some(cid), Some(end)) = (self.cid, self.end.as_mut()) {
@@ -531,13 +578,17 @@ impl Peer {
             }
         }
         let _ = transmits;
-        if !self.backlog.is_empty() {
+        if !self.backlog.is_empty() || !self.control_backlog.is_empty() {
             // Look again soon: the workspace is reading, and these are waiting for it.
             self.timeout = self.timeout.min(now + Duration::from_millis(5));
         }
 
         // The workspace finished (for example after an auth error): let the last messages out first.
-        if self.closing && self.queue.is_empty() && self.term_pending.is_none() {
+        if self.closing
+            && self.queue.is_empty()
+            && self.control_queue.is_empty()
+            && self.term_pending.is_none()
+        {
             let drained = match self.cid.and_then(|c| self.rtc.channel(c)) {
                 Some(mut ch) => ch.buffered_amount() == 0,
                 None => true,
@@ -555,6 +606,29 @@ impl Peer {
     /// Gives the workspace as many waiting client messages as it has room for.
     fn hand_over(&mut self) {
         let Some(end) = &self.end else { return };
+        while let Some(front) = self.control_backlog.pop_front() {
+            match end.to_workspace.try_send(front) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(text)) => {
+                    self.control_backlog.push_front(text);
+                    break;
+                }
+                Err(_) => {
+                    self.control_backlog.clear();
+                    break;
+                }
+            }
+        }
+        if !self.control_backlog.is_empty() {
+            // Nothing else goes ahead of a waiting control message.
+            self.backlog_bytes = self
+                .backlog
+                .iter()
+                .chain(&self.control_backlog)
+                .map(inbound_len)
+                .sum();
+            return;
+        }
         while let Some(front) = self.backlog.pop_front() {
             match end.to_workspace.try_send(front) {
                 Ok(()) => {}
@@ -570,7 +644,12 @@ impl Peer {
                 }
             }
         }
-        self.backlog_bytes = self.backlog.iter().map(inbound_len).sum();
+        self.backlog_bytes = self
+            .backlog
+            .iter()
+            .chain(&self.control_backlog)
+            .map(inbound_len)
+            .sum();
     }
 
     /// False means drop this peer.
@@ -579,6 +658,12 @@ impl Peer {
             Event::IceConnectionStateChange(IceConnectionState::Disconnected) => return false,
             Event::ChannelOpen(cid, label) if label == "term" => {
                 self.term_cid = Some(cid);
+                if let Some(mut ch) = self.rtc.channel(cid) {
+                    ch.set_buffered_amount_low_threshold(32 * 1024);
+                }
+            }
+            Event::ChannelOpen(cid, label) if label == "ctl" => {
+                self.ctl_cid = Some(cid);
                 if let Some(mut ch) = self.rtc.channel(cid) {
                     ch.set_buffered_amount_low_threshold(32 * 1024);
                 }
@@ -612,9 +697,15 @@ impl Peer {
                     Inbound::Json(text)
                 };
                 self.backlog_bytes += inbound_len(&msg);
-                self.backlog.push_back(msg);
+                if Some(d.id) == self.ctl_cid {
+                    self.control_backlog.push_back(msg);
+                } else {
+                    self.backlog.push_back(msg);
+                }
                 // More than this waiting means the client floods faster than the workspace reads.
-                if self.backlog_bytes > BACKLOG_BYTES || self.backlog.len() > BACKLOG_MESSAGES {
+                if self.backlog_bytes > BACKLOG_BYTES
+                    || self.backlog.len() + self.control_backlog.len() > BACKLOG_MESSAGES
+                {
                     return false;
                 }
                 self.hand_over();

@@ -183,7 +183,7 @@ impl ServerClient {
             ServerMessage::Error { message } => {
                 info!("Server error: {}", message);
             }
-            ServerMessage::Pong => {}
+            ServerMessage::Pong | ServerMessage::ControlAck { .. } => {}
         }
         Ok(())
     }

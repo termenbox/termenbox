@@ -1,4 +1,4 @@
-import type { ClientMessage, ServerMessage } from './protocol';
+import { CONTROL_TYPES, type ClientMessage, type ServerMessage } from './protocol';
 import { openRtc } from './rtc';
 import { openTransport, Unreachable, type Openers, type Target, type Transport } from './transport';
 import { openWs } from './ws';
@@ -22,6 +22,9 @@ const STALE_AFTER_MS = 2500;
 const PONG_WITHIN_MS = 12000;
 /** After the network changed (Wi-Fi to cellular and back), a link that does not answer within this is re-raced (decision 0123). */
 const NETWORK_PONG_WITHIN_MS = 2000;
+
+/** The result of a control message (`Connection.request`). */
+export interface Ack { ok: boolean; acknowledged: boolean; error?: string }
 
 /** 1s, 2s, 4s, 8s, 16s, then 30s; +0..25% jitter so many tabs do not reconnect in lockstep. */
 export function backoffDelay(attempt: number, random = Math.random): number {
@@ -95,6 +98,10 @@ export class Connection {
   private authed = false;
   /** The server predates protocol versions: messages are translated to and from the old vocabulary (legacy.ts). */
   private legacy = false;
+  /** The server acknowledges control messages and, over WebRTC, has the `ctl` channel for them (step 3.3). */
+  private control = false;
+  private nextReq = 1;
+  private waiting = new Map<number, { resolve: (r: Ack) => void; timer: ReturnType<typeof setTimeout> }>();
   /** The server put terminal bytes on their own lane for this connection (`auth_ok.channels`). */
   private lanes = false;
   private everReady = false;
@@ -158,11 +165,44 @@ export class Connection {
     if (!this.transport || !this.authed) return;
     // Keystrokes go as raw bytes on the lane when there is one, and as JSON otherwise.
     if (msg.type === 'input' && this.lanes && this.transport.sendTerm?.(b64ToBytes(msg.data))) return;
-    this.transport.send(JSON.stringify(this.legacy ? toLegacy(msg) : msg));
+    const text = JSON.stringify(this.legacy ? toLegacy(msg) : msg);
+    // Control messages use the control channel when there is one: they never queue behind terminal bytes or events.
+    if (this.control && CONTROL_TYPES.has(msg.type) && this.transport.sendControl?.(text)) return;
+    this.transport.send(text);
+  }
+
+  /** Sends a control message and resolves with the server's result. A server that does not acknowledge (an older one)
+   *  resolves at once as `{ ok: true, acknowledged: false }`; a lost connection or no answer within `timeoutMs`
+   *  resolves `{ ok: false }` with the reason. */
+  request(msg: ClientMessage, timeoutMs = 8000): Promise<Ack> {
+    if (!this.transport || !this.authed) return Promise.resolve({ ok: false, acknowledged: false, error: 'Not connected' });
+    if (!this.control) {
+      this.send(msg);
+      return Promise.resolve({ ok: true, acknowledged: false });
+    }
+    const req = this.nextReq++;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.waiting.delete(req);
+        resolve({ ok: false, acknowledged: false, error: 'No answer from the server' });
+      }, timeoutMs);
+      this.waiting.set(req, { resolve, timer });
+      this.send({ ...msg, req } as unknown as ClientMessage);
+    });
+  }
+
+  /** Ends every request that waits for an answer: the connection it was sent on is gone. */
+  private failWaiting(error: string) {
+    for (const { resolve, timer } of this.waiting.values()) {
+      clearTimeout(timer);
+      resolve({ ok: false, acknowledged: false, error });
+    }
+    this.waiting.clear();
   }
 
   close() {
     this.stopped = true;
+    this.failWaiting('The connection was closed');
     this.clearTimers();
     document.removeEventListener('visibilitychange', this.wake);
     window.removeEventListener('online', this.wake);
@@ -225,6 +265,7 @@ export class Connection {
     this.retryAt = 0; // an attempt is running now
     this.authed = false;
     this.legacy = false;
+    this.control = false;
     this.lanes = false;
     this.opts.onState(this.everReady ? 'reconnecting' : 'connecting');
 
@@ -295,6 +336,7 @@ export class Connection {
       const isReconnect = this.everReady;
       this.authed = true;
       this.legacy = !(msg.protocol && msg.protocol >= 1);
+      this.control = !!msg.control_channel;
       this.pingsOut = 0;
       this.proving = false;
       this.fastReconnect = false;
@@ -318,6 +360,13 @@ export class Connection {
     }
     if (msg.type === 'pong') {
       if (this.pingSentAt) this.rtt = Math.round(performance.now() - this.pingSentAt);
+    } else if (msg.type === 'control_ack') {
+      const w = this.waiting.get(msg.req);
+      if (w) {
+        clearTimeout(w.timer);
+        this.waiting.delete(msg.req);
+        w.resolve({ ok: msg.ok, acknowledged: true, error: msg.error });
+      }
     } else {
       this.listeners.forEach((fn) => fn(msg));
     }
@@ -392,6 +441,7 @@ export class Connection {
   private dropped(reason: string) {
     if (!this.authed) return; // a failed attempt is reported as `unreachable`, not as a drop
     this.authed = false; // one loss is reported once, whichever path notices it first
+    this.failWaiting('The connection dropped');
     this.drops++;
     this.opts.onDrop?.(reason, Math.round(performance.now() - this.readyAt));
   }

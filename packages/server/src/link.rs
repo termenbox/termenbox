@@ -23,6 +23,8 @@ pub enum Inbound {
 /// Outgoing half. `wake` lets a transport that owns its own event loop (WebRTC) notice new output.
 #[derive(Clone)]
 pub struct LinkTx {
+    /// Acks, pongs and other small urgent replies (decision 0139): written before anything on `status` or `term`.
+    control: mpsc::Sender<String>,
     status: mpsc::Sender<String>,
     term: mpsc::Sender<Vec<u8>>,
     lanes: Arc<AtomicBool>,
@@ -68,6 +70,23 @@ impl LinkTx {
             text
         };
         if self.status.send(text).await.is_err() {
+            return false;
+        }
+        if let Some(wake) = &self.wake {
+            wake.notify_one();
+        }
+        true
+    }
+
+    /// A control reply: an ack, a pong. It is written before any queued status message or terminal byte, and never
+    /// waits for the queues of those to drain. False when the transport is gone.
+    pub async fn send_control(&self, text: String) -> bool {
+        let text = if self.legacy.load(Ordering::Acquire) {
+            crate::legacy::outbound(&text)
+        } else {
+            text
+        };
+        if self.control.send(text).await.is_err() {
             return false;
         }
         if let Some(wake) = &self.wake {
@@ -122,6 +141,7 @@ pub struct Link {
 /// The transport's side of a `Link`.
 pub struct LinkEnd {
     pub to_workspace: mpsc::Sender<Inbound>,
+    pub control_from_workspace: mpsc::Receiver<String>,
     pub from_workspace: mpsc::Receiver<String>,
     pub term_from_workspace: mpsc::Receiver<Vec<u8>>,
 }
@@ -129,11 +149,13 @@ pub struct LinkEnd {
 pub fn pair(peer_ip: Option<String>, wake: Option<Arc<Notify>>) -> (Link, LinkEnd) {
     let (in_tx, in_rx) = mpsc::channel(32);
     let (out_tx, out_rx) = mpsc::channel(64);
+    let (control_tx, control_rx) = mpsc::channel(64);
     let (term_tx, term_rx) = mpsc::channel(64);
     (
         Link {
             rx: in_rx,
             tx: LinkTx {
+                control: control_tx,
                 status: out_tx,
                 term: term_tx,
                 lanes: Arc::default(),
@@ -144,6 +166,7 @@ pub fn pair(peer_ip: Option<String>, wake: Option<Arc<Notify>>) -> (Link, LinkEn
         },
         LinkEnd {
             to_workspace: in_tx,
+            control_from_workspace: control_rx,
             from_workspace: out_rx,
             term_from_workspace: term_rx,
         },

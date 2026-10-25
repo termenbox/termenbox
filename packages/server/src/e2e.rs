@@ -19,7 +19,9 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::auth::AuthState;
 use crate::cert::testing::{now, Device, Signer};
-use crate::rtc::{self, RtcInfo, CHANNEL_ID, SERVER_PWD, SERVER_UFRAG, TERM_CHANNEL_ID};
+use crate::rtc::{
+    self, RtcInfo, CHANNEL_ID, CONTROL_CHANNEL_ID, SERVER_PWD, SERVER_UFRAG, TERM_CHANNEL_ID,
+};
 use crate::workspaces::WorkspaceManager;
 use crate::{router, AppState};
 
@@ -272,6 +274,14 @@ impl Conn {
         .await;
     }
 
+    /// A control message: on its own channel over WebRTC, the one socket over WebSocket.
+    async fn send_control(&mut self, v: Value) {
+        match self {
+            Conn::Ws(_) => self.send(v).await,
+            Conn::Rtc(c) => c.send(Frame::Control(v.to_string())),
+        }
+    }
+
     async fn send(&mut self, v: Value) {
         match self {
             Conn::Ws(ws) => ws.send(Message::Text(v.to_string())).await.unwrap(),
@@ -362,10 +372,12 @@ struct RtcClient {
     rx: mpsc::UnboundedReceiver<Frame>,
 }
 
-/// What travels on the data channels: text on the status channel, bytes on the `term` channel.
+/// What travels on the data channels: text on the status channel, bytes on the `term` channel, control messages on
+/// the `ctl` channel.
 enum Frame {
     Text(String),
     Term(Vec<u8>),
+    Control(String),
 }
 
 /// A `term` frame as the tests read it: `{"type":"term","data":<base64>}`.
@@ -397,6 +409,7 @@ impl RtcClient {
         rtc.add_remote_candidate(Candidate::host(server, "udp").unwrap());
         let cid: ChannelId;
         let term_cid: ChannelId;
+        let ctl_cid: ChannelId;
         {
             let mut d = rtc.direct_api();
             d.set_ice_controlling(true);
@@ -421,6 +434,11 @@ impl RtcClient {
                 negotiated: Some(TERM_CHANNEL_ID),
                 ..Default::default()
             });
+            ctl_cid = d.create_data_channel(ChannelConfig {
+                label: "ctl".into(),
+                negotiated: Some(CONTROL_CHANNEL_ID),
+                ..Default::default()
+            });
         }
 
         let (to_net, mut from_app) = mpsc::unbounded_channel::<Frame>();
@@ -439,6 +457,7 @@ impl RtcClient {
                             let (id, binary, bytes) = match m {
                                 Frame::Text(t) => (cid, false, t.as_bytes()),
                                 Frame::Term(b) => (term_cid, true, b.as_slice()),
+                                Frame::Control(t) => (ctl_cid, false, t.as_bytes()),
                             };
                             let Some(mut ch) = rtc.channel(id) else { break };
                             if ch.write(binary, bytes).unwrap_or(false) {
@@ -1372,6 +1391,110 @@ async fn legacy_an_old_client_is_answered_in_the_old_vocabulary(kind: Kind) {
     c.recv_type("sessions").await;
 }
 
+/// Control messages that carry a `req` are answered with a `control_ack` that says whether they were carried out
+/// (step 3.3): on the control channel over WebRTC, ahead of everything queued over WebSocket. No tmux needed.
+async fn a_control_message_is_acknowledged_with_its_result(kind: Kind) {
+    let f = fixture().await;
+    let alice = f.who(1, "alice");
+    let mut c = Conn::open(kind, &f).await;
+    c.login(&f, &alice, &f.claim).await;
+    c.recv_type("auth_ok").await;
+    // Carried out: success.
+    c.send_control(json!({"type":"detach","req":7})).await;
+    let ack = c.recv_type("control_ack").await;
+    assert_eq!(
+        (ack["req"].as_u64(), ack["ok"].as_bool()),
+        (Some(7), Some(true)),
+        "{ack}"
+    );
+    assert!(ack.get("error").is_none());
+    // Refused: the error comes back in the ack, not as a separate error message.
+    c.send_control(json!({"type":"close_workspace","workspace":"no-such-workspace","req":8}))
+        .await;
+    let ack = c.recv_type("control_ack").await;
+    assert_eq!(
+        (ack["req"].as_u64(), ack["ok"].as_bool()),
+        (Some(8), Some(false)),
+        "{ack}"
+    );
+    assert!(
+        !ack["error"].as_str().unwrap_or_default().is_empty(),
+        "{ack}"
+    );
+    // A message that is not understood is still answered when it asks for an ack.
+    c.send_control(json!({"type":"from_the_future","req":9}))
+        .await;
+    let ack = c.recv_type("control_ack").await;
+    assert_eq!(
+        (ack["req"].as_u64(), ack["ok"].as_bool()),
+        (Some(9), Some(false)),
+        "{ack}"
+    );
+    // Without `req` nothing changes: a refusal is an error message, and ping is still answered.
+    c.send(json!({"type":"close_workspace","workspace":"no-such-workspace"}))
+        .await;
+    c.recv_type("error").await;
+    c.send(json!({"type":"ping"})).await;
+    c.recv_type("pong").await;
+}
+
+/// The longest a control message may wait to be acknowledged while an attached terminal floods the connection. Taken
+/// from the baseline measured below (the flood is `seq` in a loop, the client reads continuously): see the printed
+/// `control_ack after` line in the test output.
+const CONTROL_ACK_BOUND: Duration = Duration::from_millis(2000);
+
+/// A cancel (`detach` stops the stream) sent while the terminal floods the connection is acknowledged within the
+/// bound, over both transports (step 3.3, guardrail `control-never-waits-behind-bulk`).
+async fn a_cancel_during_an_output_flood_is_acknowledged_within_the_bound(kind: Kind) {
+    if std::process::Command::new("tmux")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        eprintln!("tmux not installed; skipping");
+        return;
+    }
+    let f = fixture().await;
+    let name = format!("cf{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let _cleanup = KillOnDrop(name.clone());
+    let alice = f.who(1, "alice");
+    let mut c = Conn::open(kind, &f).await;
+    c.login(&f, &alice, &f.claim).await;
+    c.recv_type("auth_ok").await;
+    c.send(json!({"type":"new_workspace","name":name})).await;
+    c.recv_type("workspaces").await;
+    c.send(json!({"type":"attach","workspace_id":name})).await;
+    c.recv_type("workspace_attached").await;
+    c.send(json!({"type":"input","data":B64.encode("timeout 20 sh -c 'while :; do seq 1 5000; done'\n")})).await;
+    // Wait until the flood is running: a few hundred KB of output seen.
+    let mut seen = 0usize;
+    let start = Instant::now();
+    while seen < 300_000 && start.elapsed() < Duration::from_secs(15) {
+        let Some(v) = c.recv().await else { break };
+        if v["type"] == "output" || v["type"] == "term" {
+            seen += v["data"].as_str().map_or(0, str::len);
+        }
+    }
+    assert!(seen >= 300_000, "the flood never started: {seen} bytes");
+    let sent = Instant::now();
+    c.send_control(json!({"type":"detach","req":42})).await;
+    let mut waited = None;
+    while sent.elapsed() < Duration::from_secs(15) {
+        let Some(v) = c.recv().await else { break };
+        if v["type"] == "control_ack" && v["req"] == 42 {
+            assert_eq!(v["ok"], true);
+            waited = Some(sent.elapsed());
+            break;
+        }
+    }
+    let waited = waited.expect("the cancel was never acknowledged");
+    eprintln!("control_ack after {waited:?} during a flood ({kind:?})");
+    assert!(
+        waited < CONTROL_ACK_BOUND,
+        "the ack took {waited:?}, bound {CONTROL_ACK_BOUND:?}"
+    );
+}
+
 macro_rules! over_both_transports {
     ($($name:ident),*) => {$(
         mod $name {
@@ -1382,6 +1505,8 @@ macro_rules! over_both_transports {
 }
 
 over_both_transports!(
+    a_control_message_is_acknowledged_with_its_result,
+    a_cancel_during_an_output_flood_is_acknowledged_within_the_bound,
     a_client_that_announces_the_protocol_speaks_the_workspace_vocabulary,
     legacy_an_old_clients_messages_are_understood,
     legacy_an_old_client_is_answered_in_the_old_vocabulary,
