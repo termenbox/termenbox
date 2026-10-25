@@ -917,6 +917,7 @@ async fn main() -> anyhow::Result<()> {
                     state_dir: args.config_dir.clone(),
                 },
             })
+            .with_requests(args.requests_dir.clone())
             .with_uninstall(
                 args.server_name.clone(),
                 Arc::new(|| {

@@ -42,6 +42,40 @@ impl Request {
     }
 }
 
+/// Asks the root helper to check for and install a release now. The file is created exclusively and readable by the
+/// server's user only; the helper treats it as hostile anyway (see `read_one`).
+pub fn leave_update_now(dir: &Path) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(format!("{}.json", uuid::Uuid::new_v4()));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(br#"{"action":"update-now"}"#)
+}
+
+/// The release the updater recorded as installable but not installed (`update-status.json`, written next to the
+/// requests directory), or None. A file that is large, unreadable or not what the updater writes reads as None.
+pub fn available_update(requests_dir: &Path) -> Option<String> {
+    let path = requests_dir.parent()?.join("update-status.json");
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_BYTES)
+        .read_to_string(&mut text)
+        .ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let version = v.get("available")?.as_str()?;
+    (!version.is_empty()
+        && version.len() <= 64
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c)))
+    .then(|| version.to_string())
+}
+
 /// Reads and removes the pending requests (at most 16 per run). Anything that is not a valid request is removed
 /// and logged without its content, so the path unit cannot be kept busy by junk.
 pub fn take_requests(dir: &Path) -> Vec<Request> {
@@ -194,5 +228,31 @@ mod tests {
         }
         assert_eq!(take_requests(&d).len(), 16);
         assert_eq!(std::fs::read_dir(&d).unwrap().count(), 24);
+    }
+
+    #[test]
+    fn an_update_request_the_server_leaves_is_one_the_helper_accepts() {
+        let d = dir();
+        leave_update_now(&d).unwrap();
+        assert_eq!(take_requests(&d), vec![Request::UpdateNow {}]);
+    }
+
+    #[test]
+    fn the_available_release_is_read_from_the_status_file_next_to_the_requests() {
+        let d = dir().join("requests");
+        std::fs::create_dir_all(&d).unwrap();
+        assert_eq!(available_update(&d), None);
+        let status = d.parent().unwrap().join("update-status.json");
+        std::fs::write(
+            &status,
+            r#"{"available":"0.1.54-beta.1","channel":"beta","mode":"notify"}"#,
+        )
+        .unwrap();
+        assert_eq!(available_update(&d).as_deref(), Some("0.1.54-beta.1"));
+        std::fs::write(&status, r#"{"available":"1.0 <b>"}"#).unwrap();
+        assert_eq!(available_update(&d), None);
+        std::fs::write(&status, "junk").unwrap();
+        assert_eq!(available_update(&d), None);
+        std::fs::remove_dir_all(d.parent().unwrap()).unwrap();
     }
 }

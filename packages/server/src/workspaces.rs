@@ -92,6 +92,9 @@ pub struct WorkspaceManager {
     server_name: String,
     /// Called after an uninstall has wiped the configuration and told the client; stops the process.
     on_uninstalled: Arc<dyn Fn() + Send + Sync>,
+    /// Where requests for the root helper go and where the updater's status sits beside them (decision 0077); None
+    /// in tests and builds without an updater.
+    requests_dir: Option<std::path::PathBuf>,
     events: Option<EventHub>,
     push: Option<Arc<crate::push::Push>>,
     windows: Option<WindowHub>,
@@ -118,6 +121,7 @@ impl WorkspaceManager {
             mode,
             server_name: String::new(),
             on_uninstalled: Arc::new(|| {}),
+            requests_dir: None,
             events: None,
             push: None,
             windows: None,
@@ -159,6 +163,20 @@ impl WorkspaceManager {
     /// The agents the owner allows as ACP workspaces (decision 0111); empty when none are configured.
     pub fn acp_agents(&self) -> Vec<String> {
         self.backend.acp_agents()
+    }
+
+    /// Lets the owner update the server from the app: `dir` is the requests directory the root helper watches.
+    pub fn with_requests(mut self, dir: std::path::PathBuf) -> Self {
+        self.requests_dir = Some(dir);
+        self
+    }
+
+    /// The newer release the updater recorded, empty when there is none (reported in `auth_ok`).
+    pub fn update_available(&self) -> String {
+        self.requests_dir
+            .as_deref()
+            .and_then(crate::requests::available_update)
+            .unwrap_or_default()
     }
 
     /// Serves the agent event stream (plan v6) to every connection.
@@ -536,6 +554,24 @@ impl WorkspaceManager {
                 )
                 .await?;
                 (self.on_uninstalled)();
+            }
+            ClientMessage::UpdateServer {} => {
+                let is_owner = auth
+                    .owner()
+                    .is_some_and(|o| o.provider == identity.provider && o.id == identity.id);
+                let Some(dir) = self.requests_dir.as_deref().filter(|_| is_owner) else {
+                    info!(target: "audit", event = "update_refused", provider = %identity.provider, account_id = %identity.id);
+                    return Err(anyhow::anyhow!("Only the owner can update this server"));
+                };
+                crate::requests::leave_update_now(dir)?;
+                info!(target: "audit", event = "update_requested", provider = %identity.provider, account_id = %identity.id, login = %identity.login);
+                send_r(
+                    tx,
+                    &ServerMessage::UpdateRequested {
+                        available: self.update_available(),
+                    },
+                )
+                .await?;
             }
             ClientMessage::RevokeDevice { device } => {
                 auth.revoke_device(&device)?;

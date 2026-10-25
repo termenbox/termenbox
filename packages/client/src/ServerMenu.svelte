@@ -3,10 +3,10 @@
   import { cn } from './lib/ui/utils';
 
   /** What one server's row can do, behind one button (the three dots): pause or resume, retry a server that is not
-   *  connected, send it to another device, remove it from this browser. Each entry is an icon and its words. */
-  let { name, paused, canRetry, canShare, onpause, onresume, onretry, onshare, onremove }: {
+   *  connected, send it to another device, rename it on this device, remove it from this browser. Each entry is an icon and its words. */
+  let { name, paused, canRetry, canShare, onpause, onresume, onretry, onshare, onrename, onremove }: {
     name: string; paused: boolean; canRetry: boolean; canShare: boolean;
-    onpause: () => void; onresume: () => void; onretry: () => void; onshare: () => void; onremove: () => void;
+    onpause: () => void; onresume: () => void; onretry: () => void; onshare: () => void; onrename: () => void; onremove: () => void;
   } = $props();
   const item = 'flex min-h-11 cursor-pointer items-center gap-3 rounded-control px-3 text-base text-fg outline-none data-[highlighted]:bg-raised';
 </script>
@@ -36,6 +36,9 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12M8 7l4-4 4 4"></path><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"></path></svg>Send to another device
       </DropdownMenu.Item>
     {/if}
+    <DropdownMenu.Item class={item} onSelect={onrename} data-testid="server-rename-item">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>Rename
+    </DropdownMenu.Item>
     <DropdownMenu.Item class={cn(item, 'text-bad')} onSelect={onremove}>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>Remove
     </DropdownMenu.Item>

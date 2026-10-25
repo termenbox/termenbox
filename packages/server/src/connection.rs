@@ -150,6 +150,7 @@ pub async fn run(mut link: Link, state: AppState) {
         tmux_version: state.workspaces.tmux_version().to_string(),
         prefix: state.workspaces.prefix().to_string(),
         acp_agents: state.workspaces.acp_agents(),
+        update_available: state.workspaces.update_available(),
     };
     if !send(&link, &ok).await {
         return;

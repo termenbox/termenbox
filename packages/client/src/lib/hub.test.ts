@@ -30,6 +30,20 @@ function setup(target?: (server: ServerListItem, refresh: boolean) => Promise<Ta
 }
 
 describe('ServerHub', () => {
+  it('reports a newer release and asks the server to install it, until it comes back', () => {
+    const { hub, connections } = setup(); hub.start([server('a')]);
+    const c = connections[0];
+    c.opts.onState('connected');
+    c.opts.onReady({ type: 'auth_ok', user: 'u', server_name: 'host', version: '0.1.53+abc', update_available: '0.1.54' }, false);
+    expect(get(hub.servers)[0]).toMatchObject({ version: '0.1.53+abc', updateAvailable: '0.1.54', updating: false });
+    hub.updateServer('a');
+    expect(c.sent).toContainEqual({ type: 'update_server' });
+    expect(get(hub.servers)[0].updating).toBe(true);
+    c.opts.onReady({ type: 'auth_ok', user: 'u', server_name: 'host', version: '0.1.54+def' }, true);
+    expect(get(hub.servers)[0]).toMatchObject({ version: '0.1.54+def', updateAvailable: '', updating: false });
+    hub.updateServer('a'); c.emit({ type: 'error', message: 'Only the owner can update this server' });
+    expect(get(hub.servers)[0].updating).toBe(false);
+  });
   it('starts every saved server once, even if start or add is repeated', () => {
     const { hub, connections } = setup();
     hub.start([server('a'), server('b')]); hub.start([server('a'), server('b')]); hub.add(server('a'));
