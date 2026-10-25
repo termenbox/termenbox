@@ -84,7 +84,7 @@ try {
   for (const width of [360, 390]) {
     await page.setViewportSize({ width, height: 900 });
     await page.evaluate(width => window.__vv?.({ width }), width);
-    await page.waitForFunction(activeInView, null, { timeout: 8000 }).catch(async e => { console.log('DEBUG', width, JSON.stringify(await page.evaluate(() => { const t=document.querySelector('[role=tab][aria-selected=true]'); const s=document.querySelector('[role=tablist]'); return {tab:t.getBoundingClientRect().toJSON(), key:t.dataset.key, strip:s.getBoundingClientRect().toJSON(), sl:s.scrollLeft, sw:s.scrollWidth, vw:innerWidth}; }))); throw e; });
+    await page.waitForFunction(activeInView);
   }
   const tabs = page.getByRole('tab');
   if (!(await tabs.first().getAttribute('aria-label')).includes('Needs you')) fail('needs-you tabs are not first');
