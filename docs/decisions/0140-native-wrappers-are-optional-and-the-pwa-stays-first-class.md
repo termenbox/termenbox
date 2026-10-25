@@ -2,8 +2,7 @@
 id: 0140-native-wrappers-are-optional-and-the-pwa-stays-first-class
 title: Native wrappers are optional enhancements and the PWA stays the reference client
 status: active
-supersedes-guardrail: [no-native-apps]
-amends-guardrail: [no-paid-services]
+amends: 0005
 date: 2026-10-25
 track: product
 accepted-by: Sergey Strebulaev <s@vivantel.dev>
@@ -12,18 +11,18 @@ tags: [platform, distribution, client, mobile, desktop, product]
 
 ## Decision
 
-- **The PWA stays the reference client.** Every user-facing feature works in a browser, and no feature exists only in a wrapper. Removing the wrappers must leave a complete product, including a complete client.
-- **One Svelte build, one protocol.** A wrapper loads the same `packages/client` build and speaks the same wire protocol. Native code lives in a separate `packages/native` workspace; `packages/client` never imports a native module. Platform differences go through a capability adapter that the web build implements as a no-op, so shared client code has no `if (isIOS)` or `if (isElectron)` branches.
+- **The PWA stays the reference client.** Every user-visible outcome is reachable in a browser, and no feature exists only in a wrapper; delivery may be native-only where the browser physically cannot do it, as long as the outcome stays reachable on the web. Removing the wrappers must leave a complete product, including a complete client.
+- **One Svelte build, one protocol.** A wrapper loads the same `packages/client` build and speaks the same wire protocol. Native code lives in a separate `packages/native` workspace; `packages/client` never imports a native module. Platform differences go through a capability adapter whose interface and web no-op live in `packages/client` and whose native implementations are injected from `packages/native`, so shared client code has no `if (isIOS)` or `if (isElectron)` branches. Browser feature detection (for example, the iOS Safari install hint) is not a native-runtime branch and stays allowed.
 - **Mobile: Capacitor** for iOS and Android.
-- **Desktop: `@capacitor-community/electron`** for Windows, macOS and Linux, driven by the same Capacitor CLI, so one command family builds all five targets.
-- **Native is an enhancement.** Native push, background execution, camera/QR and biometrics may be added, but each one has a web fallback (Web Push, foreground sync, file/QR input, device key). The wrapper's chrome fixes (safe areas, back gesture, viewport, keyboard) are the only native work with no web counterpart, because the web already has the behaviour.
-- **Distribution.** Mobile ships through the App Store and Google Play; desktop ships signed installers. `no-paid-services` is waived strictly for the cost of distribution through the Apple App Store and Google Play: paying for the Apple Developer Program and Google Play Console accounts, desktop code-signing certificates, and the supporting infrastructure needed to publish the wrappers in those stores is an accepted **distribution cost**. The exception covers that cost and nothing else — it is not a runtime dependency, introduces no subscription and no per-user fee, and the PWA and self-hosted installs still need no paid service.
+- **Desktop: `@capacitor-community/electron`** for Windows, macOS and Linux, driven by the same Capacitor CLI, so one command family builds all five targets, subject to verifying the plugin against the Capacitor version in use (see Consequences).
+- **Native is an enhancement.** Native push, background execution, camera/QR and biometrics may be added, but each one has a web fallback (Web Push, foreground sync, file/QR input, device key). The wrapper's chrome fixes (safe areas, back gesture, viewport, keyboard) are the only native feature work with no web counterpart, because the web already has the behaviour.
+- **Distribution.** Mobile ships through the App Store and Google Play; desktop ships signed installers. `no-paid-services` is waived strictly for the cost of distribution: the Apple Developer Program and Google Play Console accounts, desktop code-signing certificates, and the store fees for publishing the wrappers are an accepted **distribution cost**. The exception covers those fees and nothing else — it does not cover a recurring build, CI or hosting service, is not a runtime dependency, introduces no subscription and no per-user fee, and the PWA and self-hosted installs still need no paid service.
 - **The server is untouched.** The Rust server and its install path stay as they are; a wrapper is a client, not a host.
 - **Guardrail.** `no-native-apps` is superseded by `native-wrapper-keeps-web-parity`: the web client stays complete, the shared client stays free of native imports, and every native enhancement has a web fallback.
 
 ## Why
 
-The owner wants the product reachable as a home-screen and desktop app with native push and real background execution, which is the one thing the browser cannot do on iOS (decision 0005, fact 0016). Optional wrappers serve that without giving up zero-install web access, self-hosting or the MIT license. Keeping the native code in its own package preserves the old guardrail's real intent — that the web build must never depend on a platform — while allowing the app-store presence the owner asked for.
+The owner wants the product reachable as a home-screen and desktop app with native push and real background execution; on iOS the browser cannot run the app in the background, and Web Push reaches only an installed PWA with best-effort delivery (decision 0005, fact 0016). Optional wrappers serve that without giving up zero-install web access, self-hosting or the MIT license. Keeping the native code in its own package preserves the old guardrail's real intent — that the web build must never depend on a platform — while allowing the app-store presence the owner asked for.
 
 ## Rejected
 
@@ -32,17 +31,19 @@ The owner wants the product reachable as a home-screen and desktop app with nati
 | Stay web-only | Leaves native push, background execution and store discovery unreachable |
 | A separate native UI codebase | Drift and double maintenance; one Svelte build is the point |
 | Capacitor or Electron imports inside `packages/client` | Makes the web bundle depend on native code and breaks the zero-install path |
-| Tauri or Electron for mobile | Neither covers iOS and Android |
+| Electron for mobile | Does not target iOS or Android |
 | Capacitor alone for all five targets | Capacitor itself targets iOS, Android and web; desktop needs the Electron extension |
 | Wrappers as the primary distribution | Drops the zero-install PWA and self-hosted users |
 
 ## Consequences
 
-- A new workspace `packages/native` holds the Capacitor projects, the Electron target and the capability adapter.
+- A new workspace `packages/native` holds the Capacitor projects, the Electron target and the native capability implementations; the adapter interface and web no-op live in `packages/client`.
 - CI gains a gate (`scripts/check-native-parity.mjs`, added in its own PR) that fails when `packages/client` imports a native module or depends on one.
+- Desktop distribution depends on `@capacitor-community/electron`. The wrapper stack is pinned to Capacitor 8.x and `@capacitor-community/electron` 5.0.1. R76 verifies that pair before starting; the check is a precondition, and a failure blocks R76 rather than changing the target inside the step. A replacement desktop target needs an amendment to this decision.
+- Native push adds Apple (APNs) or Google (FCM) as a notification intermediary and introduces device tokens and notification metadata as a new data category. The payload rule is unchanged: no agent text leaves the device (`notifications-carry-no-agent-text`), and the privacy notice must name the tokens before a wrapper ships.
 - Signing keys, store credentials and provisioning profiles are release secrets and never logged (`security-secrets-handling`).
 - The web client keeps its own gates: the browser matrix (R36) and the real-device pass (U16) still decide whether the PWA is done. Wrapper checks are labelled per platform (`a-phone-check-names-its-platform`).
-- Decision 0005's "no native wrapper" rationale is superseded; its persistence layers still apply to the web client.
+- Decision 0005's "no native wrapper" rationale is amended (frontmatter `amends: 0005`); its persistence layers still apply to the web client.
 - The 512 MB / 1 vCPU envelope (guardrail `resource-constraints`) is about the server and is unchanged; a wrapper runs on the user's device.
 
 ## See also

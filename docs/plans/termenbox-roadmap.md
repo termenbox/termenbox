@@ -107,7 +107,7 @@ Next ready step: [R07](roadmap/R07.md).
 | 36 | [R38](roadmap/R38.md) | Session sharing links, read-only and read-write (new) | server | both | pending | 1.4 | 1.4 | - |
 | 37 | [R33](roadmap/R33.md) | Managed quick-tunnel fallback for hosts with no UDP port (8.3) | server | n/a | pending | 1.2 | 1.2 | - |
 | 38 | [R50](roadmap/R50.md) | Release channels and auto-update policies for server and client | release | both | pending | 1.2 | 1.2 | - |
-| 39 | [R76](roadmap/R76.md) | Native wrappers: Capacitor for iOS and Android, Electron for desktop, PWA kept complete | release | both | pending | 1.2 | 1.2 | - |
+| 39 | [R76](roadmap/R76.md) | Native wrappers: Capacitor for iOS and Android, `@capacitor-community/electron` for desktop, PWA kept complete | release | both | pending | 1.2 | 1.2 | - |
 | 40 | [R24](roadmap/R24.md) | Environment profile on the native host (replaces B.4-B.6) | server | both | pending | 1.1 | 1.1 | - |
 | 41 | [R15](roadmap/R15.md) | Session and model connectors (O.5) | connectors | n/a | pending | 1.0 | 1.0 | R10, R11 |
 | 42 | [R40](roadmap/R40.md) | The free gate check (P.1) | paid | n/a | pending | 15.0 | 15.0 | R18, U16 |

@@ -11,18 +11,18 @@ tags: [client, platform, distribution, parity]
 # Guardrail: Native wrappers are optional and the web client stays complete
 
 ## Rule
-**MUST** ship every user-facing feature in the browser. **MUST NOT** put a feature only in a native wrapper.
+**MUST** make every user-visible outcome reachable in the browser. **MUST NOT** put a feature only in a native wrapper.
 
-**MUST** keep native code out of the web client: `packages/client` must not import Capacitor, Electron, Tauri or a native plugin. Native code lives in `packages/native`, behind a capability adapter.
+**MUST** keep native code out of the web client: `packages/client` must not import Capacitor, Electron or a native plugin. Native code lives in `packages/native`; the adapter interface and its web no-op live in `packages/client`, and native implementations are injected from `packages/native`.
 
-**MUST NOT** branch on the platform in shared client code (`isIOS`, `isAndroid`, `isElectron`). **MUST** ask the adapter for a capability instead.
+**MUST NOT** branch on the *native runtime* in shared client code (`isIOS`, `isAndroid`, `isElectron` wrapper checks). **MUST** ask the adapter for a capability instead. Browser feature detection — an iOS Safari install hint, a WebGL fallback — is not a native-runtime branch and stays allowed.
 
 **MUST** give every native enhancement a web fallback: native push falls back to Web Push, background execution to foreground sync, camera/QR to file or QR input, biometrics to the device key.
 
 ## Scope
 - Applies to `packages/client` (the PWA and hosted client) and to the shared code a wrapper loads.
 - Does not apply to the Rust server and its installers, which are native by design.
-- The wrapper's platform chrome — safe areas, back gesture, viewport, soft keyboard — is the only work with no web counterpart; it must not change what the web client can do.
+- The wrapper's platform chrome — safe areas, back gesture, viewport, soft keyboard — is the only *feature* work with no web counterpart; it must not change what the web client can do.
 
 ## Rationale
 - The product promise is zero-install, self-hosted and MIT; a wrapper is a convenience, not a requirement.
@@ -36,7 +36,9 @@ tags: [client, platform, distribution, parity]
 - CI (planned, own PR): `scripts/check-native-parity.mjs`, run in the client job, fails on a native import
   or a native dependency in `packages/client`. It must cover `src`, `functions`, `public`, `installer` and
   `e2e`, the vite config and `package.json`; fail when a covered path is missing rather than passing; and
-  match `@capacitor/core` and plugin shims, not only wrapper package names. Until that script lands, PR
-  review is the only enforcement of this rule.
+  match `@capacitor/*` (including `@capacitor/core`), `@capacitor-community/*`, `@electron/*` and
+  `electron`, not only wrapper package names. The import gate does not detect a platform branch;
+  that rule is enforced in review against the native-runtime definition above, so browser feature detection
+  is not rejected. Until that script lands, PR review is the only enforcement of this rule.
 - CI (with R76): a wrapper job builds all five targets and runs the web parity suite; the PWA matrix (R36) stays green independently.
-- PR review: reject a feature that only appears in a wrapper, and reject a platform branch in shared client code.
+- PR review: reject a feature that only appears in a wrapper, and reject a native-runtime branch in shared client code.

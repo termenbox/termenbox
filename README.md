@@ -2,7 +2,7 @@
 
 <p align="center">
   <b>Run Claude Code and Codex on your own server, from your phone.</b><br>
-  A self-hosted web terminal for AI coding agents. Workspaces live in tmux and survive dropped connections. No app to install, no subscription.
+  A self-hosted web terminal for AI coding agents. Workspaces live in tmux and survive dropped connections. No app required, no subscription.
 </p>
 
 <p align="center">

@@ -31,7 +31,7 @@ packages/
   agent/           # termenbox-agent (parked; see issue #19)
   core/            # termenbox-core (Rust, shared protocol types)
   client/          # termenbox-client (Svelte 5, xterm.js WebGL)
-  native/          # termenbox-native (planned, R76: optional Capacitor iOS/Android + Electron desktop)
+  native/          # termenbox-native (planned, R76: optional Capacitor iOS/Android + @capacitor-community/electron desktop)
 ```
 
 ## Quick Commands
@@ -69,7 +69,7 @@ lint
 - **Auth**: GitHub OAuth; one owner per server, claimed with a one-time secret (DECISION-0053)
 - **Workspaces**: server owns tmux/PTY via a WorkspaceBackend trait (DECISION-0054); reconnect = re-attach
 - **Client**: Svelte 5 + xterm.js WebGL; hosted or self-hosted (DECISION-0052)
-- **Wrappers**: optional Capacitor (iOS/Android) + Electron (desktop); one Svelte build, PWA first-class (DECISION-0140)
+- **Wrappers**: optional Capacitor (iOS/Android) + `@capacitor-community/electron` (desktop); one Svelte build, PWA first-class (DECISION-0140)
 - **Deployment**: Docker image (ghcr.io), one command from the client; 512MB RAM, 1 vCPU (FACT-0001)
 - **Branches**: PRs target `develop`, the default branch; `master` moves only for a release (DECISION-0129)
 - **Plan**: docs/plans/termenbox-roadmap.md, tracked in GitHub issues
@@ -77,7 +77,7 @@ lint
 ## Guardrail Highlights
 
 - Wrappers optional; the web client stays complete (GUARDRAIL-native-wrapper-keeps-web-parity)
-- No paid services (GUARDRAIL-no-paid-services)
+- No paid services (GUARDRAIL-no-paid-services; developer accounts and signing certificates excepted)
 - 512MB RAM / 1 vCPU limit (GUARDRAIL-resource-constraints)
 - Secrets in memory only, never logged (GUARDRAIL-security-secrets-handling)
 - Internal services on 127.0.0.1 only (GUARDRAIL-internal-network-binding)
