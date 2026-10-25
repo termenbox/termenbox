@@ -64,7 +64,7 @@ describe('describeProblem', () => {
 describe('steps in the report', () => {
   it('lists the steps and says so when there are none', () => {
     const base = { version: null, userAgent: 'x', inner: '1x1', visual: '1x1', connection: 'connected', errors: [] };
-    expect(buildReport({ ...base, steps: ['1. open session tab (3 s ago)'] })).toContain('steps before this report:\n1. open session tab (3 s ago)');
+    expect(buildReport({ ...base, steps: ['1. open workspace tab (3 s ago)'] })).toContain('steps before this report:\n1. open workspace tab (3 s ago)');
     expect(buildReport(base)).toContain('steps before this report:\n(none)');
   });
 });

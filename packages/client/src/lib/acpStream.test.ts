@@ -44,7 +44,7 @@ describe('the stream reducer', () => {
     expect(s.info?.working).toBe(true);
   });
 
-  it('asks for only what it lacks when it opens a session again', () => {
+  it('asks for only what it lacks when it opens a workspace again', () => {
     expect(openMessage('s')).toEqual({ type: 'acp_open', session: 's' });
     const s = applyView(emptyStream('s'), view({ rev: 9, entries: [user(1, 'x')] }));
     expect(openMessage('s', s)).toEqual({ type: 'acp_open', session: 's', after: 9, epoch: 7 });
@@ -146,10 +146,10 @@ describe('a reply that was cut', () => {
   });
 });
 
-describe('opening a session on a server that does not answer', () => {
+describe('opening a workspace on a server that does not answer', () => {
   it('says what it waits for, and after a while that the server may be too old', () => {
     expect(OPEN_WAIT_MS).toBeGreaterThan(2000);
-    expect(openingText(true, false)).toBe('Opening the session…');
+    expect(openingText(true, false)).toBe('Opening the workspace…');
     expect(openingText(true, true)).toMatch(/older version, update it/);
     expect(openingText(false, true)).toBe('Waiting for the connection…');
   });
@@ -170,7 +170,7 @@ describe('the directory and the companion shell', () => {
     expect(infoFrom({ agent: 'a', dir: '/w'.repeat(300), status: 'running', working: false })?.cwd).toBeUndefined();
     expect(infoFrom({ agent: 'a', dir: '', status: 'running', working: false })?.cwd).toBeUndefined();
   });
-  it('names the shell after the session, and keeps long names that share a start apart', () => {
+  it('names the shell after the workspace, and keeps long names that share a start apart', () => {
     expect(shellName('work')).toBe('work-shell');
     const a = 'a'.repeat(60) + '1', b = 'a'.repeat(60) + '2';
     expect(shellName(a)).not.toBe(shellName(b));

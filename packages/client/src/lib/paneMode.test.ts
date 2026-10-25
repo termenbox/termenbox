@@ -3,8 +3,8 @@ import { loadPaneModes, withPaneMode, PANE_KEY } from './paneMode';
 
 const memory = () => { const m = new Map<string, string>(); return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v) }; };
 
-describe('pane mode per session', () => {
-  it('is the terminal unless a session was switched to Decision, and is kept on this device', () => {
+describe('pane mode per workspace', () => {
+  it('is the terminal unless a workspace was switched to Decision, and is kept on this device', () => {
     const st = memory();
     expect(loadPaneModes(st)).toEqual({});
     const a = withPaneMode({}, 'srv/a', 'decision', st);

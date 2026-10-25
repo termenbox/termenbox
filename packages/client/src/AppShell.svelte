@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { DEBUG_KEY, debugEnabled, debugText, viewportBox, type Box } from './lib/viewport';
 
-  /** In a session the shell is pinned to what is visible; elsewhere the page scrolls normally. */
+  /** In a workspace the shell is pinned to what is visible; elsewhere the page scrolls normally. */
   export let pinned = false;
 
   let debug = debugEnabled(location.search, localStorage.getItem(DEBUG_KEY));

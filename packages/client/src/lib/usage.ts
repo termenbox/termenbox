@@ -1,5 +1,5 @@
 // On-device usage meter (decision 0073, guardrail usage-stays-on-device): foreground time with an attached
-// session, per ISO week, kept in this browser only. Nothing here talks to a network.
+// workspace, per ISO week, kept in this browser only. Nothing here talks to a network.
 
 export const TIERS = [
   { name: 'copper', hours: 1 },

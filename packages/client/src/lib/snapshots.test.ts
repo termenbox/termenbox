@@ -16,7 +16,7 @@ describe('peeked screens', () => {
     s.apply('a', { text: '', hash: 'h1', unchanged: true });
     expect(s.text('a')).toBe('screen');
   });
-  it('treats an empty snapshot as "no preview for this session"', () => {
+  it('treats an empty snapshot as "no preview for this workspace"', () => {
     const s = new SnapshotStore();
     s.apply('a', { text: 'screen', hash: 'h1' });
     s.apply('a', { text: '', hash: '' });

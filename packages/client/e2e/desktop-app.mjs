@@ -28,14 +28,14 @@ async function sidebarAt(shared, width) {
   const side = page.locator('[data-shell=sidebar]');
   t.check(await side.isVisible(), `${width}: no sidebar`);
   t.check((await page.locator('[data-shell=bottom-bar]').count()) === 0, `${width}: bottom bar beside the sidebar`);
-  await t.openSession('s1');
-  const toggle = page.locator('.sessions-button');
+  await t.openWorkspace('s1');
+  const toggle = page.locator('.workspaces-button');
   const sep = page.getByRole('separator', { name: 'Sidebar width' });
 
-  // The Sessions control: accurate expanded state, and it names what it controls.
-  t.check((await toggle.getAttribute('aria-expanded')) === 'true', `${width}: Sessions does not say the sidebar is open`);
+  // The Workspaces control: accurate expanded state, and it names what it controls.
+  t.check((await toggle.getAttribute('aria-expanded')) === 'true', `${width}: Workspaces does not say the sidebar is open`);
   const controls = await toggle.getAttribute('aria-controls');
-  t.check(controls === 'workspace-sidebar' && (await page.locator(`#${controls}`).count()) === 1, `${width}: Sessions does not control the sidebar (${controls})`);
+  t.check(controls === 'workspace-sidebar' && (await page.locator(`#${controls}`).count()) === 1, `${width}: Workspaces does not control the sidebar (${controls})`);
   let sizes = 0;
   await nextSize(t, 0, `${width} first `);
   await page.waitForTimeout(400);
@@ -44,7 +44,7 @@ async function sidebarAt(shared, width) {
 
   // Closing frees the width: the terminal refits and the server gets more columns; the page does not overflow.
   await toggle.click();
-  t.check((await side.count()) === 0, `${width}: Sessions did not close the sidebar`);
+  t.check((await side.count()) === 0, `${width}: Workspaces did not close the sidebar`);
   t.check((await toggle.getAttribute('aria-expanded')) === 'false' && !(await toggle.getAttribute('aria-controls')), `${width}: expanded state wrong while closed`);
   t.check((await page.locator('[data-shell=bottom-bar]').count()) === 1, `${width}: no destinations left while the sidebar is closed`);
   t.check((await t.overflow()) <= 0, `${width}: overflow with the sidebar closed`);
@@ -52,7 +52,7 @@ async function sidebarAt(shared, width) {
   t.check(closed.cols > first.cols, `${width}: the server got ${closed.cols} columns with the sidebar closed, not more than ${first.cols}`);
   sizes = server.of('resize').length;
   await toggle.click();
-  t.check(await side.isVisible(), `${width}: Sessions did not reopen the sidebar`);
+  t.check(await side.isVisible(), `${width}: Workspaces did not reopen the sidebar`);
   t.check((await toggle.getAttribute('aria-expanded')) === 'true', `${width}: expanded state wrong after reopening`);
   await page.waitForFunction(() => true);
   const back = Date.now() + 5000;
@@ -138,10 +138,10 @@ async function sidebarAt(shared, width) {
   const kept = await now();
   await t.reload();
   t.check(Math.round((await page.locator('[data-shell=sidebar]').boundingBox()).width) === kept, `${width}: the width did not survive a reload`);
-  await toggle.waitFor({ state: 'detached' }).catch(() => {}); // the app opens on Home after a reload: no Sessions control yet
-  await page.locator('[data-shell=sidebar] [data-destination=sessions]').click();
-  await page.locator('.sessions-button').waitFor();
-  await page.locator('.sessions-button').click();
+  await toggle.waitFor({ state: 'detached' }).catch(() => {}); // the app opens on Home after a reload: no Workspaces control yet
+  await page.locator('[data-shell=sidebar] [data-destination=workspaces]').click();
+  await page.locator('.workspaces-button').waitFor();
+  await page.locator('.workspaces-button').click();
   t.check((await page.locator('[data-shell=sidebar]').count()) === 0, `${width}: could not close the sidebar after the reload`);
   await t.reload();
   t.check((await page.locator('[data-shell=sidebar]').count()) === 0 && (await page.locator('[data-shell=bottom-bar]').count()) === 1, `${width}: a closed sidebar was not restored closed`);
@@ -161,9 +161,9 @@ async function storageBlocked(shared) {
     }
   }, WORKSPACE);
   await t.open();
-  await t.openSession('s1');
+  await t.openWorkspace('s1');
   t.check(await t.page.locator('[data-shell=sidebar]').isVisible(), 'blocked storage: no sidebar');
-  await t.page.locator('.sessions-button').click();
+  await t.page.locator('.workspaces-button').click();
   t.check((await t.page.locator('[data-shell=sidebar]').count()) === 0, 'blocked storage: the toggle stopped working');
   const ok = await t.end();
   if (ok) t.ok('storage that throws for the layout key leaves the app on its defaults and the toggle working');
@@ -175,7 +175,7 @@ async function crossing(shared) {
   const t = await startApp(shared, { viewport: { width: 1024, height: 800 } });
   const { page } = t;
   await t.open();
-  await t.openSession('s1');
+  await t.openWorkspace('s1');
   const sep = page.getByRole('separator', { name: 'Sidebar width' });
   await sep.focus();
   await page.keyboard.press('Shift+ArrowRight'); // 260 -> 324
@@ -193,13 +193,13 @@ async function crossing(shared) {
   t.check(await same(), 'crossing: the xterm was rebuilt going down to 720 px');
   t.check((await t.overflow()) <= 0, 'crossing: overflow at 720');
   // The phone sheet works on its own: its state does not follow the saved sidebar.
-  const sessions = page.locator('.sessions-button');
-  t.check((await sessions.getAttribute('aria-expanded')) === 'false', 'crossing: the sheet reads as open on a phone');
-  await sessions.click();
-  t.check((await sessions.getAttribute('aria-expanded')) === 'true', 'crossing: the phone sheet did not open');
+  const workspaces = page.locator('.workspaces-button');
+  t.check((await workspaces.getAttribute('aria-expanded')) === 'false', 'crossing: the sheet reads as open on a phone');
+  await workspaces.click();
+  t.check((await workspaces.getAttribute('aria-expanded')) === 'true', 'crossing: the phone sheet did not open');
   t.check((await saved(page)).sidebarOpen === true, 'crossing: opening the phone sheet changed the saved sidebar');
-  await sessions.click();
-  t.check((await sessions.getAttribute('aria-expanded')) === 'false', 'crossing: the phone sheet did not close');
+  await workspaces.click();
+  t.check((await workspaces.getAttribute('aria-expanded')) === 'false', 'crossing: the phone sheet did not close');
 
   await page.setViewportSize({ width: 721, height: 800 });
   await page.waitForFunction(() => document.querySelector('[data-shell=frame]')?.dataset.wide === 'true');
@@ -222,7 +222,7 @@ async function split(shared) {
   const t = await startApp(shared, { viewport: { width: 1440, height: 900 } });
   const { page, server } = t;
   await t.open();
-  await t.openSession('s1');
+  await t.openWorkspace('s1');
   await page.evaluate(() => { window.__xterm = document.querySelector('.xterm'); });
   const body = page.locator('[data-pane-body]');
   const decision = page.locator('[data-pane=decision]');
@@ -278,7 +278,7 @@ async function split(shared) {
 
   // Remembered per device.
   await t.reload();
-  await t.openSession('s1');
+  await t.openWorkspace('s1');
   await page.locator('[data-pane=decision]').waitFor();
   t.check((await page.locator('[data-pane-body]').getAttribute('data-split')) === 'true', 'split: not restored after a reload');
   t.check((await num(page.getByRole('separator', { name: 'Terminal width' }), 'aria-valuenow')) === saved1, 'split: the width was not restored after a reload');
@@ -300,7 +300,7 @@ async function shortcuts(shared) {
   const t = await startApp(shared, { viewport: { width: 1440, height: 900 } });
   const { page, server } = t;
   await t.open();
-  await t.openSession('s1');
+  await t.openWorkspace('s1');
   await page.keyboard.press('Alt+p'); // terminal beside the decision
   await page.locator('[data-pane=decision] [data-hero-options] button').first().waitFor();
   const options = page.locator('[data-pane=decision] [data-hero-options] button');
@@ -350,12 +350,12 @@ async function shortcuts(shared) {
   await rearm();
   await page.keyboard.press('Alt+j');
   await page.locator('[data-shell=sidebar] [data-key="one/s2"][aria-current=true]').waitFor();
-  await page.waitForTimeout(600); // the terminal takes the focus when the session attaches; a key typed there is the shell's
+  await page.waitForTimeout(600); // the terminal takes the focus when the workspace attaches; a key typed there is the shell's
   await t.leaveTerminal('s2');
   await page.keyboard.press('Alt+j');
   await page.locator('[data-shell=sidebar] [data-key="one/s1"][aria-current=true]').waitFor();
   await page.waitForTimeout(600);
-  t.ok('Alt+J opens the next session that needs you and wraps');
+  t.ok('Alt+J opens the next workspace that needs you and wraps');
 
   // Focus composer: the visible one.
   await t.leaveTerminal('s1');
@@ -376,13 +376,13 @@ async function shortcuts(shared) {
   t.check(sentAnswers(server).length === 0, 'shortcuts: a key in the composer answered the decision');
   t.check((await page.locator('[data-pane-body]').getAttribute('data-split')) === before, 'shortcuts: Alt+P toggled the split from the composer');
   t.check((await page.locator('[data-pane=decision] input[data-composer]').inputValue()) === 'yn jcp', 'shortcuts: the composer did not keep what was typed');
-  t.check((await page.locator('[data-shell=sidebar] [data-key="one/s1"][aria-current=true]').count()) === 1, 'shortcuts: Alt+J left the session from the composer');
+  t.check((await page.locator('[data-shell=sidebar] [data-key="one/s1"][aria-current=true]').count()) === 1, 'shortcuts: Alt+J left the workspace from the composer');
   // The palette is the one key taken even while typing.
   await page.keyboard.press('Control+k');
   await page.getByRole('combobox', { name: 'Search' }).waitFor();
   await page.keyboard.press('Escape');
   await page.getByRole('combobox', { name: 'Search' }).waitFor({ state: 'detached' });
-  t.ok('typing in the composer: no key reaches the terminal, answers a decision, moves a pane or leaves the session; Ctrl+K still opens the palette');
+  t.ok('typing in the composer: no key reaches the terminal, answers a decision, moves a pane or leaves the workspace; Ctrl+K still opens the palette');
 
   // From the terminal the same keys belong to the shell.
   await page.locator('.xterm-helper-textarea').focus();
@@ -418,7 +418,7 @@ async function shortcuts(shared) {
   await page.keyboard.type('reply composer');
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => document.activeElement?.matches?.('input[data-composer]'));
-  t.ok('Ctrl+K reaches Answer Yes, Answer No, next session and the composer from the terminal');
+  t.ok('Ctrl+K reaches Answer Yes, Answer No, next workspace and the composer from the terminal');
   await t.leaveTerminal();
 
   // The terminal-only view has no decision on screen: say so rather than answer blind.
@@ -454,15 +454,15 @@ async function phone(shared) {
   const { page } = t;
   await t.open();
   t.check((await page.locator('[data-shell=sidebar]').count()) === 0 && (await page.locator('[data-shell=bottom-bar]').count()) === 1, 'phone: the saved desktop layout leaked into a phone');
-  await page.locator('[data-shell=bottom-bar] [data-destination=sessions]').click();
-  const sessions = page.locator('.sessions-button');
-  await sessions.waitFor().catch(() => {});
-  // Tapping Sessions again, already on Sessions, brings the list back (and a third tap puts it away).
-  const open = async () => (await sessions.getAttribute('aria-expanded')) === 'true';
+  await page.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click();
+  const workspaces = page.locator('.workspaces-button');
+  await workspaces.waitFor().catch(() => {});
+  // Tapping Workspaces again, already on Workspaces, brings the list back (and a third tap puts it away).
+  const open = async () => (await workspaces.getAttribute('aria-expanded')) === 'true';
   const before = await open();
-  await page.locator('[data-shell=bottom-bar] [data-destination=sessions]').click();
-  await page.waitForFunction(([was]) => (document.querySelector('.sessions-button')?.getAttribute('aria-expanded') === 'true') !== was, [before], { timeout: 3000 }).catch(() => {});
-  t.check((await open()) !== before, 'phone: a second tap on Sessions did not toggle the list');
+  await page.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click();
+  await page.waitForFunction(([was]) => (document.querySelector('.workspaces-button')?.getAttribute('aria-expanded') === 'true') !== was, [before], { timeout: 3000 }).catch(() => {});
+  t.check((await open()) !== before, 'phone: a second tap on Workspaces did not toggle the list');
   t.check((await t.overflow()) <= 0, 'phone: overflow');
   const ok = await t.end();
   if (ok) t.ok('390 px ignores the saved sidebar and split');
@@ -478,7 +478,7 @@ async function copySelectionWithMouseMode(shared) {
   const { page, server } = t;
   const LINE = 'MOUSE-MODE-67890';
   await t.open();
-  await t.openSession('s1');
+  await t.openWorkspace('s1');
   // What tmux sends the browser when the pane app (here opencode) reports the mouse: SGR, all motion.
   server.output('\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h');
   server.output(`${LINE}\r\n`);
@@ -526,7 +526,7 @@ async function copyFromServer(shared) {
   const { page, server } = t;
   const clipboard = () => t.clipboard();
   await t.open();
-  await t.openSession('s1');
+  await t.openWorkspace('s1');
   await t.setClipboard('BEFORE');
   const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
   server.output(`\u001b]52;c;${b64('FROM-TMUX Привет 😀')}\u0007`);
@@ -550,7 +550,7 @@ async function copySelection(shared) {
   const { page, server } = t;
   const LINE = 'COPY-TARGET-12345';
   await t.open();
-  await t.openSession('s1');
+  await t.openWorkspace('s1');
   server.output(`${LINE}\r\n`);
   await page.waitForFunction((want) => [...document.querySelectorAll('.xterm-rows > div')].some((d) => d.textContent.includes(want)), LINE);
   const row = page.locator('.xterm-rows > div').filter({ hasText: LINE }).first();
@@ -604,12 +604,12 @@ async function copySelection(shared) {
   return ok;
 }
 
-/** A resize while a session is active: the same xterm refits, the server is told the new size, nothing spills out of the pane. */
+/** A resize while a workspace is active: the same xterm refits, the server is told the new size, nothing spills out of the pane. */
 async function resizeWhileActive(shared) {
   const t = await startApp(shared, { viewport: { width: 1280, height: 800 } });
   const { page } = t;
   await t.open();
-  await t.openSession('s1');
+  await t.openWorkspace('s1');
   t.check((await page.evaluate(() => devicePixelRatio)) === DPR, `resize: the pixel ratio is not ${DPR}`);
   await page.evaluate(() => { window.__xterm = document.querySelector('.xterm'); });
   const inside = () => page.evaluate(() => {
@@ -632,7 +632,7 @@ async function resizeWhileActive(shared) {
   t.check(got['1024x600'].rows < got['1024x800'].rows, 'resize: a shorter window did not give fewer rows');
   const sizes = Object.entries(got).map(([vp, m]) => `${vp}: ${m.cols}x${m.rows}`);
   const ok = await t.end();
-  if (ok) t.ok(`a resize while a session is active refits the same xterm and tells the server (${sizes.join(', ')}, pixel ratio ${DPR})`);
+  if (ok) t.ok(`a resize while a workspace is active refits the same xterm and tells the server (${sizes.join(', ')}, pixel ratio ${DPR})`);
   return ok;
 }
 
@@ -648,7 +648,7 @@ async function clipboardDenied(shared) {
   });
   const LINE = 'DENIED-TARGET-777';
   await t.open();
-  await t.openSession('s1');
+  await t.openWorkspace('s1');
   server.output(`${LINE}\r\n`);
   await page.waitForFunction((want) => [...document.querySelectorAll('.xterm-rows > div')].some((d) => d.textContent.includes(want)), LINE);
   const box = await page.locator('.xterm-rows > div').filter({ hasText: LINE }).first().boundingBox();
@@ -674,7 +674,7 @@ async function zoom200(shared) {
   const t = await startApp(shared, { viewport: full, deviceScaleFactor: DPR * 2 });
   const { page } = t;
   await t.open();
-  await t.openSession('s1');
+  await t.openWorkspace('s1');
   await page.evaluate(() => { window.__xterm = document.querySelector('.xterm'); });
   const since = t.server.of('resize').length;
   await page.setViewportSize(half);

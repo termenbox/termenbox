@@ -9,7 +9,7 @@
   let { current, onnavigate, needsYou = 0, class: className = '' }: { current: Destination; onnavigate: (d: Destination) => void; needsYou?: number; class?: string } = $props();
   const ICONS: Record<Destination, string> = {
     home: 'M3 11.5 12 4l9 7.5M5.5 10v9.5h13V10',
-    sessions: 'M4 5h16v11H4zM8 20h8M12 16v4',
+    workspaces: 'M4 5h16v11H4zM8 20h8M12 16v4',
     activity: 'M3 12h4l3-7 4 14 3-7h4',
     settings: 'M12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5ZM4 12h2.5M17.5 12H20M12 4v2.5M12 17.5V20',
   };
@@ -17,7 +17,7 @@
 
 <nav aria-label="Main" data-shell="bottom-bar" class={cn('flex shrink-0 gap-2 border-t border-line bg-panel px-2 py-1', className)}>
   {#each DESTINATIONS as d (d.id)}
-    {@const count = d.id === 'sessions' ? needsYou : 0}
+    {@const count = d.id === 'workspaces' ? needsYou : 0}
     <button type="button" data-destination={d.id} aria-current={current === d.id ? 'page' : undefined}
       aria-label={count ? `${d.label}, ${count} need you` : undefined}
       onpointerdown={(e) => e.preventDefault()} onclick={() => onnavigate(d.id)}

@@ -66,7 +66,7 @@ lint
 - **Paths**: one identity (key + fingerprint) over raced signed candidates `lan|wan4|wan6|overlay|tunnel`; `--print-pairing`, `TERMENBOX_LAN_ONLY` (DECISION-0123)
 - **Directory**: signed records (Pages Functions + D1) map server key -> address/fingerprint (DECISION-0056)
 - **Auth**: GitHub OAuth; one owner per server, claimed with a one-time secret (DECISION-0053)
-- **Sessions**: server owns tmux/PTY via a SessionBackend trait (DECISION-0054); reconnect = re-attach
+- **Workspaces**: server owns tmux/PTY via a WorkspaceBackend trait (DECISION-0054); reconnect = re-attach
 - **Client**: Svelte 5 + xterm.js WebGL; hosted or self-hosted (DECISION-0052)
 - **Deployment**: Docker image (ghcr.io), one command from the client; 512MB RAM, 1 vCPU (FACT-0001)
 - **Branches**: PRs target `develop`, the default branch; `master` moves only for a release (DECISION-0129)

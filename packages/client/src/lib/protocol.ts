@@ -15,7 +15,7 @@ export type ClientMessage =
   | { type: 'new_window'; session: string }
   | { type: 'close_window'; session: string; index: number }
   | { type: 'close_session'; session: string }
-  /** Sets the name shown for a session; an empty name clears it. The session's id does not change. */
+  /** Sets the name shown for a workspace; an empty name clears it. The workspace's id does not change. */
   | { type: 'rename_session'; session: string; name: string }
   | { type: 'list_sessions' }
   /** U14: the server's in-memory health samples; the answer is `health_history`. Older servers do not answer. */
@@ -29,17 +29,17 @@ export type ClientMessage =
   | { type: 'push_info' }
   | { type: 'push_subscribe'; endpoint: string; p256dh: string; auth: string }
   | { type: 'push_unsubscribe'; endpoint: string }
-  /** The session this device shows in the foreground now, or null (hidden, or on the list): no push for it. */
+  /** The workspace this device shows in the foreground now, or null (hidden, or on the list): no push for it. */
   | { type: 'foreground'; session: string | null }
   | { type: 'ack'; attention_id: string }
   | { type: 'dismiss'; attention_id: string }
-  /** Decision 0103: asks for the session view (cleaned tail, parsed prompt, tier); `hash` is the one already held. */
+  /** Decision 0103: asks for the workspace view (cleaned tail, parsed prompt, tier); `hash` is the one already held. */
   | { type: 'session_view'; session: string; hash?: string }
   /** Taps option `option` (0-based) of prompt `prompt_id`; the server sends the keys its profile lists for it, never more. */
   | { type: 'session_answer'; session: string; prompt_id: string; option: number }
   /** U10: the hook state of one agent on this server. `preview` answers with the exact settings file `apply` will write. */
   | { type: 'agent_hooks'; agent: string; action: 'status' | 'preview' | 'apply' | 'remove' }
-  /** T0 (decision 0111): shows this ACP session on this connection; `after` and `epoch` are the revision and stream the client holds. */
+  /** T0 (decision 0111): shows this ACP workspace on this connection; `after` and `epoch` are the revision and stream the client holds. */
   | { type: 'acp_open'; session: string; after?: number; epoch?: number }
   | { type: 'acp_close' }
   /** The owner's next prompt (`session/prompt`); several lines allowed. */
@@ -78,7 +78,7 @@ export type ServerMessage =
   /** Decision 0123: the server's signed candidate bundle, pushed after `auth_ok`; verify it before use (lib/bundle.ts). */
   | { type: 'candidates'; bundle: string }
   | { type: 'auth_ok'; channels?: string[]; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string; acp_agents?: string[] }
-  | { type: 'sessions'; sessions: SessionInfo[] }
+  | { type: 'sessions'; sessions: WorkspaceInfo[] }
   | { type: 'session_attached'; session_id: string }
   | { type: 'output'; data: string }
   /** Never on the wire as JSON: terminal bytes from the `term` lane, as `Connection` hands them to listeners. */
@@ -87,9 +87,9 @@ export type ServerMessage =
   | { type: 'scrollback'; session: string; part: number; last: boolean; text: string }
   | { type: 'snapshot'; session: string; text: string; hash: string; unchanged?: boolean }
   | { type: 'window_list'; session: string; windows: WindowInfo[]; representative?: number | null }
-  | { type: 'agent_snapshot'; states: SessionAgentState[] }
+  | { type: 'agent_snapshot'; states: WorkspaceAgentState[] }
   | { type: 'agent_events'; events: AgentEvent[] }
-  | { type: 'activity'; sessions: SessionActivity[] }
+  | { type: 'activity'; sessions: WorkspaceActivity[] }
   | { type: 'attention'; items: Attention[] }
   | SessionViewMessage
   | AcpViewMessage
@@ -138,7 +138,7 @@ export interface HistoryRun {
   task?: string;
   started_at: number;
   ended_at?: number;
-  /** `stopped` is an end nobody reported: interrupted, or the session went away. Other values are read as `stopped`. */
+  /** `stopped` is an end nobody reported: interrupted, or the workspace went away. Other values are read as `stopped`. */
   outcome?: 'finished' | 'failed' | 'stopped' | string;
   /** How long the agent waited on the user during the task. */
   blocked_ms: number;
@@ -187,7 +187,7 @@ export interface SessionViewMessage {
   timeline?: TimelineMessage;
 }
 
-/** T0: a change to the client's copy of an ACP session. Every text is untrusted agent text, cleaned again on arrival. */
+/** T0: a change to the client's copy of an ACP workspace. Every text is untrusted agent text, cleaned again on arrival. */
 export interface AcpViewMessage {
   type: 'acp_view';
   session: string;
@@ -235,15 +235,15 @@ export interface TimelineMessage {
   last_message?: string;
 }
 
-export interface SessionInfo {
+export interface WorkspaceInfo {
   id: string;
   name: string;
   agent: 'tmux' | 'codex' | null;
-  /** The session manager it lives in; set when the server runs more than one (`tmux`). */
+  /** The workspace manager it lives in; set when the server runs more than one (`tmux`). */
   backend?: string;
 }
 
-/** One window of a multiplexer session, as the windows dropdown lists it. */
+/** One window of a multiplexer workspace, as the windows dropdown lists it. */
 export interface WindowInfo {
   index: number;
   name: string;
@@ -257,13 +257,13 @@ export interface WindowInfo {
 
 export type AgentState = 'idle' | 'working' | 'needs_input' | 'done' | 'error' | 'unknown';
 
-export interface SessionAgentState {
+export interface WorkspaceAgentState {
   session: string;
   state: AgentState;
   seq: number;
   stale: boolean;
   ts: number;
-  /** The agent in the session (`claude`, `codex`); absent for a plain shell and from older servers. */
+  /** The agent in the workspace (`claude`, `codex`); absent for a plain shell and from older servers. */
   agent?: string;
   /** When the agent last answered (ms since the epoch); absent until it has. */
   last_response_at?: number;
@@ -276,14 +276,14 @@ export type Activity = 'working' | 'blocked' | 'idle' | 'unknown';
 
 export type AttentionKind = 'needs_input' | 'finished_unseen' | 'failed' | 'unknown';
 
-/** The current piece of work of a session; `started_at` is ms since the epoch on the server's clock. */
+/** The current piece of work of a workspace; `started_at` is ms since the epoch on the server's clock. */
 export interface Task {
   title: string;
   started_at: number;
   source: string;
 }
 
-export interface SessionActivity {
+export interface WorkspaceActivity {
   session: string;
   activity: Activity;
   ts: number;

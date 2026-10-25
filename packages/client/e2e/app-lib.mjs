@@ -1,5 +1,5 @@
 // The real App.svelte (built into ../dist) signed in with a forged local certificate and talking to a scripted server
-// over a WebSocket that Playwright answers (page.routeWebSocket), so the real hub, connection, terminal and session view
+// over a WebSocket that Playwright answers (page.routeWebSocket), so the real hub, connection, terminal and workspace view
 // run end to end without a server binary. What this does not prove: a real tmux, the real server's resize handling and
 // the real agent hooks (e2e/run.mjs covers the server; the decision text here is what the protocol carries, not captured).
 import { launch, contextOptions, trace, keepIfFailed, ENGINE } from './browser.mjs';
@@ -29,7 +29,7 @@ export async function serveDist() {
   return { srv, origin: `http://127.0.0.1:${srv.address().port}/` };
 }
 
-/** One scripted server with sessions s1 (waiting on a decision), s2 (also waiting) and s3 (a plain shell). */
+/** One scripted server with workspaces s1 (waiting on a decision), s2 (also waiting) and s3 (a plain shell). */
 export class ScriptedServer {
   received = [];
   sockets = new Set();
@@ -41,28 +41,28 @@ export class ScriptedServer {
     this.views.set('s2', this.view('s2', { prompt: { ...CLAUDE_PROMPT, id: 'p2' }, tail: ['deploying'] }));
     this.views.set('s3', this.view('s3', { tail: ['$'] }));
   }
-  view(session, extra) {
-    return { type: 'session_view', session, tier: 't1', agent: 'claude', tail: [], hash: `h${Math.random().toString(36).slice(2)}`, task: 'Fix the login test', ...extra };
+  view(workspace, extra) {
+    return { type: 'session_view', session: workspace, tier: 't1', agent: 'claude', tail: [], hash: `h${Math.random().toString(36).slice(2)}`, task: 'Fix the login test', ...extra };
   }
-  sessions() { return Object.keys(this.names).map((id) => ({ id, name: this.names[id], agent: null })); }
+  workspaces() { return Object.keys(this.names).map((id) => ({ id, name: this.names[id], agent: null })); }
   snapshot() {
-    return { type: 'agent_snapshot', states: Object.keys(this.names).map((session) => ({ session, state: this.states[session], seq: 1, ts: Date.now(), stale: false, agent: 'claude', waiting_since: this.states[session] === 'needs_input' ? Date.now() - (session === 's2' ? 90000 : 30000) : undefined })) };
+    return { type: 'agent_snapshot', states: Object.keys(this.names).map((workspace) => ({ session: workspace, state: this.states[workspace], seq: 1, ts: Date.now(), stale: false, agent: 'claude', waiting_since: this.states[workspace] === 'needs_input' ? Date.now() - (workspace === 's2' ? 90000 : 30000) : undefined })) };
   }
   send(ws, m) { ws.send(JSON.stringify(m)); }
   broadcast(m) { for (const ws of this.sockets) this.send(ws, m); }
-  /** Terminal output reaches every connection, as a live session's would. */
+  /** Terminal output reaches every connection, as a live workspace's would. */
   output(text) { this.broadcast({ type: 'output', data: b64text(text) }); }
-  setView(session, extra) { this.views.set(session, this.view(session, extra)); this.broadcast(this.views.get(session)); }
+  setView(workspace, extra) { this.views.set(workspace, this.view(workspace, extra)); this.broadcast(this.views.get(workspace)); }
   handle(ws, m) {
     this.received.push(m);
     switch (m.type) {
       case 'hello': this.send(ws, { type: 'challenge', nonce: 'nonce', server_id: 'one' }); break;
       case 'auth':
         this.send(ws, { type: 'auth_ok', user: 'tester', server_name: 'one', version: '0.1.31', backends: ['tmux'], control_mode: true, prefix: 'C-b' });
-        this.send(ws, { type: 'sessions', sessions: this.sessions() });
+        this.send(ws, { type: 'sessions', sessions: this.workspaces() });
         this.send(ws, this.snapshot());
         break;
-      case 'list_sessions': this.send(ws, { type: 'sessions', sessions: this.sessions() }); break;
+      case 'list_sessions': this.send(ws, { type: 'sessions', sessions: this.workspaces() }); break;
       case 'ping': this.send(ws, { type: 'pong' }); break;
       case 'attach':
         this.send(ws, { type: 'session_attached', session_id: m.session_id });
@@ -74,7 +74,7 @@ export class ScriptedServer {
         break;
       }
       case 'session_answer':
-        // The agent takes the answer: the prompt clears and the session goes back to work.
+        // The agent takes the answer: the prompt clears and the workspace goes back to work.
         this.states[m.session] = 'working';
         this.setView(m.session, { prompt: undefined, tail: ['answered option ' + m.option] });
         this.broadcast(this.snapshot());
@@ -153,9 +153,9 @@ export async function startApp(shared, { viewport, deviceScaleFactor, storage = 
     async reload() { await page.reload(); await page.getByRole('navigation', { name: 'Main' }).first().waitFor(); },
     // The body, not the root: xterm parks a 50000 px wide measuring div above the page, which Firefox counts in the root's scroll width.
     overflow: () => page.evaluate(() => document.body.scrollWidth - innerWidth),
-    /** Opens session `id` from the sidebar and waits for the attach. The terminal takes focus when the session attaches (so
+    /** Opens workspace `id` from the sidebar and waits for the attach. The terminal takes focus when the workspace attaches (so
      *  typing works at once); `leaveTerminal` (default) hands it back to the page, as a click on empty space would. */
-    async openSession(id, { leaveTerminal = true } = {}) {
+    async openWorkspace(id, { leaveTerminal = true } = {}) {
       await page.locator(`[data-shell=sidebar] [data-key="one/${id}"]`).click();
       await page.locator('.xterm').first().waitFor();
       await page.waitForFunction((n) => [...document.querySelectorAll('.xterm-rows > div')].some((d) => d.textContent.includes(`attached to ${n}`)), id);
@@ -163,7 +163,7 @@ export async function startApp(shared, { viewport, deviceScaleFactor, storage = 
       await page.waitForTimeout(500); // a second attach (the app sends one more when the tab settles) refocuses the terminal
       if (leaveTerminal) await t.leaveTerminal(id);
     },
-    /** Focus goes to the session's row in the sidebar, as a click there does. (Blurring to nothing does not work: the terminal takes the focus straight back so a hidden phone keyboard leaves it active.) */
+    /** Focus goes to the workspace's row in the sidebar, as a click there does. (Blurring to nothing does not work: the terminal takes the focus straight back so a hidden phone keyboard leaves it active.) */
     async leaveTerminal(id = 's1') { await page.locator(`[data-shell=sidebar] [data-key="one/${id}"]`).focus(); },
     async waitResize(sinceCount) {
       await page.waitForFunction(() => true);

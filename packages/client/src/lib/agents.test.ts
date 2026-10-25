@@ -4,7 +4,7 @@ import { agents, applyActivity, applyAttention, applyEvents, applySnapshot, atte
 import { needsYou } from './tabs';
 import type { AgentEvent, ClientMessage, ServerMessage } from './protocol';
 
-const ev = (seq: number, rest: object, session = 's'): AgentEvent => ({ session, seq, ts: 1000 + seq, source: 'hook', confidence: 'high', ...rest }) as AgentEvent;
+const ev = (seq: number, rest: object, workspace = 's'): AgentEvent => ({ session: workspace, seq, ts: 1000 + seq, source: 'hook', confidence: 'high', ...rest }) as AgentEvent;
 
 describe('agent events', () => {
   it('follows state, tool, prompt and message events in order', () => {
@@ -55,7 +55,7 @@ describe('agent events', () => {
     expect(applyEvents(map, [ev(8, { kind: 'state', state: 'done' })]).gap).toBe(false);
   });
 
-  it('drops sessions the snapshot no longer lists and survives a server counter reset', () => {
+  it('drops workspaces the snapshot no longer lists and survives a server counter reset', () => {
     const map = applyEvents({}, [ev(1, { kind: 'state', state: 'idle' }), ev(1, { kind: 'state', state: 'idle' }, 'gone')]).map;
     const snap = applySnapshot(map, [{ session: 's', state: 'idle', seq: 1, stale: false, ts: 1 }]);
     expect(Object.keys(snap)).toEqual(['s']);
@@ -106,7 +106,7 @@ describe('the message handler', () => {
 });
 
 describe('server status (activity and attention)', () => {
-  const att = (kind: 'needs_input' | 'finished_unseen' | 'failed', id = 'a1', session = 's') => ({ id, session, kind, raised_at: 5000 });
+  const att = (kind: 'needs_input' | 'finished_unseen' | 'failed', id = 'a1', workspace = 's') => ({ id, session: workspace, kind, raised_at: 5000 });
   const base = (): AgentMap => applyActivity({}, [{ session: 's', activity: 'working', ts: 10_000, task: { title: 'fix login', started_at: 4_000, source: 'hook' } }], 9_000);
 
   it('derives the card state from activity and attention, and raw events no longer move it', () => {
@@ -124,7 +124,7 @@ describe('server status (activity and attention)', () => {
     expect(needsYou(m.s)).toBe(false);
   });
 
-  it('counts a finished item as attention and picks the most urgent item of a session', () => {
+  it('counts a finished item as attention and picks the most urgent item of a workspace', () => {
     let m = applyAttention(base(), [att('finished_unseen', 'a1'), att('failed', 'a2')]);
     expect(m.s.attention?.id).toBe('a2');
     m = applyAttention(m, [att('finished_unseen', 'a1')]);
@@ -133,13 +133,13 @@ describe('server status (activity and attention)', () => {
     expect(needsYou(m.s)).toBe(true);
   });
 
-  it('shows a silent working session as unknown, never as stale', () => {
+  it('shows a silent working workspace as unknown, never as stale', () => {
     const m = applyActivity(base(), [{ session: 's', activity: 'unknown', ts: 80_000 }], 80_000);
     expect(m.s.state).toBe('unknown');
     expect(isStale(m.s, 999_999)).toBe(false);
   });
 
-  it('acknowledges a finished item only for a foreground session on a visible page, once', () => {
+  it('acknowledges a finished item only for a foreground workspace on a visible page, once', () => {
     const m = applyAttention(base(), [att('finished_unseen')]);
     const done = new Set<string>();
     expect(attentionToAck(m.s, false, true, done)).toEqual([]);

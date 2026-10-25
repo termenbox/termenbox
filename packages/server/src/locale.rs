@@ -1,4 +1,4 @@
-//! Sessions need a UTF-8 locale. The image and many hosts start with none (LANG unset or `C`), and then
+//! Workspaces need a UTF-8 locale. The image and many hosts start with none (LANG unset or `C`), and then
 //! bash's readline prints typed Cyrillic, CJK or emoji as octal bytes (`\320\265`) and tmux draws non-ASCII
 //! as underscores. We only step in when the inherited locale is not UTF-8; a UTF-8 one is left alone.
 
@@ -19,7 +19,7 @@ pub fn needs_utf8(lc_all: Option<&str>, lc_ctype: Option<&str>, lang: Option<&st
     }
 }
 
-/// Environment to add to every session command: empty when the inherited locale already is UTF-8.
+/// Environment to add to every workspace command: empty when the inherited locale already is UTF-8.
 pub fn utf8_env() -> Vec<(&'static str, &'static str)> {
     let get = |k: &str| std::env::var(k).ok();
     if needs_utf8(

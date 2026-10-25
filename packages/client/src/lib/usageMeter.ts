@@ -7,7 +7,7 @@ export const usageWeeks = writable<Weeks>({});
 const STEP_MS = 5000;
 
 /**
- * Counts time while the page is visible and `isAttached()` is true (connected, with a session open).
+ * Counts time while the page is visible and `isAttached()` is true (connected, with a workspace open).
  * A suspended tab produces one long gap, which `tickMs` caps. Returns the stop function.
  */
 export function startUsageMeter(isAttached: () => boolean, now: () => Date = () => new Date()): () => void {

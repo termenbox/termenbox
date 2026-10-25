@@ -1,6 +1,6 @@
 //! History (U12, decision 0105): what agents did, kept on this server so the Activity view can show a day or a week.
 //!
-//! Metadata only. A record holds the session name, the agent, a short scrubbed task title, when the task started and
+//! Metadata only. A record holds the workspace name, the agent, a short scrubbed task title, when the task started and
 //! ended, how it ended and how long the agent waited on the user. No prompt and no terminal text ever reaches it.
 //! Since U13 it also holds the folder name the agent worked in and the counts the agent exposed (tokens, a cost the
 //! agent itself reported, times it was rate limited): numbers and names, nothing readable.
@@ -48,7 +48,7 @@ pub fn fit(mut runs: Vec<HistoryRun>, budget: usize) -> (Vec<HistoryRun>, bool) 
     runs.drain(..cut);
     (runs, cut > 0)
 }
-/// Tasks in flight at once, one per session (the same bound as the event hub).
+/// Tasks in flight at once, one per workspace (the same bound as the event hub).
 const MAX_OPEN: usize = crate::events::MAX_SESSIONS;
 /// A rewrite leaves room for this share of the limit, so it does not run again on the next record.
 const TRIM_TO_PERCENT: u64 = 80;
@@ -461,7 +461,7 @@ pub struct History {
     wake: SyncSender<u64>,
     /// Bumped by `delete`: a task that began before it is not written after it.
     generation: AtomicU64,
-    /// The last cost an agent reported per session. ACP reports the cost of the whole session so far, so a task's share
+    /// The last cost an agent reported per workspace. ACP reports the cost of the whole workspace so far, so a task's share
     /// is the step from the previous report, in the currency it was reported in.
     costs: Mutex<HashMap<String, (String, u64)>>,
     limits: Limits,
@@ -562,9 +562,9 @@ impl History {
         self.limits
     }
 
-    /// A session's state changed (a fact from a hook, Codex or ACP): a task starts when the agent starts working or
+    /// A workspace's state changed (a fact from a hook, Codex or ACP): a task starts when the agent starts working or
     /// waits, and ends when it is done, failed or idle. The time spent waiting on the user is summed as it happens.
-    pub fn state(&self, session: &str, agent: Option<&str>, state: AgentState, ts: u64) {
+    pub fn state(&self, workspace: &str, agent: Option<&str>, state: AgentState, ts: u64) {
         let mut ended = Vec::new();
         {
             let mut open = self.open.lock().unwrap();
@@ -572,21 +572,21 @@ impl History {
                 AgentState::Working | AgentState::NeedsInput => {
                     // An end that never came: close that task where it went quiet, and start this one fresh.
                     if open
-                        .get(session)
+                        .get(workspace)
                         .is_some_and(|r| ts.saturating_sub(r.touched) >= OPEN_MAX_AGE_MS)
                     {
-                        if let Some(run) = open.remove(session) {
+                        if let Some(run) = open.remove(workspace) {
                             let at = run.touched;
                             ended.push((run, RunOutcome::Stopped, at));
                         }
                     }
-                    if !open.contains_key(session) && open.len() >= MAX_OPEN {
+                    if !open.contains_key(workspace) && open.len() >= MAX_OPEN {
                         drop(open);
-                        self.finish_all(session, agent, ended);
+                        self.finish_all(workspace, agent, ended);
                         return;
                     }
                     let run = open
-                        .entry(session.to_string())
+                        .entry(workspace.to_string())
                         .or_insert_with(|| Open::new(ts, self.generation.load(Ordering::Acquire)));
                     run.touched = ts;
                     if let Some(a) = agent {
@@ -600,47 +600,52 @@ impl History {
                     }
                 }
                 AgentState::Done | AgentState::Idle | AgentState::Error => {
-                    // Only Done is a finished turn and only Error a failure. Idle is the agent going quiet (a session
+                    // Only Done is a finished turn and only Error a failure. Idle is the agent going quiet (a workspace
                     // that ended or started, a cancelled or cut-off turn): the task stopped, it did not finish.
                     let outcome = match state {
                         AgentState::Done => RunOutcome::Finished,
                         AgentState::Error => RunOutcome::Failed,
                         _ => RunOutcome::Stopped,
                     };
-                    if let Some(run) = open.remove(session) {
+                    if let Some(run) = open.remove(workspace) {
                         ended.push((run, outcome, ts));
                     }
                 }
                 AgentState::Unknown => {}
             }
         }
-        self.finish_all(session, agent, ended);
+        self.finish_all(workspace, agent, ended);
     }
 
-    fn finish_all(&self, session: &str, agent: Option<&str>, ended: Vec<(Open, RunOutcome, u64)>) {
+    fn finish_all(
+        &self,
+        workspace: &str,
+        agent: Option<&str>,
+        ended: Vec<(Open, RunOutcome, u64)>,
+    ) {
         for (run, outcome, ts) in ended {
-            self.finish(session, run, outcome, agent, ts);
+            self.finish(workspace, run, outcome, agent, ts);
         }
     }
 
     /// The agent named what it is working on; only a task in flight takes a title.
-    pub fn task(&self, session: &str, title: &str) {
+    pub fn task(&self, workspace: &str, title: &str) {
         let title = scrub_title(title);
         if title.is_empty() {
             return;
         }
-        if let Some(run) = self.open.lock().unwrap().get_mut(session) {
+        if let Some(run) = self.open.lock().unwrap().get_mut(workspace) {
             run.task = Some(title);
         }
     }
 
     /// The folder the agent works in, by name only. Only a task in flight takes it.
-    pub fn project(&self, session: &str, name: &str) {
+    pub fn project(&self, workspace: &str, name: &str) {
         let name = scrub_title(name);
         if name.is_empty() {
             return;
         }
-        if let Some(run) = self.open.lock().unwrap().get_mut(session) {
+        if let Some(run) = self.open.lock().unwrap().get_mut(workspace) {
             // Where the task began: a later `cd` does not rename it.
             run.project.get_or_insert(name);
         }
@@ -648,11 +653,11 @@ impl History {
 
     /// Tokens the agent reported, added to the task in flight. With no task in flight they belong to nothing and are
     /// dropped: a count is only kept against a task.
-    pub fn tokens(&self, session: &str, t: Tokens) {
+    pub fn tokens(&self, workspace: &str, t: Tokens) {
         if t.is_empty() {
             return;
         }
-        if let Some(run) = self.open.lock().unwrap().get_mut(session) {
+        if let Some(run) = self.open.lock().unwrap().get_mut(workspace) {
             let u = run.usage.get_or_insert_with(RunUsage::default);
             add(&mut u.input_tokens, t.input);
             add(&mut u.output_tokens, t.output);
@@ -661,10 +666,10 @@ impl History {
         }
     }
 
-    /// The agent reported `micros` millionths of `currency` spent in this session so far. The step since its previous
-    /// report is the task's cost; the first report counts whole (a session the server started sees its first report in its
+    /// The agent reported `micros` millionths of `currency` spent in this workspace so far. The step since its previous
+    /// report is the task's cost; the first report counts whole (a workspace the server started sees its first report in its
     /// first turn).
-    pub fn cost(&self, session: &str, micros: u64, currency: &str) {
+    pub fn cost(&self, workspace: &str, micros: u64, currency: &str) {
         // A currency code, as letters only.
         let currency: String = currency
             .chars()
@@ -680,11 +685,11 @@ impl History {
         let mut open = self.open.lock().unwrap();
         // With no task in flight the baseline stays where it was: the spend since then lands on the next task's step
         // rather than on nothing.
-        if !open.contains_key(session) {
+        if !open.contains_key(workspace) {
             return;
         }
-        if !costs.contains_key(session) && costs.len() >= MAX_OPEN {
-            // Sessions with no task in flight can be re-read from their next report; make room from them.
+        if !costs.contains_key(workspace) && costs.len() >= MAX_OPEN {
+            // Workspaces with no task in flight can be re-read from their next report; make room from them.
             costs.retain(|k, _| open.contains_key(k));
             if costs.len() >= MAX_OPEN {
                 return;
@@ -692,16 +697,16 @@ impl History {
         }
         // A baseline in another currency is no baseline for this one.
         let last = costs
-            .get(session)
+            .get(workspace)
             .filter(|(c, _)| c == currency)
             .map_or(0, |(_, m)| *m);
-        costs.insert(session.to_string(), (currency.to_string(), micros));
+        costs.insert(workspace.to_string(), (currency.to_string(), micros));
         let step = if micros >= last {
             micros - last
         } else {
             micros
         };
-        if let Some(run) = open.get_mut(session) {
+        if let Some(run) = open.get_mut(workspace) {
             let u = run.usage.get_or_insert_with(RunUsage::default);
             // One currency per task: a second one is not added to the first.
             if u.cost_currency.as_deref().is_none_or(|c| c == currency) {
@@ -712,14 +717,14 @@ impl History {
     }
 
     /// The agent said it was rate limited.
-    pub fn rate_limited(&self, session: &str) {
-        if let Some(run) = self.open.lock().unwrap().get_mut(session) {
+    pub fn rate_limited(&self, workspace: &str) {
+        if let Some(run) = self.open.lock().unwrap().get_mut(workspace) {
             let u = run.usage.get_or_insert_with(RunUsage::default);
             u.rate_limited = u.rate_limited.saturating_add(1);
         }
     }
 
-    /// Sessions under `prefix` that are no longer live end their task, as stopped.
+    /// Workspaces under `prefix` that are no longer live end their task, as stopped.
     pub fn retain_live(&self, prefix: &str, live: &[String], now: u64) {
         let gone: Vec<(String, Open)> = {
             let mut open = self.open.lock().unwrap();
@@ -737,14 +742,21 @@ impl History {
             .lock()
             .unwrap()
             .retain(|k, _| !k.starts_with(prefix) || live.contains(k));
-        for (session, run) in gone {
-            self.finish(&session, run, RunOutcome::Stopped, None, now);
+        for (workspace, run) in gone {
+            self.finish(&workspace, run, RunOutcome::Stopped, None, now);
         }
     }
 
     /// Hands a finished task to the store without waiting for it, and starts a compaction (off this thread) when the
     /// file is over its limit.
-    fn finish(&self, session: &str, run: Open, outcome: RunOutcome, agent: Option<&str>, ts: u64) {
+    fn finish(
+        &self,
+        workspace: &str,
+        run: Open,
+        outcome: RunOutcome,
+        agent: Option<&str>,
+        ts: u64,
+    ) {
         let generation = run.generation;
         let ended_at = ts.max(run.started_at);
         let blocked = run.blocked_ms
@@ -752,7 +764,7 @@ impl History {
                 .blocked_since
                 .map_or(0, |since| ended_at.saturating_sub(since));
         let record = HistoryRun {
-            session: clip(session),
+            workspace: clip(workspace),
             // The agent the task ran under; the one named at its end only when the task never learned one.
             agent: run.agent.or_else(|| agent.map(clip)),
             task: run.task,
@@ -794,11 +806,11 @@ impl History {
             .cloned()
             .collect();
         let (mut runs, truncated) = self.store.lock().unwrap().query(from, to);
-        let key = |r: &HistoryRun| (r.session.clone(), r.started_at, r.ended_at);
+        let key = |r: &HistoryRun| (r.workspace.clone(), r.started_at, r.ended_at);
         let known: HashSet<_> = runs.iter().map(key).collect();
         runs.extend(waiting.into_iter().filter(|r| !known.contains(&key(r))));
         let open = self.open.lock().unwrap();
-        for (session, run) in open
+        for (workspace, run) in open
             .iter()
             .filter(|(_, r)| r.started_at < to && (to > now || r.started_at >= from))
         {
@@ -807,7 +819,7 @@ impl History {
                     .blocked_since
                     .map_or(0, |since| now.saturating_sub(since));
             runs.push(HistoryRun {
-                session: clip(session),
+                workspace: clip(workspace),
                 agent: run.agent.clone(),
                 task: run.task.clone(),
                 started_at: run.started_at,
@@ -848,9 +860,9 @@ impl History {
                 .filter_map(|k| open.remove(&k).map(|r| (k, r)))
                 .collect()
         };
-        for (session, run) in lost {
+        for (workspace, run) in lost {
             let at = run.touched;
-            self.finish(&session, run, RunOutcome::Stopped, None, at);
+            self.finish(&workspace, run, RunOutcome::Stopped, None, at);
         }
         self.store.lock().unwrap().compact(now, "age");
         let _ = self.wake.try_send(now);
@@ -862,7 +874,7 @@ mod tests {
     #[test]
     fn a_reply_keeps_the_newest_runs_that_fit_and_says_it_cut_the_rest() {
         let run = |n: u64| HistoryRun {
-            session: "session-opencode".into(),
+            workspace: "workspace-opencode".into(),
             agent: Some("opencode".into()),
             task: Some("x".repeat(80)),
             started_at: n,
@@ -910,10 +922,10 @@ mod tests {
     }
 
     /// One whole task: working, then done, `mins` later.
-    fn task(h: &History, session: &str, start: u64, mins: u64, end: AgentState) {
-        h.state(session, Some("claude"), AgentState::Working, start);
-        h.task(session, "Fix the flaky login test");
-        h.state(session, Some("claude"), end, start + mins * MIN);
+    fn task(h: &History, workspace: &str, start: u64, mins: u64, end: AgentState) {
+        h.state(workspace, Some("claude"), AgentState::Working, start);
+        h.task(workspace, "Fix the flaky login test");
+        h.state(workspace, Some("claude"), end, start + mins * MIN);
         idle(h);
     }
 
@@ -930,7 +942,7 @@ mod tests {
         let a = h.query(T0, T0 + 10 * MIN, T0 + 10 * MIN);
         assert_eq!(a.runs.len(), 1);
         let r = &a.runs[0];
-        assert_eq!(r.session, "api");
+        assert_eq!(r.workspace, "api");
         assert_eq!(r.agent.as_deref(), Some("claude"));
         assert_eq!(r.task.as_deref(), Some("Fix the flaky login test"));
         assert_eq!((r.started_at, r.ended_at), (T0, Some(T0 + 6 * MIN)));
@@ -954,18 +966,18 @@ mod tests {
             h.query(T0, T0 + 9 * MIN, T0)
                 .runs
                 .into_iter()
-                .find(|r| r.session == s)
+                .find(|r| r.workspace == s)
                 .unwrap()
                 .outcome
         };
         assert_eq!(by("a"), Some(RunOutcome::Finished));
         assert_eq!(by("b"), Some(RunOutcome::Failed));
-        // Idle is a session that ended or a turn that was cut off, never a finished task.
+        // Idle is a workspace that ended or a turn that was cut off, never a finished task.
         assert_eq!(by("c"), Some(RunOutcome::Stopped));
     }
 
     #[test]
-    fn a_task_in_flight_is_listed_without_an_end_and_a_gone_session_stops_it() {
+    fn a_task_in_flight_is_listed_without_an_end_and_a_gone_workspace_stops_it() {
         let d = dir("flight");
         let h = History::open(&d, limits(), T0).unwrap();
         h.state("api", None, AgentState::NeedsInput, T0);
@@ -1106,7 +1118,7 @@ mod tests {
         h.state("b", Some("codex"), AgentState::Working, T0);
         h.state("b", None, AgentState::Done, T0 + MIN);
         let runs = h.query(T0, T0 + 9 * MIN, T0).runs;
-        let a = runs.iter().find(|r| r.session == "a").unwrap();
+        let a = runs.iter().find(|r| r.workspace == "a").unwrap();
         let u = a.usage.as_ref().unwrap();
         assert_eq!(
             (u.input_tokens, u.cache_read_tokens, u.cost_micros),
@@ -1114,7 +1126,7 @@ mod tests {
         );
         assert!(runs
             .iter()
-            .find(|r| r.session == "b")
+            .find(|r| r.workspace == "b")
             .unwrap()
             .usage
             .is_none());
@@ -1144,7 +1156,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_cost_is_shared_out_by_the_steps_between_reports() {
+    fn a_workspace_cost_is_shared_out_by_the_steps_between_reports() {
         let d = dir("cost");
         let h = History::open(&d, limits(), T0).unwrap();
         for (i, total) in [1_000_000u64, 1_500_000].into_iter().enumerate() {
@@ -1196,7 +1208,7 @@ mod tests {
     }
 
     #[test]
-    fn costs_of_ended_sessions_do_not_block_new_ones() {
+    fn costs_of_ended_workspaces_do_not_block_new_ones() {
         let d = dir("cost-full");
         let h = History::open(&d, limits(), T0).unwrap();
         for i in 0..MAX_OPEN {
@@ -1327,7 +1339,7 @@ mod tests {
         let mut s = Store::open(&d, limits(), T0).unwrap();
         s.torn = true; // as after a write that failed half-way
         let run = HistoryRun {
-            session: "a".into(),
+            workspace: "a".into(),
             agent: None,
             task: None,
             started_at: T0,
@@ -1356,7 +1368,11 @@ mod tests {
         idle(&h);
         let kept = h.query(0, u64::MAX, T0).runs;
         assert!(!kept.is_empty() && kept.len() < 500);
-        assert_eq!(kept.last().unwrap().session, "s499", "the newest survives");
+        assert_eq!(
+            kept.last().unwrap().workspace,
+            "s499",
+            "the newest survives"
+        );
         assert!(file_len(&d) <= limits.max_bytes);
         // The same holds after a restart with a smaller limit.
         drop(h);
@@ -1385,7 +1401,7 @@ mod tests {
             h.query(0, u64::MAX, T0)
                 .runs
                 .into_iter()
-                .map(|r| r.session)
+                .map(|r| r.workspace)
                 .collect()
         };
         assert_eq!(names(&h), ["newer"]);
@@ -1404,7 +1420,10 @@ mod tests {
         let a = h.query(0, u64::MAX, T0);
         assert_eq!(a.runs.len(), MAX_RUNS);
         assert!(a.truncated);
-        assert_eq!(a.runs.last().unwrap().session, format!("s{}", MAX_RUNS + 4));
+        assert_eq!(
+            a.runs.last().unwrap().workspace,
+            format!("s{}", MAX_RUNS + 4)
+        );
     }
 
     #[test]
@@ -1474,7 +1493,7 @@ mod tests {
         let mut s = Store::open(&d, limits, T0).unwrap();
         for i in 0..20u64 {
             s.append(&HistoryRun {
-                session: format!("s{i}"),
+                workspace: format!("s{i}"),
                 agent: None,
                 task: Some("Fix the flaky login test".into()),
                 started_at: T0,
@@ -1536,7 +1555,7 @@ mod tests {
         h.maintain(T0 + OPEN_MAX_AGE_MS + 5 * MIN);
         let runs = h.query(0, u64::MAX, T0 + OPEN_MAX_AGE_MS + 6 * MIN).runs;
         assert!(runs.iter().all(|r| r.ended_at.is_some()));
-        assert_eq!(runs.iter().filter(|r| r.session == "b").count(), 1);
+        assert_eq!(runs.iter().filter(|r| r.workspace == "b").count(), 1);
     }
 
     #[test]

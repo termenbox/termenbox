@@ -1,5 +1,5 @@
 // U11: what a push opens, and the reminder settings, in the REAL app against a scripted server (app-lib.mjs).
-//   1. A push's deep link (#/home?focus=<session key>) opens Home on that session's decision card, ahead of an older
+//   1. A push's deep link (#/home?focus=<workspace key>) opens Home on that workspace's decision card, ahead of an older
 //      waiting one, with no terminal attached: the tap on the push and one tap on an option are the two taps to a sent answer.
 //   2. The same link followed in a tab where the app is already open (a notification click only changes the fragment).
 //   3. Settings: the reminder form appears for a server that has settings, saves minutes as seconds with the browser's
@@ -27,18 +27,18 @@ class PushServer extends ScriptedServer {
 const shared = await startShared();
 const failures = [];
 const phone = { width: 390, height: 844 };
-/** The hooks' confirmed question on a session, as the server's event stream carries it: it gives the Home card its buttons. */
-const ask = (server, session, seq = 2) => server.broadcast({ type: 'agent_events', events: [{ session, seq, ts: Date.now(), source: 'hook', confidence: 'high', kind: 'prompt', id: `p-${session}`, prompt_kind: 'choice', choices: ['Yes', 'No'] }] });
+/** The hooks' confirmed question on a workspace, as the server's event stream carries it: it gives the Home card its buttons. */
+const ask = (server, workspace, seq = 2) => server.broadcast({ type: 'agent_events', events: [{ session: workspace, seq, ts: Date.now(), source: 'hook', confidence: 'high', kind: 'prompt', id: `p-${workspace}`, prompt_kind: 'choice', choices: ['Yes', 'No'] }] });
 const heroKey = (t) => t.page.locator('[data-decision-card]').first().getAttribute('data-decision-card');
 
 try {
-  // 1. Cold start from the push: the named session is the hero although another has waited longer.
+  // 1. Cold start from the push: the named workspace is the hero although another has waited longer.
   {
     const t = await startApp(shared, { viewport: phone, server: new PushServer() });
     await t.page.goto(`${shared.origin}#/home?focus=${encodeURIComponent('one/s1')}`);
     await t.page.locator('[data-decision-card]').first().waitFor();
     ask(t.server, 's1');
-    t.check((await heroKey(t)) === 'one/s1', `the pushed session is not the hero: ${await heroKey(t)}`);
+    t.check((await heroKey(t)) === 'one/s1', `the pushed workspace is not the hero: ${await heroKey(t)}`);
     t.check((await t.page.evaluate(() => location.hash)) === '#/home', `the link stays in the address bar: ${await t.page.evaluate(() => location.hash)}`);
     t.check(t.server.of('attach').length === 0, 'the push attached a terminal instead of showing the card');
     const card = t.page.locator('[data-decision-card="one/s1"]');

@@ -47,19 +47,19 @@ mod reducer;
 mod release;
 mod requests;
 mod rtc;
-mod sessions;
 mod terminfo;
 mod tmuxconf;
 mod transcript;
 mod uninstall;
 mod updater;
 mod websocket;
+mod workspaces;
 
 use auth::AuthState;
-use backend::{CommandBackend, RunMode, SessionBackend, TmuxBackend};
+use backend::{CommandBackend, RunMode, TmuxBackend, WorkspaceBackend};
 use health::HealthCollector;
-use sessions::SessionManager;
 use websocket::handle_websocket;
+use workspaces::WorkspaceManager;
 
 #[derive(Parser, Debug)]
 #[command(name = "termenbox-server", version)]
@@ -86,12 +86,12 @@ struct Args {
     )]
     client_url: String,
 
-    /// Session manager: `tmux` (built in), `acp` (agents the server starts), `command` (any CLI, see
+    /// Workspace manager: `tmux` (built in), `acp` (agents the server starts), `command` (any CLI, see
     /// TERMENBOX_BACKEND_*), a comma list of them, or `auto` (tmux, plus acp when TERMENBOX_ACP=on).
     #[arg(long, env = "TERMENBOX_BACKEND", default_value = "auto")]
     backend: String,
 
-    /// `on` lets `auto` offer the built-in ACP agents that are installed; `off` (default) keeps `auto` at tmux, so session
+    /// `on` lets `auto` offer the built-in ACP agents that are installed; `off` (default) keeps `auto` at tmux, so workspace
     /// ids stay bare (with two managers they are `tmux:<name>`). Off until the adapters' terms of use are settled (0137).
     #[arg(long, env = "TERMENBOX_ACP", default_value = "off")]
     acp: String,
@@ -100,24 +100,24 @@ struct Args {
     #[arg(long, env = "TERMENBOX_BACKEND_NAME", default_value = "command")]
     backend_name: String,
 
-    /// For `command`: prints one session per line (`id` or `id|name`).
+    /// For `command`: prints one workspace per line (`id` or `id|name`).
     #[arg(long, env = "TERMENBOX_BACKEND_LIST")]
     backend_list: Option<String>,
 
-    /// For `command`: creates a detached session; `{name}` is replaced.
+    /// For `command`: creates a detached workspace; `{name}` is replaced.
     #[arg(long, env = "TERMENBOX_BACKEND_CREATE")]
     backend_create: Option<String>,
 
-    /// For `command`: attaches a terminal to a session; `{id}` is replaced.
+    /// For `command`: attaches a terminal to a workspace; `{id}` is replaced.
     #[arg(long, env = "TERMENBOX_BACKEND_ATTACH")]
     backend_attach: Option<String>,
 
-    /// Where sessions run: `container` (default, isolated), `native` (the server runs on the host as a
+    /// Where workspaces run: `container` (default, isolated), `native` (the server runs on the host as a
     /// systemd service, decision 0075) or `host` (the retired privileged-container mode, needs --pid=host --privileged).
     #[arg(long, env = "TERMENBOX_RUN", default_value = "container")]
     run: String,
 
-    /// For `host`: the user sessions run as, `root` or a dedicated unprivileged user.
+    /// For `host`: the user workspaces run as, `root` or a dedicated unprivileged user.
     #[arg(long, env = "TERMENBOX_RUN_USER", default_value = "termenbox")]
     run_user: String,
 
@@ -126,7 +126,7 @@ struct Args {
     #[arg(long, env = "TERMENBOX_UDP_PORT")]
     udp_port: Option<u16>,
 
-    /// Which tmux server holds the sessions: `termenbox` (its own server and config, decisions 0120 and 0121, the
+    /// Which tmux server holds the workspaces: `termenbox` (its own server and config, decisions 0120 and 0121, the
     /// default) or `default` (the user's own tmux server and config; the tmux termenbox runs must then be the same
     /// version as that server, or it cannot attach).
     #[arg(long, env = "TERMENBOX_TMUX_SOCKET")]
@@ -310,7 +310,7 @@ struct Args {
 #[derive(Clone)]
 pub struct AppState {
     pub auth: Arc<AuthState>,
-    pub sessions: Arc<SessionManager>,
+    pub workspaces: Arc<WorkspaceManager>,
     pub server_name: String,
     /// `container` or `host:<user>`, shown to the owner.
     pub mode: String,
@@ -475,7 +475,7 @@ fn parse_acp(v: &str) -> anyhow::Result<bool> {
 }
 
 /// `TERMENBOX_BACKEND`: one manager (`tmux`, `acp`, `command`), a comma list of them (taken as written), or `auto`
-/// (tmux, plus acp when `acp_on`). Registering acp is free: no child starts until a session is created.
+/// (tmux, plus acp when `acp_on`). Registering acp is free: no child starts until a workspace is created.
 fn resolve_backends(spec: &str, acp_on: bool) -> anyhow::Result<Vec<String>> {
     let mut kinds: Vec<String> = if spec == "auto" {
         let mut v = vec!["tmux".to_string()];
@@ -504,7 +504,7 @@ fn build_backend(
     mode: &RunMode,
     env: events::EventEnv,
     prefix: &str,
-) -> anyhow::Result<Arc<dyn SessionBackend>> {
+) -> anyhow::Result<Arc<dyn WorkspaceBackend>> {
     match kind {
         "tmux" => Ok(Arc::new(
             TmuxBackend::new(mode.runner())
@@ -517,7 +517,8 @@ fn build_backend(
             let backend = Arc::new(
                 acp::AcpBackend::new(config)
                     .with_events(env.hub.clone())
-                    .with_state_file(args.config_dir.join("acp-sessions.json"))
+                    .with_state_file(args.config_dir.join("acp-workspaces.json"))
+                    .with_legacy_state_file(args.config_dir.join("acp-sessions.json"))
                     .with_event_prefix(prefix),
             );
             let restoring = backend.clone();
@@ -772,7 +773,7 @@ async fn main() -> anyhow::Result<()> {
         hub = hub.with_history(history.clone());
     }
     let socket = events::socket_path(&args.config_dir);
-    // Which session an event belongs to is checked against the panes; the runner arrives with the backends below.
+    // Which workspace an event belongs to is checked against the panes; the runner arrives with the backends below.
     let owners = Arc::new(owner::Resolver::default());
     tokio::spawn({
         let (hub, socket, owners) = (hub.clone(), socket.clone(), owners.clone());
@@ -806,7 +807,7 @@ async fn main() -> anyhow::Result<()> {
         });
     }
     let kinds = resolve_backends(&args.backend, parse_acp(&args.acp)?)?;
-    // With several managers every session id is `manager:name`; with one it stays the plain name.
+    // With several managers every workspace id is `manager:name`; with one it stays the plain name.
     let prefix_of = |k: &str| {
         if kinds.len() > 1 {
             format!("{k}:")
@@ -849,18 +850,18 @@ async fn main() -> anyhow::Result<()> {
         socket,
     };
     let backend = if kinds.len() > 1 {
-        let mut parts: Vec<(String, Arc<dyn SessionBackend>)> = Vec::new();
+        let mut parts: Vec<(String, Arc<dyn WorkspaceBackend>)> = Vec::new();
         for k in &kinds {
             parts.push((
                 k.clone(),
                 build_backend(&args, k, &mode, env.clone(), &prefix_of(k))?,
             ));
         }
-        Arc::new(backend::CompositeBackend::new(parts)) as Arc<dyn SessionBackend>
+        Arc::new(backend::CompositeBackend::new(parts)) as Arc<dyn WorkspaceBackend>
     } else {
         build_backend(&args, &kinds[0], &mode, env, "")?
     };
-    info!("Session backend: {}", backend.name());
+    info!("Workspace backend: {}", backend.name());
     // Server health (U14): sampled every 10 s into memory; the data directory is the disk it reports.
     let health = Arc::new(HealthCollector::new());
     health.spawn(args.config_dir.clone());
@@ -880,12 +881,12 @@ async fn main() -> anyhow::Result<()> {
     }
     let mut state = AppState {
         auth,
-        sessions: Arc::new(
+        workspaces: Arc::new(
             if control_on {
-                SessionManager::new(backend, mode.clone())
+                WorkspaceManager::new(backend, mode.clone())
                     .with_windows(window_hub.clone(), tmux_version.clone())
             } else {
-                SessionManager::new(backend, mode.clone()).with_tmux_version(tmux_version.clone())
+                WorkspaceManager::new(backend, mode.clone()).with_tmux_version(tmux_version.clone())
             }
             .with_prefix(tmux_prefix.clone())
             .with_push(push.clone())
@@ -1175,7 +1176,7 @@ async fn ws_handler(
     ws.on_upgrade(|socket| handle_websocket(socket, State(state), headers))
 }
 
-/// Decides which tmux server the sessions live on and, for termenbox's own, writes its config (decision 0120).
+/// Decides which tmux server the workspaces live on and, for termenbox's own, writes its config (decision 0120).
 /// Runs before any tmux command of the server, because runners made earlier would use the default socket.
 async fn choose_tmux_server(args: &Args, mode: &RunMode) -> anyhow::Result<()> {
     use tmuxconf::Socket;
@@ -1194,7 +1195,7 @@ async fn choose_tmux_server(args: &Args, mode: &RunMode) -> anyhow::Result<()> {
     }
     if saved == Some(Socket::Default) && choice == Socket::Private {
         tracing::warn!(
-            "sessions still running on the default tmux server stay there and are no longer listed"
+            "workspaces still running on the default tmux server stay there and are no longer listed"
         );
     }
     info!(target: "audit", event = "tmux_server", socket = choice.as_str());
@@ -1216,7 +1217,7 @@ async fn choose_tmux_server(args: &Args, mode: &RunMode) -> anyhow::Result<()> {
 }
 
 /// `termenbox-server tmux <args>`: runs tmux the way the server does, so `termenbox-server tmux attach` reaches the
-/// sessions from a shell. Replaces this process.
+/// workspaces from a shell. Replaces this process.
 fn run_tmux_passthrough() -> anyhow::Result<()> {
     use std::os::unix::process::CommandExt;
     let dir = std::env::var_os("TERMENBOX_CONFIG_DIR")

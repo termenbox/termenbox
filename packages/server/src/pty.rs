@@ -4,9 +4,9 @@ use anyhow::{anyhow, Result};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::mpsc;
 
-/// A session-attach client (e.g. `tmux attach`) running in a PTY. A multiplexer repaints the whole
+/// A workspace-attach client (e.g. `tmux attach`) running in a PTY. A multiplexer repaints the whole
 /// screen when a client attaches, so re-attaching after a dropped connection is also the screen
-/// replay. Dropping this detaches; the session itself keeps running.
+/// replay. Dropping this detaches; the workspace itself keeps running.
 pub struct Attachment {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
@@ -86,7 +86,7 @@ impl Drop for Attachment {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{SessionBackend, TmuxBackend};
+    use crate::backend::{TmuxBackend, WorkspaceBackend};
     use std::time::Duration;
 
     fn tmux_available() -> bool {
@@ -133,7 +133,7 @@ mod tests {
 
         assert!(
             backend.list().await.unwrap().iter().any(|s| s.id == name),
-            "session survives detach"
+            "workspace survives detach"
         );
 
         let mut b = backend.attach(&name, 80, 24).unwrap();

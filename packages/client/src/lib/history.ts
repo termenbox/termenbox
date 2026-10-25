@@ -1,6 +1,6 @@
 // Activity (U12, decision 0105): the tasks each server kept, as a timeline per day and a digest. A server answers a range
 // of time; this module asks for it, turns the answers into rows, counts and chart buckets, and tracks deletion. Texts from
-// the server (task titles, session names) are shown as text only.
+// the server (task titles, workspace names) are shown as text only.
 import type { HistoryMessage, HistoryRun, RunUsage } from './protocol';
 
 /** A server that has not answered by then is older than this feature (it ignores a message it does not know). */
@@ -82,7 +82,7 @@ export type Outcome = 'finished' | 'failed' | 'stopped' | 'running';
 export interface Row {
   serverId: string;
   serverName: string;
-  session: string;
+  workspace: string;
   agent?: string;
   task?: string;
   startedAt: number;
@@ -101,7 +101,7 @@ export function rowOf(s: Pick<Source, 'serverId' | 'serverName'>, r: HistoryRun,
   const endedAt = typeof r.ended_at === 'number' ? r.ended_at : undefined;
   const outcome: Outcome = endedAt === undefined ? 'running' : r.outcome === 'finished' || r.outcome === 'failed' ? r.outcome : 'stopped';
   return {
-    serverId: s.serverId, serverName: s.serverName, session: r.session, agent: r.agent, task: r.task,
+    serverId: s.serverId, serverName: s.serverName, workspace: r.session, agent: r.agent, task: r.task,
     startedAt: r.started_at, endedAt, outcome, blockedMs: nonNegative(r.blocked_ms),
     durationMs: nonNegative((endedAt ?? now) - r.started_at),
     project: r.project || undefined, usage: usageOfRun(r.usage),
@@ -209,7 +209,7 @@ export function whyMissing(agent: string, what: Missing): string {
     return 'Claude Code gives hooks no cost. The status-line forwarder (roadmap R19, not built yet) would report it.';
   }
   if (agent === 'codex') {
-    if (what === 'tokens') return 'Codex\'s notify hook carries no usage. A Codex session started from Termenbox over ACP reports tokens for each turn.';
+    if (what === 'tokens') return 'Codex\'s notify hook carries no usage. A Codex workspace started from Termenbox over ACP reports tokens for each turn.';
     return 'Codex reports no cost to Termenbox.';
   }
   if (what === 'tokens') return `${a} reported no token counts. Only hooks of Claude Code and ACP agents that report usage supply them.`;

@@ -1,25 +1,25 @@
 <script lang="ts">
   import * as snippets from './lib/snippets';
   import { NativeSelect } from './lib/ui/native-select';
-  import type { HubSession } from './lib/hub';
+  import type { HubWorkspace } from './lib/hub';
   import type { ClientMessage } from './lib/protocol';
-  export let sessions: HubSession[];
+  export let workspaces: HubWorkspace[];
   export let activeKey: string | null;
   export let send: (message: ClientMessage) => void;
   let target: string | null = null;
   let draft = '';
   let saved = snippets.load();
-  $: replyTo = sessions.find(s => s.key === target)?.key ?? sessions.find(s => s.key === activeKey)?.key ?? sessions[0]?.key;
+  $: replyTo = workspaces.find(s => s.key === target)?.key ?? workspaces.find(s => s.key === activeKey)?.key ?? workspaces[0]?.key;
   function reply(text: string) {
     const clean = snippets.clean(text);
     if (clean && replyTo) { send({ type: 'reply', session: replyTo, text: clean }); draft = ''; }
   }
 </script>
-{#if sessions.length}
+{#if workspaces.length}
   <form class="reply" on:submit|preventDefault={() => reply(draft)}>
     <label for="reply-to">Quick reply to</label>
     <NativeSelect id="reply-to" value={replyTo} onchange={(e) => target = e.currentTarget.value}>
-      {#each sessions as s (s.key)}<option value={s.key}>{s.name} · {s.serverName}</option>{/each}
+      {#each workspaces as s (s.key)}<option value={s.key}>{s.name} · {s.serverName}</option>{/each}
     </NativeSelect>
     <div class="snips">
       {#each saved as text}

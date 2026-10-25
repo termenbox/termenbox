@@ -1,5 +1,5 @@
 //! The server-side watchers behind the event layer (plan v6, P.4/P.5): the process scan and screen
-//! heuristics for tmux sessions. They report through the same hub as the
+//! heuristics for tmux workspaces. They report through the same hub as the
 //! hooks, with low confidence.
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -14,10 +14,10 @@ use crate::profile::Profiles;
 use crate::reducer::Screen;
 
 const SCAN_EVERY: Duration = Duration::from_secs(2);
-/// Never more than one `capture-pane` per this long, whatever the number of sessions.
+/// Never more than one `capture-pane` per this long, whatever the number of workspaces.
 const PANE_SPACING: Duration = Duration::from_millis(250);
 
-/// Per-session memory of the prompt heuristic: a prompt is a new one each time the matched text changes
+/// Per-workspace memory of the prompt heuristic: a prompt is a new one each time the matched text changes
 /// or reappears after being gone.
 #[derive(Default)]
 pub struct PromptTracker {
@@ -26,24 +26,24 @@ pub struct PromptTracker {
 
 impl PromptTracker {
     /// `matched` is the question text on screen now, if any. Returns the prompt id when it is new.
-    pub fn update(&mut self, session: &str, matched: Option<&str>) -> Option<String> {
+    pub fn update(&mut self, workspace: &str, matched: Option<&str>) -> Option<String> {
         let Some(text) = matched else {
-            self.seen.remove(session);
+            self.seen.remove(workspace);
             return None;
         };
         let hash = hex8(text);
-        let (prev_hash, generation) = self.seen.get(session).cloned().unwrap_or_default();
+        let (prev_hash, generation) = self.seen.get(workspace).cloned().unwrap_or_default();
         if prev_hash == hash {
             return None;
         }
         let generation = generation + 1;
         self.seen
-            .insert(session.to_string(), (hash.clone(), generation));
+            .insert(workspace.to_string(), (hash.clone(), generation));
         Some(format!("{generation}-{hash}"))
     }
 
-    pub fn active(&self, session: &str) -> bool {
-        self.seen.contains_key(session)
+    pub fn active(&self, workspace: &str) -> bool {
+        self.seen.contains_key(workspace)
     }
 
     pub fn retain(&mut self, live: &HashSet<String>) {
@@ -75,7 +75,7 @@ fn now_s() -> u64 {
     crate::events::now_ms() / 1000
 }
 
-/// What tmux prints when no server is running (or its socket is gone): the sessions it held are gone with it.
+/// What tmux prints when no server is running (or its socket is gone): the workspaces it held are gone with it.
 fn no_tmux_server(stderr: &str) -> bool {
     let e = stderr.to_ascii_lowercase();
     e.contains("no server running")
@@ -83,7 +83,7 @@ fn no_tmux_server(stderr: &str) -> bool {
         || e.contains("failed to connect to server")
 }
 
-/// One scan cycle over tmux: states from the process scan, then prompts from the screens of agent sessions.
+/// One scan cycle over tmux: states from the process scan, then prompts from the screens of agent workspaces.
 pub async fn scan_tmux_once(
     hub: &EventHub,
     runner: &Runner,
@@ -101,7 +101,7 @@ pub async fn scan_tmux_once(
         return;
     };
     if !out.status.success() {
-        // Only a tmux that says there is no server means every session is gone. Any other failure is this scan's, and
+        // Only a tmux that says there is no server means every workspace is gone. Any other failure is this scan's, and
         // ending every task in flight on it would cut them all in half.
         if no_tmux_server(&String::from_utf8_lossy(&out.stderr)) {
             hub.forget_except(prefix, &[]);
@@ -110,18 +110,18 @@ pub async fn scan_tmux_once(
         return;
     }
     let mut panes = adapters::parse_panes(&String::from_utf8_lossy(&out.stdout), now_s());
-    // Events know a session by the id clients see: the manager prefix plus tmux's name.
+    // Events know a workspace by the id clients see: the manager prefix plus tmux's name.
     let names: HashMap<String, String> = panes
         .iter()
-        .map(|p| (format!("{prefix}{}", p.session), p.session.clone()))
+        .map(|p| (format!("{prefix}{}", p.workspace), p.workspace.clone()))
         .collect();
     for p in &mut panes {
-        p.session = format!("{prefix}{}", p.session);
+        p.workspace = format!("{prefix}{}", p.workspace);
     }
-    let live: HashSet<String> = panes.iter().map(|p| p.session.clone()).collect();
+    let live: HashSet<String> = panes.iter().map(|p| p.workspace.clone()).collect();
     hub.forget_except(prefix, &live.iter().cloned().collect::<Vec<_>>());
     tracker.retain(&live);
-    // One agent pane speaks for a session, and it is the one the session shows (the active pane of its active
+    // One agent pane speaks for a workspace, and it is the one the workspace shows (the active pane of its active
     // window), so the process, the screen and the state all come from the same pane. Without an active agent pane
     // the first one is used, as before.
     let mut chosen: Vec<&adapters::PaneScan> = Vec::new();
@@ -129,18 +129,18 @@ pub async fn scan_tmux_once(
         .iter()
         .filter(|p| adapters::agent_name(&p.command).is_some())
     {
-        match chosen.iter().position(|c| c.session == p.session) {
+        match chosen.iter().position(|c| c.workspace == p.workspace) {
             None => chosen.push(p),
             Some(i) if p.active && !chosen[i].active => chosen[i] = p,
             Some(_) => {}
         }
     }
     for p in chosen {
-        let tmux_name = names[&p.session].clone();
+        let tmux_name = names[&p.workspace].clone();
         if !crate::backend::valid_name(&tmux_name) {
             continue;
         }
-        // The pane itself when tmux named it (`%12`); the session's active pane otherwise.
+        // The pane itself when tmux named it (`%12`); the workspace's active pane otherwise.
         let target = if p.pane_id.starts_with('%')
             && p.pane_id[1..].chars().all(|c| c.is_ascii_digit())
             && p.pane_id.len() > 1
@@ -155,7 +155,7 @@ pub async fn scan_tmux_once(
             _ => String::new(),
         };
         if let Some(agent) = adapters::agent_name(&p.command) {
-            hub.set_agent(&p.session, agent);
+            hub.set_agent(&p.workspace, agent);
         }
         // Where the agent has a profile that tells working from idle, the screen decides both what the scan says
         // (a redraw on attach is output, not inference) and whether the reducer's turn or wait is still on screen.
@@ -171,10 +171,10 @@ pub async fn scan_tmux_once(
             .as_ref()
             .is_some_and(|v| (v.working || v.idle) && !v.blocked);
         let info = adapters::parse_prompt(&screen).filter(|_| !recognised_without_dialog);
-        if let Some(id) = tracker.update(&p.session, info.as_ref().map(|i| i.question.as_str())) {
+        if let Some(id) = tracker.update(&p.workspace, info.as_ref().map(|i| i.question.as_str())) {
             let info = info.expect("a new prompt has a screen");
             // The screen says what the question is; only the agent's own hook says it is really waiting.
-            let confirmed = hub.hook_says_needs_input(&p.session);
+            let confirmed = hub.hook_says_needs_input(&p.workspace);
             let confidence = if confirmed {
                 Confidence::High
             } else {
@@ -191,7 +191,7 @@ pub async fn scan_tmux_once(
                 .map(|(label, _)| label.clone())
                 .collect();
             hub.report(
-                &p.session,
+                &p.workspace,
                 Source::Screen,
                 Confidence::Low,
                 EventKind::State {
@@ -199,7 +199,7 @@ pub async fn scan_tmux_once(
                 },
             );
             hub.report(
-                &p.session,
+                &p.workspace,
                 Source::Screen,
                 confidence,
                 EventKind::Prompt {
@@ -215,14 +215,14 @@ pub async fn scan_tmux_once(
             // a push), and the screen says so again when it is gone, so the hint cannot outlive the dialog.
             if let Some(state) = screen_state(v) {
                 hub.report(
-                    &p.session,
+                    &p.workspace,
                     Source::Screen,
                     Confidence::Low,
                     EventKind::State { state },
                 );
             }
             hub.reconcile(
-                &p.session,
+                &p.workspace,
                 Screen {
                     working: v.working,
                     idle: v.idle,
@@ -231,7 +231,7 @@ pub async fn scan_tmux_once(
             );
         }
         // While a question is on screen the scan must not flip the state back and forth.
-        if !tracker.active(&p.session) {
+        if !tracker.active(&p.workspace) {
             // A screen the profile does not recognise (a newer UI, a blank start-up) falls back to the output
             // heuristic: an agent is still reported, and the reducer's pin guards an open turn against it.
             let scanned = match &view {
@@ -242,7 +242,7 @@ pub async fn scan_tmux_once(
             };
             if let Some(state) = scanned {
                 hub.report(
-                    &p.session,
+                    &p.workspace,
                     Source::Scan,
                     Confidence::Low,
                     EventKind::State { state },
@@ -268,7 +268,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_a_missing_tmux_server_means_the_sessions_are_gone() {
+    fn only_a_missing_tmux_server_means_the_workspaces_are_gone() {
         assert!(no_tmux_server(
             "no server running on /tmp/tmux-1000/default\n"
         ));
@@ -357,7 +357,7 @@ mod tests {
         let agent = hub
             .snapshot()
             .into_iter()
-            .find(|s| s.session == "tmux:scantest")
+            .find(|s| s.workspace == "tmux:scantest")
             .and_then(|s| s.agent);
         assert_eq!(
             agent.as_deref(),

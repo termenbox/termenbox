@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { render } from 'svelte/server';
 import DecisionPanel from '../DecisionPanel.svelte';
 import { answerIndex, decisionFor, nextNeedsYou, replyLine, stepOf, STEP_SUMMARY_CHARS } from './decision';
-import type { SessionAgent } from './agents';
+import type { WorkspaceAgent } from './agents';
 
-const waiting = (extra: Partial<SessionAgent> = {}): SessionAgent => ({
+const waiting = (extra: Partial<WorkspaceAgent> = {}): WorkspaceAgent => ({
   state: 'needs_input', seq: 4, stale: false, ts: 10, agent: 'claude', serverStatus: true,
   attention: { id: 'a1', session: 's', kind: 'needs_input', raised_at: 5, prompt: 'Allow the edit?', task: { title: 'Fix login', started_at: 0, source: 'hook' } },
   prompt: { id: 'p1', kind: 'choice', choices: ['Yes', 'Yes, always', 'No'], seq: 4, confidence: 'high' },
@@ -79,7 +79,7 @@ describe('answerIndex (the Yes and No shortcuts)', () => {
     expect(answerIndex(['Yes', 'Yes, and don\'t ask again', 'No'], 'no')).toBe(2);
     expect(answerIndex(['Yes, and don\'t ask again', 'No'], 'yes')).toBeNull();
     expect(answerIndex(['Allow always', 'Deny'], 'yes')).toBeNull();
-    expect(answerIndex(['Allow for this session', 'Allow once', 'Deny'], 'yes')).toBe(1);
+    expect(answerIndex(['Allow for this workspace', 'Allow once', 'Deny'], 'yes')).toBe(1);
   });
   it('does nothing when the options carry no plain answer', () => {
     expect(answerIndex(['Option A', 'Option B'], 'yes')).toBeNull();
@@ -92,12 +92,12 @@ describe('nextNeedsYou', () => {
   const list = ['a', 'b', 'c', 'd'].map((key) => ({ key }));
   const waiting = new Set(['b', 'c', 'd']);
   const since = (k: string) => ({ b: 30, c: 10, d: 20 } as Record<string, number>)[k] ?? 0;
-  it('goes round the waiting sessions, longest wait first', () => {
+  it('goes round the waiting workspaces, longest wait first', () => {
     expect(nextNeedsYou(list, (k) => waiting.has(k), since, null)?.key).toBe('c');
     expect(nextNeedsYou(list, (k) => waiting.has(k), since, 'c')?.key).toBe('d');
     expect(nextNeedsYou(list, (k) => waiting.has(k), since, 'b')?.key).toBe('c');
   });
-  it('stays put when the current session is the only one', () => {
+  it('stays put when the current workspace is the only one', () => {
     expect(nextNeedsYou(list, (k) => k === 'b', since, 'b')).toBeNull();
     expect(nextNeedsYou(list, () => false, since, null)).toBeNull();
   });

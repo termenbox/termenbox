@@ -13,7 +13,7 @@
   // Server health (U14): by default an unhealthy server (RAM over its level); `?healthy`; `?fresh` (just started, no sample yet);
   // `?noHealth` a server that answers the history but predates health and never answers `health_history`.
   const q = new URLSearchParams(location.search);
-  // `?reported`: an ACP agent that reported its own cost joins the day, and one idle Claude Code session has a warm cache.
+  // `?reported`: an ACP agent that reported its own cost joins the day, and one idle Claude Code workspace has a warm cache.
   const reported = new URLSearchParams(location.search).has('reported');
   let servers = $state([{ id: 'alpha', state: 'connected', server: { server_name: 'alpha' } }] as unknown as HubServer[]);
   let history: HistoryMap = $state({});

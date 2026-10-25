@@ -73,7 +73,7 @@ describe('Usage and cost from a fixture', () => {
     expect(out).toContain('1.5k tokens');
   });
 
-  it('shows the warm prompt cache as an estimate only when a session has one', () => {
+  it('shows the warm prompt cache as an estimate only when a workspace has one', () => {
     expect(out).not.toContain('Prompt cache now');
     const warm = render(ActivityView, { props: { servers: [server('alpha')], history: { alpha: entry(NOW, answer(RUNS)) }, now: NOW, onask: () => {}, ttlMs: 300_000, caches: [{ key: 'alpha/api', name: 'api', server: 'alpha', remainingMs: 150_000 }] } }).body;
     expect(warm).toContain('Prompt cache now');

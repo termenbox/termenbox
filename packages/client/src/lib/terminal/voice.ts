@@ -30,7 +30,7 @@ export function recognizerFactory(scope: Record<string, unknown> = globalThis as
 
 /** What a recognizer event adds: text to type now, and the words still being guessed. */
 export interface Mapped {
-  /** Final text, spaced so that it follows whatever was typed before it in this session. */
+  /** Final text, spaced so that it follows whatever was typed before it in this workspace. */
   typed: string;
   interim: string;
 }
@@ -38,7 +38,7 @@ export interface Mapped {
 /**
  * Maps one event to text. Final results are typed once, trimmed, with one space before every phrase after the first
  * (browsers disagree on whether they supply it). Interim results are only shown. `started` says whether this
- * session has typed anything yet.
+ * workspace has typed anything yet.
  */
 export function mapResults(e: RecognizerEvent, started: boolean): Mapped {
   let typed = '';
@@ -56,7 +56,7 @@ export function mapResults(e: RecognizerEvent, started: boolean): Mapped {
   return { typed, interim };
 }
 
-/** Why a session ended with an error, in words for the person; null when it is not worth saying. */
+/** Why a workspace ended with an error, in words for the person; null when it is not worth saying. */
 export function errorMessage(code: string): string | null {
   switch (code) {
     case 'not-allowed':
@@ -133,7 +133,7 @@ export function parseVoiceLang(v: string | null): VoiceLang {
 }
 
 /**
- * The recognizer takes one language per session and cannot detect it, and the web cannot read the keyboard layout on
+ * The recognizer takes one language per workspace and cannot detect it, and the web cannot read the keyboard layout on
  * iOS. So: the person's choice, else the script of the text just typed (Latin -> English, Cyrillic -> Russian), else
  * the browser's language.
  */
@@ -260,7 +260,7 @@ export class Voice {
 
   /** Stops listening; a phrase the recognizer is about to finalize still arrives before `onend`. */
   stop(): void {
-    this.generation++; // a permission prompt still open no longer starts a session
+    this.generation++; // a permission prompt still open no longer starts a workspace
     this.waiting = false;
     const rec = this.rec;
     if (!rec) return;

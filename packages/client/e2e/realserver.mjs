@@ -59,7 +59,7 @@ const httpPort = randomPort();
 const claim = randomBytes(32).toString('base64url');
 const serverEnv = {
   ...process.env,
-  TMUX_TMPDIR: home, // a private tmux server: never touches the developer's sessions
+  TMUX_TMPDIR: home, // a private tmux server: never touches the developer's workspaces
   TERMENBOX_CONFIG_DIR: join(home, 'config'),
   TERMENBOX_HOST: '127.0.0.1',
   TERMENBOX_PORT: String(httpPort),
@@ -81,7 +81,7 @@ const restartServer = async () => {
   await new Promise((r) => server.once('exit', r));
   await startServer();
   // A starting server applies its tmux config to the tmux server that is already running, `mouse on` included, and then tmux
-  // takes a double-click for itself. These sessions come from a bare tmux, where the selection steps below are the page's own.
+  // takes a double-click for itself. These workspaces come from a bare tmux, where the selection steps below are the page's own.
   tmux('set-option', '-g', 'mouse', 'off');
 };
 const tmux = (...args) => execFileSync('tmux', ['-L', 'termenbox', ...args], { env: { ...process.env, TMUX_TMPDIR: home }, encoding: 'utf8' }).trim();
@@ -170,13 +170,13 @@ async function runContext(browser, label) {
     }
     ok('shell chrome and the destinations');
 
-    // 2. Open a session; attach shows a real xterm, typing reaches the shell, a second session switches.
-    const open = async (session) => {
+    // 2. Open a workspace; attach shows a real xterm, typing reaches the shell, a second workspace switches.
+    const open = async (workspace) => {
       if (phone) {
-        await tap(bottom.locator('[data-destination=sessions]'));
-        await tap(page.locator(`[role=tab][aria-label*="${session}"]`).first());
+        await tap(bottom.locator('[data-destination=workspaces]'));
+        await tap(page.locator(`[role=tab][aria-label*="${workspace}"]`).first());
       } else {
-        await sidebar.locator(`[data-key$="/${session}"], [data-key$=":${session}"]`).click();
+        await sidebar.locator(`[data-key$="/${workspace}"], [data-key$=":${workspace}"]`).click();
       }
       await page.locator('.xterm-rows').waitFor();
     };
@@ -193,10 +193,10 @@ async function runContext(browser, label) {
 
     await open('beta');
     await waitFor(async () => (await screen()).includes('READY-beta'), 'the screen of beta');
-    check(!(await screen()).includes(`typed-${tag}-42`), 'switching session kept the other session\'s screen');
+    check(!(await screen()).includes(`typed-${tag}-42`), 'switching workspace kept the other workspace\'s screen');
     await open('alpha');
     await waitFor(async () => (await screen()).includes(`typed-${tag}-42`), 'alpha screen back after switching');
-    ok('switching sessions shows each session\'s own screen');
+    ok('switching workspaces shows each workspace\'s own screen');
 
     // 3. Reconnect: the server restarts; the client re-attaches and the screen and typing still work.
     await restartServer();
@@ -221,14 +221,14 @@ async function runContext(browser, label) {
       await page.keyboard.type('beta');
       await page.keyboard.press('Enter');
       await waitFor(async () => (await screen()).includes('READY-beta'), 'the palette to open beta');
-      await input.focus(); // the terminal was rebuilt for the other session
+      await input.focus(); // the terminal was rebuilt for the other workspace
       await page.keyboard.press('Control+k');
       await palette.waitFor();
       await page.keyboard.press('Escape');
       await palette.waitFor({ state: 'detached' });
       check(await input.evaluate((e) => document.activeElement === e), 'focus did not return to the terminal after Escape');
       await open('alpha');
-      ok('keyboard only: Ctrl+K palette opens a session, Escape returns focus to the terminal');
+      ok('keyboard only: Ctrl+K palette opens a workspace, Escape returns focus to the terminal');
 
       // 5. Dialog: the shortcut list is a dialog that Escape closes.
       await page.keyboard.press('Control+k');
@@ -305,7 +305,7 @@ async function runContext(browser, label) {
     tmux('send-keys', '-t', '=alpha:', 'printf "\\033[?1000l\\033[?1006l"; clear; echo READY-alpha', 'Enter');
     await waitFor(async () => (await screen()).includes('READY-alpha'), 'the shell back after mouse mode');
 
-    // 8. Resize with the session active: xterm is retained, the rows follow the window and the fit leaves less than a row.
+    // 8. Resize with the workspace active: xterm is retained, the rows follow the window and the fit leaves less than a row.
     const fit = () => page.evaluate(() => {
       const rows = document.querySelector('.xterm-rows');
       const screenEl = document.querySelector('.xterm-screen');
@@ -340,7 +340,7 @@ let failures = [];
 let browser;
 try {
   await startServer();
-  // Real tmux sessions on the isolated server; the shell prints a marker so the attached screen is recognisable.
+  // Real tmux workspaces on the isolated server; the shell prints a marker so the attached screen is recognisable.
   for (const name of ['alpha', 'beta']) {
     tmux('new-session', '-d', '-s', name, '-x', '100', '-y', '30', `bash --norc -c 'PS1="$ "; echo READY-${name}; exec bash --norc -i'`);
   }

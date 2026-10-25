@@ -6,7 +6,7 @@
 
   export let servers: ServerListItem[] = [];
   export let states: HubServer[] = [];
-  /** Sessions each connected server has, by server id. */
+  /** Workspaces each connected server has, by server id. */
   export let counts: Record<string, number> = {};
   export let onpause: (id: string) => void;
   export let onresume: (id: string) => void;
@@ -18,7 +18,7 @@
   export let onshare: (index: number) => void;
 
   const word = (state: string) => (state === 'connected' ? 'Connected' : state.charAt(0).toUpperCase() + state.slice(1));
-  const sessionsText = (n: number) => (n === 1 ? '1 session' : `${n} sessions`);
+  const workspacesText = (n: number) => (n === 1 ? '1 workspace' : `${n} workspaces`);
   const remove = (server: ServerListItem, index: number) => {
     if (confirm(`Remove "${server.server_name}" from this browser? You can add it again with its link or QR.`)) onremove(index);
   };
@@ -58,7 +58,7 @@
               <h3>{server.server_name || 'Server'}</h3>
               <p class="addr">{server.server_url || (server.record ? `${server.record.ip}:${server.record.udp_port}` : server.bundle ? 'Paired by link' : '')}</p>
               <p class="state" class:ok={state === 'connected'}>
-                <span aria-hidden="true">{state === 'connected' ? '●' : '○'}</span> {word(state)}{#if state === 'connected' && status?.path} · {status.path}{/if}{#if state === 'connected'} · <span data-testid="session-count">{sessionsText(counts[serverKey(server)] ?? 0)}</span>{/if}
+                <span aria-hidden="true">{state === 'connected' ? '●' : '○'}</span> {word(state)}{#if state === 'connected' && status?.path} · {status.path}{/if}{#if state === 'connected'} · <span data-testid="workspace-count">{workspacesText(counts[serverKey(server)] ?? 0)}</span>{/if}
               </p>
             </div>
             <span class="slot">{#if status && state !== 'connected'}<ServerIssue name={server.server_name || 'Server'} {status} udpPort={server.record?.udp_port} />{/if}</span>

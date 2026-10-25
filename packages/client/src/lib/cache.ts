@@ -1,9 +1,9 @@
 // The prompt cache of an idle agent (plan H.8, decision 0083): how long until it is cold. Until the server sends
 // exact expiry this is an estimate from the last answer, and the text says so ("about").
-import type { SessionAgent } from './agents';
+import type { WorkspaceAgent } from './agents';
 
-/** Milliseconds left, or null when this session has no warm cache to speak of (no agent, working, never answered). */
-export function cacheRemaining(a: SessionAgent | undefined, now: number, ttlMs: number): number | null {
+/** Milliseconds left, or null when this workspace has no warm cache to speak of (no agent, working, never answered). */
+export function cacheRemaining(a: WorkspaceAgent | undefined, now: number, ttlMs: number): number | null {
   if (!a?.agent || (a.state !== 'idle' && a.state !== 'done') || a.lastResponseAt === undefined) return null;
   return Math.max(0, ttlMs - Math.max(0, now - a.lastResponseAt));
 }

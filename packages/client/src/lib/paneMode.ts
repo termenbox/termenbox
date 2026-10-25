@@ -1,5 +1,5 @@
-/** Which half of the in-session screen a session shows: the session view (Decision) or the terminal. The terminal is
- *  the default; the choice is kept per session on this device only (localStorage, best effort). */
+/** Which half of the in-workspace screen a workspace shows: the workspace view (Decision) or the terminal. The terminal is
+ *  the default; the choice is kept per workspace on this device only (localStorage, best effort). */
 export type PaneMode = 'decision' | 'terminal';
 export const PANE_KEY = 'termenbox_pane_modes';
 const MAX_KEPT = 100;

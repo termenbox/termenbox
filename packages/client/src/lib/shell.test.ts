@@ -4,17 +4,18 @@ import { parseRoute, routeHash, navigate, startRouter, destination, DESTINATIONS
 import { navGroups, HeldView, fleetOf } from './navlist';
 import { buildEntries, searchEntries, matchShortcut, loadShortcutsEnabled, saveShortcutsEnabled, shortcutAllowed, isTyping, SHORTCUTS, type KeyLike } from './palette';
 import { edgeSwipeBack } from './edgeswipe';
-import type { HubServer, HubSession } from './hub';
-import type { AgentMap, SessionAgent } from './agents';
+import type { HubServer, HubWorkspace } from './hub';
+import type { AgentMap, WorkspaceAgent } from './agents';
 
 const server = (id: string, state: HubServer['state'] = 'connected'): HubServer => ({ id, server: { server_id: id, server_name: id, server_url: '', registered_at: 0 }, state, reason: '', version: '', backends: [], acpAgents: [], controlMode: false, tmuxVersion: '', prefix: '' });
-const session = (serverId: string, id: string): HubSession => ({ id, name: id, agent: null, serverId, key: `${serverId}/${id}`, serverName: serverId } as HubSession);
-const agent = (state: SessionAgent['state']): SessionAgent => ({ state, seq: 1, stale: false, ts: 0 });
+const workspace = (serverId: string, id: string): HubWorkspace => ({ id, name: id, agent: null, serverId, key: `${serverId}/${id}`, serverName: serverId } as HubWorkspace);
+const agent = (state: WorkspaceAgent['state']): WorkspaceAgent => ({ state, seq: 1, stale: false, ts: 0 });
 
 describe('router', () => {
   it('reads only the four destinations from the hash', () => {
     for (const d of DESTINATIONS) expect(parseRoute(routeHash(d.id))).toBe(d.id);
-    expect(parseRoute('#/sessions/')).toBe('sessions');
+    expect(parseRoute('#/workspaces/')).toBe('workspaces');
+    expect(parseRoute('#/sessions')).toBe('workspaces'); // the address bar before the rename
     for (const h of ['', '#', '#claim=abc', '#server=x', '#/nowhere', '#/home/extra']) expect(parseRoute(h)).toBeNull();
   });
   it('navigate moves the store and writes the hash once', () => {
@@ -42,16 +43,16 @@ describe('router', () => {
   });
 });
 
-describe('session list for the sidebar', () => {
+describe('workspace list for the sidebar', () => {
   const servers = [server('alpha'), server('beta')];
-  const sessions = [session('alpha', 'b'), session('alpha', 'a'), session('beta', 'c')];
+  const workspaces = [workspace('alpha', 'b'), workspace('alpha', 'a'), workspace('beta', 'c')];
   it('groups by server, needs-you first, then by name', () => {
     const agents: AgentMap = { 'alpha/b': agent('needs_input'), 'alpha/a': agent('working') };
-    const g = navGroups(servers, sessions, agents);
+    const g = navGroups(servers, workspaces, agents);
     expect(g.map((x) => x.server.id)).toEqual(['alpha', 'beta']);
-    expect(g[0].sessions.map((s) => s.name)).toEqual(['b', 'a']);
-    expect(g[0].sessions[0].state).toBe('needs-you');
-    expect(g[1].sessions[0].state).toBe('idle');
+    expect(g[0].workspaces.map((s) => s.name)).toEqual(['b', 'a']);
+    expect(g[0].workspaces[0].state).toBe('needs-you');
+    expect(g[1].workspaces[0].state).toBe('idle');
   });
   it('maps agent states to fleet states', () => {
     expect(fleetOf(agent('error'))).toBe('needs-you');
@@ -60,46 +61,46 @@ describe('session list for the sidebar', () => {
   });
   it('holds order and membership while a pointer is down, updating state in place', () => {
     const v = new HeldView();
-    const before = v.view(navGroups(servers, sessions, {}), 0);
-    expect(before[0].sessions.map((s) => s.name)).toEqual(['a', 'b']);
+    const before = v.view(navGroups(servers, workspaces, {}), 0);
+    expect(before[0].workspaces.map((s) => s.name)).toEqual(['a', 'b']);
     v.down(1);
-    const changed = navGroups(servers, [...sessions, session('alpha', 'new')], { 'alpha/b': agent('needs_input') });
+    const changed = navGroups(servers, [...workspaces, workspace('alpha', 'new')], { 'alpha/b': agent('needs_input') });
     const held = v.view(changed, 10);
-    expect(held[0].sessions.map((s) => s.name)).toEqual(['a', 'b']); // no reorder, no insert
-    expect(held[0].sessions[1].state).toBe('needs-you'); // fresh state, same place
+    expect(held[0].workspaces.map((s) => s.name)).toEqual(['a', 'b']); // no reorder, no insert
+    expect(held[0].workspaces[1].state).toBe('needs-you'); // fresh state, same place
     v.up(1);
-    expect(v.view(changed, 20)[0].sessions.map((s) => s.name)).toEqual(['b', 'a', 'new']);
+    expect(v.view(changed, 20)[0].workspaces.map((s) => s.name)).toEqual(['b', 'a', 'new']);
   });
   it('holds for 2 s after a scroll', () => {
     const v = new HeldView();
-    v.view(navGroups(servers, sessions, {}), 0);
+    v.view(navGroups(servers, workspaces, {}), 0);
     v.scrolled(1000);
-    const next = navGroups(servers, sessions, { 'alpha/b': agent('needs_input') });
-    expect(v.view(next, 2500)[0].sessions.map((s) => s.name)).toEqual(['a', 'b']);
-    expect(v.view(next, 3100)[0].sessions.map((s) => s.name)).toEqual(['b', 'a']);
+    const next = navGroups(servers, workspaces, { 'alpha/b': agent('needs_input') });
+    expect(v.view(next, 2500)[0].workspaces.map((s) => s.name)).toEqual(['a', 'b']);
+    expect(v.view(next, 3100)[0].workspaces.map((s) => s.name)).toEqual(['b', 'a']);
   });
 });
 
 describe('palette search', () => {
-  const many = [...Array.from({ length: 10 }, (_, i) => session('alpha', `svc-${i}`)), ...Array.from({ length: 10 }, (_, i) => session('beta', i === 7 ? 'needle' : `job-${i}`))];
-  const entries = buildEntries({ servers: [server('alpha'), server('beta', 'paused')], sessions: many, agents: {}, wide: true, sidebarOpen: true, splitOpen: false, canCreate: true });
-  it('lists destinations, actions, servers and sessions', () => {
+  const many = [...Array.from({ length: 10 }, (_, i) => workspace('alpha', `svc-${i}`)), ...Array.from({ length: 10 }, (_, i) => workspace('beta', i === 7 ? 'needle' : `job-${i}`))];
+  const entries = buildEntries({ servers: [server('alpha'), server('beta', 'paused')], workspaces: many, agents: {}, wide: true, sidebarOpen: true, splitOpen: false, canCreate: true });
+  it('lists destinations, actions, servers and workspaces', () => {
     const ids = entries.map((e) => e.id);
     expect(ids).toContain('dest:home');
-    expect(ids).toContain('action:new-session');
+    expect(ids).toContain('action:new-workspace');
     expect(ids).toContain('action:pause:alpha');
     expect(ids).toContain('action:resume:beta');
     expect(ids).toContain('action:toggle-split');
     expect(ids).toContain('server:alpha');
-    expect(ids.filter((i) => i.startsWith('session:'))).toHaveLength(20);
+    expect(ids.filter((i) => i.startsWith('workspace:'))).toHaveLength(20);
   });
-  it('finds a session by name among 20 on two servers', () => {
-    expect(searchEntries(entries, 'needle')[0].id).toBe('session:beta/needle');
-    expect(searchEntries(entries, 'ndl')[0].id).toBe('session:beta/needle');
+  it('finds a workspace by name among 20 on two servers', () => {
+    expect(searchEntries(entries, 'needle')[0].id).toBe('workspace:beta/needle');
+    expect(searchEntries(entries, 'ndl')[0].id).toBe('workspace:beta/needle');
     expect(searchEntries(entries, 'zzzz')).toEqual([]);
   });
   it('matches the server named in the detail and ranks prefixes first', () => {
-    expect(searchEntries(entries, 'beta job-3')[0].id).toBe('session:beta/job-3');
+    expect(searchEntries(entries, 'beta job-3')[0].id).toBe('workspace:beta/job-3');
     expect(searchEntries(entries, 'pause')[0].label).toBe('Pause server alpha');
     expect(searchEntries(entries, 'se')[0].label.toLowerCase().startsWith('se')).toBe(true);
   });
@@ -107,8 +108,8 @@ describe('palette search', () => {
     expect(searchEntries(entries, '').map((e) => e.id)).toEqual(entries.slice(0, 50).map((e) => e.id));
   });
   it('hides what cannot be done', () => {
-    const e = buildEntries({ servers: [], sessions: [], agents: {}, wide: false, sidebarOpen: true, splitOpen: false, canCreate: false });
-    expect(e.some((x) => x.id === 'action:new-session' || x.id === 'action:toggle-split')).toBe(false);
+    const e = buildEntries({ servers: [], workspaces: [], agents: {}, wide: false, sidebarOpen: true, splitOpen: false, canCreate: false });
+    expect(e.some((x) => x.id === 'action:new-workspace' || x.id === 'action:toggle-split')).toBe(false);
   });
 });
 

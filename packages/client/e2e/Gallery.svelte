@@ -1,7 +1,7 @@
 <script lang="ts">
   import BottomBar from '../src/shell/BottomBar.svelte';
   import { NativeSelect } from '../src/lib/ui/native-select';
-  import { StatusChip, AgentBadge, FleetTile, SessionStrip, DecisionCard, OptionButton, QueueItem, Composer, MoreSheet, ChartFrame, EmptyState, STATES, type FleetState } from '../src/lib/ds';
+  import { StatusChip, AgentBadge, FleetTile, WorkspaceStrip, DecisionCard, OptionButton, QueueItem, Composer, MoreSheet, ChartFrame, EmptyState, STATES, type FleetState } from '../src/lib/ds';
 
   const states = Object.keys(STATES) as FleetState[];
   const strip = [
@@ -31,12 +31,12 @@
     <FleetTile state="finished" count={7} onclick={() => {}} />
   </section>
 
-  <SessionStrip items={strip} {selected} onselect={(id) => (selected = id)} onadd={() => {}} />
+  <WorkspaceStrip items={strip} {selected} onselect={(id) => (selected = id)} onadd={() => {}} />
 
-  <DecisionCard agent="claude" session="api" waited="4 min" context="Edit src/server.rs, 12 lines" question="Allow this edit?" state="needs-you">
+  <DecisionCard agent="claude" workspace="api" waited="4 min" context="Edit src/server.rs, 12 lines" question="Allow this edit?" state="needs-you">
     <div class="flex flex-col gap-2">
       <OptionButton hint="1" label="Yes, once" detail="Only this edit" primary onclick={() => {}} />
-      <OptionButton hint="2" label="Yes, for this session" onclick={() => {}} />
+      <OptionButton hint="2" label="Yes, for this workspace" onclick={() => {}} />
       <OptionButton hint="3" label="No" detail="Tell the agent why" onclick={() => {}} />
     </div>
   </DecisionCard>
@@ -46,12 +46,12 @@
     <QueueItem name="docs" summary="Finished the changelog" state="finished" onclick={() => {}} />
   </section>
 
-  <ChartFrame title="Sessions per day" caption="12 sessions this week, most on Tuesday.">
+  <ChartFrame title="Workspaces per day" caption="12 workspaces this week, most on Tuesday.">
     {#snippet legend()}last 7 days{/snippet}
     <div class="h-24 rounded-control bg-raised" role="img" aria-label="Bar chart placeholder"></div>
   </ChartFrame>
 
-  <EmptyState title="No sessions yet" body="Start one and it shows up here with its state.">
+  <EmptyState title="No workspaces yet" body="Start one and it shows up here with its state.">
     <button type="button" class="min-h-12 rounded-control bg-accent text-base text-on-accent" onclick={() => (more = true)}>Open More</button>
   </EmptyState>
 
@@ -60,7 +60,7 @@
       <NativeSelect aria-label="Server"><option>alpha</option><option>beta</option></NativeSelect></label>
     <label class="flex items-center gap-3 text-base text-fg">Sort <NativeSelect aria-label="Sort" disabled><option>Recent</option></NativeSelect></label>
   </section>
-  <section aria-label="Bottom bar"><BottomBar current="sessions" needsYou={2} onnavigate={() => {}} class="rounded-card border" /></section>
+  <section aria-label="Bottom bar"><BottomBar current="workspaces" needsYou={2} onnavigate={() => {}} class="rounded-card border" /></section>
 
   <MoreSheet bind:open={more} {groups} />
 </main>

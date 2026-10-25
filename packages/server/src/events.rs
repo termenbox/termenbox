@@ -10,7 +10,7 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use termenbox_core::events::{
     Activity, AgentEvent, AgentState, Attention, AttentionKind, Confidence, EventKind, PlanItem,
-    SessionActivity, SessionAgentState, Source, Task, ToolPhase,
+    Source, Task, ToolPhase, WorkspaceActivity, WorkspaceAgentState,
 };
 use tokio::sync::broadcast;
 
@@ -106,7 +106,7 @@ pub fn sanitize_text(input: &str, max: usize) -> String {
     collapsed.chars().take(max).collect()
 }
 
-/// Several lines of untrusted text (a Markdown reply, a diff) for the ACP session view: newlines and the
+/// Several lines of untrusted text (a Markdown reply, a diff) for the ACP workspace view: newlines and the
 /// indentation stay (a tab is two spaces), every other control character (so every escape sequence) becomes a
 /// space, zero-width and bidirectional-override characters are dropped, secrets and addresses are replaced
 /// exactly as in `sanitize_text`, and the result is cut at `max` characters and at most `max_lines` lines. Runs
@@ -401,12 +401,12 @@ fn derive_hint(r: &Ring, now: u64) -> Option<AttentionKind> {
 /// What a status-channel client is told as it happens.
 #[derive(Clone, Debug)]
 pub enum StatusChange {
-    Activity(SessionActivity),
+    Activity(WorkspaceActivity),
     Attention(Vec<Attention>),
 }
 
-/// A session id as events know it: a plain name, or `manager:name` when several managers run.
-pub fn valid_event_session(id: &str) -> bool {
+/// A workspace id as events know it: a plain name, or `manager:name` when several managers run.
+pub fn valid_event_workspace(id: &str) -> bool {
     match id.split_once(':') {
         Some((kind, name)) => crate::backend::valid_name(kind) && crate::backend::valid_name(name),
         None => crate::backend::valid_name(id),
@@ -424,22 +424,22 @@ pub fn now_ms() -> u64 {
 pub struct EventHub {
     key: Arc<[u8; 32]>,
     rings: Arc<Mutex<HashMap<String, Ring>>>,
-    /// The agent the scan found in each session; only sessions that have events report it.
+    /// The agent the scan found in each workspace; only workspaces that have events report it.
     agents: Arc<Mutex<HashMap<String, String>>>,
-    /// The transcript file a Claude Code hook named for each session. Untrusted: `transcript::resolve` decides
+    /// The transcript file a Claude Code hook named for each workspace. Untrusted: `transcript::resolve` decides
     /// whether it may be opened, and nothing here is logged.
     transcripts: Arc<Mutex<HashMap<String, String>>>,
     tx: broadcast::Sender<AgentEvent>,
     attention: Arc<Mutex<Vec<Attention>>>,
     next_attention: Arc<std::sync::atomic::AtomicU64>,
-    /// The Activity last announced per session, so only a change is sent.
-    derived: Arc<Mutex<HashMap<String, SessionActivity>>>,
-    /// The turn-and-obligation reducer of each session whose agent reports turns (hooks, ACP).
+    /// The Activity last announced per workspace, so only a change is sent.
+    derived: Arc<Mutex<HashMap<String, WorkspaceActivity>>>,
+    /// The turn-and-obligation reducer of each workspace whose agent reports turns (hooks, ACP).
     reducers: Arc<Mutex<HashMap<String, Reducer>>>,
     status_tx: broadcast::Sender<StatusChange>,
     /// The tasks agents worked on, kept on disk (U12); absent in tests that do not need it.
     history: Option<Arc<crate::history::History>>,
-    /// Where each Claude Code session's token counts are read from (U13).
+    /// Where each Claude Code workspace's token counts are read from (U13).
     usage: Arc<crate::transcript::UsageTracker>,
 }
 
@@ -472,17 +472,17 @@ impl EventHub {
     }
 
     /// Counts an ACP agent reported for a turn (U13), kept against the task in flight.
-    pub fn record_tokens(&self, session: &str, t: crate::history::Tokens) {
+    pub fn record_tokens(&self, workspace: &str, t: crate::history::Tokens) {
         if let Some(h) = &self.history {
-            h.tokens(session, t);
+            h.tokens(workspace, t);
         }
     }
 
     /// The folder an agent works in, by its last component (U13).
-    pub fn record_project(&self, session: &str, dir: &str) {
+    pub fn record_project(&self, workspace: &str, dir: &str) {
         static HOME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
         let dir = dir.trim_end_matches('/');
-        // A session in the home folder would file its task under the user name.
+        // A workspace in the home folder would file its task under the user name.
         let home = HOME.get_or_init(|| {
             std::env::var("HOME")
                 .ok()
@@ -493,49 +493,49 @@ impl EventHub {
         }
         let name = dir.rsplit('/').next().unwrap_or("");
         if let Some(h) = &self.history {
-            h.project(session, name);
+            h.project(workspace, name);
         }
     }
 
     /// What a Claude Code hook payload says about use (U13), before the event itself is ingested so that a task a `Stop`
     /// is about to end still takes its counts. Hook payloads carry no token counts, cost or limits (fact 0029): the
-    /// counts come from the transcript the payload names, read from where this server first saw the session; the one
+    /// counts come from the transcript the payload names, read from where this server first saw the workspace; the one
     /// thing a payload says itself is that a turn failed on a rate limit. The caller has already checked the token.
-    pub fn note_claude_usage(&self, session: &str, data: &serde_json::Value) {
-        self.note_claude_usage_in(crate::transcript::claude_root().as_deref(), session, data);
+    pub fn note_claude_usage(&self, workspace: &str, data: &serde_json::Value) {
+        self.note_claude_usage_in(crate::transcript::claude_root().as_deref(), workspace, data);
     }
 
     fn note_claude_usage_in(
         &self,
         root: Option<&std::path::Path>,
-        session: &str,
+        workspace: &str,
         data: &serde_json::Value,
     ) {
         let Some(history) = &self.history else { return };
         if let (Some(path), Some(root)) =
             (data.get("transcript_path").and_then(|p| p.as_str()), root)
         {
-            self.usage.arm(root, session, path);
+            self.usage.arm(root, workspace, path);
         }
         let event = data
             .get("hook_event_name")
             .and_then(|e| e.as_str())
             .unwrap_or("");
         if let Some(cwd) = data.get("cwd").and_then(|c| c.as_str()) {
-            self.record_project(session, cwd);
+            self.record_project(workspace, cwd);
         }
         if event == "StopFailure"
             && data.get("error").and_then(|e| e.as_str()) == Some("rate_limit")
         {
-            history.rate_limited(session);
-            tracing::info!(target: "audit", event = "agent_rate_limited", session = %session);
+            history.rate_limited(workspace);
+            tracing::info!(target: "audit", event = "agent_rate_limited", session = %workspace);
         }
         // A prompt collects too: after an interrupted turn no Stop came, and its counts must not wait for the next task.
         if collects(event) {
-            if let Some(t) = self.usage.collect(session) {
+            if let Some(t) = self.usage.collect(workspace) {
                 // Counts only (audit-logging-no-secrets).
-                tracing::info!(target: "audit", event = "usage_collected", session = %session, input = t.input, output = t.output, cache_read = t.cache_read, cache_write = t.cache_write);
-                history.tokens(session, t);
+                tracing::info!(target: "audit", event = "usage_collected", session = %workspace, input = t.input, output = t.output, cache_read = t.cache_read, cache_write = t.cache_write);
+                history.tokens(workspace, t);
             }
         }
     }
@@ -544,7 +544,7 @@ impl EventHub {
     /// task title the agent reports; plan items are never copied). Guesses from the screen or the scan are not recorded.
     fn note_history(
         &self,
-        session: &str,
+        workspace: &str,
         source: Source,
         confidence: Confidence,
         kind: &EventKind,
@@ -556,23 +556,23 @@ impl EventHub {
         }
         match kind {
             EventKind::State { state } => {
-                let agent = self.agents.lock().unwrap().get(session).cloned();
-                history.state(session, agent.as_deref(), *state, ts);
+                let agent = self.agents.lock().unwrap().get(workspace).cloned();
+                history.state(workspace, agent.as_deref(), *state, ts);
             }
-            EventKind::Task { title } => history.task(session, title),
+            EventKind::Task { title } => history.task(workspace, title),
             // A cost the agent reported itself (ACP); the context figures are not counts of use.
             EventKind::Usage {
                 cost: Some(cost), ..
             } => {
                 if let Some((micros, currency)) = crate::history::parse_cost(cost) {
-                    history.cost(session, micros, &currency);
+                    history.cost(workspace, micros, &currency);
                 }
             }
             _ => {}
         }
     }
 
-    /// The hub key lives in the state directory (0600) so sessions that outlive a server restart keep a
+    /// The hub key lives in the state directory (0600) so workspaces that outlive a server restart keep a
     /// working token.
     pub fn load_or_create(dir: &Path) -> Result<Self> {
         let path = dir.join("event.key");
@@ -589,22 +589,22 @@ impl EventHub {
         Ok(Self::new(key))
     }
 
-    fn mac(&self, session: &str) -> Hmac<Sha256> {
+    fn mac(&self, workspace: &str) -> Hmac<Sha256> {
         let mut m = Hmac::<Sha256>::new_from_slice(&*self.key).expect("any key length");
         m.update(b"termenbox-event-session\0");
-        m.update(session.as_bytes());
+        m.update(workspace.as_bytes());
         m
     }
 
-    /// The token a session's agent tools present; valid for that session name only.
-    pub fn token(&self, session: &str) -> String {
-        URL_SAFE_NO_PAD.encode(self.mac(session).finalize().into_bytes())
+    /// The token a workspace's agent tools present; valid for that workspace name only.
+    pub fn token(&self, workspace: &str) -> String {
+        URL_SAFE_NO_PAD.encode(self.mac(workspace).finalize().into_bytes())
     }
 
-    pub fn token_matches(&self, session: &str, token: &str) -> bool {
+    pub fn token_matches(&self, workspace: &str, token: &str) -> bool {
         URL_SAFE_NO_PAD
             .decode(token)
-            .map(|t| self.mac(session).verify_slice(&t).is_ok())
+            .map(|t| self.mac(workspace).verify_slice(&t).is_ok())
             .unwrap_or(false)
     }
 
@@ -616,27 +616,27 @@ impl EventHub {
         self.status_tx.subscribe()
     }
 
-    /// An event reported by a session's own tool: accepted only with that session's token.
+    /// An event reported by a workspace's own tool: accepted only with that workspace's token.
     pub fn ingest(
         &self,
-        session: &str,
+        workspace: &str,
         token: &str,
         source: Source,
         confidence: Confidence,
         kinds: Vec<EventKind>,
     ) -> Result<()> {
-        if !valid_event_session(session) || !self.token_matches(session, token) {
-            tracing::info!(target: "audit", event = "agent_event_refused", session = %session);
-            return Err(anyhow!("token does not match the session"));
+        if !valid_event_workspace(workspace) || !self.token_matches(workspace, token) {
+            tracing::info!(target: "audit", event = "agent_event_refused", session = %workspace);
+            return Err(anyhow!("token does not match the workspace"));
         }
         for k in kinds {
-            self.feed(session, source, confidence, k, now_ms());
+            self.feed(workspace, source, confidence, k, now_ms());
         }
         Ok(())
     }
 
-    /// Like `ingest`, for an event whose reporter proved to belong to `target` rather than to the session its
-    /// environment named: the token must still be the declared session's.
+    /// Like `ingest`, for an event whose reporter proved to belong to `target` rather than to the workspace its
+    /// environment named: the token must still be the declared workspace's.
     pub fn ingest_as(
         &self,
         declared: &str,
@@ -646,9 +646,9 @@ impl EventHub {
         confidence: Confidence,
         kinds: Vec<EventKind>,
     ) -> Result<()> {
-        if !valid_event_session(target) || !self.token_matches(declared, token) {
+        if !valid_event_workspace(target) || !self.token_matches(declared, token) {
             tracing::info!(target: "audit", event = "agent_event_refused", session = %declared);
-            return Err(anyhow!("token does not match the session"));
+            return Err(anyhow!("token does not match the workspace"));
         }
         for k in kinds {
             self.feed(target, source, confidence, k, now_ms());
@@ -657,15 +657,15 @@ impl EventHub {
     }
 
     /// An event from the server's own adapters (scan, screen). A repeated state is not an event.
-    pub fn report(&self, session: &str, source: Source, confidence: Confidence, kind: EventKind) {
-        self.feed(session, source, confidence, kind, now_ms());
+    pub fn report(&self, workspace: &str, source: Source, confidence: Confidence, kind: EventKind) {
+        self.feed(workspace, source, confidence, kind, now_ms());
     }
 
-    /// Where an agent's own events enter: a turn or obligation edge goes through the session's reducer, which
+    /// Where an agent's own events enter: a turn or obligation edge goes through the workspace's reducer, which
     /// decides the state; everything else is stored as it is.
     fn feed(
         &self,
-        session: &str,
+        workspace: &str,
         source: Source,
         confidence: Confidence,
         kind: EventKind,
@@ -680,45 +680,51 @@ impl EventHub {
         let Some(edge) = edge else {
             // `Turn` and `Block` are inputs only; one that maps to no edge is dropped.
             if !matches!(kind, EventKind::Turn { .. } | EventKind::Block { .. }) {
-                self.push(session, source, confidence, kind, now);
+                self.push(workspace, source, confidence, kind, now);
             }
             return;
         };
         if matches!(kind, EventKind::Tool { .. }) {
-            self.push(session, source, confidence, kind, now);
+            self.push(workspace, source, confidence, kind, now);
         }
         let next = {
             let mut reducers = self.reducers.lock().unwrap();
-            if !reducers.contains_key(session) && reducers.len() >= MAX_SESSIONS {
+            if !reducers.contains_key(workspace) && reducers.len() >= MAX_SESSIONS {
                 return;
             }
             reducers
-                .entry(session.to_string())
+                .entry(workspace.to_string())
                 .or_default()
                 .apply(edge, now)
         };
         if let Some(state) = next {
-            self.push(session, source, confidence, EventKind::State { state }, now);
+            self.push(
+                workspace,
+                source,
+                confidence,
+                EventKind::State { state },
+                now,
+            );
         }
     }
 
-    /// What the screen of an agent session shows now, against what the reducer believes. Closes an obligation or a
+    /// What the screen of an agent workspace shows now, against what the reducer believes. Closes an obligation or a
     /// turn that ended without telling anyone (Esc sends no hook); never opens one.
-    pub fn reconcile(&self, session: &str, screen: Screen) {
-        self.reconcile_at(session, screen, now_ms());
+    pub fn reconcile(&self, workspace: &str, screen: Screen) {
+        self.reconcile_at(workspace, screen, now_ms());
     }
 
-    fn reconcile_at(&self, session: &str, screen: Screen, now: u64) {
+    fn reconcile_at(&self, workspace: &str, screen: Screen, now: u64) {
         let next = {
             let mut reducers = self.reducers.lock().unwrap();
             reducers
-                .get_mut(session)
+                .get_mut(workspace)
                 .and_then(|r| r.reconcile(screen, now))
         };
         if let Some(state) = next {
             // A reconciliation is a fact about the screen, not a finished turn: it clears a wait but raises nothing.
             self.push(
-                session,
+                workspace,
                 Source::Hook,
                 Confidence::Medium,
                 EventKind::State { state },
@@ -727,18 +733,18 @@ impl EventHub {
         }
     }
 
-    /// Whether a fact about this session (an open turn or a wait for the human) must not be overridden by a guess.
-    fn pinned(&self, session: &str, now: u64) -> bool {
+    /// Whether a fact about this workspace (an open turn or a wait for the human) must not be overridden by a guess.
+    fn pinned(&self, workspace: &str, now: u64) -> bool {
         self.reducers
             .lock()
             .unwrap()
-            .get(session)
+            .get(workspace)
             .is_some_and(|r| r.pins_at(now))
     }
 
     pub fn push(
         &self,
-        session: &str,
+        workspace: &str,
         source: Source,
         confidence: Confidence,
         kind: EventKind,
@@ -752,12 +758,12 @@ impl EventHub {
         // those describe ends with an event or with the screen reconciliation, not with a clock.
         if matches!(kind, EventKind::State { .. })
             && matches!(tier(source), Some(1 | 2))
-            && self.pinned(session, now)
+            && self.pinned(workspace, now)
         {
             return;
         }
         let mut rings = self.rings.lock().unwrap();
-        if !rings.contains_key(session) && rings.len() >= MAX_SESSIONS {
+        if !rings.contains_key(workspace) && rings.len() >= MAX_SESSIONS {
             if let Some(oldest) = rings
                 .iter()
                 .min_by_key(|(_, r)| r.last_event_at)
@@ -766,7 +772,7 @@ impl EventHub {
                 rings.remove(&oldest);
             }
         }
-        let ring = rings.entry(session.to_string()).or_insert_with(|| Ring {
+        let ring = rings.entry(workspace.to_string()).or_insert_with(|| Ring {
             events: VecDeque::new(),
             seq: 0,
             state: AgentState::Unknown,
@@ -814,8 +820,8 @@ impl EventHub {
                 drop(rings);
                 // The merged state may already say this because a screen guess got there first; the agent's own
                 // report still opens or ends the task.
-                self.note_history(session, source, confidence, &kind, now);
-                self.settle(session, source, confidence, &kind, prev_hook, now);
+                self.note_history(workspace, source, confidence, &kind, now);
+                self.settle(workspace, source, confidence, &kind, prev_hook, now);
                 return;
             }
             if confidence == Confidence::Low && !matches!(source, Source::Screen | Source::Hook) {
@@ -829,7 +835,7 @@ impl EventHub {
                         && now.saturating_sub(last.ts) < STALE_AFTER_MS
                     {
                         drop(rings);
-                        self.settle(session, source, confidence, &kind, prev_hook, now);
+                        self.settle(workspace, source, confidence, &kind, prev_hook, now);
                         return;
                     }
                 }
@@ -838,7 +844,7 @@ impl EventHub {
         ring.seq += 1;
         ring.last_event_at = now;
         let event = AgentEvent {
-            session: session.to_string(),
+            workspace: workspace.to_string(),
             seq: ring.seq,
             ts: now,
             source,
@@ -871,18 +877,18 @@ impl EventHub {
             ring.events.pop_front();
         }
         drop(rings);
-        self.note_history(session, source, confidence, &event.kind, event.ts);
+        self.note_history(workspace, source, confidence, &event.kind, event.ts);
         // Counts and kinds only, never content (audit-logging-no-secrets).
-        tracing::info!(target: "audit", event = "agent_event", session = %event.session, source = ?event.source, seq = event.seq);
-        self.settle(session, source, confidence, &event.kind, prev_hook, now);
+        tracing::info!(target: "audit", event = "agent_event", session = %event.workspace, source = ?event.source, seq = event.seq);
+        self.settle(workspace, source, confidence, &event.kind, prev_hook, now);
         let _ = self.tx.send(event);
     }
 
-    /// After an event: move the session's Attention items by fact, then announce a changed Activity.
+    /// After an event: move the workspace's Attention items by fact, then announce a changed Activity.
     /// Only a hook or Codex (a fact, not a guess) raises or clears Attention.
     fn settle(
         &self,
-        session: &str,
+        workspace: &str,
         source: Source,
         confidence: Confidence,
         kind: &EventKind,
@@ -893,7 +899,7 @@ impl EventHub {
             match kind {
                 EventKind::State { state } if prev_hook != Some(*state) => {
                     if *state != AgentState::NeedsInput {
-                        self.clear_where(session, |a| a.kind == AttentionKind::NeedsInput);
+                        self.clear_where(workspace, |a| a.kind == AttentionKind::NeedsInput);
                     }
                     let raise = match state {
                         AgentState::NeedsInput => Some(AttentionKind::NeedsInput),
@@ -906,7 +912,7 @@ impl EventHub {
                     };
                     // A reconciliation clears a wait but is no fact that something finished or failed.
                     if let Some(k) = raise.filter(|_| confidence == Confidence::High) {
-                        self.raise(session, k, source, now);
+                        self.raise(workspace, k, source, now);
                     }
                 }
                 // The notification text arrives right after its `needs_input`; a T0 request names its action
@@ -922,7 +928,7 @@ impl EventHub {
                 } => {
                     let mut list = self.attention.lock().unwrap();
                     if let Some(a) = list.iter_mut().find(|a| {
-                        a.session == session
+                        a.workspace == workspace
                             && a.kind == AttentionKind::NeedsInput
                             && a.prompt.is_none()
                     }) {
@@ -938,23 +944,23 @@ impl EventHub {
         self.refresh(now);
     }
 
-    fn raise(&self, session: &str, kind: AttentionKind, source: Source, now: u64) {
+    fn raise(&self, workspace: &str, kind: AttentionKind, source: Source, now: u64) {
         let task = self
             .rings
             .lock()
             .unwrap()
-            .get(session)
+            .get(workspace)
             .and_then(|r| r.task.clone());
         let mut list = self.attention.lock().unwrap();
-        // One open item per session and kind: a newer one replaces the older.
-        list.retain(|a| !(a.session == session && a.kind == kind));
+        // One open item per workspace and kind: a newer one replaces the older.
+        list.retain(|a| !(a.workspace == workspace && a.kind == kind));
         let id = self
             .next_attention
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
         list.push(Attention {
             id: format!("a{id}"),
-            session: session.to_string(),
+            workspace: workspace.to_string(),
             kind,
             raised_at: now,
             task,
@@ -965,24 +971,24 @@ impl EventHub {
         }
         let snapshot = list.clone();
         drop(list);
-        // Session, kind and source only (audit-logging-no-secrets).
-        tracing::info!(target: "audit", event = "attention_raised", session = %session, kind = ?kind, source = ?source);
+        // Workspace, kind and source only (audit-logging-no-secrets).
+        tracing::info!(target: "audit", event = "attention_raised", session = %workspace, kind = ?kind, source = ?source);
         let _ = self.status_tx.send(StatusChange::Attention(snapshot));
     }
 
-    fn clear_where(&self, session: &str, pred: impl Fn(&Attention) -> bool) {
+    fn clear_where(&self, workspace: &str, pred: impl Fn(&Attention) -> bool) {
         let mut list = self.attention.lock().unwrap();
         let before = list.len();
-        list.retain(|a| !(a.session == session && pred(a)));
+        list.retain(|a| !(a.workspace == workspace && pred(a)));
         if list.len() != before {
             let snapshot = list.clone();
             drop(list);
-            tracing::info!(target: "audit", event = "attention_cleared", session = %session, by = "fact");
+            tracing::info!(target: "audit", event = "attention_cleared", session = %workspace, by = "fact");
             let _ = self.status_tx.send(StatusChange::Attention(snapshot));
         }
     }
 
-    /// A device shows the item's session in the foreground, or the owner dismisses it. A `needs_input`
+    /// A device shows the item's workspace in the foreground, or the owner dismisses it. A `needs_input`
     /// stays until the prompt is really gone. Returns whether an item was cleared.
     pub fn ack(&self, attention_id: &str) -> bool {
         let mut list = self.attention.lock().unwrap();
@@ -995,7 +1001,7 @@ impl EventHub {
         let gone = list.remove(pos);
         let snapshot = list.clone();
         drop(list);
-        tracing::info!(target: "audit", event = "attention_cleared", session = %gone.session, by = "ack");
+        tracing::info!(target: "audit", event = "attention_cleared", session = %gone.workspace, by = "ack");
         let _ = self.status_tx.send(StatusChange::Attention(snapshot));
         true
     }
@@ -1004,7 +1010,7 @@ impl EventHub {
         self.attention.lock().unwrap().clone()
     }
 
-    /// Recomputes every session's Activity and announces the ones that changed. Called after each event and
+    /// Recomputes every workspace's Activity and announces the ones that changed. Called after each event and
     /// on a timer, so a silent `working` decays to `unknown`.
     pub fn refresh(&self, now: u64) {
         let open: Vec<String> = self
@@ -1012,31 +1018,31 @@ impl EventHub {
             .lock()
             .unwrap()
             .iter()
-            .map(|a| a.session.clone())
+            .map(|a| a.workspace.clone())
             .collect();
         let rings = self.rings.lock().unwrap();
         let agents = self.agents.lock().unwrap();
         let mut derived = self.derived.lock().unwrap();
         let mut changed = Vec::new();
-        for (session, r) in rings.iter() {
-            let next = SessionActivity {
-                session: session.clone(),
+        for (workspace, r) in rings.iter() {
+            let next = WorkspaceActivity {
+                workspace: workspace.clone(),
                 activity: derive_activity(r, now),
                 ts: now,
                 task: r.task.clone(),
-                agent: agents.get(session).cloned(),
-                hint: if open.contains(session) {
+                agent: agents.get(workspace).cloned(),
+                hint: if open.contains(workspace) {
                     None
                 } else {
                     derive_hint(r, now)
                 },
             };
-            let same = derived.get(session).is_some_and(|d| {
+            let same = derived.get(workspace).is_some_and(|d| {
                 (d.activity, &d.task, &d.agent, d.hint)
                     == (next.activity, &next.task, &next.agent, next.hint)
             });
             if !same {
-                derived.insert(session.clone(), next.clone());
+                derived.insert(workspace.clone(), next.clone());
                 changed.push(next);
             }
         }
@@ -1046,20 +1052,20 @@ impl EventHub {
         }
     }
 
-    /// The Activity of every session, for a client that has just connected.
-    pub fn activities(&self) -> Vec<SessionActivity> {
+    /// The Activity of every workspace, for a client that has just connected.
+    pub fn activities(&self) -> Vec<WorkspaceActivity> {
         self.activities_at(now_ms())
     }
 
-    pub fn activities_at(&self, now: u64) -> Vec<SessionActivity> {
+    pub fn activities_at(&self, now: u64) -> Vec<WorkspaceActivity> {
         self.refresh(now);
         let mut out: Vec<_> = self.derived.lock().unwrap().values().cloned().collect();
-        out.sort_by(|a, b| a.session.cmp(&b.session));
+        out.sort_by(|a, b| a.workspace.cmp(&b.workspace));
         out
     }
 
-    /// Forget a session that no longer exists.
-    /// Only ids that start with `prefix` are considered (one per session manager when several run).
+    /// Forget a workspace that no longer exists.
+    /// Only ids that start with `prefix` are considered (one per workspace manager when several run).
     pub fn forget_except(&self, prefix: &str, live: &[String]) {
         if let Some(history) = &self.history {
             history.retain_live(prefix, live, now_ms());
@@ -1086,7 +1092,7 @@ impl EventHub {
             .retain(|k, _| !k.starts_with(prefix) || live.contains(k));
         let mut list = self.attention.lock().unwrap();
         let before = list.len();
-        list.retain(|a| !a.session.starts_with(prefix) || live.contains(&a.session));
+        list.retain(|a| !a.workspace.starts_with(prefix) || live.contains(&a.workspace));
         if list.len() != before {
             let snapshot = list.clone();
             drop(list);
@@ -1095,66 +1101,66 @@ impl EventHub {
     }
 
     /// Remembers the transcript path a hook of `session` named (only after its token was accepted).
-    pub fn set_transcript(&self, session: &str, path: &str) {
-        if path.is_empty() || path.len() > 1024 || !valid_event_session(session) {
+    pub fn set_transcript(&self, workspace: &str, path: &str) {
+        if path.is_empty() || path.len() > 1024 || !valid_event_workspace(workspace) {
             return;
         }
         let mut map = self.transcripts.lock().unwrap();
-        if !map.contains_key(session) && map.len() >= MAX_SESSIONS * 4 {
+        if !map.contains_key(workspace) && map.len() >= MAX_SESSIONS * 4 {
             return;
         }
-        if map.get(session).map(String::as_str) != Some(path) {
-            map.insert(session.to_string(), path.to_string());
+        if map.get(workspace).map(String::as_str) != Some(path) {
+            map.insert(workspace.to_string(), path.to_string());
         }
     }
 
-    pub fn transcript(&self, session: &str) -> Option<String> {
-        self.transcripts.lock().unwrap().get(session).cloned()
+    pub fn transcript(&self, workspace: &str) -> Option<String> {
+        self.transcripts.lock().unwrap().get(workspace).cloned()
     }
 
     /// Records which agent the process scan found in `session`.
-    pub fn set_agent(&self, session: &str, agent: &str) {
+    pub fn set_agent(&self, workspace: &str, agent: &str) {
         let mut agents = self.agents.lock().unwrap();
-        if agents.get(session).map(String::as_str) != Some(agent) {
-            agents.insert(session.to_string(), agent.to_string());
+        if agents.get(workspace).map(String::as_str) != Some(agent) {
+            agents.insert(workspace.to_string(), agent.to_string());
         }
     }
 
-    /// The agent name for a session, if known.
-    pub fn agent(&self, session: &str) -> Option<String> {
-        self.agents.lock().unwrap().get(session).cloned()
+    /// The agent name for a workspace, if known.
+    pub fn agent(&self, workspace: &str) -> Option<String> {
+        self.agents.lock().unwrap().get(workspace).cloned()
     }
 
-    pub fn snapshot(&self) -> Vec<SessionAgentState> {
+    pub fn snapshot(&self) -> Vec<WorkspaceAgentState> {
         self.snapshot_at(now_ms())
     }
 
-    pub fn snapshot_at(&self, now: u64) -> Vec<SessionAgentState> {
+    pub fn snapshot_at(&self, now: u64) -> Vec<WorkspaceAgentState> {
         let rings = self.rings.lock().unwrap();
         let agents = self.agents.lock().unwrap();
         let mut out: Vec<_> = rings
             .iter()
-            .map(|(session, r)| SessionAgentState {
-                session: session.clone(),
+            .map(|(workspace, r)| WorkspaceAgentState {
+                workspace: workspace.clone(),
                 state: r.state,
                 seq: r.seq,
                 stale: r.state == AgentState::Working
                     && now.saturating_sub(r.last_event_at) > STALE_AFTER_MS,
                 ts: r.last_event_at,
-                agent: agents.get(session).cloned(),
+                agent: agents.get(workspace).cloned(),
                 last_response_at: r.last_response_at,
                 waiting_since: r.waiting_since,
             })
             .collect();
-        out.sort_by(|a, b| a.session.cmp(&b.session));
+        out.sort_by(|a, b| a.workspace.cmp(&b.workspace));
         out
     }
 
-    /// The prompt a one-tap answer may target: the session's latest `prompt` event, unless the agent has
+    /// The prompt a one-tap answer may target: the workspace's latest `prompt` event, unless the agent has
     /// moved on (a later state other than `needs_input`).
-    pub fn current_prompt(&self, session: &str) -> Option<AgentEvent> {
+    pub fn current_prompt(&self, workspace: &str) -> Option<AgentEvent> {
         let rings = self.rings.lock().unwrap();
-        let ring = rings.get(session)?;
+        let ring = rings.get(workspace)?;
         let prompt = ring
             .events
             .iter()
@@ -1167,10 +1173,10 @@ impl EventHub {
         (!moved_on).then(|| prompt.clone())
     }
 
-    /// Source and confidence of the session's latest state event, and when it happened.
-    pub fn last_state_event(&self, session: &str) -> Option<(Source, Confidence, u64)> {
+    /// Source and confidence of the workspace's latest state event, and when it happened.
+    pub fn last_state_event(&self, workspace: &str) -> Option<(Source, Confidence, u64)> {
         let rings = self.rings.lock().unwrap();
-        let ring = rings.get(session)?;
+        let ring = rings.get(workspace)?;
         ring.events
             .iter()
             .rev()
@@ -1179,28 +1185,28 @@ impl EventHub {
     }
 
     /// The agent's own hook reported `needs_input` within the last minute and nothing newer has changed the state.
-    pub fn hook_says_needs_input(&self, session: &str) -> bool {
+    pub fn hook_says_needs_input(&self, workspace: &str) -> bool {
         let now = now_ms();
         matches!(
-            self.last_state_event(session),
+            self.last_state_event(workspace),
             Some((Source::Hook, Confidence::High, ts)) if now.saturating_sub(ts) < STALE_AFTER_MS
         ) && self
             .snapshot_at(now)
             .iter()
-            .any(|s| s.session == session && s.state == AgentState::NeedsInput)
+            .any(|s| s.workspace == workspace && s.state == AgentState::NeedsInput)
     }
 
     /// Events of `session` after `seq`, oldest first (only what the ring still holds).
-    pub fn since(&self, session: &str, seq: u64) -> Vec<AgentEvent> {
+    pub fn since(&self, workspace: &str, seq: u64) -> Vec<AgentEvent> {
         self.rings
             .lock()
             .unwrap()
-            .get(session)
+            .get(workspace)
             .map(|r| r.events.iter().filter(|e| e.seq > seq).cloned().collect())
             .unwrap_or_default()
     }
 
-    pub fn sessions_with_events(&self) -> usize {
+    pub fn workspaces_with_events(&self) -> usize {
         self.rings.lock().unwrap().len()
     }
 }
@@ -1234,7 +1240,7 @@ pub fn socket_path(state_dir: &Path) -> std::path::PathBuf {
     dir.join("events.sock")
 }
 
-/// What a session's shell gets so its tools can report: who it is, its token and where to send.
+/// What a workspace's shell gets so its tools can report: who it is, its token and where to send.
 #[derive(Clone)]
 pub struct EventEnv {
     pub hub: EventHub,
@@ -1242,10 +1248,10 @@ pub struct EventEnv {
 }
 
 impl EventEnv {
-    pub fn vars(&self, session: &str) -> Vec<String> {
+    pub fn vars(&self, workspace: &str) -> Vec<String> {
         vec![
-            format!("TERMENBOX_SESSION={session}"),
-            format!("TERMENBOX_EVENT_TOKEN={}", self.hub.token(session)),
+            format!("TERMENBOX_SESSION={workspace}"),
+            format!("TERMENBOX_EVENT_TOKEN={}", self.hub.token(workspace)),
             format!("TERMENBOX_EVENT_SOCKET={}", self.socket.display()),
         ]
     }
@@ -1255,11 +1261,12 @@ impl EventEnv {
 // Ingest socket
 // ---------------------------------------------------------------------------------------------------
 
-/// One line a tool (via `termenbox-server hook`) writes: which session, its token, which adapter, and the
+/// One line a tool (via `termenbox-server hook`) writes: which workspace, its token, which adapter, and the
 /// tool's own JSON, untouched.
 #[derive(serde::Deserialize)]
 struct Wire {
-    session: String,
+    #[serde(rename = "session")]
+    workspace: String,
     token: String,
     adapter: String,
     data: serde_json::Value,
@@ -1290,7 +1297,7 @@ pub async fn serve_socket(
     tokio::spawn({
         let hub = hub.clone();
         async move {
-            // Events whose session is not known yet (a shared service, before its first prompt shows where it is).
+            // Events whose workspace is not known yet (a shared service, before its first prompt shows where it is).
             let mut pending: VecDeque<(Hooked, u64)> = VecDeque::new();
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
             loop {
@@ -1330,14 +1337,14 @@ pub async fn serve_socket(
     }
 }
 
-/// How many events wait for a session, and for how long.
+/// How many events wait for a workspace, and for how long.
 const MAX_PENDING: usize = 64;
 const PENDING_MS: u64 = 30_000;
 
 fn report_of(w: &Wire, kinds: &[EventKind]) -> crate::owner::Report {
     crate::owner::Report {
         adapter: w.adapter.clone(),
-        declared: w.session.clone(),
+        declared: w.workspace.clone(),
         agent_id: crate::adapters::agent_session_id(&w.adapter, &w.data),
         ancestors: w.ancestors.clone(),
         turn: kinds.iter().find_map(|k| match k {
@@ -1360,13 +1367,21 @@ async fn handle_hooked(
 ) -> bool {
     use crate::owner::Verdict;
     let (w, source, confidence, kinds) = &item;
-    if !hub.token_matches(&w.session, &w.token) {
-        tracing::info!(target: "audit", event = "agent_event_refused", session = %w.session);
+    if !hub.token_matches(&w.workspace, &w.token) {
+        tracing::info!(target: "audit", event = "agent_event_refused", session = %w.workspace);
         return false;
     }
     match resolver.resolve(&report_of(w, kinds), now_ms()).await {
-        Verdict::Deliver(session) => {
-            deliver(hub, &item.0, *source, *confidence, kinds.clone(), &session).await;
+        Verdict::Deliver(workspace) => {
+            deliver(
+                hub,
+                &item.0,
+                *source,
+                *confidence,
+                kinds.clone(),
+                &workspace,
+            )
+            .await;
             true
         }
         Verdict::Pending => {
@@ -1377,7 +1392,7 @@ async fn handle_hooked(
             false
         }
         Verdict::Drop(why) => {
-            tracing::info!(target: "audit", event = "agent_event_unplaced", session = %w.session, adapter = %w.adapter, reason = why);
+            tracing::info!(target: "audit", event = "agent_event_unplaced", session = %w.workspace, adapter = %w.adapter, reason = why);
             false
         }
     }
@@ -1397,13 +1412,21 @@ async fn retry_pending(
         placed_any = false;
         while let Some((item, since)) = pending.pop_front() {
             if now.saturating_sub(since) > PENDING_MS {
-                tracing::info!(target: "audit", event = "agent_event_unplaced", session = %item.0.session, adapter = %item.0.adapter, reason = "no session found for it in time");
+                tracing::info!(target: "audit", event = "agent_event_unplaced", session = %item.0.workspace, adapter = %item.0.adapter, reason = "no workspace found for it in time");
                 continue;
             }
             let (w, source, confidence, kinds) = &item;
             match resolver.resolve(&report_of(w, kinds), now).await {
-                Verdict::Deliver(session) => {
-                    deliver(hub, &item.0, *source, *confidence, kinds.clone(), &session).await;
+                Verdict::Deliver(workspace) => {
+                    deliver(
+                        hub,
+                        &item.0,
+                        *source,
+                        *confidence,
+                        kinds.clone(),
+                        &workspace,
+                    )
+                    .await;
                     placed_any = true;
                 }
                 Verdict::Pending => keep.push_back((item, since)),
@@ -1423,24 +1446,24 @@ async fn deliver(
     source: Source,
     confidence: Confidence,
     kinds: Vec<EventKind>,
-    session: &str,
+    workspace: &str,
 ) {
     if w.adapter == "claude" {
         // File reads: off the async threads.
-        let (h, s, data) = (hub.clone(), session.to_string(), w.data.clone());
+        let (h, s, data) = (hub.clone(), workspace.to_string(), w.data.clone());
         let _ = tokio::task::spawn_blocking(move || h.note_claude_usage(&s, &data)).await;
     }
     if hub
-        .ingest_as(&w.session, &w.token, session, source, confidence, kinds)
+        .ingest_as(&w.workspace, &w.token, workspace, source, confidence, kinds)
         .is_ok()
         && w.adapter == "claude"
     {
         if let Some(path) = w.data.get("transcript_path").and_then(|p| p.as_str()) {
-            hub.set_transcript(session, path);
+            hub.set_transcript(workspace, path);
         }
         // A task this event opened takes its folder now; one it ended took it above.
         if let Some(cwd) = w.data.get("cwd").and_then(|c| c.as_str()) {
-            hub.record_project(session, cwd);
+            hub.record_project(workspace, cwd);
         }
     }
 }
@@ -1466,12 +1489,12 @@ pub fn run_hook(adapter: &str) {
 
 pub fn run_hook_with(
     adapter: &str,
-    session: Option<String>,
+    workspace: Option<String>,
     token: Option<String>,
     socket: Option<String>,
 ) {
     use std::io::{Read, Write};
-    let (Some(session), Some(token), Some(socket)) = (session, token, socket) else {
+    let (Some(workspace), Some(token), Some(socket)) = (workspace, token, socket) else {
         return;
     };
     // The deadline covers the whole run, including a stdin that never closes.
@@ -1484,7 +1507,7 @@ pub fn run_hook_with(
         let data =
             serde_json::from_str::<serde_json::Value>(&raw).unwrap_or(serde_json::Value::Null);
         let ancestors = crate::owner::own_ancestors();
-        let line = serde_json::json!({"session": session, "token": token, "adapter": adapter, "data": data, "ancestors": ancestors}).to_string() + "\n";
+        let line = serde_json::json!({"session": workspace, "token": token, "adapter": adapter, "data": data, "ancestors": ancestors}).to_string() + "\n";
         if let Ok(mut s) = std::os::unix::net::UnixStream::connect(&socket) {
             let _ = s.set_write_timeout(Some(std::time::Duration::from_millis(500)));
             let _ = s.write_all(line.as_bytes());
@@ -1553,10 +1576,10 @@ mod tests {
         EventKind::State { state: s }
     }
 
-    fn activity(h: &EventHub, session: &str, now: u64) -> Option<SessionActivity> {
+    fn activity(h: &EventHub, workspace: &str, now: u64) -> Option<WorkspaceActivity> {
         h.activities_at(now)
             .into_iter()
-            .find(|a| a.session == session)
+            .find(|a| a.workspace == workspace)
     }
 
     #[test]
@@ -1827,7 +1850,7 @@ mod tests {
     }
 
     #[test]
-    fn forgetting_a_session_drops_its_attention() {
+    fn forgetting_a_workspace_drops_its_attention() {
         let h = hub();
         h.push(
             "a",
@@ -1852,12 +1875,12 @@ mod tests {
     }
 
     #[test]
-    fn event_session_ids_may_carry_a_manager_prefix() {
-        assert!(valid_event_session("work") && valid_event_session("tmux:work"));
+    fn event_workspace_ids_may_carry_a_manager_prefix() {
+        assert!(valid_event_workspace("work") && valid_event_workspace("tmux:work"));
         assert!(
-            !valid_event_session("a:b:c")
-                && !valid_event_session(":x")
-                && !valid_event_session("x:")
+            !valid_event_workspace("a:b:c")
+                && !valid_event_workspace(":x")
+                && !valid_event_workspace("x:")
         );
     }
 
@@ -1882,14 +1905,14 @@ mod tests {
         assert_eq!(
             h.snapshot()
                 .iter()
-                .map(|s| s.session.as_str())
+                .map(|s| s.workspace.as_str())
                 .collect::<Vec<_>>(),
             ["cmd:b"]
         );
     }
 
     #[test]
-    fn a_token_only_works_for_its_own_session() {
+    fn a_token_only_works_for_its_own_workspace() {
         let h = hub();
         let t = h.token("one");
         assert!(h.token_matches("one", &t));
@@ -1914,7 +1937,7 @@ mod tests {
             )
             .is_ok());
         assert_eq!(h.snapshot().len(), 1);
-        assert_eq!(h.snapshot()[0].session, "one");
+        assert_eq!(h.snapshot()[0].workspace, "one");
         assert!(
             EventHub::new([8; 32]).token("one") != t,
             "tokens depend on the key"
@@ -1991,14 +2014,14 @@ mod tests {
                 5000 + i,
             );
         }
-        assert_eq!(h.sessions_with_events(), MAX_SESSIONS);
+        assert_eq!(h.workspaces_with_events(), MAX_SESSIONS);
     }
 
     #[test]
     fn unknown_kinds_are_ignored_and_repeated_states_are_not_events() {
         let h = hub();
         h.push("a", Source::Hook, Confidence::High, EventKind::Unknown, 1);
-        assert_eq!(h.sessions_with_events(), 0);
+        assert_eq!(h.workspaces_with_events(), 0);
         h.push(
             "a",
             Source::Scan,
@@ -2127,8 +2150,8 @@ mod tests {
             std::fs::metadata(&sock).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        let send = |session: &str, token: String| {
-            let line = serde_json::json!({"session": session, "token": token, "adapter": "claude",
+        let send = |workspace: &str, token: String| {
+            let line = serde_json::json!({"session": workspace, "token": token, "adapter": "claude",
                 "data": {"hook_event_name": "UserPromptSubmit", "transcript_path": "/home/u/.claude/projects/p/s.jsonl", "prompt": "fix the login\nthe second line stays in the hook payload"}})
             .to_string()
                 + "\n";
@@ -2141,7 +2164,7 @@ mod tests {
         send("one", "wrong".into()).await;
         send("one", h.token("two")).await;
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        assert_eq!(h.sessions_with_events(), 0);
+        assert_eq!(h.workspaces_with_events(), 0);
         assert_eq!(
             h.transcript("one"),
             None,
@@ -2169,10 +2192,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 20 sessions at 20 events per second for a minute of events, processed in one go: memory is bounded
+    /// 20 workspaces at 20 events per second for a minute of events, processed in one go: memory is bounded
     /// by the rings and the CPU cost is tiny (the budget is 5% of one core, i.e. 3 s per minute).
     #[test]
-    fn load_20_sessions_at_20_events_per_second_for_a_minute() {
+    fn load_20_workspaces_at_20_events_per_second_for_a_minute() {
         let h = hub();
         let started = std::time::Instant::now();
         for sec in 0..60u64 {
@@ -2196,7 +2219,7 @@ mod tests {
             }
         }
         let took = started.elapsed();
-        assert_eq!(h.sessions_with_events(), 20);
+        assert_eq!(h.workspaces_with_events(), 20);
         assert!(took.as_secs_f64() < 3.0, "24000 events took {took:?}");
         let bytes: usize = (0..20)
             .map(|n| {
@@ -2413,7 +2436,7 @@ mod tests {
     }
 
     #[test]
-    fn two_open_requests_keep_an_acp_session_blocked_until_both_are_answered() {
+    fn two_open_requests_keep_an_acp_workspace_blocked_until_both_are_answered() {
         let h = EventHub::new([1; 32]);
         let ev = |kind: EventKind, now: u64| h.feed("a", Source::Acp, Confidence::High, kind, now);
         let block = |key: &str, open: bool| EventKind::Block {
@@ -2548,7 +2571,7 @@ mod tests {
     fn an_acp_task_keeps_its_title() {
         let (h, _dir) = hub_with_history();
         let acp = |kind: EventKind, now: u64| h.feed("a", Source::Acp, Confidence::High, kind, now);
-        // The order the ACP session uses: the turn opens, then the prompt names the task.
+        // The order the ACP workspace uses: the turn opens, then the prompt names the task.
         acp(
             EventKind::Turn {
                 open: true,
@@ -2622,7 +2645,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_that_goes_away_ends_its_task_as_stopped() {
+    fn a_workspace_that_goes_away_ends_its_task_as_stopped() {
         let (h, _dir) = hub_with_history();
         hook(&h, "UserPromptSubmit", quiet(), 1_000);
         h.forget_except("", &[]);
@@ -2741,7 +2764,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_in_the_home_folder_is_not_filed_under_the_user_name() {
+    fn a_workspace_in_the_home_folder_is_not_filed_under_the_user_name() {
         let (h, _dir) = hub_with_history();
         hook(&h, "UserPromptSubmit", quiet(), 1_000);
         let home = std::env::var("HOME").unwrap();

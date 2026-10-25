@@ -1,12 +1,12 @@
-// The agent event store (plan v6, P.6): the latest state per session, kept up to date from the server's
+// The agent event store (plan v6, P.6): the latest state per workspace, kept up to date from the server's
 // snapshot and event stream. No UI here (cards are v8). Text in events is untrusted: render it as text only.
 import { get, writable } from 'svelte/store';
-import type { Activity, AgentEvent, AgentState, Attention, ClientMessage, ServerMessage, SessionActivity, SessionAgentState, Task } from './protocol';
+import type { Activity, AgentEvent, AgentState, Attention, ClientMessage, ServerMessage, WorkspaceActivity, WorkspaceAgentState, Task } from './protocol';
 
-export interface SessionAgent {
+export interface WorkspaceAgent {
   state: AgentState;
   seq: number;
-  /** The agent in the session, when the server's scan found one. */
+  /** The agent in the workspace, when the server's scan found one. */
   agent?: string;
   /** When the agent last answered (ms): the server's value, advanced by `done` and `message` events as they arrive. */
   lastResponseAt?: number;
@@ -18,7 +18,7 @@ export interface SessionAgent {
   ts: number;
   tool?: { name: string; summary: string; phase: string };
   /** `seq` and `confidence` are the prompt event's: a one-tap answer carries the seq and needs `high`. */
-  prompt?: { id: string; kind: string; choices: string[]; seq: number; confidence: string; /** Where the event came from (`acp` for a T0 session). */ source?: string };
+  prompt?: { id: string; kind: string; choices: string[]; seq: number; confidence: string; /** Where the event came from (`acp` for a T0 workspace). */ source?: string };
   /** The last tool events, oldest first (capped). */
   timeline?: { name: string; summary: string; phase: string; ts: number }[];
   plan?: { text: string; status: string }[];
@@ -27,13 +27,13 @@ export interface SessionAgent {
   serverStatus?: boolean;
   activity?: Activity;
   task?: Task;
-  /** The most urgent open Attention item of the session. */
+  /** The most urgent open Attention item of the workspace. */
   attention?: Attention;
   /** Server clock minus this device's clock (ms) when the Activity arrived, for running times. */
   clockOffset?: number;
 }
 
-export type AgentMap = Record<string, SessionAgent>;
+export type AgentMap = Record<string, WorkspaceAgent>;
 
 const waiting = (state: AgentState) => state === 'needs_input' || state === 'error';
 
@@ -43,7 +43,7 @@ export const TIMELINE_CAP = 10;
 export const agents = writable<AgentMap>({});
 
 /** The latest state is `working` but nothing has been heard for a minute: it may be out of date. */
-export function isStale(a: SessionAgent, nowMs: number, skewMs = 0): boolean {
+export function isStale(a: WorkspaceAgent, nowMs: number, skewMs = 0): boolean {
   // With server status a silent `working` already arrives as `unknown`.
   return !a.serverStatus && a.state === 'working' && (a.stale || nowMs + skewMs - a.ts > STALE_AFTER_MS);
 }
@@ -51,7 +51,7 @@ export function isStale(a: SessionAgent, nowMs: number, skewMs = 0): boolean {
 const URGENCY: Record<string, number> = { needs_input: 0, failed: 1, finished_unseen: 2 };
 
 /** With server status, the legacy `state` is what Activity and Attention say, so cards and tabs read one thing. */
-function derived(a: SessionAgent): SessionAgent {
+function derived(a: WorkspaceAgent): WorkspaceAgent {
   if (!a.serverStatus) return a;
   const kind = a.attention?.kind;
   let state: AgentState;
@@ -65,10 +65,10 @@ function derived(a: SessionAgent): SessionAgent {
   return { ...a, state, stale: false, waitingSince };
 }
 
-/** Activity of sessions, as the server derived it. An unknown activity value counts as `unknown`. */
-export function applyActivity(map: AgentMap, sessions: SessionActivity[], receivedAt: number): AgentMap {
+/** Activity of workspaces, as the server derived it. An unknown activity value counts as `unknown`. */
+export function applyActivity(map: AgentMap, workspaces: WorkspaceActivity[], receivedAt: number): AgentMap {
   const next: AgentMap = { ...map };
-  for (const s of sessions) {
+  for (const s of workspaces) {
     const cur = next[s.session] ?? { state: 'unknown' as AgentState, seq: 0, stale: false, ts: s.ts };
     next[s.session] = derived({ ...cur, serverStatus: true, activity: s.activity, task: s.task, agent: s.agent ?? cur.agent,
       clockOffset: s.ts - receivedAt, ts: Math.max(cur.ts, s.ts) });
@@ -76,7 +76,7 @@ export function applyActivity(map: AgentMap, sessions: SessionActivity[], receiv
   return next;
 }
 
-/** The server sends all open items at once: a session without one has none. */
+/** The server sends all open items at once: a workspace without one has none. */
 export function applyAttention(map: AgentMap, items: Attention[]): AgentMap {
   const best = new Map<string, Attention>();
   for (const it of items) {
@@ -91,21 +91,21 @@ export function applyAttention(map: AgentMap, items: Attention[]): AgentMap {
   return next;
 }
 
-/** Items to acknowledge: finished or failed ones of a session that is shown in the foreground of a visible page. A
+/** Items to acknowledge: finished or failed ones of a workspace that is shown in the foreground of a visible page. A
  *  `needs_input` is never acknowledged by looking; only the prompt going away clears it. */
-export function attentionToAck(a: SessionAgent | undefined, foreground: boolean, pageVisible: boolean, done: Set<string>): string[] {
+export function attentionToAck(a: WorkspaceAgent | undefined, foreground: boolean, pageVisible: boolean, done: Set<string>): string[] {
   const it = a?.attention;
   if (!foreground || !pageVisible || !it || it.kind === 'needs_input' || done.has(it.id)) return [];
   return [it.id];
 }
 
 /** How long the current task has run, on the server's clock; null without a task. */
-export function runningMs(a: SessionAgent, nowMs: number): number | null {
+export function runningMs(a: WorkspaceAgent, nowMs: number): number | null {
   return a.task ? Math.max(0, nowMs + (a.clockOffset ?? 0) - a.task.started_at) : null;
 }
 
-/** A snapshot replaces what we know about a session's state but keeps the details we already have. */
-export function applySnapshot(map: AgentMap, states: SessionAgentState[]): AgentMap {
+/** A snapshot replaces what we know about a workspace's state but keeps the details we already have. */
+export function applySnapshot(map: AgentMap, states: WorkspaceAgentState[]): AgentMap {
   const next: AgentMap = {};
   for (const s of states) {
     const old = map[s.session];
@@ -125,7 +125,7 @@ export function applyEvents(map: AgentMap, events: AgentEvent[]): { map: AgentMa
     const cur = next[e.session];
     if (cur && e.seq <= cur.seq) continue; // already seen
     if (e.seq !== (cur ? cur.seq + 1 : 1)) gap = true;
-    const a: SessionAgent = { ...(cur ?? { state: 'unknown' as AgentState }), seq: e.seq, ts: e.ts, stale: false } as SessionAgent;
+    const a: WorkspaceAgent = { ...(cur ?? { state: 'unknown' as AgentState }), seq: e.seq, ts: e.ts, stale: false } as WorkspaceAgent;
     const ev = e as Record<string, unknown>;
     switch (e.kind) {
       case 'state':
@@ -157,7 +157,7 @@ export function applyEvents(map: AgentMap, events: AgentEvent[]): { map: AgentMa
   return { map: next, gap };
 }
 
-/** What to send in `agent_sync`: the last `seq` seen per session. */
+/** What to send in `agent_sync`: the last `seq` seen per workspace. */
 export function syncRequest(map: AgentMap): Record<string, number> {
   return Object.fromEntries(Object.entries(map).map(([k, v]) => [k, v.seq]));
 }

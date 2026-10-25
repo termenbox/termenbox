@@ -1,12 +1,12 @@
-//! Where sessions live. The server only needs four things from a session manager: list them, create one,
+//! Where workspaces live. The server only needs four things from a workspace manager: list them, create one,
 //! name the command that attaches a terminal to one, and survive a client detaching. tmux is built in;
 //! anything with a CLI that fits that shape (zellij, screen, ...) plugs in through `CommandBackend`;
-//! a server-native backend can implement `SessionBackend` directly (plan step 7.1).
+//! a server-native backend can implement `WorkspaceBackend` directly (plan step 7.1).
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use termenbox_core::protocol::SessionInfo;
+use termenbox_core::protocol::WorkspaceInfo;
 use tokio::process::Command;
 
 use crate::control::WindowState;
@@ -14,13 +14,13 @@ use crate::events::EventEnv;
 use crate::pty::Attachment;
 
 #[async_trait]
-pub trait SessionBackend: Send + Sync {
+pub trait WorkspaceBackend: Send + Sync {
     fn name(&self) -> &str;
-    async fn list(&self) -> Result<Vec<SessionInfo>>;
+    async fn list(&self) -> Result<Vec<WorkspaceInfo>>;
     async fn create(&self, name: &str) -> Result<()>;
-    /// Starts a terminal attached to session `id`. Dropping it must only detach.
+    /// Starts a terminal attached to workspace `id`. Dropping it must only detach.
     fn attach(&self, id: &str, cols: u16, rows: u16) -> Result<Attachment>;
-    /// The session managers behind this backend, in the order "New session" offers them.
+    /// The workspace managers behind this backend, in the order "New workspace" offers them.
     fn kinds(&self) -> Vec<String> {
         vec![self.name().to_string()]
     }
@@ -28,7 +28,7 @@ pub trait SessionBackend: Send + Sync {
     async fn create_in(&self, name: &str, _backend: Option<&str>) -> Result<()> {
         self.create(name).await
     }
-    /// Creates a session in a working directory, optionally starting a coding agent in it. Managers that cannot
+    /// Creates a workspace in a working directory, optionally starting a coding agent in it. Managers that cannot
     /// do either ignore them.
     async fn create_with(
         &self,
@@ -39,9 +39,9 @@ pub trait SessionBackend: Send + Sync {
     ) -> Result<()> {
         self.create_in(name, backend).await
     }
-    /// The visible text of the session's pane, for checking what a one-tap answer would answer.
+    /// The visible text of the workspace's pane, for checking what a one-tap answer would answer.
     async fn capture(&self, _id: &str) -> Result<String> {
-        Err(anyhow!("this session manager cannot read a pane"))
+        Err(anyhow!("this workspace manager cannot read a pane"))
     }
     /// Like `capture`, with the colour and style escape codes kept (for a snapshot the client draws).
     async fn capture_styled(&self, id: &str) -> Result<String> {
@@ -51,56 +51,56 @@ pub trait SessionBackend: Send + Sync {
     async fn capture_window_styled(&self, id: &str, _index: u32) -> Result<String> {
         self.capture_styled(id).await
     }
-    /// Everything the session's terminal still holds, history included, as plain text with wrapped lines joined. A
+    /// Everything the workspace's terminal still holds, history included, as plain text with wrapped lines joined. A
     /// manager that keeps no history gives the screen.
     async fn capture_history(&self, id: &str) -> Result<String> {
         self.capture(id).await
     }
-    /// Types `text` into the session's pane as if it was typed there.
+    /// Types `text` into the workspace's pane as if it was typed there.
     async fn send_text(&self, _id: &str, _text: &str) -> Result<()> {
-        Err(anyhow!("this session manager cannot send keys"))
+        Err(anyhow!("this workspace manager cannot send keys"))
     }
-    /// Ends the session and everything running in it. The caller has already asked the user.
+    /// Ends the workspace and everything running in it. The caller has already asked the user.
     async fn kill(&self, _id: &str) -> Result<()> {
-        Err(anyhow!("this session manager cannot close sessions"))
+        Err(anyhow!("this workspace manager cannot close workspaces"))
     }
-    /// Sets the name clients show for a session (an empty name clears it). The id, which events and layouts key on,
+    /// Sets the name clients show for a workspace (an empty name clears it). The id, which events and layouts key on,
     /// stays as it is.
     async fn rename(&self, _id: &str, _name: &str) -> Result<()> {
-        Err(anyhow!("this session manager cannot rename sessions"))
+        Err(anyhow!("this workspace manager cannot rename workspaces"))
     }
-    /// The windows of a session, for the windows dropdown.
+    /// The windows of a workspace, for the windows dropdown.
     async fn windows(&self, _id: &str) -> Result<Vec<WindowState>> {
-        Err(anyhow!("this session manager has no windows"))
+        Err(anyhow!("this workspace manager has no windows"))
     }
     /// Makes window `index` the one the next client sees, whoever is attached (the user chose it).
     async fn select_window(&self, _id: &str, _index: u32) -> Result<()> {
-        Err(anyhow!("this session manager has no windows"))
+        Err(anyhow!("this workspace manager has no windows"))
     }
-    /// Like `select_window`, but only when no real terminal is attached to the session, so opening a tab never
+    /// Like `select_window`, but only when no real terminal is attached to the workspace, so opening a tab never
     /// moves a screen somebody else is looking at. Returns whether it switched.
     async fn focus_window(&self, _id: &str, _index: u32) -> Result<bool> {
         Ok(false)
     }
-    /// Closes one window; closing the last one ends the session.
+    /// Closes one window; closing the last one ends the workspace.
     async fn kill_window(&self, _id: &str, _index: u32) -> Result<()> {
-        Err(anyhow!("this session manager has no windows"))
+        Err(anyhow!("this workspace manager has no windows"))
     }
-    /// Opens a window next to the others, in the directory of the session's current window, and makes it the
+    /// Opens a window next to the others, in the directory of the workspace's current window, and makes it the
     /// current one.
     async fn new_window(&self, _id: &str) -> Result<()> {
-        Err(anyhow!("this session manager has no windows"))
+        Err(anyhow!("this workspace manager has no windows"))
     }
 
-    // ---- T0: ACP sessions (decision 0111). A manager that runs none refuses all of these.
+    // ---- T0: ACP workspaces (decision 0111). A manager that runs none refuses all of these.
 
-    /// The agents the owner allows as ACP sessions.
+    /// The agents the owner allows as ACP workspaces.
     fn acp_agents(&self) -> Vec<String> {
         Vec::new()
     }
-    /// Wakes when the stream of ACP session `id` has a new revision; a closed channel means it never will.
+    /// Wakes when the stream of ACP workspace `id` has a new revision; a closed channel means it never will.
     fn acp_watch(&self, _id: &str) -> Result<tokio::sync::watch::Receiver<u64>> {
-        Err(anyhow!("This session is not an ACP session"))
+        Err(anyhow!("This workspace is not an ACP workspace"))
     }
     /// What changed in the stream since the client's revision (see `Stream::view`), and the info revision now.
     fn acp_view(
@@ -110,25 +110,25 @@ pub trait SessionBackend: Send + Sync {
         _epoch: Option<u64>,
         _info_seen: u64,
     ) -> Result<(termenbox_core::protocol::AcpView, u64)> {
-        Err(anyhow!("This session is not an ACP session"))
+        Err(anyhow!("This workspace is not an ACP workspace"))
     }
     /// The owner's next prompt (`session/prompt`).
     async fn acp_prompt(&self, _id: &str, _text: &str) -> Result<()> {
-        Err(anyhow!("This session is not an ACP session"))
+        Err(anyhow!("This workspace is not an ACP workspace"))
     }
     async fn acp_interrupt(&self, _id: &str) -> Result<()> {
-        Err(anyhow!("This session is not an ACP session"))
+        Err(anyhow!("This workspace is not an ACP workspace"))
     }
     /// Answers permission `prompt_id` with exactly `option_id`.
     async fn acp_answer(&self, _id: &str, _prompt_id: &str, _option_id: &str) -> Result<()> {
-        Err(anyhow!("This session is not an ACP session"))
+        Err(anyhow!("This workspace is not an ACP workspace"))
     }
     async fn acp_mode(&self, _id: &str, _mode: &str) -> Result<()> {
-        Err(anyhow!("This session is not an ACP session"))
+        Err(anyhow!("This workspace is not an ACP workspace"))
     }
 }
 
-/// Session ids/names we accept from clients; they end up in argv, never in a shell.
+/// Workspace ids/names we accept from clients; they end up in argv, never in a shell.
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
@@ -137,7 +137,7 @@ pub fn valid_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-/// The display name a client may give a session: trimmed, one line, at most 64 characters, no `|` (the list format's
+/// The display name a client may give a workspace: trimmed, one line, at most 64 characters, no `|` (the list format's
 /// separator). `None` clears it.
 pub fn clean_label(name: &str) -> Result<Option<String>> {
     let name = name.trim();
@@ -158,15 +158,15 @@ pub fn valid_dir(dir: &str) -> bool {
     dir.starts_with('/') && dir.len() <= 512 && !dir.chars().any(|c| c.is_control())
 }
 
-/// One session per line: `id` or `id|name|...`; extra fields are ignored.
-pub fn parse_list(output: &str) -> Vec<SessionInfo> {
+/// One workspace per line: `id` or `id|name|...`; extra fields are ignored.
+pub fn parse_list(output: &str) -> Vec<WorkspaceInfo> {
     output
         .lines()
         .filter_map(|line| {
             let mut fields = line.split('|').map(str::trim);
             let id = fields.next().filter(|id| !id.is_empty())?;
             let name = fields.next().filter(|n| !n.is_empty()).unwrap_or(id);
-            Some(SessionInfo {
+            Some(WorkspaceInfo {
                 id: id.to_string(),
                 name: name.to_string(),
                 agent: None,
@@ -176,7 +176,7 @@ pub fn parse_list(output: &str) -> Vec<SessionInfo> {
         .collect()
 }
 
-/// Where session commands run (DECISION-0058). In container mode they run as-is. In host mode every command
+/// Where workspace commands run (DECISION-0058). In container mode they run as-is. In host mode every command
 /// is prefixed with `nsenter` into PID 1's namespaces (the container has `--pid=host --privileged`), and
 /// for a dedicated user also with `runuser`, so tmux and the agent CLIs are the host's own.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -208,7 +208,7 @@ pub enum Isolation {
 /// Runs `"$0" <args>` with termenbox's socket and the per-user config in tmux's own directory for that uid.
 const HOST_TMUX: &str = r#"exec "$0" -L termenbox -f "/tmp/tmux-$(id -u)/termenbox.conf" "$@""#;
 
-/// Writes the config for host mode into `/tmp/tmux-<uid>/` as the session user. The directory is tmux's own: it
+/// Writes the config for host mode into `/tmp/tmux-<uid>/` as the workspace user. The directory is tmux's own: it
 /// is created private, and refused when it is a link or someone else's, so another user cannot plant a config.
 const WRITE_HOST_CONF: &str = r#"umask 077; d=/tmp/tmux-$(id -u); mkdir -p "$d" && [ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ] && chmod 700 "$d" && printf '%s' "$1" > "$d/termenbox.conf.$$" && mv "$d/termenbox.conf.$$" "$d/termenbox.conf""#;
 
@@ -231,13 +231,13 @@ fn tmux_stderr(raw: &[u8]) -> String {
     let text = text.trim();
     if text.contains("protocol version mismatch") {
         return format!(
-            "the tmux server already running on this socket is too different from the tmux termenbox runs now to talk to it (tmux says: {text}). Restart that tmux server: `termenbox-server tmux kill-server` ends its sessions"
+            "the tmux server already running on this socket is too different from the tmux termenbox runs now to talk to it (tmux says: {text}). Restart that tmux server: `termenbox-server tmux kill-server` ends its workspaces"
         );
     }
     text.to_string()
 }
 
-/// The oldest tmux with the control mode the session backend needs.
+/// The oldest tmux with the control mode the workspace backend needs.
 const MIN_TMUX: (u32, u32) = (3, 2);
 
 /// `Some(true)` when `tmux -V` output names a version older than 3.2, `Some(false)` when it names a newer one, `None`
@@ -268,7 +268,7 @@ pub fn resolve_tmux(
         return match version_of(path).map(|v| tmux_too_old(&v)) {
             None => Err(format!("TERMENBOX_TMUX={path} cannot be run")),
             Some(Some(true)) => Err(format!(
-                "TERMENBOX_TMUX={path} is older than tmux 3.2, which the session backend needs"
+                "TERMENBOX_TMUX={path} is older than tmux 3.2, which the workspace backend needs"
             )),
             Some(_) => Ok(path.to_string()),
         };
@@ -287,7 +287,7 @@ pub fn resolve_tmux(
     }
     match version_of("tmux").map(|v| tmux_too_old(&v)) {
         Some(Some(true)) => log(
-            "tmux on PATH is older than 3.2; control mode is off and sessions are scanned instead"
+            "tmux on PATH is older than 3.2; control mode is off and workspaces are scanned instead"
                 .into(),
         ),
         Some(_) => {}
@@ -340,7 +340,7 @@ const DETACH: [&str; 4] = [
     "sh",
 ];
 
-/// The most of a session's history that is sent for select-all: the newest of it.
+/// The most of a workspace's history that is sent for select-all: the newest of it.
 const HISTORY_TEXT_MAX: usize = 2_000_000;
 
 /// The newest at most `max` bytes of `text`, starting at a line, without trailing blank lines.
@@ -378,8 +378,8 @@ impl Runner {
     }
 
     /// Applies the generated tmux config to a tmux server that is already running. tmux reads its config only when its
-    /// server starts, and sessions outlive the termenbox server, so an upgrade that changes the config (hiding the
-    /// status line, say) would otherwise wait for every session to end. Where no tmux server runs this does nothing.
+    /// server starts, and workspaces outlive the termenbox server, so an upgrade that changes the config (hiding the
+    /// status line, say) would otherwise wait for every workspace to end. Where no tmux server runs this does nothing.
     pub async fn reload_tmux_config(&self) {
         let Some(Isolation::File(conf)) = &self.isolation else {
             return;
@@ -388,7 +388,7 @@ impl Runner {
         let _ = self.run("tmux", &args).await;
     }
 
-    /// Host mode: writes the private server's config on the host (decision 0120), as the session user.
+    /// Host mode: writes the private server's config on the host (decision 0120), as the workspace user.
     pub async fn install_host_tmux_conf(&self, content: &str) -> Result<()> {
         let args = ["-c", WRITE_HOST_CONF, "sh", content].map(String::from);
         let out = self.run("sh", &args).await?;
@@ -536,7 +536,7 @@ impl Runner {
         let uid = String::from_utf8_lossy(&out.stdout).trim().to_string();
         if want_root != (uid == "0") {
             return Err(anyhow!(
-                "host sessions run as uid {uid}, not as the {} you chose",
+                "host workspaces run as uid {uid}, not as the {} you chose",
                 if want_root {
                     "root user"
                 } else {
@@ -621,7 +621,7 @@ impl RunMode {
 pub struct TmuxBackend {
     runner: Runner,
     events: Option<EventEnv>,
-    /// Added to the session name wherever events refer to it (`tmux:` when several managers run).
+    /// Added to the workspace name wherever events refer to it (`tmux:` when several managers run).
     event_prefix: String,
 }
 
@@ -639,7 +639,7 @@ impl TmuxBackend {
         self
     }
 
-    /// New sessions get the variables agent tools use to report events (plan v6).
+    /// New workspaces get the variables agent tools use to report events (plan v6).
     pub fn with_events(mut self, events: EventEnv) -> Self {
         self.events = Some(events);
         self
@@ -647,12 +647,12 @@ impl TmuxBackend {
 }
 
 #[async_trait]
-impl SessionBackend for TmuxBackend {
+impl WorkspaceBackend for TmuxBackend {
     fn name(&self) -> &str {
         "tmux"
     }
 
-    async fn list(&self) -> Result<Vec<SessionInfo>> {
+    async fn list(&self) -> Result<Vec<WorkspaceInfo>> {
         let args = [
             "list-sessions",
             "-F",
@@ -662,7 +662,7 @@ impl SessionBackend for TmuxBackend {
         let out = self.runner.run("tmux", &args).await?;
         if !out.status.success() {
             let stderr = tmux_stderr(&out.stderr);
-            // No server yet simply means no sessions.
+            // No server yet simply means no workspaces.
             if stderr.contains("no server running") || stderr.contains("No such file") {
                 return Ok(vec![]);
             }
@@ -684,7 +684,7 @@ impl SessionBackend for TmuxBackend {
     ) -> Result<()> {
         if !valid_name(name) {
             return Err(anyhow!(
-                "Session names use letters, digits, - and _ (max 64)"
+                "Workspace names use letters, digits, - and _ (max 64)"
             ));
         }
         // Only the agents the scan knows may be started from a client; a plain shell otherwise.
@@ -719,7 +719,7 @@ impl SessionBackend for TmuxBackend {
             ));
         }
         if let Some(agent) = template {
-            // Typed into the new shell, so quitting the agent leaves the shell (and the session) alive.
+            // Typed into the new shell, so quitting the agent leaves the shell (and the workspace) alive.
             self.send_text(name, &format!("{agent}\r")).await?;
         }
         Ok(())
@@ -727,7 +727,7 @@ impl SessionBackend for TmuxBackend {
 
     async fn capture(&self, id: &str) -> Result<String> {
         if !valid_name(id) {
-            return Err(anyhow!("Unknown session"));
+            return Err(anyhow!("Unknown workspace"));
         }
         let args = ["capture-pane", "-p", "-t", &format!("={id}:")].map(String::from);
         let out = self.runner.run("tmux", &args).await?;
@@ -739,7 +739,7 @@ impl SessionBackend for TmuxBackend {
 
     async fn capture_history(&self, id: &str) -> Result<String> {
         if !valid_name(id) {
-            return Err(anyhow!("Unknown session"));
+            return Err(anyhow!("Unknown workspace"));
         }
         // `-S -` and `-E -` are the start and end of the history; `-J` joins the lines the width wrapped.
         let args = [
@@ -766,7 +766,7 @@ impl SessionBackend for TmuxBackend {
 
     async fn capture_styled(&self, id: &str) -> Result<String> {
         if !valid_name(id) {
-            return Err(anyhow!("Unknown session"));
+            return Err(anyhow!("Unknown workspace"));
         }
         let args = ["capture-pane", "-e", "-p", "-t", &format!("={id}:")].map(String::from);
         let out = self.runner.run("tmux", &args).await?;
@@ -778,7 +778,7 @@ impl SessionBackend for TmuxBackend {
 
     async fn capture_window_styled(&self, id: &str, index: u32) -> Result<String> {
         if !valid_name(id) {
-            return Err(anyhow!("Unknown session"));
+            return Err(anyhow!("Unknown workspace"));
         }
         let args = ["capture-pane", "-e", "-p", "-t", &format!("={id}:{index}")].map(String::from);
         let out = self.runner.run("tmux", &args).await?;
@@ -790,7 +790,7 @@ impl SessionBackend for TmuxBackend {
 
     async fn send_text(&self, id: &str, text: &str) -> Result<()> {
         if !valid_name(id) {
-            return Err(anyhow!("Unknown session"));
+            return Err(anyhow!("Unknown workspace"));
         }
         // `\r` is Enter; everything else is literal (`-l`), so no tmux key name can be smuggled in.
         for (i, part) in text.split('\r').enumerate() {
@@ -809,7 +809,7 @@ impl SessionBackend for TmuxBackend {
 
     async fn rename(&self, id: &str, name: &str) -> Result<()> {
         if !valid_name(id) {
-            return Err(anyhow!("Unknown session"));
+            return Err(anyhow!("Unknown workspace"));
         }
         let label = clean_label(name)?;
         // A trailing colon: `set-option` takes a pane target, and `=name` alone is not one.
@@ -834,7 +834,7 @@ impl SessionBackend for TmuxBackend {
 
     async fn kill(&self, id: &str) -> Result<()> {
         if !valid_name(id) {
-            return Err(anyhow!("Unknown session"));
+            return Err(anyhow!("Unknown workspace"));
         }
         let args = ["kill-session", "-t", &format!("={id}")].map(String::from);
         let out = self.runner.run("tmux", &args).await?;
@@ -853,7 +853,7 @@ impl SessionBackend for TmuxBackend {
 
     async fn select_window(&self, id: &str, index: u32) -> Result<()> {
         if !valid_name(id) {
-            return Err(anyhow!("Unknown session"));
+            return Err(anyhow!("Unknown workspace"));
         }
         let args = ["select-window", "-t", &format!("={id}:{index}")].map(String::from);
         let out = self.runner.run("tmux", &args).await?;
@@ -865,7 +865,7 @@ impl SessionBackend for TmuxBackend {
 
     async fn focus_window(&self, id: &str, index: u32) -> Result<bool> {
         if !valid_name(id) {
-            return Err(anyhow!("Unknown session"));
+            return Err(anyhow!("Unknown workspace"));
         }
         let args = [
             "list-clients",
@@ -888,7 +888,7 @@ impl SessionBackend for TmuxBackend {
 
     async fn new_window(&self, id: &str) -> Result<()> {
         if !valid_name(id) {
-            return Err(anyhow!("Unknown session"));
+            return Err(anyhow!("Unknown workspace"));
         }
         // tmux does not expand a format in -c, so ask for the current window's directory first. It is passed
         // as one argument, never through a shell, and only when it is a sane absolute path.
@@ -915,7 +915,7 @@ impl SessionBackend for TmuxBackend {
 
     async fn kill_window(&self, id: &str, index: u32) -> Result<()> {
         if !valid_name(id) {
-            return Err(anyhow!("Unknown session"));
+            return Err(anyhow!("Unknown workspace"));
         }
         let args = ["kill-window", "-t", &format!("={id}:{index}")].map(String::from);
         let out = self.runner.run("tmux", &args).await?;
@@ -927,7 +927,7 @@ impl SessionBackend for TmuxBackend {
 
     fn attach(&self, id: &str, cols: u16, rows: u16) -> Result<Attachment> {
         if !valid_name(id) {
-            return Err(anyhow!("Unknown session"));
+            return Err(anyhow!("Unknown workspace"));
         }
         // `=` makes the target an exact name match.
         let args = ["attach-session", "-t", &format!("={id}")].map(String::from);
@@ -935,43 +935,43 @@ impl SessionBackend for TmuxBackend {
     }
 }
 
-/// Several session managers at once. Session ids become `manager:name` so a tmux `work` and a zellij `work`
+/// Several workspace managers at once. Workspace ids become `manager:name` so a tmux `work` and a zellij `work`
 /// stay apart; the client shows the manager next to the name.
 pub struct CompositeBackend {
-    parts: Vec<(String, Arc<dyn SessionBackend>)>,
+    parts: Vec<(String, Arc<dyn WorkspaceBackend>)>,
 }
 
 impl CompositeBackend {
-    pub fn new(parts: Vec<(String, Arc<dyn SessionBackend>)>) -> Self {
+    pub fn new(parts: Vec<(String, Arc<dyn WorkspaceBackend>)>) -> Self {
         Self { parts }
     }
 
-    fn part(&self, kind: &str) -> Result<&Arc<dyn SessionBackend>> {
+    fn part(&self, kind: &str) -> Result<&Arc<dyn WorkspaceBackend>> {
         self.parts
             .iter()
             .find(|(k, _)| k == kind)
             .map(|(_, b)| b)
-            .ok_or_else(|| anyhow!("Unknown session manager"))
+            .ok_or_else(|| anyhow!("Unknown workspace manager"))
     }
 }
 
 #[async_trait]
-impl SessionBackend for CompositeBackend {
+impl WorkspaceBackend for CompositeBackend {
     fn name(&self) -> &str {
         "mixed"
     }
 
-    /// A manager that fails to answer (zellij not installed, say) only hides its own sessions.
-    async fn list(&self) -> Result<Vec<SessionInfo>> {
+    /// A manager that fails to answer (zellij not installed, say) only hides its own workspaces.
+    async fn list(&self) -> Result<Vec<WorkspaceInfo>> {
         let mut all = Vec::new();
         for (kind, b) in &self.parts {
             match b.list().await {
-                Ok(list) => all.extend(list.into_iter().map(|s| SessionInfo {
+                Ok(list) => all.extend(list.into_iter().map(|s| WorkspaceInfo {
                     id: format!("{kind}:{}", s.id),
                     backend: Some(kind.clone()),
                     ..s
                 })),
-                Err(e) => tracing::warn!("{kind}: cannot list sessions: {e}"),
+                Err(e) => tracing::warn!("{kind}: cannot list workspaces: {e}"),
             }
         }
         Ok(all)
@@ -1002,7 +1002,7 @@ impl SessionBackend for CompositeBackend {
     fn attach(&self, id: &str, cols: u16, rows: u16) -> Result<Attachment> {
         let (kind, name) = id
             .split_once(':')
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.attach(name, cols, rows)
     }
 
@@ -1013,84 +1013,84 @@ impl SessionBackend for CompositeBackend {
     async fn capture(&self, id: &str) -> Result<String> {
         let (kind, name) = id
             .split_once(':')
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.capture(name).await
     }
 
     async fn capture_styled(&self, id: &str) -> Result<String> {
         let (kind, name) = id
             .split_once(':')
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.capture_styled(name).await
     }
 
     async fn capture_history(&self, id: &str) -> Result<String> {
         let (kind, name) = id
             .split_once(':')
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.capture_history(name).await
     }
 
     async fn capture_window_styled(&self, id: &str, index: u32) -> Result<String> {
         let (kind, name) = id
             .split_once(':')
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.capture_window_styled(name, index).await
     }
 
     async fn send_text(&self, id: &str, text: &str) -> Result<()> {
         let (kind, name) = id
             .split_once(':')
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.send_text(name, text).await
     }
 
     async fn kill(&self, id: &str) -> Result<()> {
         let (kind, name) = id
             .split_once(':')
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.kill(name).await
     }
 
     async fn rename(&self, id: &str, name: &str) -> Result<()> {
         let (kind, name_in) = id
             .split_once(':')
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.rename(name_in, name).await
     }
 
     async fn windows(&self, id: &str) -> Result<Vec<WindowState>> {
         let (kind, name) = id
             .split_once(':')
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.windows(name).await
     }
 
     async fn select_window(&self, id: &str, index: u32) -> Result<()> {
         let (kind, name) = id
             .split_once(':')
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.select_window(name, index).await
     }
 
     async fn focus_window(&self, id: &str, index: u32) -> Result<bool> {
         let (kind, name) = id
             .split_once(':')
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.focus_window(name, index).await
     }
 
     async fn kill_window(&self, id: &str, index: u32) -> Result<()> {
         let (kind, name) = id
             .split_once(':')
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.kill_window(name, index).await
     }
 
     async fn new_window(&self, id: &str) -> Result<()> {
         let (kind, name) = id
             .split_once(':')
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.new_window(name).await
     }
 
@@ -1104,7 +1104,7 @@ impl SessionBackend for CompositeBackend {
     fn acp_watch(&self, id: &str) -> Result<tokio::sync::watch::Receiver<u64>> {
         let (kind, name) = id
             .split_once(':')
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.acp_watch(name)
     }
 
@@ -1117,28 +1117,28 @@ impl SessionBackend for CompositeBackend {
     ) -> Result<(termenbox_core::protocol::AcpView, u64)> {
         let (kind, name) = id
             .split_once(':')
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.acp_view(name, after, epoch, info_seen)
     }
 
     async fn acp_prompt(&self, id: &str, text: &str) -> Result<()> {
         let (kind, name) = id
             .split_once(':')
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.acp_prompt(name, text).await
     }
 
     async fn acp_interrupt(&self, id: &str) -> Result<()> {
         let (kind, name) = id
             .split_once(':')
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.acp_interrupt(name).await
     }
 
     async fn acp_answer(&self, id: &str, prompt_id: &str, option_id: &str) -> Result<()> {
         let (kind, name) = id
             .split_once(':')
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?
             .acp_answer(name, prompt_id, option_id)
             .await
@@ -1147,15 +1147,15 @@ impl SessionBackend for CompositeBackend {
     async fn acp_mode(&self, id: &str, mode: &str) -> Result<()> {
         let (kind, name) = id
             .split_once(':')
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.acp_mode(name, mode).await
     }
 }
 
-/// Any session manager driven by three command lines (no shell; split on spaces).
-/// `{id}` and `{name}` in an argument are replaced by the validated session id/name.
-/// list prints one session per line (`id` or `id|name`); create makes a detached session;
-/// attach runs in a PTY and must repaint the session when it starts and only detach when killed.
+/// Any workspace manager driven by three command lines (no shell; split on spaces).
+/// `{id}` and `{name}` in an argument are replaced by the validated workspace id/name.
+/// list prints one workspace per line (`id` or `id|name`); create makes a detached workspace;
+/// attach runs in a PTY and must repaint the workspace when it starts and only detach when killed.
 pub struct CommandBackend {
     label: String,
     list: Vec<String>,
@@ -1206,12 +1206,12 @@ impl CommandBackend {
 }
 
 #[async_trait]
-impl SessionBackend for CommandBackend {
+impl WorkspaceBackend for CommandBackend {
     fn name(&self) -> &str {
         &self.label
     }
 
-    async fn list(&self) -> Result<Vec<SessionInfo>> {
+    async fn list(&self) -> Result<Vec<WorkspaceInfo>> {
         let out = self.runner.run(&self.list[0], &self.list[1..]).await?;
         if !out.status.success() {
             return Err(anyhow!(
@@ -1229,7 +1229,7 @@ impl SessionBackend for CommandBackend {
     async fn create(&self, name: &str) -> Result<()> {
         if !valid_name(name) {
             return Err(anyhow!(
-                "Session names use letters, digits, - and _ (max 64)"
+                "Workspace names use letters, digits, - and _ (max 64)"
             ));
         }
         let argv = Self::fill(&self.create, name);
@@ -1246,7 +1246,7 @@ impl SessionBackend for CommandBackend {
 
     fn attach(&self, id: &str, cols: u16, rows: u16) -> Result<Attachment> {
         if !valid_name(id) {
-            return Err(anyhow!("Unknown session"));
+            return Err(anyhow!("Unknown workspace"));
         }
         let argv = Self::fill(&self.attach, id);
         self.runner.attach(&argv[0], &argv[1..], cols, rows)
@@ -1269,7 +1269,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_session_lines() {
+    fn parses_workspace_lines() {
         let infos = parse_list("main|Main one\nwork\n\n|x\n");
         assert_eq!(
             infos
@@ -1280,13 +1280,13 @@ mod tests {
         );
     }
 
-    /// Two fake managers sharing a session name stay apart.
+    /// Two fake managers sharing a workspace name stay apart.
     #[tokio::test]
-    async fn the_composite_keeps_same_named_sessions_of_different_managers_apart() {
-        let a: Arc<dyn SessionBackend> = Arc::new(
+    async fn the_composite_keeps_same_named_workspaces_of_different_managers_apart() {
+        let a: Arc<dyn WorkspaceBackend> = Arc::new(
             CommandBackend::new("a", r"printf work|Work\n", "true {name}", "cat").unwrap(),
         );
-        let b: Arc<dyn SessionBackend> = Arc::new(
+        let b: Arc<dyn WorkspaceBackend> = Arc::new(
             CommandBackend::new("b", r"printf work|Work\nother\n", "true {name}", "cat").unwrap(),
         );
         let c = CompositeBackend::new(vec![("one".into(), a), ("two".into(), b)]);
@@ -1628,7 +1628,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_new_session_starts_in_the_asked_directory_and_unknown_agents_are_refused() {
+    async fn a_new_workspace_starts_in_the_asked_directory_and_unknown_agents_are_refused() {
         if std::process::Command::new("tmux")
             .arg("-V")
             .output()
@@ -1745,7 +1745,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn renaming_a_session_changes_the_name_clients_show_and_not_its_id() {
+    async fn renaming_a_workspace_changes_the_name_clients_show_and_not_its_id() {
         if std::process::Command::new("tmux")
             .arg("-V")
             .output()
@@ -1799,7 +1799,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sessions_live_on_a_private_server_that_reads_termenbox_config_and_not_the_users() {
+    async fn workspaces_live_on_a_private_server_that_reads_termenbox_config_and_not_the_users() {
         if std::process::Command::new("tmux")
             .arg("-V")
             .output()
@@ -1850,7 +1850,7 @@ mod tests {
         assert_eq!(show(&private, "status").await, "on");
         private.reload_tmux_config().await;
         assert_eq!(show(&private, "status").await, "off");
-        // The user's tmux does not see it, and the session list of the private one does.
+        // The user's tmux does not see it, and the workspace list of the private one does.
         let theirs = TmuxBackend::new(user_own.clone());
         assert!(theirs.list().await.map(|l| l.is_empty()).unwrap_or(true));
         assert_eq!(b.list().await.unwrap().len(), 1);

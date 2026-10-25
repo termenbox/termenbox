@@ -12,7 +12,7 @@ describe('the pairing link', () => {
     expect(parsePairLink('#/pair/AbC-_123')).toEqual({ payload: 'AbC-_123', claim: undefined });
     expect(parsePairLink(`https://app.example/#/pair/AbC?claim=${CLAIM}`)).toEqual({ payload: 'AbC', claim: CLAIM });
     expect(parsePairLink('  https://app.example/#/pair/AbC  ')?.payload).toBe('AbC');
-    expect(parsePairLink('#/sessions')).toBeNull();
+    expect(parsePairLink('#/workspaces')).toBeNull();
     expect(parsePairLink('#claim=' + CLAIM)).toBeNull();
     expect(parsePairLink('')).toBeNull();
   });

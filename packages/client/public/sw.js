@@ -28,7 +28,7 @@ const WORDS = { needs_input: 'needs you', finished: 'finished', failed: 'failed'
 self.addEventListener('push', (event) => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch { /* Show the generic text. */ }
-  const name = typeof data.session === 'string' ? data.session.slice(0, 64) : 'A session';
+  const name = typeof data.session === 'string' ? data.session.slice(0, 64) : 'A workspace';
   const word = WORDS[data.kind] ?? WORDS.attention;
   // Only a path inside this app is followed, whatever the payload says.
   const deepLink = typeof data.deep_link === 'string' && data.deep_link.startsWith('/#/') ? data.deep_link.slice(0, 512) : '/';

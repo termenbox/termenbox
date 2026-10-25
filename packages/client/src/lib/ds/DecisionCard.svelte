@@ -7,8 +7,8 @@
   /** The frame of a decision (decision 0104): who asks, the task, how long it has waited, the question with its
    *  context, then the options. The options and the free-text field are children. `task`, `step` and `context` are
    *  text from an agent or a terminal: they are rendered as text and nothing else. `tier` says how much to trust the options. */
-  let { agent, command, session, waited, task, context, unhealthy, step, tier, question, state = 'needs-you', children, class: className = '' }:
-    { agent?: string; command?: string; session: string; waited?: string; task?: string; context?: string; unhealthy?: boolean; step?: { name: string; summary: string };
+  let { agent, command, workspace, waited, task, context, unhealthy, step, tier, question, state = 'needs-you', children, class: className = '' }:
+    { agent?: string; command?: string; workspace: string; waited?: string; task?: string; context?: string; unhealthy?: boolean; step?: { name: string; summary: string };
       tier?: { name: string; detail: string }; question: string; state?: FleetState; children: Snippet; class?: string } = $props();
 </script>
 
@@ -16,7 +16,7 @@
   <header class="flex items-center gap-3">
     <AgentBadge {agent} {command} {state} />
     <div class="flex min-w-0 flex-1 flex-col">
-      <b class="truncate text-base font-semibold">{session}</b>
+      <b class="truncate text-base font-semibold">{workspace}</b>
       {#if task}<span class="truncate text-sm text-soft" data-decision-task>{task}</span>{/if}
     </div>
     {#if waited}<small class="shrink-0 text-xs font-semibold text-warn" data-decision-waited>Waiting {waited}</small>{/if}

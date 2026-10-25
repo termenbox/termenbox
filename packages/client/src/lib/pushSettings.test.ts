@@ -25,11 +25,11 @@ describe('push settings form', () => {
 });
 
 describe('push deep link', () => {
-  it('reads the session key out of #/home?focus=, decoded', () => {
+  it('reads the workspace key out of #/home?focus=, decoded', () => {
     expect(parseFocusLink('#/home?focus=one%2Ftmux%3Awork')).toBe('one/tmux:work');
     expect(parseFocusLink('#/home?focus=a%2Db')).toBe('a-b');
   });
   it('ignores every other hash, a broken escape and an oversized key', () => {
-    for (const h of ['', '#/home', '#/sessions?focus=x', '#/home?focus=', '#/home?focus=%E0%A4%A', `#/home?focus=${'a'.repeat(300)}`, '#claim=abc']) expect(parseFocusLink(h)).toBeNull();
+    for (const h of ['', '#/home', '#/workspaces?focus=x', '#/home?focus=', '#/home?focus=%E0%A4%A', `#/home?focus=${'a'.repeat(300)}`, '#claim=abc']) expect(parseFocusLink(h)).toBeNull();
   });
 });

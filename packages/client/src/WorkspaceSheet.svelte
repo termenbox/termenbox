@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { NativeSelect } from './lib/ui/native-select';
-  import SessionCard from './SessionCard.svelte';
+  import WorkspaceCard from './WorkspaceCard.svelte';
   import ServerStatus from './ServerStatus.svelte';
   import QuickReply from './QuickReply.svelte';
   import { FrozenOrder } from './lib/cards';
@@ -9,11 +9,11 @@
   import { HEIGHTS, sheetHeight, snapHeight, type SheetHeight } from './lib/sheet';
   import { settings } from './lib/settings';
   import { representativeWindow, type WindowMap } from './lib/windows';
-  import type { AgentMap, SessionAgent } from './lib/agents';
-  import type { HubServer, HubSession } from './lib/hub';
+  import type { AgentMap, WorkspaceAgent } from './lib/agents';
+  import type { HubServer, HubWorkspace } from './lib/hub';
   import type { AgentState, ClientMessage } from './lib/protocol';
 
-  export let sessions: HubSession[];
+  export let workspaces: HubWorkspace[];
   export let agents: AgentMap;
   export let servers: HubServer[];
   export let activeKey: string | null;
@@ -42,7 +42,7 @@
   let shown: ViewGroup[] = [];
   let shownAgents: AgentMap = {};
   let shownServers: HubServer[] = [];
-  let shownSessions: HubSession[] = [];
+  let shownWorkspaces: HubWorkspace[] = [];
   let shownGroupBy: SessionView['group'] = 'server';
   let shownNow = now;
   let shownWindows: WindowMap = {};
@@ -57,26 +57,26 @@
   const frozen = new FrozenOrder();
   $: if (held !== externalHold) { frozen.sheet(held); externalHold = held; revision++; }
   $: if ((height === 'peek' || height === 'closed') && expanded) closeExpanded();
-  $: paths = Object.fromEntries(sessions.map(s => [s.key, representativeWindow(windows[s.key])?.path ?? '']));
-  $: effectiveView = view ?? adaptiveDefault(Object.fromEntries(sessions.filter(s => agents[s.key]).map(s => [s.key, agents[s.key]])));
-  $: agentNames = [...new Set(sessions.map(s => agents[s.key]?.agent ?? s.agent ?? 'shell'))].sort();
+  $: paths = Object.fromEntries(workspaces.map(s => [s.key, representativeWindow(windows[s.key])?.path ?? '']));
+  $: effectiveView = view ?? adaptiveDefault(Object.fromEntries(workspaces.filter(s => agents[s.key]).map(s => [s.key, agents[s.key]])));
+  $: agentNames = [...new Set(workspaces.map(s => agents[s.key]?.agent ?? s.agent ?? 'shell'))].sort();
   $: pixels = dragPixels ?? sheetHeight(height, available);
   $: {
     revision;
-    const proposed = applyView(sessions, agents, effectiveView, now, { ttlMs: $settings.cacheTtlMs, paths });
+    const proposed = applyView(workspaces, agents, effectiveView, now, { ttlMs: $settings.cacheTtlMs, paths });
     // An empty/reconnecting server still has its state and Retry in the unfiltered By server view.
     if (effectiveView.group === 'server' && !effectiveView.filter.statuses.length && !effectiveView.filter.agents.length && !effectiveView.filter.query) {
       for (const s of servers) if (s.state !== 'paused' && (!effectiveView.filter.servers.length || effectiveView.filter.servers.includes(s.id)) && !proposed.some(g => g.serverId === s.id)) {
-        proposed.push({ key: `server:${s.id}`, label: s.server.server_name || 'Server', serverId: s.id, sessions: [] });
+        proposed.push({ key: `server:${s.id}`, label: s.server.server_name || 'Server', serverId: s.id, workspaces: [] });
       }
     }
-    frozen.order(proposed.flatMap(g => g.sessions.map(s => s.key)), {}, now);
+    frozen.order(proposed.flatMap(g => g.workspaces.map(s => s.key)), {}, now);
     onheld(frozen.frozen(now));
     if (forceRender || !frozen.frozen(now) || !rendered) {
       forceRender = false;
       shown = withServerStatus(proposed, servers);
       shownAgents = { ...agents }; shownServers = servers; shownNow = now; rendered = true;
-      shownSessions = sessions; shownGroupBy = effectiveView.group; shownWindows = windows;
+      shownWorkspaces = workspaces; shownGroupBy = effectiveView.group; shownWindows = windows;
     }
   }
   function closeExpanded() { if (expanded) { frozen.sheet(false); expanded = null; onexpanded(false); revision++; } }
@@ -113,7 +113,7 @@
     drag = null; dragPixels = null;
   }
   function cycle() { if (!suppressCycle) height = HEIGHTS[(HEIGHTS.indexOf(height) + 1) % HEIGHTS.length]; suppressCycle = false; }
-  function answer(key: string, choice: number, prompt: NonNullable<SessionAgent['prompt']>) {
+  function answer(key: string, choice: number, prompt: NonNullable<WorkspaceAgent['prompt']>) {
     send({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice });
   }
   onMount(() => {
@@ -134,14 +134,14 @@
   });
 </script>
 
-<section bind:this={root} class="session-sheet" class:mobile class:docked={!mobile} class:peek={mobile && height === 'peek'} class:closed={mobile && height === 'closed'} aria-label="Session views" data-height={mobile ? height : 'docked'}
+<section bind:this={root} class="workspace-sheet" class:mobile class:docked={!mobile} class:peek={mobile && height === 'peek'} class:closed={mobile && height === 'closed'} aria-label="Workspace views" data-height={mobile ? height : 'docked'}
   style={mobile ? `height: ${pixels}px; flex-basis: ${pixels}px;` : ''}
   on:pointerdown|capture={(e) => { frozen.touchDown(e.pointerId); touches = frozen.pointerCount; revision++; }} on:focusin={focusField}>
   {#if mobile}
-    <button class="handle" aria-label={`Resize sessions sheet, ${height}`} on:pointerdown={startDrag} on:pointermove={moveDrag} on:pointerup={(e) => endDrag(e)} on:pointercancel={(e) => endDrag(e, true)} on:click={cycle}
+    <button class="handle" aria-label={`Resize workspaces sheet, ${height}`} on:pointerdown={startDrag} on:pointermove={moveDrag} on:pointerup={(e) => endDrag(e)} on:pointercancel={(e) => endDrag(e, true)} on:click={cycle}
       on:keydown={(e) => { if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); const i = HEIGHTS.indexOf(height); height = HEIGHTS[Math.max(0, Math.min(2, i + (e.key === 'ArrowUp' ? 1 : -1)))]; } }}><span aria-hidden="true"></span></button>
   {/if}
-  <div class="sheet-header"><h2>Sessions</h2><button class="secondary icon" on:click={onrefresh}>Refresh</button><button class="secondary icon" on:click={() => onnew()}>+ New</button>{#if mobile}<button class="secondary" aria-label="Minimize sessions" on:click={() => height = 'closed'}>⌄</button>{/if}</div>
+  <div class="sheet-header"><h2>Workspaces</h2><button class="secondary icon" on:click={onrefresh}>Refresh</button><button class="secondary icon" on:click={() => onnew()}>+ New</button>{#if mobile}<button class="secondary" aria-label="Minimize workspaces" on:click={() => height = 'closed'}>⌄</button>{/if}</div>
   <div class="content" bind:this={content} on:scroll={() => { frozen.scrolled(Date.now()); revision++; }}>
     <div class="presets" on:scroll={() => { frozen.scrolled(Date.now()); revision++; }}>
       {#each PRESETS as preset}<button class="secondary" aria-pressed={effectiveView.preset === preset.id} on:click={() => choose(presetView(preset.id))}>{preset.label}</button>{/each}
@@ -155,7 +155,7 @@
           <label>Status <NativeSelect aria-label="Status" value={effectiveView.filter.statuses.length > 1 ? 'multiple' : effectiveView.filter.statuses[0] ?? ''} onchange={(e) => filter({ statuses: e.currentTarget.value ? [e.currentTarget.value as AgentState] : [] })}><option value="">All statuses</option>{#if effectiveView.filter.statuses.length > 1}<option value="multiple" disabled>Multiple statuses</option>{/if}<option value="needs_input">Needs you</option><option value="error">Error</option><option value="working">Working</option><option value="idle">Idle</option><option value="done">Done</option><option value="unknown">No status</option></NativeSelect></label>
           <label>Agent <NativeSelect aria-label="Agent" value={effectiveView.filter.agents[0] ?? ''} onchange={(e) => filter({ agents: e.currentTarget.value ? [e.currentTarget.value] : [] })}><option value="">All agents</option>{#each agentNames as name}<option value={name}>{name}</option>{/each}</NativeSelect></label>
           <label>Server <NativeSelect aria-label="Server" value={effectiveView.filter.servers[0] ?? ''} onchange={(e) => filter({ servers: e.currentTarget.value ? [e.currentTarget.value] : [] })}><option value="">All servers</option>{#each servers as s}<option value={s.id}>{s.server.server_name || 'Server'}</option>{/each}</NativeSelect></label>
-          <label>Find <input aria-label="Find" type="search" value={effectiveView.filter.query} on:input={(e) => filter({ query: e.currentTarget.value })} placeholder="Session, server or agent" /></label>
+          <label>Find <input aria-label="Find" type="search" value={effectiveView.filter.query} on:input={(e) => filter({ query: e.currentTarget.value })} placeholder="Workspace, server or agent" /></label>
           <label><input type="checkbox" aria-label="Cache expiring only" checked={!!effectiveView.filter.cacheExpiring} on:change={(e) => filter({ cacheExpiring: e.currentTarget.checked })} />Cache expiring only</label>
         </div>
       {/if}
@@ -163,25 +163,25 @@
         {#each shownServers.filter(s => s.state !== 'connected' && s.state !== 'paused') as server (server.id)}<div class="group-header"><h3>{server.server.server_name || 'Server'}</h3><ServerStatus {server} {onretry} /></div>{/each}
       {/if}
       {#each shown as group (group.key)}
-        <section class="session-group" data-group={group.key}>
-          {#if group.label || group.server}<div class="group-header"><h3>{group.label}</h3>{#if group.server}<ServerStatus server={group.server} {onretry} />{#if group.server.state === 'connected'}<button class="secondary icon" aria-label={`New session on ${group.server.server.server_name || 'Server'}`} on:click={() => onnew(group.server?.id)}>+ New</button>{/if}{/if}</div>{/if}
-          {#each group.sessions as session (session.key)}
-            {@const agent = shownAgents[session.key]}
+        <section class="workspace-group" data-group={group.key}>
+          {#if group.label || group.server}<div class="group-header"><h3>{group.label}</h3>{#if group.server}<ServerStatus server={group.server} {onretry} />{#if group.server.state === 'connected'}<button class="secondary icon" aria-label={`New workspace on ${group.server.server.server_name || 'Server'}`} on:click={() => onnew(group.server?.id)}>+ New</button>{/if}{/if}</div>{/if}
+          {#each group.workspaces as workspace (workspace.key)}
+            {@const agent = shownAgents[workspace.key]}
             {#if agent}
-              <SessionCard session={session} {agent} windows={shownWindows[session.key]} ttlMs={$settings.cacheTtlMs} keepWarm={$settings.keepWarm} onpeek={() => onpeek(session.key)} onwarm={() => onwarm(session.key)} serverName={shownGroupBy !== 'server' && shownServers.length > 1 ? session.serverName : ''} now={shownNow} active={session.key === activeKey} expanded={session.key === expanded} onopen={() => onopen(session.key)} ontoggle={() => toggle(session.key)} onanswer={(choice, prompt) => answer(session.key, choice, prompt)} />
-            {:else}<button class="plain" class:active={session.key === activeKey} on:click={() => onopen(session.key)}>{session.name} <small>{session.serverName}</small></button>{/if}
+              <WorkspaceCard workspace={workspace} {agent} windows={shownWindows[workspace.key]} ttlMs={$settings.cacheTtlMs} keepWarm={$settings.keepWarm} onpeek={() => onpeek(workspace.key)} onwarm={() => onwarm(workspace.key)} serverName={shownGroupBy !== 'server' && shownServers.length > 1 ? workspace.serverName : ''} now={shownNow} active={workspace.key === activeKey} expanded={workspace.key === expanded} onopen={() => onopen(workspace.key)} ontoggle={() => toggle(workspace.key)} onanswer={(choice, prompt) => answer(workspace.key, choice, prompt)} />
+            {:else}<button class="plain" class:active={workspace.key === activeKey} on:click={() => onopen(workspace.key)}>{workspace.name} <small>{workspace.serverName}</small></button>{/if}
           {/each}
-          {#if !group.sessions.length}<p class="empty">No sessions yet</p>{/if}
+          {#if !group.workspaces.length}<p class="empty">No workspaces yet</p>{/if}
         </section>
       {/each}
-      {#if !shown.length}<p class="empty">No sessions in this view</p>{/if}
-      <QuickReply sessions={shownSessions} {activeKey} {send} />
+      {#if !shown.length}<p class="empty">No workspaces in this view</p>{/if}
+      <QuickReply workspaces={shownWorkspaces} {activeKey} {send} />
     </div>
   </div>
 </section>
 
 <style>
-  .session-sheet { display: flex; flex-direction: column; min-height: 0; flex-shrink: 0; background: var(--bg-secondary); color: var(--fg); overflow: hidden; }
+  .workspace-sheet { display: flex; flex-direction: column; min-height: 0; flex-shrink: 0; background: var(--bg-secondary); color: var(--fg); overflow: hidden; }
   .mobile { border: 1px solid var(--border); border-radius: 16px 16px 0 0; width: 100%; }
   .docked { width: 320px; height: 100%; border-right: 1px solid var(--border); order: -1; }
   .handle { display: flex; align-items: center; justify-content: center; min-height: 44px; flex: 0 0 44px; width: 100%; background: transparent; color: var(--fg); touch-action: none; padding: 0; }

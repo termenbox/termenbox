@@ -1,9 +1,9 @@
 // The View choice and a restart in the real app against a real termenbox-server, with no acp-agents.toml: the server offers
 // its built-in `claude` because a fake `claude-agent-acp` (a wrapper around e2e/fake-acp-agent.mjs) is on its PATH.
-//   1. New session: the dialog offers Terminal (the default) and Agent view for Claude; one session is made in each, and
+//   1. New session: the dialog offers Terminal (the default) and Agent view for Claude; one workspace is made in each, and
 //      the choice is remembered for that agent.
-//   2. The server restarts while an ACP turn is open (the agent is waiting for a permission): the session comes back by
-//      session/load, says that the restart interrupted the turn, and the terminal session is untouched.
+//   2. The server restarts while an ACP turn is open (the agent is waiting for a permission): the workspace comes back by
+//      session/load, says that the restart interrupted the turn, and the terminal workspace is untouched.
 // Desktop Chromium: this is NOT an iPhone or an Android check (guardrail a-phone-check-names-its-platform).
 // Usage: node e2e/acp-views.mjs   (needs a built server, `pnpm run build` and `pnpm run e2e:build`, node, tmux, and Chrome)
 import { launch, contextOptions } from './browser.mjs';
@@ -129,16 +129,16 @@ try {
   await page.reload();
 
   shown = page;
-  const dialog = page.locator('dialog[aria-label="New session"]');
+  const dialog = page.locator('dialog[aria-label="New workspace"]');
   const viewOn = (id) => dialog.locator(`[data-testid=view-${id}]`).getAttribute('aria-checked').then((v) => v === 'true');
   const openDialog = async () => {
     // The button does nothing until the server is connected, so tap again until the sheet opens.
     await waitFor(async () => {
       if (await dialog.isVisible()) return true;
-      await page.getByRole('button', { name: /^(\+ New|Start a session)$/ }).first().click({ timeout: 5000 }).catch(() => {});
+      await page.getByRole('button', { name: /^(\+ New|Start a workspace)$/ }).first().click({ timeout: 5000 }).catch(() => {});
       await sleep(500);
       return dialog.isVisible();
-    }, 'the New session sheet', 40000);
+    }, 'the New workspace sheet', 40000);
     await dialog.locator('[data-testid=view]').waitFor({ timeout: 20000 });
   };
   const create = async (name) => {
@@ -156,20 +156,20 @@ try {
   check(await viewOn('terminal'), 'the default view is not Terminal');
   await create('term-one');
   await page.locator('.xterm').first().waitFor({ timeout: 30000 });
-  ok('New session: with the adapter on PATH and no config, Claude offers Terminal (default) and Agent view; a Terminal session opens the agent\'s own terminal');
+  ok('New session: with the adapter on PATH and no config, Claude offers Terminal (default) and Agent view; a Terminal workspace opens the agent\'s own terminal');
 
   await openDialog();
   check(await viewOn('terminal'), 'the view was not Terminal on the second open (nothing chosen yet)');
   await dialog.locator('[data-testid=view-acp]').click();
   check(await viewOn('acp'), 'a tap on Agent view does not select it');
   await create('agent-one');
-  await page.locator('[data-testid=acp-view][data-session$="/acp:agent-one"]').waitFor({ timeout: 30000 });
+  await page.locator('[data-testid=acp-view][data-workspace$="/acp:agent-one"]').waitFor({ timeout: 30000 });
   check((await page.locator('[data-testid=tier]').innerText()) === 'T0 · ACP', 'the agent view does not say T0 · ACP');
   await openDialog();
   check(await viewOn('acp'), 'the last choice (Agent view) was not remembered for Claude on this server');
   await dialog.getByRole('button', { name: 'Cancel' }).click();
   await dialog.waitFor({ state: 'detached' });
-  ok('New session: Agent view starts an ACP session in termenbox\'s own view, and the choice is remembered per agent');
+  ok('New session: Agent view starts an ACP workspace in termenbox\'s own view, and the choice is remembered per agent');
 
   // 2. Restart the server during an open turn: "edit" makes the fake agent wait for a permission answer, so the turn stays open.
   const field = page.locator('textarea[aria-label=Prompt]');
@@ -181,21 +181,21 @@ try {
   const row = page.locator('[data-shell=sidebar] [data-key$="acp:agent-one"]');
   await row.waitFor({ timeout: 40000 });
   await row.click();
-  await page.locator('[data-testid=acp-view][data-session$="/acp:agent-one"]').waitFor({ timeout: 30000 });
+  await page.locator('[data-testid=acp-view][data-workspace$="/acp:agent-one"]').waitFor({ timeout: 30000 });
   const notice = (t) => page.locator('[data-kind=notice]').filter({ hasText: t });
   await notice('A server restart interrupted the running turn.').waitFor({ timeout: 40000 });
   await notice('Restored after a server restart').waitFor({ timeout: 10000 });
   check((await notice('A server restart interrupted the running turn.').count()) === 1, 'the interruption is said more than once');
-  check(logged().some((m) => m.method === 'session/resume' || m.method === 'session/load'), `the agent was not asked to resume or load the session after the restart; it received: ${logged().map((m) => m.method).filter(Boolean).join(', ')}`);
-  check((await page.getByTestId('stop').count()) === 0, 'the restored session still looks busy');
-  ok('restart during an open turn: the session comes back by session/resume (or load) and says the restart interrupted the running turn, once');
+  check(logged().some((m) => m.method === 'session/resume' || m.method === 'session/load'), `the agent was not asked to resume or load the workspace after the restart; it received: ${logged().map((m) => m.method).filter(Boolean).join(', ')}`);
+  check((await page.getByTestId('stop').count()) === 0, 'the restored workspace still looks busy');
+  ok('restart during an open turn: the workspace comes back by session/resume (or load) and says the restart interrupted the running turn, once');
 
-  // The terminal session is untouched: still listed, still attachable.
+  // The terminal workspace is untouched: still listed, still attachable.
   const termRow = page.locator('[data-shell=sidebar] [data-key$="tmux:term-one"]');
   await termRow.waitFor({ timeout: 20000 });
   await termRow.click();
   await page.locator('.xterm').first().waitFor({ timeout: 30000 });
-  ok('restart: the terminal session is still there and attaches');
+  ok('restart: the terminal workspace is still there and attaches');
   check(errors.length === 0, `page errors: ${errors}`);
   await ctx.close();
 } catch (e) {

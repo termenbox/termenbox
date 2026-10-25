@@ -1,9 +1,9 @@
 // Desktop (mouse and keyboard, no touch) scenarios. Each desktop step of the roadmap adds its own scenario here
 // (desktop review, PR #149).
-//   Part 1 (1280 px, U04): the shell probe: the sidebar with the four destinations and every session of two servers, the
+//   Part 1 (1280 px, U04): the shell probe: the sidebar with the four destinations and every workspace of two servers, the
 //   Ctrl/Cmd+K palette, its shortcut list and off switch, and a sidebar that holds still under the pointer. The probe's
 //   terminal is a stand-in textarea, so this part proves what the page does with a key, not what xterm does with it.
-//   Part 2 (U15): the REAL app (real hub, connection, xterm, session view, decision card) against a scripted server:
+//   Part 2 (U15): the REAL app (real hub, connection, xterm, workspace view, decision card) against a scripted server:
 //   sidebar toggle/resize/keyboard/reload at 721, 1024, 1440 and 1920 px, crossing 720 px, the live terminal beside the
 //   structured view, the shortcuts, and no key reaching the terminal from the composer. See app-lib.mjs for its limits.
 // Usage: node e2e/desktop.mjs (after: pnpm run e2e:build, and the app's own: pnpm build). Browser, viewport and pixel ratio
@@ -17,32 +17,32 @@ const failures = [];
 const { page } = t;
 await t.open();
 
-// 1. Sidebar, not a bottom bar; every destination reachable; 20 sessions on two servers, each with a state word.
+// 1. Sidebar, not a bottom bar; every destination reachable; 20 workspaces on two servers, each with a state word.
 const side = page.locator('[data-shell=sidebar]');
 t.check(await side.isVisible(), `no sidebar at ${t.page.viewportSize().width} px`);
 t.check((await page.locator('[data-shell=bottom-bar]').count()) === 0, 'the bottom bar is on the desktop');
-for (const [id, heading] of [['home', 'Home'], ['activity', 'Activity'], ['settings', 'Settings'], ['sessions', null]]) {
+for (const [id, heading] of [['home', 'Home'], ['activity', 'Activity'], ['settings', 'Settings'], ['workspaces', null]]) {
   await side.locator(`[data-destination=${id}]`).click();
   t.check((await t.destination()) === id, `the sidebar did not reach ${id}`);
   t.check((await side.locator(`[data-destination=${id}]`).getAttribute('aria-current')) === 'page', `${id} is not marked as the current page`);
   if (heading) await page.getByRole('heading', { name: heading, exact: true }).waitFor();
   t.check((await t.overflow()) <= 0, `${id} overflows sideways`);
 }
-t.check((await side.locator('[data-key]').count()) === 20, `the sidebar lists ${await side.locator('[data-key]').count()} sessions, not 20`);
-t.check((await side.locator('section[data-server]').count()) === 2, 'the sessions are not grouped under two servers');
-t.check((await side.locator('[data-key="alpha/svc-2"]').innerText()).includes('Needs you'), 'a session needing you does not say so in words');
+t.check((await side.locator('[data-key]').count()) === 20, `the sidebar lists ${await side.locator('[data-key]').count()} workspaces, not 20`);
+t.check((await side.locator('section[data-server]').count()) === 2, 'the workspaces are not grouped under two servers');
+t.check((await side.locator('[data-key="alpha/svc-2"]').innerText()).includes('Needs you'), 'a workspace needing you does not say so in words');
 t.check((await t.smallTargets('[data-shell=sidebar]')).length === 0, `sidebar targets under 44 pt: ${await t.smallTargets('[data-shell=sidebar]')}`);
-t.ok('sidebar: four destinations, 20 sessions on two servers with their states');
+t.ok('sidebar: four destinations, 20 workspaces on two servers with their states');
 
-// 2. Open a session from the sidebar; the in-session tab switch and the strip.
+// 2. Open a workspace from the sidebar; the in-workspace tab switch and the strip.
 await side.locator('[data-key="alpha/svc-2"]').click();
-t.check((await t.api('active')) === 'alpha/svc-2', 'a sidebar session did not open');
-await t.inSessionTabSwitch();
+t.check((await t.api('active')) === 'alpha/svc-2', 'a sidebar workspace did not open');
+await t.inWorkspaceTabSwitch();
 await t.stripKeyboard();
 
 // 3. Ordinary keys, the palette, Escape.
 await t.ordinaryKeysReachTerminal();
-await t.paletteOpensSessionByName();
+await t.paletteOpensWorkspaceByName();
 await t.escapeRestoresFocus();
 
 // 4. The palette also takes destinations, servers and actions, and opens from the sidebar's Search button.
@@ -64,14 +64,14 @@ t.check((await t.api('actions')).includes('pause:alpha'), 'the palette did not r
 await openPalette();
 await page.keyboard.type('beta job-3');
 await page.keyboard.press('Enter');
-t.check((await t.api('active')) === 'beta/job-3', 'a server name plus a session name did not find the session');
+t.check((await t.api('active')) === 'beta/job-3', 'a server name plus a workspace name did not find the workspace');
 await openPalette();
 await page.keyboard.type('zzzzzz');
 await page.getByText('Nothing matches').waitFor();
 await page.keyboard.press('Escape');
 t.check(await side.getByRole('button', { name: /^Search/ }).evaluate((e) => document.activeElement === e), 'focus did not return to the Search button after Escape');
 t.check((await t.smallTargets('[data-shell=palette]')).length === 0, 'palette targets under 44 pt');
-t.ok('the palette opens a destination, runs an action, finds a server+session, says when nothing matches, and returns focus');
+t.ok('the palette opens a destination, runs an action, finds a server+workspace, says when nothing matches, and returns focus');
 
 // 5. Shortcut list from the palette; shortcuts can be turned off in Settings and then Ctrl+K belongs to the terminal.
 await page.keyboard.press('Control+k');
@@ -84,7 +84,7 @@ await page.keyboard.press('Escape');
 await help.waitFor({ state: 'detached' });
 await side.locator('[data-destination=settings]').click();
 await page.getByRole('switch', { name: /Keyboard shortcuts/ }).click();
-await side.locator('[data-destination=sessions]').click();
+await side.locator('[data-destination=workspaces]').click();
 await t.api('clearKeys');
 await page.locator('textarea[aria-label="Terminal input"]').focus();
 await page.keyboard.press('Control+k');
@@ -93,14 +93,14 @@ t.check((await page.getByRole('combobox', { name: 'Search' }).count()) === 0, 'C
 t.check((await t.api('keys')).some((k) => k.key === 'k' && k.ctrl && !k.prevented), 'Ctrl+K did not reach the terminal with shortcuts off');
 await side.locator('[data-destination=settings]').click();
 await page.getByRole('switch', { name: /Keyboard shortcuts/ }).click();
-await side.locator('[data-destination=sessions]').click();
+await side.locator('[data-destination=workspaces]').click();
 await page.locator('textarea[aria-label="Terminal input"]').focus();
 await page.keyboard.press('Control+k');
 await page.getByRole('combobox', { name: 'Search' }).waitFor();
 await page.keyboard.press('Escape');
 t.ok('the shortcut list opens from the palette and names the keys; Settings turns shortcuts off and on');
 
-// 7. The sidebar holds still under the pointer: press on a session, a status update arrives, nothing moves; release, then it re-sorts.
+// 7. The sidebar holds still under the pointer: press on a workspace, a status update arrives, nothing moves; release, then it re-sorts.
 await t.api('setState', 'alpha', 'svc-9', 'idle');
 await page.waitForTimeout(2300);
 const rows = '[data-shell=sidebar] [data-key]';

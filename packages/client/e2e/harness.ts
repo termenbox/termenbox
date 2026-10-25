@@ -26,8 +26,8 @@ interface Opts {
 
 const decoder = new TextDecoder();
 let connection: Connection | null = null;
-let activeSession: string | null = null; // re-attached after a reconnect, as the app does
-let mounted = false; // the Terminal component sizes the session itself
+let activeWorkspace: string | null = null; // re-attached after a reconnect, as the app does
+let mounted = false; // the Terminal component sizes the workspace itself
 
 const api = {
   /** Public key of this browser's device key, for the test to have a certificate issued. */
@@ -42,7 +42,7 @@ const api = {
   control: [] as string[],
   /** Every server message except terminal output, for diagnosing a test. */
   received: [] as string[],
-  sessions: [] as { id: string; name: string }[],
+  workspaces: [] as { id: string; name: string }[],
   kind: () => connection?.kind ?? null,
   start(opts: Opts) {
     connection = new Connection({
@@ -58,7 +58,7 @@ const api = {
         api.ready++;
         if (isReconnect) {
           connection?.send({ type: 'list_sessions' });
-          if (activeSession) connection?.send({ type: 'attach', session_id: activeSession });
+          if (activeWorkspace) connection?.send({ type: 'attach', session_id: activeWorkspace });
         }
       },
       onFatal: (m) => (api.fatal = m),
@@ -67,7 +67,7 @@ const api = {
       if (m.type !== 'output' && m.type !== 'term') api.received.push(JSON.stringify(m).slice(0, 160));
       if (m.type === 'output') api.output += decoder.decode(b64ToBytes(m.data), { stream: true });
       if (m.type === 'term') api.output += decoder.decode(m.bytes, { stream: true });
-      if (m.type === 'sessions') api.sessions = m.sessions;
+      if (m.type === 'sessions') api.workspaces = m.sessions;
       if (m.type === 'session_attached' && !mounted) connection?.send({ type: 'resize', cols: 120, rows: 30 });
     });
     const realSend = connection.send.bind(connection);
@@ -75,7 +75,7 @@ const api = {
       if (m.type === 'input') api.sent.push(atob(m.data));
       else {
         api.control.push(JSON.stringify(m));
-        if (m.type === 'attach') activeSession = m.session_id;
+        if (m.type === 'attach') activeWorkspace = m.session_id;
       }
       return realSend(m);
     };
@@ -88,7 +88,7 @@ const api = {
     host.style.cssText = 'position:fixed;inset:0;display:flex;flex-direction:column;background:#000';
     document.body.append(host);
     mounted = true;
-    mount(Terminal, { target: host, props: { connection: connection!, activeSessionId: sessionId, connState: 'connected' } });
+    mount(Terminal, { target: host, props: { connection: connection!, activeWorkspaceId: sessionId, connState: 'connected' } });
   },
   send: (msg: ClientMessage) => connection?.send(msg),
   type: (text: string) => connection?.send({ type: 'input', data: textToB64(text) }),

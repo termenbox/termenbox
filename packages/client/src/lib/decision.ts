@@ -1,9 +1,9 @@
-// The decision card's data (decisions 0103, 0104): one model for Home, the inbox and the session view, built from
+// The decision card's data (decisions 0103, 0104): one model for Home, the inbox and the workspace view, built from
 // what the server already sends. Everything here that came from an agent is untrusted: cleaned and capped, and only
 // ever rendered as text. No standing rules and no batch approve (0104).
 import { cleanText, type Tier } from './sessionView';
 import { bannerChoices } from './notify';
-import { isStale, type SessionAgent } from './agents';
+import { isStale, type WorkspaceAgent } from './agents';
 import { clean as cleanLine } from './snippets';
 
 export const STEP_NAME_CHARS = 40;
@@ -27,15 +27,15 @@ export interface Decision {
   step?: Step;
   /** The labels of the agent's own options, in order. */
   options: string[];
-  /** Which prompt this is, for a surface that answers by index (the session view). */
+  /** Which prompt this is, for a surface that answers by index (the workspace view). */
   promptId?: string;
   /** The prompt a one-tap answer is attached to, as it was when the card was built. */
-  prompt?: NonNullable<SessionAgent['prompt']>;
+  prompt?: NonNullable<WorkspaceAgent['prompt']>;
 }
 
 /** The command, file or diff summary of the step the agent is about to take, from its own hook: the latest `tool`
  *  event, only while it has started and not finished. */
-export function stepOf(a: SessionAgent | undefined): Step | undefined {
+export function stepOf(a: WorkspaceAgent | undefined): Step | undefined {
   const t = a?.tool;
   if (!t || t.phase !== 'started') return undefined;
   const name = cleanText(t.name, STEP_NAME_CHARS);
@@ -43,9 +43,9 @@ export function stepOf(a: SessionAgent | undefined): Step | undefined {
   return name || summary ? { name, summary } : undefined;
 }
 
-/** The card for a session that needs you. Options come only from a prompt the agent's own hook confirmed (the
- *  banner's rule), so the tier with options is T1 (T0 when the session is an ACP session); without one the card has the question and the reply field only. */
-export function decisionFor(s: { key: string; name: string; since?: number; question?: string; title?: string }, a: SessionAgent | undefined, now: number): Decision {
+/** The card for a workspace that needs you. Options come only from a prompt the agent's own hook confirmed (the
+ *  banner's rule), so the tier with options is T1 (T0 when the workspace is an ACP workspace); without one the card has the question and the reply field only. */
+export function decisionFor(s: { key: string; name: string; since?: number; question?: string; title?: string }, a: WorkspaceAgent | undefined, now: number): Decision {
   const options = a ? bannerChoices(a, now) : [];
   const structured = options.length > 0 && !!a && !isStale(a, now);
   return {
@@ -66,7 +66,7 @@ export function decisionFor(s: { key: string; name: string; since?: number; ques
 export const replyLine = (text: string): string => cleanLine(text);
 
 /** An option that grants more than this one question: it must never be what a quick shortcut picks (decision 0104). */
-const STANDING = /don['’]?t ask again|do not ask again|always|for (this|the rest of the) session|every time|from now on|remember|all (future )?(edits|commands|requests)/i;
+const STANDING = /don['’]?t ask again|do not ask again|always|for (this|the rest of the) workspace|every time|from now on|remember|all (future )?(edits|commands|requests)/i;
 const YES = /^(yes|allow|approve|accept|proceed|continue|run|ok|okay|trust)\b/i;
 const NO = /^(no|deny|reject|decline|cancel|don['’]?t (allow|run|do))\b/i;
 
@@ -81,9 +81,9 @@ export function answerIndex(options: string[], kind: 'yes' | 'no'): number | nul
   return i < 0 ? null : i;
 }
 
-/** The session to open for “next that needs you”: the one waiting longest after the current one, wrapping round. */
-export function nextNeedsYou<T extends { key: string }>(sessions: T[], isWaiting: (key: string) => boolean, since: (key: string) => number, current: string | null): T | null {
-  const waiting = sessions.filter((s) => isWaiting(s.key)).sort((a, b) => since(a.key) - since(b.key));
+/** The workspace to open for “next that needs you”: the one waiting longest after the current one, wrapping round. */
+export function nextNeedsYou<T extends { key: string }>(workspaces: T[], isWaiting: (key: string) => boolean, since: (key: string) => number, current: string | null): T | null {
+  const waiting = workspaces.filter((s) => isWaiting(s.key)).sort((a, b) => since(a.key) - since(b.key));
   if (!waiting.length) return null;
   const at = waiting.findIndex((s) => s.key === current);
   const next = waiting[(at + 1) % waiting.length];

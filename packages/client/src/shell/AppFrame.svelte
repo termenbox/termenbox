@@ -11,19 +11,19 @@
   import { commitLayout, layout, MIN_CONTENT, patchLayout, sidebarWidthFor, SIDEBAR, toggleSidebar, toggleSplit, WIDE_QUERY } from '../lib/panes';
   import { edgeSwipeBack } from '../lib/edgeswipe';
   import type { AgentMap } from '../lib/agents';
-  import type { HubServer, HubSession } from '../lib/hub';
+  import type { HubServer, HubWorkspace } from '../lib/hub';
 
   /**
    * The arrangement around a screen (decision 0101). Phone (720 px and below): content, then the bottom bar (hidden while
-   * the soft keyboard is open inside a session). Wider: a docked sidebar you can hide and resize (saved per device) beside
+   * the soft keyboard is open inside a workspace). Wider: a docked sidebar you can hide and resize (saved per device) beside
    * the content; with the sidebar hidden the bottom bar carries the destinations. The palette and the shortcut list are the
    * same at both widths. The frame never sizes the app: AppShell does (soft-keyboard-never-hides-input).
    */
-  let { current, onnavigate, servers, sessions, agents, activeKey = null, chrome = true, inSession = false, keyboardOpen = false, wide = $bindable(false), helpOpen = $bindable(false),
-    canCreate = true, onopen, onserver, onrename, onclosesession, onaction = () => {}, onshortcut = () => {}, onback, onrepeat, children }: {
-    current: Destination; onnavigate: (d: Destination) => void; servers: HubServer[]; sessions: HubSession[]; agents: AgentMap; activeKey?: string | null; chrome?: boolean;
-    inSession?: boolean; keyboardOpen?: boolean; wide?: boolean; helpOpen?: boolean; canCreate?: boolean; onopen: (key: string) => void; onserver: (id: string) => void;
-    onrename?: (key: string, name: string) => void; onclosesession?: (key: string) => void; onaction?: (id: string) => void; onshortcut?: (id: string) => void; onback?: () => void; /** The bottom bar's button for the destination already open was tapped again (Sessions: the list). */ onrepeat?: (d: Destination) => void; children: Snippet;
+  let { current, onnavigate, servers, workspaces, agents, activeKey = null, chrome = true, inWorkspace = false, keyboardOpen = false, wide = $bindable(false), helpOpen = $bindable(false),
+    canCreate = true, onopen, onserver, onrename, oncloseworkspace, onaction = () => {}, onshortcut = () => {}, onback, onrepeat, children }: {
+    current: Destination; onnavigate: (d: Destination) => void; servers: HubServer[]; workspaces: HubWorkspace[]; agents: AgentMap; activeKey?: string | null; chrome?: boolean;
+    inWorkspace?: boolean; keyboardOpen?: boolean; wide?: boolean; helpOpen?: boolean; canCreate?: boolean; onopen: (key: string) => void; onserver: (id: string) => void;
+    onrename?: (key: string, name: string) => void; oncloseworkspace?: (key: string) => void; onaction?: (id: string) => void; onshortcut?: (id: string) => void; onback?: () => void; /** The bottom bar's button for the destination already open was tapped again (Workspaces: the list). */ onrepeat?: (d: Destination) => void; children: Snippet;
   } = $props();
 
   let viewport = $state(typeof innerWidth === 'number' ? innerWidth : 1280);
@@ -32,9 +32,9 @@
   const sidebarShown = $derived(chrome && wide && $layout.sidebarOpen);
 
   const mac = isMac();
-  const groups = $derived(navGroups(servers, sessions, agents));
-  const needsYou = $derived(groups.reduce((n, g) => n + g.sessions.filter((s) => s.state === 'needs-you').length, 0));
-  const entries = $derived(buildEntries({ servers, sessions, agents, wide, sidebarOpen: $layout.sidebarOpen, splitOpen: $layout.splitOpen, canCreate }));
+  const groups = $derived(navGroups(servers, workspaces, agents));
+  const needsYou = $derived(groups.reduce((n, g) => n + g.workspaces.filter((s) => s.state === 'needs-you').length, 0));
+  const entries = $derived(buildEntries({ servers, workspaces, agents, wide, sidebarOpen: $layout.sidebarOpen, splitOpen: $layout.splitOpen, canCreate }));
   const hint = $derived(mac ? SHORTCUTS[0].mac : SHORTCUTS[0].other);
   let paletteOpen = $state(false);
   let returnTo: HTMLElement | null = $state(null);
@@ -48,7 +48,7 @@
     const [kind, ...rest] = e.id.split(':');
     const arg = rest.join(':');
     if (kind === 'dest') onnavigate(arg as Destination);
-    else if (kind === 'session') onopen(arg);
+    else if (kind === 'workspace') onopen(arg);
     else if (kind === 'server') onserver(arg);
     else if (arg === 'toggle-sidebar') toggleSidebar();
     else if (arg === 'toggle-split') toggleSplit();
@@ -83,12 +83,12 @@
   });
 
   let swipe: { id: number; x: number; y: number } | null = null;
-  const bar = $derived(chrome && !sidebarShown && !(inSession && keyboardOpen));
+  const bar = $derived(chrome && !sidebarShown && !(inWorkspace && keyboardOpen));
 </script>
 
 <div class="flex min-h-0 min-w-0 flex-1" data-shell="frame" data-wide={wide} data-bar={bar} data-sidebar={sidebarShown ? 'open' : 'closed'}>
   {#if sidebarShown}
-    <SideNav id="workspace-sidebar" width={sidebarWidth} {current} {onnavigate} {groups} {activeKey} {onopen} {onserver} {onrename} {onclosesession} onnew={canCreate ? () => onaction('new-session') : undefined} onsearch={openPalette} searchHint={hint}
+    <SideNav id="workspace-sidebar" width={sidebarWidth} {current} {onnavigate} {groups} {activeKey} {onopen} {onserver} {onrename} {oncloseworkspace} onnew={canCreate ? () => onaction('new-workspace') : undefined} onsearch={openPalette} searchHint={hint}
       splitOpen={$layout.splitOpen} onsplit={toggleSplit} />
     <Resizer label="Sidebar width" controls="workspace-sidebar" value={sidebarWidth} min={SIDEBAR.min} max={sidebarMax} def={Math.min(SIDEBAR.def, sidebarMax)} step={SIDEBAR.step}
       onchange={(w) => patchLayout({ sidebarWidth: w }, false)} oncommit={commitLayout} />
@@ -96,15 +96,15 @@
   <div class="flex min-h-0 min-w-0 flex-1 flex-col">
     <div class="relative flex min-h-0 min-w-0 flex-1">
       <div class="flex min-h-0 min-w-0 flex-1 flex-col" data-shell="main">{@render children()}</div>
-      {#if onback && inSession && !wide}
-        <!-- Swipe-back: a drag from the left edge opens the session list. Not a control: taps here fall through to nothing. -->
+      {#if onback && inWorkspace && !wide}
+        <!-- Swipe-back: a drag from the left edge opens the workspace list. Not a control: taps here fall through to nothing. -->
         <div aria-hidden="true" data-shell="edge" class="absolute inset-y-0 left-0 z-40 w-5 touch-none"
           onpointerdown={(e) => (swipe = { id: e.pointerId, x: e.clientX, y: e.clientY })}
           onpointerup={(e) => { if (swipe?.id === e.pointerId && edgeSwipeBack(swipe, { x: e.clientX, y: e.clientY })) onback?.(); swipe = null; }}
           onpointercancel={() => (swipe = null)}></div>
       {/if}
     </div>
-    {#if bar}<BottomBar {current} onnavigate={(d) => (d === current && d === 'sessions' && onrepeat ? onrepeat(d) : onnavigate(d))} {needsYou} />{/if}
+    {#if bar}<BottomBar {current} onnavigate={(d) => (d === current && d === 'workspaces' && onrepeat ? onrepeat(d) : onnavigate(d))} {needsYou} />{/if}
   </div>
   {#if chrome}
     <CommandPalette bind:open={paletteOpen} {entries} onrun={run} {returnTo} />

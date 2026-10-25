@@ -1,6 +1,6 @@
 // "Report a problem" (decision 0074): builds a scrubbed diagnostics text and a prefilled GitHub issue URL.
 // The user reads and submits it; nothing is sent by the app. Guardrail diagnostics-never-include-secrets:
-// no certificates, tokens, claim secrets, addresses, terminal output or session names.
+// no certificates, tokens, claim secrets, addresses, terminal output or workspace names.
 import { writable } from 'svelte/store';
 import { APP_VERSION } from './appVersion';
 

@@ -1,4 +1,4 @@
-// The sounds a session that needs you can make. Each is data: a list of notes that one player schedules, so adding
+// The sounds a workspace that needs you can make. Each is data: a list of notes that one player schedules, so adding
 // a sound or cutting a bad one is an edit to this table. The terminal bell keeps its own beep (bell.ts).
 
 /** Asking: a question or a failure, rising. Done: a finished reply, the same notes played back falling. */

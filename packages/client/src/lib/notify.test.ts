@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PlayResult } from './bell';
 import { announce, attentionIcon, bannerChoices, bannerText, createAlerter, createAttention, createNotifier, VIBRATE_PATTERN, PENDING_MS, titleFor, waitingList } from './notify';
-import type { AgentMap, SessionAgent } from './agents';
+import type { AgentMap, WorkspaceAgent } from './agents';
 
-const ag = (patch: Partial<SessionAgent>): SessionAgent => ({ state: 'needs_input', seq: 1, stale: false, ts: 1000, ...patch });
+const ag = (patch: Partial<WorkspaceAgent>): WorkspaceAgent => ({ state: 'needs_input', seq: 1, stale: false, ts: 1000, ...patch });
 
 describe('needs-you signals', () => {
   it('lists who waits, the longest wait first, and never lists the rest', () => {
@@ -109,7 +109,7 @@ describe('browser notifications', () => {
     expect(shown).toHaveLength(0);
   });
 
-  it('tells once per session however often it is updated, and again after the session stops needing you', () => {
+  it('tells once per workspace however often it is updated, and again after the workspace stops needing you', () => {
     const { update, shown } = setup();
     update([w('a', 'Alpha')], true, false);
     update([w('a', 'Alpha')], true, false);
@@ -122,7 +122,7 @@ describe('browser notifications', () => {
     expect(shown).toHaveLength(3);
   });
 
-  it('opens the session when the notification is clicked', () => {
+  it('opens the workspace when the notification is clicked', () => {
     const { update, opened, notes } = setup();
     update([w('a')], true, false);
     notes[0].onclick?.();
@@ -131,7 +131,7 @@ describe('browser notifications', () => {
   });
 });
 
-describe('sound and vibration when a session starts needing you', () => {
+describe('sound and vibration when a workspace starts needing you', () => {
   const w = (key: string, since: number, clockOffset?: number) => ({ key, name: key, since, agent: ag({ clockOffset }) });
   const both = { sound: true, vibrate: true };
   const setup = (now = 100_000) => {
@@ -158,7 +158,7 @@ describe('sound and vibration when a session starts needing you', () => {
     expect(vibrate).not.toHaveBeenCalled();
   });
 
-  it('alerts again when a session needs you again after being answered', () => {
+  it('alerts again when a workspace needs you again after being answered', () => {
     const { play, update } = setup();
     update([w('a', 99_000)], both);
     update([], both);
@@ -217,7 +217,7 @@ describe('sound and vibration when a session starts needing you', () => {
     expect(finished.play).toHaveBeenCalledWith('done');
   });
 
-  it('keeps a sound that found audio locked and plays it on the next tap while the session still waits', () => {
+  it('keeps a sound that found audio locked and plays it on the next tap while the workspace still waits', () => {
     const { play, update, clock } = setup();
     play.mockReturnValueOnce('locked');
     update([w('a', 99_000)], both);
@@ -229,7 +229,7 @@ describe('sound and vibration when a session starts needing you', () => {
     expect(play).toHaveBeenCalledTimes(2);
   });
 
-  it('drops a kept sound that is too old, or whose session no longer waits', () => {
+  it('drops a kept sound that is too old, or whose workspace no longer waits', () => {
     const old = setup();
     old.play.mockReturnValueOnce('locked');
     old.update([w('a', 99_000)], both);
@@ -254,13 +254,13 @@ describe('sound and vibration when a session starts needing you', () => {
     expect(play).toHaveBeenCalledTimes(3);
   });
 
-  it('says why in one log line per update with new items, without a session name', () => {
+  it('says why in one log line per update with new items, without a workspace name', () => {
     const { log, update } = setup();
-    update([w('secret-session', 10_000)], both);
-    update([w('secret-session', 10_000)], both);
+    update([w('secret-workspace', 10_000)], both);
+    update([w('secret-workspace', 10_000)], both);
     expect(log).toHaveBeenCalledTimes(1);
     expect(log.mock.calls[0][0]).toMatch(/1 new, 0 fresh \(ages 90 s.*stale/);
-    expect(log.mock.calls[0][0]).not.toContain('secret-session');
+    expect(log.mock.calls[0][0]).not.toContain('secret-workspace');
     const off = setup();
     off.update([w('a', 99_000)], { sound: false, vibrate: true });
     expect(off.log.mock.calls[0][0]).toMatch(/sound off, vibrated/);

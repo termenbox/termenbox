@@ -1,6 +1,6 @@
 // The hook offer (U10, decisions 0079 and 0106) in the real app against a real termenbox-server and tmux: the card on Home
 // with the exact change, Not now / Never / the 14-day return, Enable writing exactly the previewed file, Settings showing
-// and removing it, and the session reaching T1 once the hook entry that was written is run. A stand-in `claude` (a copy of
+// and removing it, and the workspace reaching T1 once the hook entry that was written is run. A stand-in `claude` (a copy of
 // `sleep` under that name) is what the server's process scan detects; the settings file lives in a private HOME.
 // Usage: node e2e/hookoffer.mjs   (needs a built server, `pnpm run build` and `pnpm run e2e:build`, and Chrome)
 import { launch, contextOptions } from './browser.mjs';
@@ -99,8 +99,8 @@ try {
   await hp.evaluate((o) => window.__e2e.start(o), { record, cert, serverId, claim });
   await waitFor(() => hp.evaluate(() => window.__e2e.state === 'connected'), 'harness connected');
   await hp.evaluate(() => window.__e2e.send({ type: 'new_session', name: 's1' }));
-  await waitFor(() => hp.evaluate(() => (window.__e2e.send({ type: 'list_sessions' }), window.__e2e.sessions.length > 0)), 'session listed');
-  const id = await hp.evaluate(() => window.__e2e.sessions[0].id);
+  await waitFor(() => hp.evaluate(() => (window.__e2e.send({ type: 'list_sessions' }), window.__e2e.workspaces.length > 0)), 'workspace listed');
+  const id = await hp.evaluate(() => window.__e2e.workspaces[0].id);
   await hp.evaluate((id) => window.__e2e.send({ type: 'attach', session_id: id }), id);
   await sleep(500);
   const typeLine = async (line, marker) => {
@@ -200,7 +200,7 @@ try {
   check(existsSync(join(configDir, 'claude-hooks.json')), 'the change was not journaled');
   console.log('ok  Enable writes exactly the previewed file, with a backup and a journal entry');
 
-  // 5. Settings shows it on. The hook entry that was written, run in the session, takes the view to T1.
+  // 5. Settings shows it on. The hook entry that was written, run in the workspace, takes the view to T1.
   await goto('settings');
   await row.waitFor();
   check((await row.getAttribute('data-hook-state')) === 'connected' && (await row.locator('[data-hook-status]').innerText()) === 'On', 'Settings does not show the hooks on');
@@ -209,15 +209,15 @@ try {
   const payload = JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'x', transcript_path: transcript, cwd: '/tmp' });
   await typeLine(`printf '%s' '${payload}' | ${command}`, 'hook-sent');
   await selectWindow(1);
-  await goto('sessions');
-  const sessionRow = page.locator('[data-session-groups] button').filter({ has: page.locator('b', { hasText: /^s1$/ }) }).first();
-  await sessionRow.waitFor({ timeout: 20000 });
-  await sessionRow.click();
+  await goto('workspaces');
+  const workspaceRow = page.locator('[data-workspace-groups] button').filter({ has: page.locator('b', { hasText: /^s1$/ }) }).first();
+  await workspaceRow.waitFor({ timeout: 20000 });
+  await workspaceRow.click();
   await page.locator('.xterm').waitFor({ timeout: 20000 });
   await page.getByRole('radio', { name: 'Decision' }).click();
   await page.locator('[data-testid=timeline]').waitFor({ timeout: 20000 });
-  check((await page.locator('[data-testid=session-view]').innerText()).includes('Structured view'), 'the session did not reach T1');
-  console.log('ok  the hook entry Enable wrote takes the session to T1');
+  check((await page.locator('[data-testid=session-view]').innerText()).includes('Structured view'), 'the workspace did not reach T1');
+  console.log('ok  the hook entry Enable wrote takes the workspace to T1');
 
   // 6. Remove from Settings restores the original bytes; Enable there shows the change first.
   await goto('settings');

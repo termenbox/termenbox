@@ -2,21 +2,21 @@
 import { writable } from 'svelte/store';
 import { DESTINATIONS } from './router';
 import type { AgentMap } from './agents';
-import type { HubServer, HubSession } from './hub';
+import type { HubServer, HubWorkspace } from './hub';
 import { fleetOf } from './navlist';
 import { STATES, type FleetState } from './ds/states';
 
-export type EntryKind = 'destination' | 'action' | 'server' | 'session';
+export type EntryKind = 'destination' | 'action' | 'server' | 'workspace';
 export interface PaletteEntry { id: string; kind: EntryKind; label: string; detail?: string; state?: FleetState; agent?: string }
 
-export interface PaletteInput { servers: HubServer[]; sessions: HubSession[]; agents: AgentMap; wide: boolean; sidebarOpen: boolean; splitOpen: boolean; canCreate: boolean }
+export interface PaletteInput { servers: HubServer[]; workspaces: HubWorkspace[]; agents: AgentMap; wide: boolean; sidebarOpen: boolean; splitOpen: boolean; canCreate: boolean }
 
-/** Ids: `dest:<name>`, `action:<name>[:<server>]`, `server:<id>`, `session:<key>`. */
+/** Ids: `dest:<name>`, `action:<name>[:<server>]`, `server:<id>`, `workspace:<key>`. */
 export function buildEntries(i: PaletteInput): PaletteEntry[] {
   const out: PaletteEntry[] = DESTINATIONS.map((d) => ({ id: `dest:${d.id}`, kind: 'destination', label: d.label, detail: 'Go to' }));
-  if (i.canCreate) out.push({ id: 'action:new-session', kind: 'action', label: 'New session', detail: 'Action' });
-  // The same as the Alt keys, for where those keys belong to the terminal or a field (the terminal keeps the focus when a session opens).
-  out.push({ id: 'action:next-needs-you', kind: 'action', label: 'Open the next session that needs you', detail: 'Action' });
+  if (i.canCreate) out.push({ id: 'action:new-workspace', kind: 'action', label: 'New workspace', detail: 'Action' });
+  // The same as the Alt keys, for where those keys belong to the terminal or a field (the terminal keeps the focus when a workspace opens).
+  out.push({ id: 'action:next-needs-you', kind: 'action', label: 'Open the next workspace that needs you', detail: 'Action' });
   out.push({ id: 'action:approve-decision', kind: 'action', label: 'Answer Yes to the open decision', detail: 'Action' });
   out.push({ id: 'action:deny-decision', kind: 'action', label: 'Answer No to the open decision', detail: 'Action' });
   out.push({ id: 'action:focus-composer', kind: 'action', label: 'Focus the reply composer', detail: 'Action' });
@@ -31,10 +31,10 @@ export function buildEntries(i: PaletteInput): PaletteEntry[] {
   }
   out.push({ id: 'action:shortcuts', kind: 'action', label: 'Keyboard shortcuts', detail: 'Action' });
   for (const s of i.servers) out.push({ id: `server:${s.id}`, kind: 'server', label: s.server.server_name || 'Server', detail: `Server, ${s.state}` });
-  for (const s of i.sessions) {
+  for (const s of i.workspaces) {
     const agent = i.agents[s.key];
     const state = fleetOf(agent);
-    out.push({ id: `session:${s.key}`, kind: 'session', label: s.name, detail: `${s.serverName || 'Server'} · ${STATES[state].label}`, state, agent: agent?.agent });
+    out.push({ id: `workspace:${s.key}`, kind: 'workspace', label: s.name, detail: `${s.serverName || 'Server'} · ${STATES[state].label}`, state, agent: agent?.agent });
   }
   return out;
 }
@@ -90,9 +90,9 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'palette', mac: '⌘K', other: 'Ctrl+K', label: 'Open or close the command palette', scope: 'Everywhere in the app, including while the terminal has focus' },
   { id: 'approve-decision', mac: '⌥Y', other: 'Alt+Y', label: 'Answer Yes to the open decision', scope: 'When the decision is on screen with a plain Yes option. From the terminal or a field: Ctrl+K, then “Answer Yes”' },
   { id: 'deny-decision', mac: '⌥N', other: 'Alt+N', label: 'Answer No to the open decision', scope: 'When the decision is on screen with a plain No option; never “don’t ask again”. From the terminal or a field: Ctrl+K' },
-  { id: 'next-needs-you', mac: '⌥J', other: 'Alt+J', label: 'Open the next session that needs you', scope: 'When no field or terminal has focus' },
+  { id: 'next-needs-you', mac: '⌥J', other: 'Alt+J', label: 'Open the next workspace that needs you', scope: 'When no field or terminal has focus' },
   { id: 'focus-composer', mac: '⌥C', other: 'Alt+C', label: 'Focus the reply composer', scope: 'When no field or terminal has focus' },
-  { id: 'toggle-panes', mac: '⌥P', other: 'Alt+P', label: 'Show or hide the terminal beside the decision', scope: 'On the desktop, in a session' },
+  { id: 'toggle-panes', mac: '⌥P', other: 'Alt+P', label: 'Show or hide the terminal beside the decision', scope: 'On the desktop, in a workspace' },
 ];
 export const PALETTE_KEYS: { keys: string; label: string }[] = [
   { keys: '↑ ↓', label: 'Move through the results' },

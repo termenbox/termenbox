@@ -78,8 +78,8 @@ for (const [name, opts] of [['phone 360', { viewport: { width: 360, height: 740 
  await page.getByText('Add server', { exact: false }).first().waitFor({ timeout: 5000 }).catch(() => fail(`${name}: the Servers page did not open from Settings`));
  await nav.locator('[data-destination=home]').click();
  await page.getByRole('heading', { name: 'Home', exact: true }).waitFor();
- await nav.locator('[data-destination=sessions]').click();
- check((await page.getByRole('heading', { name: 'Home', exact: true }).count()) === 0, `${name}: Sessions still shows Home`);
+ await nav.locator('[data-destination=workspaces]').click();
+ check((await page.getByRole('heading', { name: 'Home', exact: true }).count()) === 0, `${name}: Workspaces still shows Home`);
  check((await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)) <= 0, `${name}: horizontal overflow`);
  check((await page.locator('[data-shell=sidebar]').count()) === (wide ? 1 : 0), `${name}: sidebar presence is wrong`);
  check((await page.locator('[data-shell=bottom-bar]').count()) === (wide ? 0 : 1), `${name}: bottom bar presence is wrong`);

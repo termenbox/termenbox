@@ -1,6 +1,6 @@
 // Shared by appshell.mjs (phone, 390 px) and desktop.mjs (1280 px): serves e2e/dist, opens the frame probe in
 // the selected browser (browser.mjs), and holds the checks both widths make. The probe is the real AppFrame, bottom bar, sidebar, palette, NavigationBar,
-// SessionSheet and SessionStrip on the real ServerHub with two fake servers; the terminal is a stand-in textarea, so this
+// WorkspaceSheet and WorkspaceStrip on the real ServerHub with two fake servers; the terminal is a stand-in textarea, so this
 // proves what the page does with a key, not what xterm or a shell does with it.
 import { launch, contextOptions, trace, keepIfFailed, ENGINE } from './browser.mjs';
 import { createServer } from 'node:http';
@@ -66,8 +66,8 @@ export async function start(options) {
       t.check(find('Escape') && find('Escape').prevented === false, 'Escape did not reach the terminal untouched');
       t.ok('Ctrl+C, Tab and Escape reach the terminal untouched while the palette is closed');
     },
-    /** Ctrl+K from the terminal opens the palette, the "k" does not reach the terminal, a name finds a session of the other server, Enter opens it. */
-    async paletteOpensSessionByName() {
+    /** Ctrl+K from the terminal opens the palette, the "k" does not reach the terminal, a name finds a workspace of the other server, Enter opens it. */
+    async paletteOpensWorkspaceByName() {
       await page.locator('textarea[aria-label="Terminal input"]').focus();
       await t.api('clearKeys');
       await page.keyboard.press('Control+k');
@@ -79,12 +79,12 @@ export async function start(options) {
       await page.keyboard.type('needle');
       const options = page.getByRole('option');
       await options.first().waitFor();
-      t.check((await options.count()) === 1, `searching "needle" among 20 sessions gave ${await options.count()} results`);
+      t.check((await options.count()) === 1, `searching "needle" among 20 workspaces gave ${await options.count()} results`);
       t.check((await options.first().innerText()).includes('beta'), 'the result does not say which server it is on');
       await page.keyboard.press('Enter');
       await input.waitFor({ state: 'detached' });
       t.check((await t.api('active')) === 'beta/needle', `Enter opened ${await t.api('active')}, not beta/needle`);
-      t.ok('the palette found "needle" among 20 sessions on two servers and opened it');
+      t.ok('the palette found "needle" among 20 workspaces on two servers and opened it');
     },
     /** Escape closes the palette and focus returns to where it was. */
     async escapeRestoresFocus() {
@@ -98,7 +98,7 @@ export async function start(options) {
       t.ok('Escape closes the palette and returns focus');
     },
     async stripKeyboard() {
-      const strip = page.getByRole('tablist', { name: 'Sessions' }).last();
+      const strip = page.getByRole('tablist', { name: 'Workspaces' }).last();
       const tabs = strip.getByRole('tab');
       const n = await tabs.count();
       t.check(n >= 10, `the strip shows ${n} tabs`);
@@ -134,15 +134,15 @@ export async function start(options) {
       await page.waitForFunction((g) => !document.querySelector(`[role=tab][data-id="${g}"]`), goner);
       await page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'tab', null, { timeout: 2000 }).catch(() => {});
       t.check(await page.evaluate(() => document.activeElement?.getAttribute('role') === 'tab'), 'focus was lost when the focused tab was removed');
-      t.ok('keyboard-only navigation of the session strip: one tab stop, arrows, Home/End, Space, scroll into view, focus kept on removal, no key reaches the terminal');
+      t.ok('keyboard-only navigation of the workspace strip: one tab stop, arrows, Home/End, Space, scroll into view, focus kept on removal, no key reaches the terminal');
     },
-    async inSessionTabSwitch() {
+    async inWorkspaceTabSwitch() {
       const tab = (key) => page.locator(`[role=tab][data-key="${key}"]`);
       await tab('alpha/svc-0').click();
-      t.check((await t.api('active')) === 'alpha/svc-0', 'could not open a session from the in-session tab strip');
+      t.check((await t.api('active')) === 'alpha/svc-0', 'could not open a workspace from the in-workspace tab strip');
       await tab('alpha/svc-3').click();
-      t.check((await t.api('active')) === 'alpha/svc-3', 'the in-session tab switch no longer works');
-      t.ok('the in-session tab strip (TabStrip) still switches sessions');
+      t.check((await t.api('active')) === 'alpha/svc-3', 'the in-workspace tab switch no longer works');
+      t.ok('the in-workspace tab strip (TabStrip) still switches workspaces');
     },
     /** Closes the browser and says whether every check passed; for a script that runs more after this one. */
     async end() {

@@ -20,7 +20,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use crate::auth::AuthState;
 use crate::cert::testing::{now, Device, Signer};
 use crate::rtc::{self, RtcInfo, CHANNEL_ID, SERVER_PWD, SERVER_UFRAG, TERM_CHANNEL_ID};
-use crate::sessions::SessionManager;
+use crate::workspaces::WorkspaceManager;
 use crate::{router, AppState};
 
 async fn serve(app: Router) -> String {
@@ -69,8 +69,8 @@ extern "C" fn kill_keeper() {
     }
 }
 
-/// These tests share the machine's default tmux server, which exits as soon as its last session is closed; a test
-/// starting a session at that moment fails. One idle session, started once and killed when the test process exits,
+/// These tests share the machine's default tmux server, which exits as soon as its last workspace is closed; a test
+/// starting a workspace at that moment fails. One idle workspace, started once and killed when the test process exits,
 /// keeps the server up for all of them.
 fn keep_tmux_alive() {
     static ONCE: std::sync::Once = std::sync::Once::new();
@@ -107,7 +107,7 @@ async fn fixture_with(history_runs: usize) -> Fixture {
     if history_runs > 0 {
         let now = crate::events::now_ms();
         let lines: String = (0..history_runs as u64)
-            .map(|i| format!("{{\"session\":\"session-opencode\",\"agent\":\"opencode\",\"task\":\"Fix the failing build of the installer on a machine that has no compiler or root access\",\"project\":\"termenbox\",\"started_at\":{},\"ended_at\":{},\"outcome\":\"finished\",\"blocked_ms\":0}}\n", now - 4_000_000 + i * 1000, now - 3_990_000 + i * 1000))
+            .map(|i| format!("{{\"session\":\"workspace-opencode\",\"agent\":\"opencode\",\"task\":\"Fix the failing build of the installer on a machine that has no compiler or root access\",\"project\":\"termenbox\",\"started_at\":{},\"ended_at\":{},\"outcome\":\"finished\",\"blocked_ms\":0}}\n", now - 4_000_000 + i * 1000, now - 3_990_000 + i * 1000))
             .collect();
         std::fs::write(dir.join("history.jsonl"), lines).unwrap();
         let limits = crate::history::Limits::new(90, 20);
@@ -127,8 +127,8 @@ async fn fixture_with(history_runs: usize) -> Fixture {
     };
     let mut state = AppState {
         auth: auth.clone(),
-        sessions: Arc::new(
-            SessionManager::new(
+        workspaces: Arc::new(
+            WorkspaceManager::new(
                 Arc::new(crate::backend::TmuxBackend::default().with_events(env)),
                 crate::backend::RunMode::Container,
             )
@@ -643,8 +643,8 @@ async fn uninstall_needs_the_name_and_a_recent_login_then_wipes_the_config(kind:
     assert!(f.stopped.load(std::sync::atomic::Ordering::SeqCst));
 }
 
-/// Kills a test's tmux session when the test ends, also when it fails halfway (a failed assertion used to leave
-/// `detach…` sessions behind on the machine that ran the tests).
+/// Kills a test's tmux workspace when the test ends, also when it fails halfway (a failed assertion used to leave
+/// `detach…` workspaces behind on the machine that ran the tests).
 struct KillOnDrop(String);
 
 impl Drop for KillOnDrop {
@@ -665,7 +665,7 @@ async fn nothing_is_served_before_auth(kind: Kind) {
         .contains("Authenticate first"));
 }
 
-async fn detach_preserves_the_connection_and_session(kind: Kind) {
+async fn detach_preserves_the_connection_and_workspace(kind: Kind) {
     let f = fixture().await;
     let name = format!("detach{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
     let _cleanup = KillOnDrop(name.clone());
@@ -698,7 +698,7 @@ async fn detach_preserves_the_connection_and_session(kind: Kind) {
         .output();
 }
 
-async fn reconnect_resumes_the_tmux_session_with_its_screen(kind: Kind) {
+async fn reconnect_resumes_the_tmux_workspace_with_its_screen(kind: Kind) {
     if std::process::Command::new("tmux")
         .arg("-V")
         .output()
@@ -716,8 +716,8 @@ async fn reconnect_resumes_the_tmux_session_with_its_screen(kind: Kind) {
     c.login(&f, &alice, &f.claim).await;
     c.recv_type("auth_ok").await;
     c.send(json!({"type":"new_session","name":name})).await;
-    let sessions = c.recv_type("sessions").await;
-    assert!(sessions["sessions"]
+    let workspaces = c.recv_type("sessions").await;
+    assert!(workspaces["sessions"]
         .as_array()
         .unwrap()
         .iter()
@@ -748,9 +748,9 @@ async fn reconnect_resumes_the_tmux_session_with_its_screen(kind: Kind) {
         .output();
 }
 
-/// A session gets its event variables; what a tool writes to the socket reaches a connected client
+/// A workspace gets its event variables; what a tool writes to the socket reaches a connected client
 /// sanitised and in order, and a client that connects later gets the snapshot and the missed events.
-async fn agent_events_flow_from_a_session_tool_to_the_client(kind: Kind) {
+async fn agent_events_flow_from_a_workspace_tool_to_the_client(kind: Kind) {
     use tokio::io::AsyncWriteExt;
     if std::process::Command::new("tmux")
         .arg("-V")
@@ -774,7 +774,7 @@ async fn agent_events_flow_from_a_session_tool_to_the_client(kind: Kind) {
     c.send(json!({"type":"input","data":B64.encode("echo who:$TERMENBOX_SESSION; test -S \"$TERMENBOX_EVENT_SOCKET\" && echo sock:ok\n")})).await;
     assert!(
         c.output_contains(&format!("who:{name}")).await,
-        "the session knows its name"
+        "the workspace knows its name"
     );
 
     let send = |data: Value, token: String| {
@@ -868,8 +868,8 @@ async fn a_burst_of_input_messages_does_not_drop_the_connection(kind: Kind) {
     c.recv_type("pong").await;
 }
 
-/// `peek` returns what is on a session's screen without attaching, and says unchanged for a hash it already gave.
-async fn peek_shows_a_session_screen_without_attaching(kind: Kind) {
+/// `peek` returns what is on a workspace's screen without attaching, and says unchanged for a hash it already gave.
+async fn peek_shows_a_workspace_screen_without_attaching(kind: Kind) {
     if std::process::Command::new("tmux")
         .arg("-V")
         .output()
@@ -913,7 +913,7 @@ async fn peek_shows_a_session_screen_without_attaching(kind: Kind) {
         .output();
 }
 
-async fn windows_close_window_and_close_session_go_through_the_handlers(kind: Kind) {
+async fn windows_close_window_and_close_workspace_go_through_the_handlers(kind: Kind) {
     if std::process::Command::new("tmux")
         .arg("-V")
         .output()
@@ -930,14 +930,14 @@ async fn windows_close_window_and_close_session_go_through_the_handlers(kind: Ki
     c.login(&f, &alice, &f.claim).await;
     c.recv_type("auth_ok").await;
     // These tests share the machine's default tmux server, which exits when another test closes its last
-    // session at the wrong moment; creating the session is retried when that race loses.
+    // workspace at the wrong moment; creating the workspace is retried when that race loses.
     for attempt in 0..3 {
         c.send(json!({"type":"new_session","name":name})).await;
         let reply = c.recv_any(&["sessions", "error"]).await;
         if reply["type"] == "sessions" {
             break;
         }
-        assert!(attempt < 2, "tmux would not start a session: {reply}");
+        assert!(attempt < 2, "tmux would not start a workspace: {reply}");
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     c.send(json!({"type":"windows","session":name})).await;
@@ -997,8 +997,8 @@ async fn windows_close_window_and_close_session_go_through_the_handlers(kind: Ki
             .any(|s| s["id"] == name),
         "{list}"
     );
-    // A name that is not a session is an error, not a crash.
-    c.send(json!({"type":"close_session","session":"no-such-session"}))
+    // A name that is not a workspace is an error, not a crash.
+    c.send(json!({"type":"close_session","session":"no-such-workspace"}))
         .await;
     c.recv_type("error").await;
 }
@@ -1295,13 +1295,13 @@ over_both_transports!(
     a_connection_for_another_server_expired_or_revoked_certificates_fail,
     uninstall_needs_the_name_and_a_recent_login_then_wipes_the_config,
     nothing_is_served_before_auth,
-    reconnect_resumes_the_tmux_session_with_its_screen,
-    detach_preserves_the_connection_and_session,
-    agent_events_flow_from_a_session_tool_to_the_client,
+    reconnect_resumes_the_tmux_workspace_with_its_screen,
+    detach_preserves_the_connection_and_workspace,
+    agent_events_flow_from_a_workspace_tool_to_the_client,
     a_burst_of_input_messages_does_not_drop_the_connection,
-    peek_shows_a_session_screen_without_attaching,
+    peek_shows_a_workspace_screen_without_attaching,
     session_view_reads_the_screen_and_unknown_messages_are_ignored,
-    windows_close_window_and_close_session_go_through_the_handlers,
+    windows_close_window_and_close_workspace_go_through_the_handlers,
     terminal_bytes_use_their_own_lane_and_status_is_not_held_up_by_output,
     a_flood_of_output_on_the_single_pipe_still_reaches_the_client
 );

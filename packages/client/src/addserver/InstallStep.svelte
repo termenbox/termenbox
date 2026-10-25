@@ -48,14 +48,14 @@
   <input id="server-name" bind:value={name} placeholder="Leave empty to use the server's hostname" maxlength="40" style="width: 100%; margin-bottom: 12px;" />
 
   <fieldset class="where">
-    <legend>Where should sessions run?</legend>
+    <legend>Where should workspaces run?</legend>
     <label class="choice">
       <input type="radio" bind:group={where} value="container" />
-      <span><strong>In an isolated container</strong><br /><small>Sessions run in a Docker container and cannot see the rest of your VPS. Docker is installed if missing.</small></span>
+      <span><strong>In an isolated container</strong><br /><small>Workspaces run in a Docker container and cannot see the rest of your VPS. Docker is installed if missing.</small></span>
     </label>
     <label class="choice">
       <input type="radio" bind:group={where} value="host" />
-      <span><strong>On the machine itself</strong> (no Docker, recommended)<br /><small>Sessions run directly on your VPS, where your repos and agent tools already are.</small></span>
+      <span><strong>On the machine itself</strong> (no Docker, recommended)<br /><small>Workspaces run directly on your VPS, where your repos and agent tools already are.</small></span>
     </label>
     {#if where === 'host'}
       <div class="sub">
@@ -65,7 +65,7 @@
         </label>
         <label class="choice">
           <input type="radio" bind:group={hostAs} value="me" />
-          <span>As the user who runs the command (recommended)<br /><small>Sessions open as you, in your home, with your repos, keys and agent logins. Nothing new is created and <strong>no root is needed</strong>: it runs as a service of your own. Anything that would need root (starting at boot when your system does not allow it, a firewall rule) is listed at the end, for you to run if you want it.</small></span>
+          <span>As the user who runs the command (recommended)<br /><small>Workspaces open as you, in your home, with your repos, keys and agent logins. Nothing new is created and <strong>no root is needed</strong>: it runs as a service of your own. Anything that would need root (starting at boot when your system does not allow it, a firewall rule) is listed at the end, for you to run if you want it.</small></span>
         </label>
         <label class="choice">
           <input type="radio" bind:group={hostAs} value="root" />
@@ -74,12 +74,12 @@
       </div>
       <div class="warning" role="note">
         <strong>This gives your browser a shell on your server.</strong>
-        Anything you run in a session can read and change this machine's files and run programs as {hostAs === 'root' ? 'root, so it can change anything' : hostAs === 'me' ? 'you, with access to everything you can reach, including your SSH keys and agent logins' : 'the termenbox user'}.
+        Anything you run in a workspace can read and change this machine's files and run programs as {hostAs === 'root' ? 'root, so it can change anything' : hostAs === 'me' ? 'you, with access to everything you can reach, including your SSH keys and agent logins' : 'the termenbox user'}.
         Only continue on a machine you own. The installer lists every change it makes first and can undo them all.
       </div>
       <label class="choice">
         <input type="checkbox" bind:checked={consent} />
-        <span>I understand and want sessions to run on this machine{hostAs === 'root' ? ' as root' : hostAs === 'me' ? ' as my own user' : ''}.</span>
+        <span>I understand and want workspaces to run on this machine{hostAs === 'root' ? ' as root' : hostAs === 'me' ? ' as my own user' : ''}.</span>
       </label>
     {/if}
   </fieldset>

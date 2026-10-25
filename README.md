@@ -2,7 +2,7 @@
 
 <p align="center">
   <b>Run Claude Code and Codex on your own server, from your phone.</b><br>
-  A self-hosted web terminal for AI coding agents. Sessions live in tmux and survive dropped connections. No app to install, no subscription.
+  A self-hosted web terminal for AI coding agents. Workspaces live in tmux and survive dropped connections. No app to install, no subscription.
 </p>
 
 <p align="center">
@@ -30,21 +30,21 @@ Then open **[app.termenbox.dev](https://app.termenbox.dev)** on your phone or la
 |---|---|---|
 | **A VPS with a public IP** | `curl -fsSL https://app.termenbox.dev/i \| sh` | Scan the QR in Add Server. If it cannot connect, open the one UDP port the installer names. |
 | **A home server or laptop on your Wi-Fi** | the same command | Scan the QR from a phone on the same Wi-Fi. No public IP, domain or router setting needed. |
-| **Sessions isolated in Docker** | `curl -fsSL https://app.termenbox.dev/i \| sh -s -- container` | Scan the QR. Docker is installed if missing. |
+| **Workspaces isolated in Docker** | `curl -fsSL https://app.termenbox.dev/i \| sh -s -- container` | Scan the QR. Docker is installed if missing. |
 | **A dedicated user or root service** | `… \| sh -s -- host-user` or `… \| sh -s -- host` | Scan the QR; asks for `sudo`. |
 | **Your own client and domain** | the command your client shows | Follow [BOOTSTRAP.md](docs/BOOTSTRAP.md). |
 | **To remove it** | `curl -fsSL https://app.termenbox.dev/uninstall.sh \| sudo sh` | Shows what it would do first; add `-s -- --yes` to apply. |
 
 > [!IMPORTANT]
-> The default install runs sessions directly on the machine as **your own user**, so the app gets a shell with your repositories, keys and agent logins. Choose the container path if that is more access than you want.
+> The default install runs workspaces directly on the machine as **your own user**, so the app gets a shell with your repositories, keys and agent logins. Choose the container path if that is more access than you want.
 
 > [!NOTE]
 > **Windows:** run it inside WSL2 with `networkingMode=mirrored`, otherwise other devices cannot reach it ([details](docs/guide/networking.md#servers-inside-a-virtual-machine)).
 
 ## Why Termenbox
 
-- **Built for the phone.** Tabs per session, a key row for Esc, Ctrl and arrows, and a banner when an agent is waiting for you.
-- **Survives bad networks.** The session runs in tmux on your server. Close the tab, lose signal or switch from Wi-Fi to cellular and it is still there; reconnecting re-attaches and repaints.
+- **Built for the phone.** Tabs per workspace, a key row for Esc, Ctrl and arrows, and a banner when an agent is waiting for you.
+- **Survives bad networks.** The workspace runs in tmux on your server. Close the tab, lose signal or switch from Wi-Fi to cellular and it is still there; reconnecting re-attaches and repaints.
 - **Direct and private.** The browser talks to your server over an encrypted WebRTC data channel on one UDP port. There is no relay in the middle, and our free directory only maps your server's key to its address.
 - **Works with your agents.** Claude Code, Codex, OpenCode, or any program in a terminal. Notifications and agent status come from hooks you switch on yourself.
 - **Free and yours.** MIT licensed. The hosted client and directory run on Cloudflare's free tier, and the server needs 512 MB of RAM and one vCPU.
@@ -58,12 +58,12 @@ Then open **[app.termenbox.dev](https://app.termenbox.dev)** on your phone or la
 
 <details><summary><b>Can I use Claude Code or Codex from my phone?</b></summary>
 
-Yes. Install Termenbox on the machine where the agent runs, then use the app as the terminal: start the agent in a session, answer its questions from the banner, and come back later to the same session. Supported browsers: iOS Safari 16.4+, Chrome on Android 111+, current Chrome, Firefox, Edge and Safari on desktop.
+Yes. Install Termenbox on the machine where the agent runs, then use the app as the terminal: start the agent in a workspace, answer its questions from the banner, and come back later to the same workspace. Supported browsers: iOS Safari 16.4+, Chrome on Android 111+, current Chrome, Firefox, Edge and Safari on desktop.
 </details>
 
 <details><summary><b>Is this like Mosh or tmux over SSH?</b></summary>
 
-The persistence is tmux's: the server keeps the session and each connection attaches to it. What Termenbox adds is a browser client made for touch, a connection that re-races its paths after a network change, and notifications. It is not an SSH client and does not need one.
+The persistence is tmux's: the server keeps the workspace and each connection attaches to it. What Termenbox adds is a browser client made for touch, a connection that re-races its paths after a network change, and notifications. It is not an SSH client and does not need one.
 </details>
 
 <details><summary><b>Does my terminal traffic go through your servers?</b></summary>
@@ -81,7 +81,7 @@ On the same network as your phone, no: scan the QR and it connects over the LAN.
 Nothing beyond the machine you run it on. There is no subscription and no native app.
 </details>
 
-<details><summary><b>Who can open a session?</b></summary>
+<details><summary><b>Who can open a workspace?</b></summary>
 
 Only the GitHub account that claims the server first, from a browser you have enrolled. Everyone else is refused.
 </details>
@@ -90,7 +90,7 @@ Only the GitHub account that claims the server first, from a browser you have en
 
 | | |
 |---|---|
-| [Install, firewall, run modes, update and remove](docs/guide/install.md) | [Sessions, agents and notifications](docs/guide/sessions.md) |
+| [Install, firewall, run modes, update and remove](docs/guide/install.md) | [Workspaces, agents and notifications](docs/guide/workspaces.md) |
 | [How it connects, home servers, WSL](docs/guide/networking.md) | [Configuration](docs/guide/configuration.md) |
 | [Security model](docs/guide/safety.md) and [reporting a problem](SECURITY.md) | [Hosting your own client](docs/BOOTSTRAP.md) |
 | [Development and tests](docs/guide/development.md) | [Roadmap](docs/plans/termenbox-roadmap.md) |

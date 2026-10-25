@@ -16,7 +16,7 @@
 import { readFileSync, appendFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
-const SID = 'fake-session-1';
+const SID = 'fake-workspace-1';
 const fixture = (rel) => readFileSync(new URL(`../../server/testdata/acp/${rel}`, import.meta.url), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const fix = (v) => JSON.parse(JSON.stringify(v).replaceAll('<uuid>', SID));
 const claude = fixture('claude/permission-plan-mode.jsonl');

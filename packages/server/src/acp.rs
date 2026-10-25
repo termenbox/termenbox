@@ -1,6 +1,6 @@
-//! ACP sessions the server starts itself (tier T0, decisions 0054, 0103, 0104, 0111). The agent is a stdio child
+//! ACP workspaces the server starts itself (tier T0, decisions 0054, 0103, 0104, 0111). The agent is a stdio child
 //! speaking Agent Client Protocol (JSON-RPC 2.0, one message per line); the server owns the child, so a client
-//! disconnecting changes nothing. There is no terminal: a session is its event stream and its answers.
+//! disconnecting changes nothing. There is no terminal: a workspace is its event stream and its answers.
 //!
 //! The protocol types (requests, results, `session/update` kinds, permission requests) come from the
 //! `agent-client-protocol-schema` crate, built with `default-features = false` (types and serde only, protocol v1).
@@ -9,7 +9,7 @@
 //!
 //! Decoding is lenient. Agents deviate from the schema (fact 0040), so a message that does not decode into its type
 //! is dropped for that message only: it is counted (`DROPPED`) and logged by kind without its content, and it never
-//! fails the turn or the session. An update kind we do not handle stays ignored. Fields we depend on are required by
+//! fails the turn or the workspace. An update kind we do not handle stays ignored. Fields we depend on are required by
 //! the schema types, everything else is optional there.
 //!
 //! Text from the agent is untrusted (0095): lines are length-capped, chunks are buffered to a fixed size, and
@@ -31,13 +31,13 @@ use serde_json::{json, Value};
 use termenbox_core::events::{
     AgentState, Confidence, Decision, DecisionOption, EventKind, PlanItem, Source, ToolPhase,
 };
-use termenbox_core::protocol::{AcpView, SessionInfo};
+use termenbox_core::protocol::{AcpView, WorkspaceInfo};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::acp_stream::{ModeVia, Stream};
-use crate::backend::{valid_dir, valid_name, SessionBackend};
+use crate::backend::{valid_dir, valid_name, WorkspaceBackend};
 use crate::events::EventHub;
 use crate::pty::Attachment;
 
@@ -47,11 +47,11 @@ const MAX_LINE: usize = 1 << 20;
 const MAX_CHUNK_BUFFER: usize = 4096;
 /// A prompt typed by the owner.
 const MAX_PROMPT: usize = 16 * 1024;
-/// Permission requests open at once per session; further ones are answered `cancelled`.
+/// Permission requests open at once per workspace; further ones are answered `cancelled`.
 const MAX_PENDING: usize = 8;
 const MAX_TOOLS: usize = 64;
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30);
-/// Sessions at once when the config does not say. The default is 6 and there is no memory floor: an agent child is
+/// Workspaces at once when the config does not say. The default is 6 and there is no memory floor: an agent child is
 /// a Node or Rust process of a few hundred MB, so the box sizes it (six adapters on 512 MB can hit the OOM killer).
 /// `resource-constraints` covers termenbox's own processes, not the agents it starts.
 const DEFAULT_MAX_SESSIONS: usize = 6;
@@ -192,7 +192,7 @@ enum Chunk {
 }
 
 /// Messages from the agent that did not decode into their schema type and were dropped (never the turn or the
-/// session). Counted, not stored: what the agent sent is untrusted and is not logged.
+/// workspace). Counted, not stored: what the agent sent is untrusted and is not logged.
 pub(crate) static DROPPED: AtomicU64 = AtomicU64::new(0);
 
 /// Notes one dropped message by its kind (a fixed label, never agent text).
@@ -514,11 +514,11 @@ pub fn permission_options(params: &Value) -> Vec<DecisionOption> {
 }
 
 // ---------------------------------------------------------------------------------------------------
-// One session: the child, its two pipes and the state they share
+// One workspace: the child, its two pipes and the state they share
 // ---------------------------------------------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SessionStatus {
+pub enum WorkspaceStatus {
     Running,
     /// Closed by the owner, or not resumable after a server restart.
     Ended,
@@ -532,7 +532,7 @@ struct Perm {
 }
 
 struct Inner {
-    status: SessionStatus,
+    status: WorkspaceStatus,
     next_id: u64,
     waiting: HashMap<u64, oneshot::Sender<std::result::Result<Value, Value>>>,
     perms: HashMap<String, Perm>,
@@ -542,7 +542,7 @@ struct Inner {
     turn: bool,
     /// `session/load` replays history as updates; those are not news.
     replaying: bool,
-    /// What the session view shows (T0): kept here, bounded, and handed to a client on `acp_open`.
+    /// What the workspace view shows (T0): kept here, bounded, and handed to a client on `acp_open`.
     stream: Stream,
 }
 
@@ -552,12 +552,12 @@ struct Live {
     dir: String,
     hub: Option<EventHub>,
     inner: Mutex<Inner>,
-    /// The stream's revision, for the connections that show this session.
+    /// The stream's revision, for the connections that show this workspace.
     changed: watch::Sender<u64>,
     out: mpsc::UnboundedSender<String>,
     kill: Mutex<Option<oneshot::Sender<()>>>,
     /// Writes the state file (set by the backend). A turn opening or closing changes what a restart interrupts, so
-    /// it is written then, not only when a session is made or closed.
+    /// it is written then, not only when a workspace is made or closed.
     saver: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
@@ -575,7 +575,7 @@ impl Live {
         }
     }
 
-    /// Runs `f` on the stream and wakes the connections that show this session.
+    /// Runs `f` on the stream and wakes the connections that show this workspace.
     fn stream<R>(&self, f: impl FnOnce(&mut Stream) -> R) -> R {
         let (r, rev) = {
             let mut g = self.inner.lock().unwrap();
@@ -626,7 +626,7 @@ impl Live {
         let (tx, rx) = oneshot::channel();
         let id = {
             let mut g = self.inner.lock().unwrap();
-            if g.status != SessionStatus::Running {
+            if g.status != WorkspaceStatus::Running {
                 return Err(anyhow!("the agent is not running"));
             }
             g.next_id += 1;
@@ -747,20 +747,20 @@ impl Live {
     }
 
     /// The process is gone (or was told to go): nothing answers any more.
-    fn finish(&self, status: SessionStatus) {
+    fn finish(&self, status: WorkspaceStatus) {
         let was = {
             let mut g = self.inner.lock().unwrap();
             g.waiting.clear();
             g.perms.clear();
             std::mem::replace(&mut g.status, status.clone())
         };
-        if was == SessionStatus::Running {
+        if was == WorkspaceStatus::Running {
             self.stream(|st| match &status {
-                SessionStatus::Failed(text) => st.status("failed", Some(text)),
+                WorkspaceStatus::Failed(text) => st.status("failed", Some(text)),
                 _ => st.status("ended", None),
             });
             self.turn_close(match status {
-                SessionStatus::Failed(_) => AgentState::Error,
+                WorkspaceStatus::Failed(_) => AgentState::Error,
                 _ => AgentState::Done,
             });
         }
@@ -844,7 +844,7 @@ fn spawn_agent(
         hub,
         changed: watch::channel(0).0,
         inner: Mutex::new(Inner {
-            status: SessionStatus::Running,
+            status: WorkspaceStatus::Running,
             next_id: 0,
             waiting: HashMap::new(),
             perms: HashMap::new(),
@@ -875,7 +875,7 @@ fn spawn_agent(
             tokio::select! {
                 _ = &mut kill_rx => {
                     let _ = child.kill().await;
-                    l.finish(SessionStatus::Ended);
+                    l.finish(WorkspaceStatus::Ended);
                     return;
                 }
                 line = read_bounded_line(&mut reader, MAX_LINE) => match line {
@@ -891,8 +891,8 @@ fn spawn_agent(
             }
         }
         let status = match child.wait().await {
-            Ok(st) => SessionStatus::Failed(st.to_string()),
-            Err(e) => SessionStatus::Failed(e.to_string()),
+            Ok(st) => WorkspaceStatus::Failed(st.to_string()),
+            Err(e) => WorkspaceStatus::Failed(e.to_string()),
         };
         l.finish(status);
     });
@@ -947,7 +947,7 @@ async fn handshake(
             Some(SETUP_TIMEOUT),
         )
         .await?;
-    // An `initialize` result that does not decode offers nothing: the session can be new, but not resumed.
+    // An `initialize` result that does not decode offers nothing: the workspace can be new, but not resumed.
     let caps = decode::<acp::InitializeResponse>(&init, "initialize result")
         .map(|r| r.agent_capabilities)
         .unwrap_or_default();
@@ -961,8 +961,8 @@ async fn handshake(
                 )
                 .await?;
             let new: acp::NewSessionResponse = decode(&r, "session/new result")
-                .ok_or_else(|| anyhow!("the agent's session/new answer has no session id"))?;
-            live.stream(|st| st.session_state(&r));
+                .ok_or_else(|| anyhow!("the agent's session/new answer has no workspace id"))?;
+            live.stream(|st| st.workspace_state(&r));
             Ok(new.session_id.to_string())
         }
         Some(id) if caps.session_capabilities.resume.is_some() => {
@@ -972,7 +972,7 @@ async fn handshake(
             let r = live
                 .request("session/resume", params, Some(SETUP_TIMEOUT))
                 .await?;
-            live.stream(|st| st.session_state(&r));
+            live.stream(|st| st.workspace_state(&r));
             Ok(id.to_string())
         }
         Some(id) if caps.load_session => {
@@ -990,10 +990,10 @@ async fn handshake(
                 g.mapper = UpdateMapper::default();
                 r?
             };
-            live.stream(|st| st.session_state(&r));
+            live.stream(|st| st.workspace_state(&r));
             Ok(id.to_string())
         }
-        Some(_) => Err(anyhow!("the agent can neither resume nor load a session")),
+        Some(_) => Err(anyhow!("the agent can neither resume nor load a workspace")),
     }
 }
 
@@ -1001,23 +1001,23 @@ async fn handshake(
 // The backend
 // ---------------------------------------------------------------------------------------------------
 
-/// Agents running now in a locked session table.
-fn running_in(sessions: &HashMap<String, Entry>) -> usize {
-    sessions
+/// Agents running now in a locked workspace table.
+fn running_in(workspaces: &HashMap<String, Entry>) -> usize {
+    workspaces
         .values()
         .filter(|e| {
             e.live
                 .as_ref()
-                .map(|l| l.inner.lock().unwrap().status == SessionStatus::Running)
+                .map(|l| l.inner.lock().unwrap().status == WorkspaceStatus::Running)
                 .unwrap_or(false)
         })
         .count()
 }
 
-/// Writes the sessions to the state file: running ones with their ACP id and whether a turn is open, the others with
+/// Writes the workspaces to the state file: running ones with their ACP id and whether a turn is open, the others with
 /// why they are not running.
-fn write_state(path: &std::path::Path, sessions: &Mutex<HashMap<String, Entry>>) {
-    let mut saved: Vec<Saved> = sessions
+fn write_state(path: &std::path::Path, workspaces: &Mutex<HashMap<String, Entry>>) {
+    let mut saved: Vec<Saved> = workspaces
         .lock()
         .unwrap()
         .iter()
@@ -1026,12 +1026,12 @@ fn write_state(path: &std::path::Path, sessions: &Mutex<HashMap<String, Entry>>)
                 Some(l) => {
                     let g = l.inner.lock().unwrap();
                     // A crashed or ended agent is not kept, as before.
-                    if g.status != SessionStatus::Running {
+                    if g.status != WorkspaceStatus::Running {
                         return None;
                     }
                     (g.acp_id.clone(), None, false, g.stream.working())
                 }
-                // Not running: kept with why, so a restart or a cap does not lose the session.
+                // Not running: kept with why, so a restart or a cap does not lose the workspace.
                 None => (
                     e.acp_id.clone(),
                     e.reason.clone(),
@@ -1063,7 +1063,7 @@ struct Saved {
     dir: String,
     /// Empty for an entry that never started (it was over the cap at the restart).
     acp_id: String,
-    /// Why this entry has no running agent; shown as the session's "Stopped: ..." line.
+    /// Why this entry has no running agent; shown as the workspace's "Stopped: ..." line.
     #[serde(default)]
     reason: Option<String>,
     /// Tried again at the next restore.
@@ -1077,11 +1077,11 @@ struct Saved {
 struct Entry {
     agent: String,
     dir: String,
-    /// `None` for a session with no running agent: not restored yet, not restorable, or over the cap.
+    /// `None` for a workspace with no running agent: not restored yet, not restorable, or over the cap.
     live: Option<Arc<Live>>,
     /// Why there is no agent (shown to the owner).
     reason: Option<String>,
-    /// A restore is starting this session's agent now; the entry holds its name and slot meanwhile.
+    /// A restore is starting this workspace's agent now; the entry holds its name and slot meanwhile.
     restoring: bool,
     /// For an entry with no live agent, what `save` writes back: the ACP id to resume, whether the next restore
     /// tries again, and whether a turn was open.
@@ -1123,9 +1123,11 @@ pub struct AcpBackend {
     config: AcpConfig,
     hub: Option<EventHub>,
     state_file: Option<PathBuf>,
+    /// The file an older server wrote its state to (`acp-sessions.json`); read when `state_file` does not exist yet.
+    legacy_state_file: Option<PathBuf>,
     event_prefix: String,
-    sessions: Arc<Mutex<HashMap<String, Entry>>>,
-    /// Sessions being started, counted against the cap so two creates cannot both pass it.
+    workspaces: Arc<Mutex<HashMap<String, Entry>>>,
+    /// Workspaces being started, counted against the cap so two creates cannot both pass it.
     starting: Mutex<usize>,
 }
 
@@ -1135,8 +1137,9 @@ impl AcpBackend {
             config,
             hub: None,
             state_file: None,
+            legacy_state_file: None,
             event_prefix: String::new(),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            workspaces: Arc::new(Mutex::new(HashMap::new())),
             starting: Mutex::new(0),
         }
     }
@@ -1146,9 +1149,15 @@ impl AcpBackend {
         self
     }
 
-    /// Where session ids are kept (names, directories, ACP ids: no text) to come back after a restart.
+    /// Where workspace ids are kept (names, directories, ACP ids: no text) to come back after a restart.
     pub fn with_state_file(mut self, path: PathBuf) -> Self {
         self.state_file = Some(path);
+        self
+    }
+
+    /// The state file's old name, read once when the new one is missing; saves go to the new one only.
+    pub fn with_legacy_state_file(mut self, path: PathBuf) -> Self {
+        self.legacy_state_file = Some(path);
         self
     }
 
@@ -1158,33 +1167,33 @@ impl AcpBackend {
     }
 
     #[allow(dead_code)] // the wire step that carries a tap or an interrupt from a client calls this
-    pub fn status(&self, id: &str) -> Option<SessionStatus> {
-        let g = self.sessions.lock().unwrap();
+    pub fn status(&self, id: &str) -> Option<WorkspaceStatus> {
+        let g = self.workspaces.lock().unwrap();
         let e = g.get(id)?;
         Some(match &e.live {
             Some(l) => l.inner.lock().unwrap().status.clone(),
-            None if e.restoring => SessionStatus::Running,
-            None => SessionStatus::Failed(e.reason.clone().unwrap_or_default()),
+            None if e.restoring => WorkspaceStatus::Running,
+            None => WorkspaceStatus::Failed(e.reason.clone().unwrap_or_default()),
         })
     }
 
     fn live(&self, id: &str) -> Result<Arc<Live>> {
-        let g = self.sessions.lock().unwrap();
-        let e = g.get(id).ok_or_else(|| anyhow!("Unknown session"))?;
+        let g = self.workspaces.lock().unwrap();
+        let e = g.get(id).ok_or_else(|| anyhow!("Unknown workspace"))?;
         match &e.live {
             Some(l) => Ok(l.clone()),
-            None if e.restoring => Err(anyhow!("This session is still being restored")),
-            None => Err(anyhow!("Unknown session")),
+            None if e.restoring => Err(anyhow!("This workspace is still being restored")),
+            None => Err(anyhow!("Unknown workspace")),
         }
     }
 
     fn save(&self) {
         let Some(path) = &self.state_file else { return };
-        write_state(path, &self.sessions);
+        write_state(path, &self.workspaces);
     }
 
     fn running(&self) -> usize {
-        running_in(&self.sessions.lock().unwrap())
+        running_in(&self.workspaces.lock().unwrap())
     }
 
     async fn start(
@@ -1226,8 +1235,8 @@ impl AcpBackend {
         };
         live.inner.lock().unwrap().acp_id = id;
         if let Some(path) = self.state_file.clone() {
-            let sessions = self.sessions.clone();
-            *live.saver.lock().unwrap() = Some(Arc::new(move || write_state(&path, &sessions)));
+            let workspaces = self.workspaces.clone();
+            *live.saver.lock().unwrap() = Some(Arc::new(move || write_state(&path, &workspaces)));
         }
         if resume.is_some() {
             // `session/load` replays are not shown (they would arrive as one burst), so say what is missing.
@@ -1251,63 +1260,66 @@ impl AcpBackend {
         if let Some(hub) = &self.hub {
             hub.set_agent(&format!("{}{name}", self.event_prefix), agent);
         }
-        self.sessions
+        self.workspaces
             .lock()
             .unwrap()
             .insert(name.to_string(), Entry::running(agent, dir, live));
         Ok(())
     }
 
-    /// After a restart: brings back the saved sessions with `session/resume` or `session/load`. A session the
+    /// After a restart: brings back the saved workspaces with `session/resume` or `session/load`. A workspace the
     /// agent cannot take back stays in the list with the reason (the view says "Stopped: ...") until it is closed
     /// or the next restore starts it; one over the cap waits the same way.
     ///
     /// Every saved name gets a placeholder entry at once, under the same locks `create_with` takes, so while the
-    /// (slow) starts run neither its name nor its slot can be taken by a new session.
+    /// (slow) starts run neither its name nor its slot can be taken by a new workspace.
     pub async fn restore(&self) {
         let Some(path) = &self.state_file else { return };
-        let Ok(text) = std::fs::read_to_string(path) else {
+        let Ok(text) = std::fs::read_to_string(path).or_else(|e| match &self.legacy_state_file {
+            Some(old) if !path.exists() => std::fs::read_to_string(old),
+            _ => Err(e),
+        }) else {
             return;
         };
         let saved: Vec<Saved> = serde_json::from_str(&text).unwrap_or_default();
         let mut todo: Vec<Saved> = Vec::new();
         {
-            // The same order as `create_with`: `starting`, then `sessions`.
+            // The same order as `create_with`: `starting`, then `workspaces`.
             let mut starting = self.starting.lock().unwrap();
-            let mut sessions = self.sessions.lock().unwrap();
+            let mut workspaces = self.workspaces.lock().unwrap();
             let mut free = self
                 .config
                 .max_sessions
-                .saturating_sub(running_in(&sessions) + *starting);
+                .saturating_sub(running_in(&workspaces) + *starting);
             for s in saved {
                 if !valid_name(&s.name) {
                     // Not shown: a hostile name is never put in a list. Logged once, without the name.
-                    tracing::warn!("dropped a saved ACP session with an invalid name");
+                    tracing::warn!("dropped a saved ACP workspace with an invalid name");
                     continue;
                 }
-                if sessions.contains_key(&s.name) {
+                if workspaces.contains_key(&s.name) {
                     continue;
                 }
                 if !valid_dir(&s.dir) {
                     let why = "The saved directory is not valid".to_string();
-                    sessions.insert(s.name.clone(), Entry::stopped(&s, why, false));
+                    workspaces.insert(s.name.clone(), Entry::stopped(&s, why, false));
                 } else if s.reason.is_some() && !s.retry {
                     // Stopped for a reason a retry will not change: kept as it was.
                     let why = s.reason.clone().unwrap_or_default();
-                    sessions.insert(s.name.clone(), Entry::stopped(&s, why, false));
+                    workspaces.insert(s.name.clone(), Entry::stopped(&s, why, false));
                 } else if free == 0 {
                     let why = format!(
-                        "Not restored: at most {} agent sessions run at once",
+                        "Not restored: at most {} agent workspaces run at once",
                         self.config.max_sessions
                     );
-                    sessions.insert(s.name.clone(), Entry::stopped(&s, why, true));
+                    workspaces.insert(s.name.clone(), Entry::stopped(&s, why, true));
                 } else {
                     free -= 1;
                     *starting += 1;
                     let mut e = Entry::stopped(&s, String::new(), true);
                     e.reason = None;
                     e.restoring = true;
-                    sessions.insert(s.name.clone(), e);
+                    workspaces.insert(s.name.clone(), e);
                     todo.push(s);
                 }
             }
@@ -1320,7 +1332,7 @@ impl AcpBackend {
                 .await;
             if let Err(e) = started {
                 let why = format!("Could not restore: {e}");
-                self.sessions
+                self.workspaces
                     .lock()
                     .unwrap()
                     .insert(s.name.clone(), Entry::stopped(&s, why, true));
@@ -1376,7 +1388,7 @@ impl AcpBackend {
         Ok(())
     }
 
-    /// The session view's stream (T0). A session with no running agent (being restored, over the cap, or one the
+    /// The workspace view's stream (T0). A workspace with no running agent (being restored, over the cap, or one the
     /// agent could not take back) is shown as such, with the reason.
     fn stream_view(
         &self,
@@ -1386,8 +1398,8 @@ impl AcpBackend {
         info_seen: u64,
     ) -> Result<(AcpView, u64)> {
         let (live, agent, dir, restoring, reason) = {
-            let g = self.sessions.lock().unwrap();
-            let e = g.get(id).ok_or_else(|| anyhow!("Unknown session"))?;
+            let g = self.workspaces.lock().unwrap();
+            let e = g.get(id).ok_or_else(|| anyhow!("Unknown workspace"))?;
             (
                 e.live.clone(),
                 e.agent.clone(),
@@ -1406,7 +1418,7 @@ impl AcpBackend {
                 if restoring {
                     st.notice(
                         "info",
-                        "Restoring after a server restart. Open this session again in a moment.",
+                        "Restoring after a server restart. Open this workspace again in a moment.",
                     );
                 } else {
                     // A failure, not "Done": the view says "Stopped: <reason>" and Close works.
@@ -1479,18 +1491,18 @@ impl AcpBackend {
 }
 
 #[async_trait]
-impl SessionBackend for AcpBackend {
+impl WorkspaceBackend for AcpBackend {
     fn name(&self) -> &str {
         "acp"
     }
 
-    async fn list(&self) -> Result<Vec<SessionInfo>> {
-        let mut v: Vec<SessionInfo> = self
-            .sessions
+    async fn list(&self) -> Result<Vec<WorkspaceInfo>> {
+        let mut v: Vec<WorkspaceInfo> = self
+            .workspaces
             .lock()
             .unwrap()
             .iter()
-            .map(|(name, e)| SessionInfo {
+            .map(|(name, e)| WorkspaceInfo {
                 id: name.clone(),
                 name: name.clone(),
                 agent: Some(e.agent.clone()),
@@ -1502,7 +1514,7 @@ impl SessionBackend for AcpBackend {
     }
 
     async fn create(&self, _name: &str) -> Result<()> {
-        Err(anyhow!("Choose an agent for this session"))
+        Err(anyhow!("Choose an agent for this workspace"))
     }
 
     async fn create_with(
@@ -1514,7 +1526,7 @@ impl SessionBackend for AcpBackend {
     ) -> Result<()> {
         if !valid_name(name) {
             return Err(anyhow!(
-                "Session names use letters, digits, - and _ (max 64)"
+                "Workspace names use letters, digits, - and _ (max 64)"
             ));
         }
         // The client names an agent; the command line comes only from the owner's allowlist.
@@ -1529,20 +1541,20 @@ impl SessionBackend for AcpBackend {
             Some(_) => return Err(anyhow!("The directory must be an absolute path")),
             None => std::env::var("HOME").unwrap_or_else(|_| "/".into()),
         };
-        if self.sessions.lock().unwrap().contains_key(name) {
-            return Err(anyhow!("A session with that name exists"));
+        if self.workspaces.lock().unwrap().contains_key(name) {
+            return Err(anyhow!("A workspace with that name exists"));
         }
         {
             let mut starting = self.starting.lock().unwrap();
             if self.running() + *starting >= self.config.max_sessions {
                 return Err(anyhow!(
-                    "At most {} agent sessions run at once on this server",
+                    "At most {} agent workspaces run at once on this server",
                     self.config.max_sessions
                 ));
             }
             // A restore holds this lock while it takes the names it is bringing back.
-            if self.sessions.lock().unwrap().contains_key(name) {
-                return Err(anyhow!("A session with that name exists"));
+            if self.workspaces.lock().unwrap().contains_key(name) {
+                return Err(anyhow!("A workspace with that name exists"));
             }
             *starting += 1;
         }
@@ -1554,7 +1566,7 @@ impl SessionBackend for AcpBackend {
     }
 
     fn attach(&self, _id: &str, _cols: u16, _rows: u16) -> Result<Attachment> {
-        Err(anyhow!("This session has no terminal"))
+        Err(anyhow!("This workspace has no terminal"))
     }
 
     /// The owner's next prompt.
@@ -1566,7 +1578,7 @@ impl SessionBackend for AcpBackend {
         }
         let acp_id = {
             let mut g = live.inner.lock().unwrap();
-            if g.status != SessionStatus::Running {
+            if g.status != WorkspaceStatus::Running {
                 return Err(anyhow!("The agent is not running"));
             }
             if g.turn {
@@ -1624,7 +1636,7 @@ impl SessionBackend for AcpBackend {
                     );
                 }
             }
-            if live.inner.lock().unwrap().status != SessionStatus::Running {
+            if live.inner.lock().unwrap().status != WorkspaceStatus::Running {
                 return;
             }
             // A result whose stop reason does not decode ends the turn as `Idle`, without a notice.
@@ -1660,8 +1672,8 @@ impl SessionBackend for AcpBackend {
     }
 
     fn acp_watch(&self, id: &str) -> Result<watch::Receiver<u64>> {
-        let g = self.sessions.lock().unwrap();
-        let e = g.get(id).ok_or_else(|| anyhow!("Unknown session"))?;
+        let g = self.workspaces.lock().unwrap();
+        let e = g.get(id).ok_or_else(|| anyhow!("Unknown workspace"))?;
         Ok(match &e.live {
             Some(l) => l.changed.subscribe(),
             // Nothing will ever change: the sender is gone, which the connection reads as "no more updates".
@@ -1697,11 +1709,11 @@ impl SessionBackend for AcpBackend {
 
     async fn kill(&self, id: &str) -> Result<()> {
         let entry = self
-            .sessions
+            .workspaces
             .lock()
             .unwrap()
             .remove(id)
-            .ok_or_else(|| anyhow!("Unknown session"))?;
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
         if let Some(live) = entry.live {
             if let Some(k) = live.kill.lock().unwrap().take() {
                 let _ = k.send(());

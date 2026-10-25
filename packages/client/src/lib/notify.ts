@@ -1,15 +1,15 @@
 // Proactive signals (plan H.7): who needs you, how the page title and app badge say so, and which answers the
-// banner may offer. Pure functions; nothing here chooses the active session.
-import { isStale, type AgentMap, type SessionAgent } from './agents';
+// banner may offer. Pure functions; nothing here chooses the active workspace.
+import { isStale, type AgentMap, type WorkspaceAgent } from './agents';
 import { needsYou } from './tabs';
 import type { ChimeKind } from './chimes';
 import type { PlayResult } from './bell';
 
-export interface Waiting { key: string; name: string; since: number; agent: SessionAgent }
+export interface Waiting { key: string; name: string; since: number; agent: WorkspaceAgent }
 
-/** Sessions that need you, the longest wait first. */
-export function waitingList(sessions: { key: string; name: string }[], agents: AgentMap): Waiting[] {
-  return sessions
+/** Workspaces that need you, the longest wait first. */
+export function waitingList(workspaces: { key: string; name: string }[], agents: AgentMap): Waiting[] {
+  return workspaces
     .filter(s => needsYou(agents[s.key]))
     .map(s => ({ key: s.key, name: s.name, since: agents[s.key].attention?.raised_at ?? agents[s.key].waitingSince ?? agents[s.key].ts, agent: agents[s.key] }))
     .sort((a, b) => a.since - b.since);
@@ -18,10 +18,10 @@ export function waitingList(sessions: { key: string; name: string }[], agents: A
 export const titleFor = (count: number) => count > 0 ? `(${count}) Termenbox` : 'Termenbox';
 export const bannerText = (count: number) => count === 1 ? '1 needs you' : `${count} need you`;
 /** What the first item of the banner is about, when it is not a question. */
-export const bannerKind = (a: SessionAgent) => a.attention?.kind === 'finished_unseen' ? 'finished' : a.attention?.kind === 'failed' ? 'failed' : '';
+export const bannerKind = (a: WorkspaceAgent) => a.attention?.kind === 'finished_unseen' ? 'finished' : a.attention?.kind === 'failed' ? 'failed' : '';
 
 /** The choices the banner may offer: only for a prompt the agent's own hook confirmed, and never a stale one. */
-export function bannerChoices(a: SessionAgent, now: number): string[] {
+export function bannerChoices(a: WorkspaceAgent, now: number): string[] {
   if (a.attention ? a.attention.kind !== 'needs_input' : a.state !== 'needs_input') return [];
   if (!a.prompt || a.prompt.confidence !== 'high' || isStale(a, now)) return [];
   return a.prompt.choices.length > 0 && a.prompt.choices.length <= 3 ? a.prompt.choices : [];
@@ -72,7 +72,7 @@ export function createAttention(page: AttentionPage, every = 1000) {
 }
 
 /**
- * Raises one browser notification for each session that starts needing you while the page is hidden, for browsers
+ * Raises one browser notification for each workspace that starts needing you while the page is hidden, for browsers
  * without Web Push. It never asks for permission (that needs a gesture, and the push toggle already has one) and
  * stays quiet when this device is subscribed to push, which would notify twice.
  */
@@ -84,7 +84,7 @@ export function createNotifier(
   const told = new Set<string>();
   return function update(waiting: Waiting[], hidden: boolean, pushOn: boolean) {
     const keys = new Set(waiting.map(w => w.key));
-    for (const k of told) if (!keys.has(k)) told.delete(k); // a session that needed you again later is news again
+    for (const k of told) if (!keys.has(k)) told.delete(k); // a workspace that needed you again later is news again
     if (!hidden || pushOn || permission() !== 'granted') return;
     for (const w of waiting) {
       if (told.has(w.key)) continue;
@@ -97,20 +97,20 @@ export function createNotifier(
 
 /** How long after it was raised a waiting item still counts as having just landed (covers clock skew and a slow link). */
 export const FRESH_MS = 30_000;
-/** The vibration pattern for a session that needs you: two short pulses. */
+/** The vibration pattern for a workspace that needs you: two short pulses. */
 export const VIBRATE_PATTERN = [200, 100, 200];
 /** How long a sound that could not play (audio locked) waits for a tap before it is dropped. */
 export const PENDING_MS = 120_000;
 
 /** What the sound says: a question or failure asks, a finished reply is done. */
-export const alertKind = (a: SessionAgent): ChimeKind => a.attention?.kind === 'finished_unseen' ? 'done' : 'ask';
+export const alertKind = (a: WorkspaceAgent): ChimeKind => a.attention?.kind === 'finished_unseen' ? 'done' : 'ask';
 
 /**
- * Sound and vibration for a session that starts needing you. Each session alerts once per wait. An item is fresh when
+ * Sound and vibration for a workspace that starts needing you. Each workspace alerts once per wait. An item is fresh when
  * it was raised in the last 30 s, or after this page last looked (so a phone that slept and woke to a new question
  * still sounds, while opening the app on a queue that was already waiting stays quiet). `play` and `vibrate` are the
  * browser's, injected so this stays testable; each runs only when its setting is on. A sound that finds audio locked
- * is kept for one tap (`replay`). `log` gets one line per update with new items and never a session name.
+ * is kept for one tap (`replay`). `log` gets one line per update with new items and never a workspace name.
  */
 export function createAlerter(
   play: (kind: ChimeKind) => PlayResult,
@@ -161,7 +161,7 @@ export function createAlerter(
     log(`[termenbox:alert] ${ages.length} new, ${fresh} fresh (ages ${ages.join(', ')} s; last check ${Math.round(looked / 1000)} s ago): ${outcome.join(', ')}`);
   }
 
-  /** Plays the sound that was waiting for audio to unlock, if it is recent and a session still waits. */
+  /** Plays the sound that was waiting for audio to unlock, if it is recent and a workspace still waits. */
   function replay(opts: { sound: boolean } = { sound: true }) {
     if (!pending) return;
     const held = pending;

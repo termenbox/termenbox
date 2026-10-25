@@ -37,14 +37,14 @@
   import PasteSheet from './PasteSheet.svelte';
 
   export let connection: HubConnection;
-  export let activeSessionId: string | null = null;
+  export let activeWorkspaceId: string | null = null;
   export let connState: ServerState = 'connected';
-  /** Called when keys are sent to the session, so the app can tell the user answered a prompt by hand. */
+  /** Called when keys are sent to the workspace, so the app can tell the user answered a prompt by hand. */
   export let ontyped: (() => void) | undefined = undefined;
   /** `tmux` adds the Prefix key to the key row; `prefix` is tmux's own notation for it (`C-b`). */
   export let profile: KeyProfile = 'shell';
   export let prefix = 'C-b';
-  /** The last screen seen for this session (a peek): drawn dimmed until the live repaint replaces it. */
+  /** The last screen seen for this workspace (a peek): drawn dimmed until the live repaint replaces it. */
   export let preview: string | null = null;
 
   const FONT_KEY = 'termenbox_font';
@@ -131,7 +131,7 @@
   }
 
   const batch = new InputBatcher((data) => {
-    if (activeSessionId) { connection.send({ type: 'input', data: textToB64(data) }); ontyped?.(); }
+    if (activeWorkspaceId) { connection.send({ type: 'input', data: textToB64(data) }); ontyped?.(); }
   });
   /** Not connected (or the server is not answering): keys are not queued, so the user is told instead of typing into the void. */
   $: offline = connState !== 'connected';
@@ -157,7 +157,7 @@
     return prefixBytes(prefix) + data;
   }
 
-  $: newline = newlineKeys(activeSessionId ? $agents[activeSessionId]?.agent : undefined);
+  $: newline = newlineKeys(activeWorkspaceId ? $agents[activeWorkspaceId]?.agent : undefined);
 
   function combo(key: string) {
     prefixArmed = false;
@@ -165,7 +165,7 @@
   }
 
   /**
-   * The last screen of each session visited, serialized with its colours. Coming back draws it in the same write that
+   * The last screen of each workspace visited, serialized with its colours. Coming back draws it in the same write that
    * clears the terminal (no blank frame between), and tmux's repaint on attach then lands on an identical screen, so
    * only the cells that really changed are repainted. Memory only, like the peeked screens (decision 0084).
    */
@@ -186,7 +186,7 @@
     restored = !!saved;
     if (saved) term.write('\x1b[3J\x1b[2J\x1b[H' + saved);
   }
-  $: if (term) switchScreen(activeSessionId);
+  $: if (term) switchScreen(activeWorkspaceId);
 
   /**
    * tmux's repaint on attach arrives in several chunks, the first of which clears the screen. Written as they come,
@@ -248,7 +248,7 @@
   try {
     voiceLang = parseVoiceLang(localStorage.getItem(VOICE_LANG_KEY));
   } catch { /* storage can be blocked; the choice then lasts until reload */ }
-  let spoken = ''; // the language of the running session, for the bar
+  let spoken = ''; // the language of the running workspace, for the bar
   function cycleVoiceLang() {
     voiceLang = nextVoiceLang(voiceLang);
     try {
@@ -326,9 +326,9 @@
     if (!term) return;
     selectAllView = true;
     selectText = '';
-    historyLoading = !!activeSessionId;
-    if (!activeSessionId) { historyLoading = false; selectText = localText(); return; }
-    connection.send({ type: 'scrollback', session: activeSessionId });
+    historyLoading = !!activeWorkspaceId;
+    if (!activeWorkspaceId) { historyLoading = false; selectText = localText(); return; }
+    connection.send({ type: 'scrollback', session: activeWorkspaceId });
     clearTimeout(historyTimer);
     historyTimer = setTimeout(() => { if (historyLoading) { historyLoading = false; selectText = localText(); } }, 4000);
   }
@@ -432,7 +432,7 @@
     sentSize = `${cols}x${rows}`;
     crumb(`resize ${cols}x${rows}`);
     batch.flush(); // typed text goes out before the new size, as it was typed
-    if (activeSessionId) connection.send({ type: 'resize', cols, rows });
+    if (activeWorkspaceId) connection.send({ type: 'resize', cols, rows });
   }
 
   /**
@@ -679,7 +679,7 @@
     cleanups.push(
       connection.subscribe((msg) => {
         if (msg.type === 'scrollback') {
-          const whole = msg.session === activeSessionId ? historyParts.add(msg.part, msg.last, msg.text) : null;
+          const whole = msg.session === activeWorkspaceId ? historyParts.add(msg.part, msg.last, msg.text) : null;
           if (whole !== null && selectAllView) { clearTimeout(historyTimer); historyLoading = false; selectText = whole; }
         } else if (msg.type === 'output') {
           receive(b64ToBytes(msg.data));

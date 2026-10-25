@@ -66,7 +66,7 @@ export interface ConnectionOptions {
   onReady: (msg: Extract<ServerMessage, { type: 'auth_ok' }>, isReconnect: boolean) => void;
   /** The connection was lost: why, and how long it had been up (for the diagnostics and the status bar). */
   onDrop?: (reason: string, upMs: number) => void;
-  /** The path now carrying the session (`Direct, LAN`, `Tunnel`), or null when there is none. */
+  /** The path now carrying the workspace (`Direct, LAN`, `Tunnel`), or null when there is none. */
   onPath?: (path: { key: string; label: string } | null) => void;
   /** Every path that was tried and failed in the last attempt, with why and one fix; empty after a success. */
   onFailures?: (failures: PathFailure[]) => void;
@@ -119,12 +119,12 @@ export class Connection {
     netInfo()?.addEventListener('change', this.networkChanged);
   }
 
-  /** The path carrying the session, for the status line: `Direct, LAN` or `Tunnel`. */
+  /** The path carrying the workspace, for the status line: `Direct, LAN` or `Tunnel`. */
   get pathLabel(): string | null {
     return this.transport ? pathOf(this.transport).label : null;
   }
 
-  /** Which transport is carrying the session, for a connection-quality indicator. */
+  /** Which transport is carrying the workspace, for a connection-quality indicator. */
   get kind(): 'rtc' | 'ws' | null {
     return this.transport?.kind ?? null;
   }

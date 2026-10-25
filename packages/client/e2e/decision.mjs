@@ -1,4 +1,4 @@
-// U08: the decision card in real Chrome at phone width, on Home, in the inbox and in the session view. A needs_input is
+// U08: the decision card in real Chrome at phone width, on Home, in the inbox and in the workspace view. A needs_input is
 // answered with one tap on an option, or with a typed reply, without opening the terminal; the card stays (and says it
 // is waiting) until the server clears Attention. Desktop Chromium with mobile emulation: not an iPhone or Android check.
 // Usage: node e2e/decision.mjs   (needs the e2e harness built: pnpm e2e:build; CHROME_PATH for the browser)
@@ -74,7 +74,7 @@ try {
   await home.waitForTimeout(600);
   if (!(await card.innerText()).includes('task-1')) fail('the card resolved on send, before Attention cleared');
   if (!(await card.locator('[data-decision-status]').innerText()).includes('Reply sent')) fail('the card does not confirm the reply');
-  console.log('ok  Home: a typed reply goes to the card’s session as one line; the terminal stays closed and the card waits for Attention');
+  console.log('ok  Home: a typed reply goes to the card’s workspace as one line; the terminal stays closed and the card waits for Attention');
 
   // No answer from the server: after a few seconds the card says so and the options come back.
   await home.waitForFunction(() => /Nothing changed yet/.test(document.querySelector('[data-decision-status]').textContent), null, { timeout: 12000 });
@@ -86,7 +86,7 @@ try {
   const inbox = await open('decision.html?surface=inbox', 'dialog[open]');
   const icard = inbox.getByRole('region', { name: 'Decision' });
   const itext = await icard.innerText();
-  for (const w of ['api', 'Move login to the session store', 'Waiting 4 min', 'Allow the edit?', 'src/auth/session.ts +12 -3', 'Structured']) if (!itext.includes(w)) fail(`the inbox card lacks "${w}"`);
+  for (const w of ['api', 'Move login to the workspace store', 'Waiting 4 min', 'Allow the edit?', 'src/auth/session.ts +12 -3', 'Structured']) if (!itext.includes(w)) fail(`the inbox card lacks "${w}"`);
   await tap(icard.getByRole('button', { name: 'Yes', exact: true }));
   if (!eq(await inbox.evaluate(() => window.__decision.sent), [{ type: 'answer', session: 'srv/api', prompt_id: 'p1', seq: 3, choice: 0 }])) fail('inbox answer');
   await inbox.waitForTimeout(400);
@@ -97,22 +97,22 @@ try {
   console.log('ok  Inbox: the open question is the same card; one tap answers it in place and it becomes a plain line when Attention clears');
   await inbox.close();
 
-  // ---- Session view
-  const sv = await open('decision.html?surface=session', '[data-testid=session-view]');
+  // ---- Workspace view
+  const sv = await open('decision.html?surface=workspace', '[data-testid=session-view]');
   const scard = sv.getByRole('region', { name: 'Decision' });
   const stext = await scard.innerText();
-  for (const w of ['Allow the edit?', 'Waiting 4 min', 'Move login to the session store', 'The agent is about to use Edit', 'Structured']) if (!stext.includes(w)) fail(`the session card lacks "${w}"`);
+  for (const w of ['Allow the edit?', 'Waiting 4 min', 'Move login to the workspace store', 'The agent is about to use Edit', 'Structured']) if (!stext.includes(w)) fail(`the workspace card lacks "${w}"`);
   await tap(scard.getByRole('button', { name: 'No', exact: true }));
-  if (!eq(await sv.evaluate(() => window.__decision.sent), [{ type: 'session_answer', session: 'api', prompt_id: 'p1', option: 2 }])) fail('session answer');
+  if (!eq(await sv.evaluate(() => window.__decision.sent), [{ type: 'session_answer', session: 'api', prompt_id: 'p1', option: 2 }])) fail('workspace answer');
   await sv.waitForTimeout(400);
-  if (await scard.count() !== 1) fail('the session card resolved before Attention cleared');
+  if (await scard.count() !== 1) fail('the workspace card resolved before Attention cleared');
   await sv.getByLabel('Send a line').fill('thanks, carry on');
   await tap(sv.getByRole('button', { name: 'Send', exact: true }));
   const sent = await sv.evaluate(() => window.__decision.sent);
-  if (!eq(sent[1], { type: 'reply', session: 'api', text: 'thanks, carry on' }) || sent.some((m) => m.terminal)) fail(`session reply: ${JSON.stringify(sent)}`);
+  if (!eq(sent[1], { type: 'reply', session: 'api', text: 'thanks, carry on' }) || sent.some((m) => m.terminal)) fail(`workspace reply: ${JSON.stringify(sent)}`);
   await sv.evaluate(() => window.__decision.clear());
   await scard.waitFor({ state: 'detached', timeout: 3000 });
-  console.log('ok  Session view: the same card answers by option index (the server holds the keys), the composer replies, the card resolves when Attention clears');
+  console.log('ok  Workspace view: the same card answers by option index (the server holds the keys), the composer replies, the card resolves when Attention clears');
 } catch (error) {
   fail(error.stack ?? String(error));
 } finally {

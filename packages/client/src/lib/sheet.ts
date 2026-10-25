@@ -1,4 +1,4 @@
-/** `closed` is for phones: the top bar's Sessions button opens the sheet, so no strip of it stays on screen. */
+/** `closed` is for phones: the top bar's Workspaces button opens the sheet, so no strip of it stays on screen. */
 export type SheetHeight = 'closed' | 'peek' | 'half' | 'full';
 export const HEIGHTS: SheetHeight[] = ['peek', 'half', 'full'];
 export function sheetHeight(height: SheetHeight, available: number): number {

@@ -16,7 +16,7 @@
   import { STATES, type FleetState } from './states';
   import { cn } from '../ui/utils';
   /**
-   * Every session's state on one row, the open one named. 48 px high with 8 px between items (DR1, DR2).
+   * Every workspace's state on one row, the open one named. 48 px high with 8 px between items (DR1, DR2).
    * One tab stop (roving tabindex): Left/Right/Home/End move focus, Enter or Space opens the focused tab, the focused tab
    * scrolls into view, and when the focused tab goes away focus moves to its neighbour. Those keys are consumed here, so
    * none of them reaches the terminal behind the strip.
@@ -62,7 +62,7 @@
   });
 </script>
 
-<div bind:this={root} class={cn('flex items-center gap-2 overflow-x-auto px-3 py-1 [scrollbar-width:none]', className)} role="tablist" aria-label="Sessions" onkeydown={keydown} onfocusin={focusin}>
+<div bind:this={root} class={cn('flex items-center gap-2 overflow-x-auto px-3 py-1 [scrollbar-width:none]', className)} role="tablist" aria-label="Workspaces" onkeydown={keydown} onfocusin={focusin}>
   {#each items as item (item.id)}
     <button type="button" role="tab" data-id={item.id} aria-label={`${item.name}, ${STATES[item.state].label}`} aria-selected={item.id === selected} tabindex={item.id === stop ? 0 : -1} onclick={() => onselect?.(item.id)}
       onpointerdown={(e) => e.preventDefault()}
@@ -72,7 +72,7 @@
     </button>
   {/each}
   {#if onadd}
-    <button type="button" aria-label="New session" onclick={onadd} onpointerdown={(e) => e.preventDefault()}
+    <button type="button" aria-label="New workspace" onclick={onadd} onpointerdown={(e) => e.preventDefault()}
       class="flex h-12 min-w-12 shrink-0 items-center justify-center rounded-full bg-transparent p-0 text-title text-muted">+</button>
   {/if}
 </div>

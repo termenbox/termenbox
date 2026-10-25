@@ -7,7 +7,7 @@ export function setEnterKeyHint(area: HTMLTextAreaElement): void {
 
 /**
  * Colour-query answers (OSC 4 palette entries, OSC 10-19 dynamic colours) that xterm generates by itself. tmux relays an application's query to
- * every attached client, so with the session open in two places the second answer reaches the shell as typed
+ * every attached client, so with the workspace open in two places the second answer reaches the shell as typed
  * text. tmux answers these queries for the pane on its own, so the browser's answer is dropped.
  */
 // eslint-disable-next-line no-control-regex
@@ -24,7 +24,7 @@ export interface OscParser {
 
 /**
  * Stops xterm answering colour queries at all (OSC 4, 10, 11, 12 with a `?`): the answer was never typed by
- * anyone and, with the session open twice, one of them lands in the shell. Setting a colour (no `?`) is left to
+ * anyone and, with the workspace open twice, one of them lands in the shell. Setting a colour (no `?`) is left to
  * xterm. A handler that returns true ends the sequence without the built-in reply.
  */
 export function silenceColorQueries(parser: OscParser): { dispose(): void } {

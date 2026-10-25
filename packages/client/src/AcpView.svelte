@@ -11,19 +11,19 @@
   import { Settle } from './lib/home';
   import { TIER_LABEL } from './lib/sessionView';
 
-  /** The ACP session view (T0, decision 0111; U07b): a terminal-style stream we draw ourselves, because an ACP agent
+  /** The ACP workspace view (T0, decision 0111; U07b): a terminal-style stream we draw ourselves, because an ACP agent
    *  has no TUI. It is plain text in the page rather than a canvas, because that is what a phone can scroll, select and
    *  copy (see docs/plans/roadmap/U07b.md). What moves, and when (guardrail ui-never-moves-under-the-finger): the stream
    *  holds still while a finger is down and for 2 s after a scroll, and applies what arrived after that; it follows the
    *  end only while the reader is at the end; and nothing above the reader's place changes their place. */
-  let { sessionKey, name, agent, fleet = 'idle', stream, connState = 'connected', now = Date.now(), canShell = false,
+  let { workspaceKey, name, agent, fleet = 'idle', stream, connState = 'connected', now = Date.now(), canShell = false,
     onprompt, oninterrupt, onanswer, onmode, onshell }: {
-    sessionKey: string; name: string; agent?: string; fleet?: FleetState; stream?: StreamState; connState?: string; now?: number; canShell?: boolean;
+    workspaceKey: string; name: string; agent?: string; fleet?: FleetState; stream?: StreamState; connState?: string; now?: number; canShell?: boolean;
     onprompt: (text: string) => void; oninterrupt: () => void; onanswer: (promptId: string, optionId: string) => void; onmode: (mode: string) => void; onshell: () => void;
   } = $props();
 
-  // The view is made per session (App keys it), so the key is read once.
-  const key = untrack(() => sessionKey);
+  // The view is made per workspace (App keys it), so the key is read once.
+  const key = untrack(() => workspaceKey);
   const saved = loadSaved(key);
   let draft = $state(saved.draft ?? '');
   let opened = $state(new Set<string>(saved.opened ?? []));
@@ -38,7 +38,7 @@
   const entries = $derived(stream?.entries ?? []);
   const connected = $derived(connState === 'connected');
   const ended = $derived(info?.status === 'ended' || info?.status === 'failed');
-  const blocked = $derived(!connected ? 'Reconnecting. Draft kept.' : info?.status === 'failed' ? 'The agent stopped.' : info?.status === 'ended' ? 'This session has ended.' : '');
+  const blocked = $derived(!connected ? 'Reconnecting. Draft kept.' : info?.status === 'failed' ? 'The agent stopped.' : info?.status === 'ended' ? 'This workspace has ended.' : '');
   const tier = TIER_LABEL.t0;
 
   // The first full picture (the facts arrive last): what is in it is history, so an old error is not read out as an
@@ -216,7 +216,7 @@
   const subtitle = $derived(!connected ? 'Reconnecting. What you see is kept.' : info?.status === 'failed' ? `Stopped${info.statusText ? `: ${info.statusText}` : ''}` : info?.status === 'ended' ? 'Ended' : info?.title || info?.dir || 'Opening…');
 </script>
 
-<div class="flex h-full min-h-0 flex-col bg-bg text-fg" data-testid="acp-view" data-session={sessionKey} onkeydown={escape} role="presentation">
+<div class="flex h-full min-h-0 flex-col bg-bg text-fg" data-testid="acp-view" data-workspace={workspaceKey} onkeydown={escape} role="presentation">
   <header class="flex items-center gap-3 border-b border-line px-4 py-3">
     <AgentBadge agent={info?.agent || agent} state={fleet} />
     <div class="flex min-w-0 flex-1 flex-col">
@@ -227,7 +227,7 @@
     <StatusChip state={fleet} />
   </header>
 
-  <div class="flex items-center gap-2 border-b border-line px-4 py-2" role="toolbar" aria-label="Session tools">
+  <div class="flex items-center gap-2 border-b border-line px-4 py-2" role="toolbar" aria-label="Workspace tools">
     {#if info && info.modes.length > 1}
       <div class="min-w-0 flex-1">
         <NativeSelect aria-label="Mode" value={info.mode} disabled={!connected || ended} onchange={(e) => onmode((e.currentTarget as HTMLSelectElement).value)} data-testid="mode">
@@ -238,18 +238,18 @@
     {#if pct !== null}
       <span class="shrink-0 text-xs {pct >= 80 ? 'font-semibold text-warn' : 'text-soft'}" title="Context window in use{info?.usage?.cost ? ` · cost ${info.usage.cost}` : ''}" data-testid="context">{pct}%<span class="sr-only"> of the context window used</span></span>
     {/if}
-    <button type="button" aria-label="Search this session" aria-pressed={searching} onclick={() => (searching ? closeSearch() : openSearch())} onpointerdown={(e) => e.preventDefault()}
+    <button type="button" aria-label="Search this workspace" aria-pressed={searching} onclick={() => (searching ? closeSearch() : openSearch())} onpointerdown={(e) => e.preventDefault()}
       class="grid size-11 shrink-0 place-items-center rounded-control bg-raised p-0 text-base text-fg">⌕</button>
-    <button type="button" aria-label={copied ? 'Copied' : 'Copy the whole session'} onclick={copyAll} onpointerdown={(e) => e.preventDefault()} disabled={!entries.length}
+    <button type="button" aria-label={copied ? 'Copied' : 'Copy the whole workspace'} onclick={copyAll} onpointerdown={(e) => e.preventDefault()} disabled={!entries.length}
       class="grid size-11 shrink-0 place-items-center rounded-control bg-raised p-0 text-base text-fg">{copied ? '✓' : '⧉'}</button>
     <button type="button" onclick={onshell} onpointerdown={(e) => e.preventDefault()} disabled={!canShell || !connected} data-testid="shell"
-      title={canShell ? `Open a shell in ${info?.dir ?? 'the session’s directory'}` : 'This server runs no tmux, so there is no shell to open'}
+      title={canShell ? `Open a shell in ${info?.dir ?? 'the workspace’s directory'}` : 'This server runs no tmux, so there is no shell to open'}
       class="min-h-11 shrink-0 rounded-control bg-raised px-3 text-base font-semibold text-fg">Shell</button>
   </div>
 
   {#if searching}
     <div class="flex items-center gap-2 border-b border-line px-4 py-2" role="search">
-      <input bind:this={searchBox} bind:value={query} type="search" enterkeyhint="search" placeholder="Search this session" aria-label="Search this session" autocapitalize="off" autocomplete="off" spellcheck="false" onkeydown={searchKey}
+      <input bind:this={searchBox} bind:value={query} type="search" enterkeyhint="search" placeholder="Search this workspace" aria-label="Search this workspace" autocapitalize="off" autocomplete="off" spellcheck="false" onkeydown={searchKey}
         class="h-11 min-w-0 flex-1 rounded-control border border-line bg-sunken px-3 text-input text-fg outline-none focus-visible:border-accent" />
       <span class="shrink-0 text-sm text-soft" role="status" data-testid="matches">{#if !query.trim()}{:else if matches.length}{Math.min(at, matches.length - 1) + 1} / {matches.length}{:else}No matches{/if}</span>
       <button type="button" aria-label="Previous match" disabled={!matches.length} onclick={() => step(-1)} onpointerdown={(e) => e.preventDefault()} class="grid size-11 shrink-0 place-items-center rounded-control bg-raised p-0 text-base text-fg">▲</button>
@@ -259,20 +259,20 @@
 
   <div class="relative min-h-0 flex-1">
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-    <div bind:this={scroller} {onscroll} role="log" aria-live="off" aria-label="Session output" tabindex="0" data-testid="stream"
+    <div bind:this={scroller} {onscroll} role="log" aria-live="off" aria-label="Workspace output" tabindex="0" data-testid="stream"
       onpointerdowncapture={(e) => settle.touchDown(e.pointerId)} onpointerupcapture={(e) => settle.touchUp(e.pointerId)} onpointercancelcapture={(e) => settle.touchUp(e.pointerId)}
       class="h-full overflow-y-auto overscroll-contain px-4 py-4 select-text [-webkit-touch-callout:default] [overflow-anchor:none]">
       <div class="mx-auto flex w-full max-w-3xl flex-col gap-3">
         {#if !stream}
           <p class="py-8 text-center text-base text-soft" role="status">{openingText(connected, silent)}</p>
         {:else if !shown.length}
-          <EmptyState title={ended ? 'Nothing was said' : 'Say what you want done'} body={ended ? 'This session ended before anything was kept.' : 'Write a prompt below. Type / for the commands this agent offers.'} />
+          <EmptyState title={ended ? 'Nothing was said' : 'Say what you want done'} body={ended ? 'This workspace ended before anything was kept.' : 'Write a prompt below. Type / for the commands this agent offers.'} />
         {/if}
         {#each shown as e (e.id)}
           {@const m = cur && cur.entry === e.id ? cur.index : -1}
           <div data-entry={e.id}>
             <AcpEntryView entry={e} query={searching ? query.trim() : ''} current={m} asking={e.kind === 'tool' && asking.has(e.toolId)} announce={isNewEntry(e, baseRev)} {opened} ontoggle={toggleOpen}
-              {onanswer} {sessionKey} {name} agent={info?.agent || agent} {now} />
+              {onanswer} {workspaceKey} {name} agent={info?.agent || agent} {now} />
           </div>
         {/each}
       </div>

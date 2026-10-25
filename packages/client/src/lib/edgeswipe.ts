@@ -1,4 +1,4 @@
-// Swipe-back from an open session (decision 0101): a drag that starts in the left 20 px and goes right.
+// Swipe-back from an open workspace (decision 0101): a drag that starts in the left 20 px and goes right.
 export const EDGE_PX = 20;
 export const SWIPE_MIN_PX = 72;
 
