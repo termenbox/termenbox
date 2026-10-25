@@ -461,6 +461,11 @@ impl Stream {
         self.open = None;
     }
 
+    /// A turn is open: a prompt was sent and its response has not come.
+    pub fn working(&self) -> bool {
+        self.info.working
+    }
+
     /// The owner sent a prompt.
     pub fn user(&mut self, text: &str) {
         self.close_open();

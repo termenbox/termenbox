@@ -556,9 +556,19 @@ struct Live {
     changed: watch::Sender<u64>,
     out: mpsc::UnboundedSender<String>,
     kill: Mutex<Option<oneshot::Sender<()>>>,
+    /// Writes the state file (set by the backend). A turn opening or closing changes what a restart interrupts, so
+    /// it is written then, not only when a session is made or closed.
+    saver: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Live {
+    fn persist(&self) {
+        let save = self.saver.lock().unwrap().clone();
+        if let Some(save) = save {
+            save();
+        }
+    }
+
     fn emit(&self, kind: EventKind) {
         if let Some(hub) = &self.hub {
             hub.report(&self.event_name, Source::Acp, Confidence::High, kind);
@@ -828,6 +838,7 @@ fn spawn_agent(
     let (out, mut out_rx) = mpsc::unbounded_channel::<String>();
     let (kill_tx, mut kill_rx) = oneshot::channel::<()>();
     let live = Arc::new(Live {
+        saver: Mutex::new(None),
         event_name,
         dir: dir.to_string(),
         hub,
@@ -990,19 +1001,122 @@ async fn handshake(
 // The backend
 // ---------------------------------------------------------------------------------------------------
 
+/// Agents running now in a locked session table.
+fn running_in(sessions: &HashMap<String, Entry>) -> usize {
+    sessions
+        .values()
+        .filter(|e| {
+            e.live
+                .as_ref()
+                .map(|l| l.inner.lock().unwrap().status == SessionStatus::Running)
+                .unwrap_or(false)
+        })
+        .count()
+}
+
+/// Writes the sessions to the state file: running ones with their ACP id and whether a turn is open, the others with
+/// why they are not running.
+fn write_state(path: &std::path::Path, sessions: &Mutex<HashMap<String, Entry>>) {
+    let mut saved: Vec<Saved> = sessions
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(name, e)| {
+            let (acp_id, reason, retry, turn_open) = match &e.live {
+                Some(l) => {
+                    let g = l.inner.lock().unwrap();
+                    // A crashed or ended agent is not kept, as before.
+                    if g.status != SessionStatus::Running {
+                        return None;
+                    }
+                    (g.acp_id.clone(), None, false, g.stream.working())
+                }
+                // Not running: kept with why, so a restart or a cap does not lose the session.
+                None => (
+                    e.acp_id.clone(),
+                    e.reason.clone(),
+                    e.retry || e.restoring,
+                    e.turn_open,
+                ),
+            };
+            Some(Saved {
+                name: name.clone(),
+                agent: e.agent.clone(),
+                dir: e.dir.clone(),
+                acp_id,
+                reason,
+                retry,
+                turn_open,
+            })
+        })
+        .collect();
+    saved.sort_by(|a, b| a.name.cmp(&b.name));
+    if let Ok(text) = serde_json::to_string(&saved) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct Saved {
     name: String,
     agent: String,
     dir: String,
+    /// Empty for an entry that never started (it was over the cap at the restart).
     acp_id: String,
+    /// Why this entry has no running agent; shown as the session's "Stopped: ..." line.
+    #[serde(default)]
+    reason: Option<String>,
+    /// Tried again at the next restore.
+    #[serde(default)]
+    retry: bool,
+    /// A turn was running when this was saved: a restart interrupted it.
+    #[serde(default)]
+    turn_open: bool,
 }
 
 struct Entry {
     agent: String,
     dir: String,
-    /// `None` for a session that could not be brought back after a restart.
+    /// `None` for a session with no running agent: not restored yet, not restorable, or over the cap.
     live: Option<Arc<Live>>,
+    /// Why there is no agent (shown to the owner).
+    reason: Option<String>,
+    /// A restore is starting this session's agent now; the entry holds its name and slot meanwhile.
+    restoring: bool,
+    /// For an entry with no live agent, what `save` writes back: the ACP id to resume, whether the next restore
+    /// tries again, and whether a turn was open.
+    acp_id: String,
+    retry: bool,
+    turn_open: bool,
+}
+
+impl Entry {
+    fn running(agent: &str, dir: &str, live: Arc<Live>) -> Self {
+        Self {
+            agent: agent.to_string(),
+            dir: dir.to_string(),
+            live: Some(live),
+            reason: None,
+            restoring: false,
+            acp_id: String::new(),
+            retry: false,
+            turn_open: false,
+        }
+    }
+
+    /// An entry without a running agent. `retry`: the next restore tries to start it again.
+    fn stopped(s: &Saved, reason: String, retry: bool) -> Self {
+        Self {
+            agent: s.agent.clone(),
+            dir: s.dir.clone(),
+            live: None,
+            reason: Some(reason),
+            restoring: false,
+            acp_id: s.acp_id.clone(),
+            retry,
+            turn_open: s.turn_open,
+        }
+    }
 }
 
 pub struct AcpBackend {
@@ -1010,7 +1124,7 @@ pub struct AcpBackend {
     hub: Option<EventHub>,
     state_file: Option<PathBuf>,
     event_prefix: String,
-    sessions: Mutex<HashMap<String, Entry>>,
+    sessions: Arc<Mutex<HashMap<String, Entry>>>,
     /// Sessions being started, counted against the cap so two creates cannot both pass it.
     starting: Mutex<usize>,
 }
@@ -1022,7 +1136,7 @@ impl AcpBackend {
             hub: None,
             state_file: None,
             event_prefix: String::new(),
-            sessions: Mutex::new(HashMap::new()),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
             starting: Mutex::new(0),
         }
     }
@@ -1049,57 +1163,38 @@ impl AcpBackend {
         let e = g.get(id)?;
         Some(match &e.live {
             Some(l) => l.inner.lock().unwrap().status.clone(),
-            None => SessionStatus::Ended,
+            None if e.restoring => SessionStatus::Running,
+            None => SessionStatus::Failed(e.reason.clone().unwrap_or_default()),
         })
     }
 
     fn live(&self, id: &str) -> Result<Arc<Live>> {
-        self.sessions
-            .lock()
-            .unwrap()
-            .get(id)
-            .and_then(|e| e.live.clone())
-            .ok_or_else(|| anyhow!("Unknown session"))
+        let g = self.sessions.lock().unwrap();
+        let e = g.get(id).ok_or_else(|| anyhow!("Unknown session"))?;
+        match &e.live {
+            Some(l) => Ok(l.clone()),
+            None if e.restoring => Err(anyhow!("This session is still being restored")),
+            None => Err(anyhow!("Unknown session")),
+        }
     }
 
     fn save(&self) {
         let Some(path) = &self.state_file else { return };
-        let saved: Vec<Saved> = self
-            .sessions
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|(name, e)| {
-                let l = e.live.as_ref()?;
-                let g = l.inner.lock().unwrap();
-                (g.status == SessionStatus::Running).then(|| Saved {
-                    name: name.clone(),
-                    agent: e.agent.clone(),
-                    dir: e.dir.clone(),
-                    acp_id: g.acp_id.clone(),
-                })
-            })
-            .collect();
-        if let Ok(text) = serde_json::to_string(&saved) {
-            let _ = std::fs::write(path, text);
-        }
+        write_state(path, &self.sessions);
     }
 
     fn running(&self) -> usize {
-        self.sessions
-            .lock()
-            .unwrap()
-            .values()
-            .filter(|e| {
-                e.live
-                    .as_ref()
-                    .map(|l| l.inner.lock().unwrap().status == SessionStatus::Running)
-                    .unwrap_or(false)
-            })
-            .count()
+        running_in(&self.sessions.lock().unwrap())
     }
 
-    async fn start(&self, name: &str, agent: &str, dir: &str, resume: Option<&str>) -> Result<()> {
+    async fn start(
+        &self,
+        name: &str,
+        agent: &str,
+        dir: &str,
+        resume: Option<&str>,
+        interrupted: bool,
+    ) -> Result<()> {
         let profile = self
             .config
             .agents
@@ -1130,6 +1225,10 @@ impl AcpBackend {
             }
         };
         live.inner.lock().unwrap().acp_id = id;
+        if let Some(path) = self.state_file.clone() {
+            let sessions = self.sessions.clone();
+            *live.saver.lock().unwrap() = Some(Arc::new(move || write_state(&path, &sessions)));
+        }
         if resume.is_some() {
             // `session/load` replays are not shown (they would arrive as one burst), so say what is missing.
             live.stream(|st| {
@@ -1139,47 +1238,92 @@ impl AcpBackend {
                 )
             });
         }
-        live.turn_close(AgentState::Idle);
+        if interrupted {
+            // The turn that was running when the server stopped is gone with the old agent process.
+            live.stream(|st| st.notice("error", "A server restart interrupted the running turn."));
+        }
+        live.turn_close(if interrupted {
+            AgentState::Error
+        } else {
+            AgentState::Idle
+        });
         // The agent is known from the start (there is no process to scan): Home and the tabs show its icon.
         if let Some(hub) = &self.hub {
             hub.set_agent(&format!("{}{name}", self.event_prefix), agent);
         }
-        self.sessions.lock().unwrap().insert(
-            name.to_string(),
-            Entry {
-                agent: agent.to_string(),
-                dir: dir.to_string(),
-                live: Some(live),
-            },
-        );
+        self.sessions
+            .lock()
+            .unwrap()
+            .insert(name.to_string(), Entry::running(agent, dir, live));
         Ok(())
     }
 
-    /// After a restart: brings back the saved sessions with `session/resume` or `session/load`; a session the
-    /// agent cannot take back is marked ended (it stays in the list until closed).
+    /// After a restart: brings back the saved sessions with `session/resume` or `session/load`. A session the
+    /// agent cannot take back stays in the list with the reason (the view says "Stopped: ...") until it is closed
+    /// or the next restore starts it; one over the cap waits the same way.
+    ///
+    /// Every saved name gets a placeholder entry at once, under the same locks `create_with` takes, so while the
+    /// (slow) starts run neither its name nor its slot can be taken by a new session.
     pub async fn restore(&self) {
         let Some(path) = &self.state_file else { return };
         let Ok(text) = std::fs::read_to_string(path) else {
             return;
         };
         let saved: Vec<Saved> = serde_json::from_str(&text).unwrap_or_default();
-        for s in saved.into_iter().take(self.config.max_sessions) {
-            if !valid_name(&s.name) || !valid_dir(&s.dir) {
-                continue;
+        let mut todo: Vec<Saved> = Vec::new();
+        {
+            // The same order as `create_with`: `starting`, then `sessions`.
+            let mut starting = self.starting.lock().unwrap();
+            let mut sessions = self.sessions.lock().unwrap();
+            let mut free = self
+                .config
+                .max_sessions
+                .saturating_sub(running_in(&sessions) + *starting);
+            for s in saved {
+                if !valid_name(&s.name) {
+                    // Not shown: a hostile name is never put in a list. Logged once, without the name.
+                    tracing::warn!("dropped a saved ACP session with an invalid name");
+                    continue;
+                }
+                if sessions.contains_key(&s.name) {
+                    continue;
+                }
+                if !valid_dir(&s.dir) {
+                    let why = "The saved directory is not valid".to_string();
+                    sessions.insert(s.name.clone(), Entry::stopped(&s, why, false));
+                } else if s.reason.is_some() && !s.retry {
+                    // Stopped for a reason a retry will not change: kept as it was.
+                    let why = s.reason.clone().unwrap_or_default();
+                    sessions.insert(s.name.clone(), Entry::stopped(&s, why, false));
+                } else if free == 0 {
+                    let why = format!(
+                        "Not restored: at most {} agent sessions run at once",
+                        self.config.max_sessions
+                    );
+                    sessions.insert(s.name.clone(), Entry::stopped(&s, why, true));
+                } else {
+                    free -= 1;
+                    *starting += 1;
+                    let mut e = Entry::stopped(&s, String::new(), true);
+                    e.reason = None;
+                    e.restoring = true;
+                    sessions.insert(s.name.clone(), e);
+                    todo.push(s);
+                }
             }
-            if self
-                .start(&s.name, &s.agent, &s.dir, Some(&s.acp_id))
-                .await
-                .is_err()
-            {
-                self.sessions.lock().unwrap().insert(
-                    s.name.clone(),
-                    Entry {
-                        agent: s.agent,
-                        dir: s.dir,
-                        live: None,
-                    },
-                );
+        }
+        for s in todo {
+            // An entry that never started has no conversation to resume: it starts afresh.
+            let resume = (!s.acp_id.is_empty()).then_some(s.acp_id.as_str());
+            let started = self
+                .start(&s.name, &s.agent, &s.dir, resume, s.turn_open)
+                .await;
+            if let Err(e) = started {
+                let why = format!("Could not restore: {e}");
+                self.sessions
+                    .lock()
+                    .unwrap()
+                    .insert(s.name.clone(), Entry::stopped(&s, why, true));
                 if let Some(hub) = &self.hub {
                     hub.report(
                         &format!("{}{}", self.event_prefix, s.name),
@@ -1187,11 +1331,13 @@ impl AcpBackend {
                         Confidence::High,
                         EventKind::Turn {
                             open: false,
-                            outcome: Some(AgentState::Done),
+                            outcome: Some(AgentState::Error),
                         },
                     );
                 }
             }
+            *self.starting.lock().unwrap() -= 1;
+            self.save();
         }
         self.save();
     }
@@ -1230,8 +1376,8 @@ impl AcpBackend {
         Ok(())
     }
 
-    /// The session view's stream (T0). A session that could not be brought back after a restart has no agent, so it
-    /// is shown as ended.
+    /// The session view's stream (T0). A session with no running agent (being restored, over the cap, or one the
+    /// agent could not take back) is shown as such, with the reason.
     fn stream_view(
         &self,
         id: &str,
@@ -1239,10 +1385,16 @@ impl AcpBackend {
         epoch: Option<u64>,
         info_seen: u64,
     ) -> Result<(AcpView, u64)> {
-        let (live, agent, dir) = {
+        let (live, agent, dir, restoring, reason) = {
             let g = self.sessions.lock().unwrap();
             let e = g.get(id).ok_or_else(|| anyhow!("Unknown session"))?;
-            (e.live.clone(), e.agent.clone(), e.dir.clone())
+            (
+                e.live.clone(),
+                e.agent.clone(),
+                e.dir.clone(),
+                e.restoring,
+                e.reason.clone(),
+            )
         };
         match live {
             Some(l) => {
@@ -1251,7 +1403,18 @@ impl AcpBackend {
             }
             None => {
                 let mut st = Stream::new(&agent, &dir, 0);
-                st.status("ended", None);
+                if restoring {
+                    st.notice(
+                        "info",
+                        "Restoring after a server restart. Open this session again in a moment.",
+                    );
+                } else {
+                    // A failure, not "Done": the view says "Stopped: <reason>" and Close works.
+                    let why = reason
+                        .as_deref()
+                        .unwrap_or("The agent could not be restored");
+                    st.status("failed", Some(why));
+                }
                 Ok(st.view(id, after, epoch, info_seen))
             }
         }
@@ -1377,9 +1540,13 @@ impl SessionBackend for AcpBackend {
                     self.config.max_sessions
                 ));
             }
+            // A restore holds this lock while it takes the names it is bringing back.
+            if self.sessions.lock().unwrap().contains_key(name) {
+                return Err(anyhow!("A session with that name exists"));
+            }
             *starting += 1;
         }
-        let r = self.start(name, agent, &dir, None).await;
+        let r = self.start(name, agent, &dir, None, false).await;
         *self.starting.lock().unwrap() -= 1;
         r?;
         self.save();
@@ -1414,6 +1581,7 @@ impl SessionBackend for AcpBackend {
             title: first_line(text),
         });
         live.stream(|st| st.user(text));
+        live.persist();
         if let Some(hub) = &live.hub {
             hub.record_project(&live.event_name, &live.dir);
         }
@@ -1469,6 +1637,7 @@ impl SessionBackend for AcpBackend {
                 Ok(_) => st.turn_end(stop, None),
                 Err(e) => st.turn_end(None, Some(&e.to_string())),
             });
+            live.persist();
             live.turn_close(match r {
                 Ok(_) if stop == Some("end_turn") => AgentState::Done,
                 Ok(_) => AgentState::Idle,

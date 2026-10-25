@@ -813,16 +813,25 @@ async fn after_a_restart_sessions_come_back_by_resume_or_load_else_end() {
         b.backend.kill("s1").await.unwrap();
         a.backend.kill("s1").await.unwrap();
     }
-    // An agent that offers neither: the session is ended, not silently gone.
+    // An agent that offers neither: the session stays, failed with the reason, not silently gone and not "Done".
     let dir = tmp();
     let a = rig_with("", 2, dir.clone(), true);
     a.create("s1").await;
     let b = rig_with("", 2, dir.clone(), true);
     b.backend.restore().await;
-    assert_eq!(b.backend.status("s1"), Some(SessionStatus::Ended));
+    assert!(matches!(
+        b.backend.status("s1"),
+        Some(SessionStatus::Failed(_))
+    ));
     assert_eq!(b.backend.list().await.unwrap().len(), 1);
     assert!(b.backend.send_text("s1", "hi").await.is_err());
-    assert_eq!(last_state(&b, "s1"), Some(AgentState::Done));
+    assert_eq!(last_state(&b, "s1"), Some(AgentState::Error));
+    let info = view(&b, "s1").info.unwrap();
+    assert_eq!(info.status, "failed");
+    assert!(info
+        .status_text
+        .unwrap()
+        .contains("neither resume nor load"));
     a.backend.kill("s1").await.unwrap();
 }
 
@@ -1076,4 +1085,242 @@ async fn a_refused_session_new_tells_the_owner_to_log_in() {
         "fake would not start: Authentication required. Log in to it on the server, then try again."
     );
     assert!(r.backend.list().await.unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Restore (step 3)
+// ---------------------------------------------------------------------------------------------------
+
+fn saved_file(dir: &Path) -> Vec<Value> {
+    serde_json::from_str(&std::fs::read_to_string(dir.join("sessions.json")).unwrap()).unwrap()
+}
+
+/// The hub reduces a closed turn with an error outcome to the Error state (the Failed attention item).
+fn is_error_turn(k: &EventKind) -> bool {
+    matches!(
+        k,
+        EventKind::State {
+            state: AgentState::Error
+        }
+    )
+}
+
+#[tokio::test]
+async fn over_the_cap_the_rest_wait_and_survive_a_second_save_and_restore() {
+    let dir = tmp();
+    let a = rig_with("resume", 2, dir.clone(), true);
+    a.create("a").await;
+    a.create("b").await;
+    // The server restarts with room for one.
+    let b = rig_with("resume", 1, dir.clone(), true);
+    b.backend.restore().await;
+    assert_eq!(b.backend.status("a"), Some(SessionStatus::Running));
+    assert!(matches!(
+        b.backend.status("b"),
+        Some(SessionStatus::Failed(_))
+    ));
+    let v = view(&b, "b").info.unwrap();
+    assert_eq!(v.status, "failed");
+    assert!(v.status_text.unwrap().contains("at most 1 agent sessions"));
+    // A second save keeps the waiting entry, with its id and a retry.
+    b.backend.save();
+    let file = saved_file(&dir);
+    assert_eq!(file.len(), 2, "{file:?}");
+    assert_eq!(file[1]["name"], "b");
+    assert_eq!(file[1]["retry"], true);
+    assert_eq!(file[1]["acp_id"], "acp-1");
+    // The next restore, with room, starts it.
+    let c = rig_with("resume", 2, dir.clone(), true);
+    c.backend.restore().await;
+    assert_eq!(c.backend.status("a"), Some(SessionStatus::Running));
+    assert_eq!(c.backend.status("b"), Some(SessionStatus::Running));
+    for n in ["a", "b"] {
+        b.backend.kill(n).await.ok();
+        c.backend.kill(n).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_failed_start_is_retried_at_the_next_restore_and_reports_an_error() {
+    let dir = tmp();
+    let a = rig_with("resume", 2, dir.clone(), true);
+    a.create("s1").await;
+    // This time the agent can neither resume nor load.
+    let b = rig_with("", 2, dir.clone(), true);
+    b.backend.restore().await;
+    assert_eq!(last_state(&b, "s1"), Some(AgentState::Error));
+    assert!(b.kinds("s1").iter().any(is_error_turn));
+    assert_eq!(saved_file(&dir)[0]["retry"], true);
+    // Closing it removes it from the file.
+    let again = rig_with("resume", 2, dir.clone(), true);
+    again.backend.restore().await;
+    assert_eq!(again.backend.status("s1"), Some(SessionStatus::Running));
+    assert_eq!(saved_file(&dir)[0]["reason"], Value::Null);
+    again.backend.kill("s1").await.unwrap();
+    assert!(saved_file(&dir).is_empty());
+}
+
+#[tokio::test]
+async fn an_invalid_directory_is_kept_with_a_reason_and_an_invalid_name_is_dropped() {
+    let dir = tmp();
+    let f =
+        |name: &str, d: &str| json!({"name": name, "agent": "fake", "dir": d, "acp_id": "acp-1"});
+    std::fs::write(
+        dir.join("sessions.json"),
+        json!([
+            f("bad-dir", "relative/path"),
+            f("a b", "/tmp"),
+            f("ok", dir.to_str().unwrap())
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let r = rig_with("resume", 3, dir.clone(), true);
+    r.backend.restore().await;
+    let names: Vec<_> = r
+        .backend
+        .list()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    assert_eq!(names, ["bad-dir", "ok"]);
+    let info = view(&r, "bad-dir").info.unwrap();
+    assert_eq!(info.status, "failed");
+    assert!(info.status_text.unwrap().contains("directory"));
+    let file = saved_file(&dir);
+    assert_eq!(file.len(), 2);
+    assert_eq!(file[0]["retry"], false);
+    // Not retried: a second restore leaves it as it was, and Close removes it.
+    let again = rig_with("resume", 3, dir.clone(), true);
+    again.backend.restore().await;
+    assert!(matches!(
+        again.backend.status("bad-dir"),
+        Some(SessionStatus::Failed(_))
+    ));
+    again.backend.kill("bad-dir").await.unwrap();
+    again.backend.kill("ok").await.unwrap();
+    r.backend.kill("ok").await.ok();
+}
+
+#[tokio::test]
+async fn a_create_during_restore_respects_the_cap_and_the_names() {
+    let dir = tmp();
+    let a = rig_with("resume", 2, dir.clone(), true);
+    a.create("s1").await;
+    a.create("s2").await;
+    let b = rig_with("resume", 2, dir.clone(), true);
+    let (_, checks) = tokio::join!(b.backend.restore(), async {
+        // The saved names are taken and the slots are spoken for while the starts run.
+        let same = b
+            .backend
+            .create_with("s1", None, b.dir.to_str(), Some("fake"))
+            .await
+            .unwrap_err()
+            .to_string();
+        let other = b
+            .backend
+            .create_with("s3", None, b.dir.to_str(), Some("fake"))
+            .await
+            .unwrap_err()
+            .to_string();
+        let send = b
+            .backend
+            .send_text("s1", "hi")
+            .await
+            .unwrap_err()
+            .to_string();
+        let shown = view(&b, "s1");
+        (
+            same,
+            other,
+            send,
+            bodies(&shown),
+            b.backend.list().await.unwrap().len(),
+        )
+    });
+    let (same, other, send, shown, listed) = checks;
+    assert!(same.contains("exists"), "{same}");
+    assert!(other.contains("At most 2"), "{other}");
+    assert!(send.contains("still being restored"), "{send}");
+    assert!(shown
+        .iter()
+        .any(|e| matches!(e, AcpBody::Notice { text, .. } if text.contains("Restoring"))));
+    assert_eq!(listed, 2);
+    // Done restoring: the slots are free of the placeholders and still counted by the running agents.
+    assert_eq!(b.backend.status("s1"), Some(SessionStatus::Running));
+    assert!(b
+        .backend
+        .create_with("s3", None, b.dir.to_str(), Some("fake"))
+        .await
+        .is_err());
+    for n in ["s1", "s2"] {
+        b.backend.kill(n).await.unwrap();
+        a.backend.kill(n).await.ok();
+    }
+    assert_eq!(*b.backend.starting.lock().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_turn_open_at_the_restart_is_said_once_and_raises_one_failure() {
+    let dir = tmp();
+    let a = rig_with("resume", 2, dir.clone(), true);
+    a.create("s1").await;
+    a.prompt("s1", "perm").await;
+    until("the open turn", || {
+        view(&a, "s1").info.map(|i| i.working).unwrap_or(false)
+    })
+    .await;
+    // Nothing saved it by hand: the file follows the turn.
+    assert_eq!(saved_file(&dir)[0]["turn_open"], true);
+    let b = rig_with("resume", 2, dir.clone(), true);
+    b.backend.restore().await;
+    assert_eq!(b.backend.status("s1"), Some(SessionStatus::Running));
+    assert!(bodies(&view(&b, "s1")).iter().any(|e| matches!(e,
+        AcpBody::Notice { level, text } if level == "error" && text.contains("interrupted the running turn"))));
+    assert_eq!(b.kinds("s1").iter().filter(|k| is_error_turn(k)).count(), 1);
+    assert_eq!(last_state(&b, "s1"), Some(AgentState::Error));
+    // The restored session is idle and nothing is open any more.
+    assert_eq!(saved_file(&dir)[0]["turn_open"], false);
+    b.backend.kill("s1").await.unwrap();
+    a.backend.kill("s1").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_restart_without_an_open_turn_says_nothing_of_one_and_an_old_file_loads() {
+    let dir = tmp();
+    // The file as it was before step 3: four fields only.
+    std::fs::write(
+        dir.join("sessions.json"),
+        json!([{"name": "s1", "agent": "fake", "dir": dir.to_str().unwrap(), "acp_id": "acp-1"}])
+            .to_string(),
+    )
+    .unwrap();
+    let r = rig_with("resume", 2, dir.clone(), true);
+    r.backend.restore().await;
+    assert_eq!(r.backend.status("s1"), Some(SessionStatus::Running));
+    assert!(!r.kinds("s1").iter().any(is_error_turn));
+    assert!(!bodies(&view(&r, "s1")).iter().any(|e| matches!(e,
+        AcpBody::Notice { text, .. } if text.contains("interrupted"))));
+    r.backend.kill("s1").await.unwrap();
+}
+
+#[tokio::test]
+async fn the_saved_turn_flag_follows_the_turn_so_a_finished_turn_is_not_called_interrupted() {
+    let dir = tmp();
+    let a = rig_with("resume", 2, dir.clone(), true);
+    a.create("s1").await;
+    assert_eq!(saved_file(&dir)[0]["turn_open"], false);
+    a.prompt("s1", "updates").await;
+    until("the turn", || {
+        last_state(&a, "s1") == Some(AgentState::Done)
+    })
+    .await;
+    assert_eq!(saved_file(&dir)[0]["turn_open"], false);
+    let b = rig_with("resume", 2, dir.clone(), true);
+    b.backend.restore().await;
+    assert!(!b.kinds("s1").iter().any(is_error_turn));
+    a.backend.kill("s1").await.unwrap();
+    b.backend.kill("s1").await.unwrap();
 }
