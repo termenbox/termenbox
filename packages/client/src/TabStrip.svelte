@@ -57,9 +57,14 @@
     if (key !== activeKey || frozen.frozen(Date.now())) return;
     const tab = [...strip.querySelectorAll<HTMLButtonElement>('[role=tab]')].find(el => el.dataset.key === key);
     if (!tab) return;
-    const a = tab.getBoundingClientRect(), b = strip.getBoundingClientRect();
-    if (a.left < b.left) strip.scrollLeft -= b.left - a.left;
-    else if (a.right > b.right) strip.scrollLeft += a.right - b.right;
+    // A tab as wide as the strip (max-width: 100%) moves with every resize: measure again on the next frame until it fits.
+    for (let tries = 0; tries < 4; tries++) {
+      const a = tab.getBoundingClientRect(), b = strip.getBoundingClientRect();
+      if (a.left >= b.left - 1 && a.right <= b.right + 1) break;
+      if (a.left < b.left) strip.scrollLeft -= b.left - a.left;
+      else strip.scrollLeft += a.right - b.right;
+      await new Promise(requestAnimationFrame);
+    }
     visibleActive = key;
     edges();
   }
