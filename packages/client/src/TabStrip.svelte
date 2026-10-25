@@ -55,19 +55,24 @@
   async function scrollActive(key: string, _shown: HubWorkspace[]) {
     await tick();
     if (key !== activeKey || frozen.frozen(Date.now())) return;
+    userScrolled = false;
+    revealNow(key);
+  }
+  function revealNow(key: string) {
     const tab = [...strip.querySelectorAll<HTMLButtonElement>('[role=tab]')].find(el => el.dataset.key === key);
     if (!tab) return;
-    // A tab as wide as the strip (max-width: 100%) moves with every resize: measure again on the next frame until it fits.
-    for (let tries = 0; tries < 4; tries++) {
-      const a = tab.getBoundingClientRect(), b = strip.getBoundingClientRect();
-      if (a.left >= b.left - 1 && a.right <= b.right + 1) break;
-      if (a.left < b.left) strip.scrollLeft -= b.left - a.left;
-      else strip.scrollLeft += a.right - b.right;
-      await new Promise(requestAnimationFrame);
-    }
+    const a = tab.getBoundingClientRect(), b = strip.getBoundingClientRect();
+    if (a.left < b.left) strip.scrollLeft -= b.left - a.left;
+    else if (a.right > b.right) strip.scrollLeft += a.right - b.right;
     visibleActive = key;
     edges();
   }
+  // The strip keeps the active tab in view until the user scrolls it themselves. Layout moves it without a word: a
+  // tab as wide as the strip (max-width: 100%) shifts the tabs after it by a strip width, tabs grow after the first
+  // reveal, and a layout at another width that never reaches a frame still clamps scrollLeft (no resize is observed
+  // when the width is back). So the tick checks the position itself, whenever the order is not held.
+  let userScrolled = false;
+  function keepActiveInView() { if (activeKey && !userScrolled && !frozen.frozen(Date.now())) revealNow(activeKey); }
   function edges() { if (strip) { left = strip.scrollLeft > 1; right = strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1; } }
   function down(e: PointerEvent, key: string) {
     frozen.touchDown(e.pointerId); revision++;
@@ -88,10 +93,12 @@
     setTimeout(() => { frozen.touchUp(e.pointerId); revision++; }, 0);
   }
   onMount(() => {
-    const timer = setInterval(() => { now = Date.now(); edges(); }, 250);
+    const timer = setInterval(() => { now = Date.now(); edges(); keepActiveInView(); }, 250);
     const observer = new ResizeObserver(() => { visibleActive = null; now = Date.now(); edges(); }); observer.observe(strip); edges();
+    const byUser = () => { userScrolled = true; };
+    strip.addEventListener('pointerdown', byUser); strip.addEventListener('wheel', byUser, { passive: true });
     window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up);
-    return () => { clearInterval(timer); observer.disconnect(); cancelPress(); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up); };
+    return () => { clearInterval(timer); observer.disconnect(); strip.removeEventListener('pointerdown', byUser); strip.removeEventListener('wheel', byUser); cancelPress(); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up); };
   });
 </script>
 
