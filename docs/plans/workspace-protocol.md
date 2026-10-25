@@ -92,11 +92,12 @@ Done-when: both tests exist and pass, and temporarily changing a core shape make
 
 ## Phase 3: workspace, wire and channels
 
-### 3.1 Workspace and window model on the existing hosts — [ ]
+### 3.1 Workspace and window model on the existing hosts — [x]
 Class: implement · Needs: 1.1, 2.2 · Check: `scripts/dev.sh cargo test --workspace`
 Context: Decision 0138. `packages/server/src/workspaces.rs` (renamed in 1.1), `backend.rs` (tmux and ACP backends behind one trait), `acp.rs`. A workspace has windows of kind `agent` or `terminal` and a focus pointer (default: the base agent window). Today a session is one agent; that becomes a one-agent-window workspace.
 Do: Add `Window { id, kind, host, session_id? }` and `focus` to the workspace; persist the layout (windows, kinds, focus, directory) next to the saved ACP state; implement `WindowHost` for tmux (windows or panes) and for the native ACP child (an agent window with no pane); on restart, agent windows resume per step 0.4 and terminal windows reattach by tmux. Existing single-agent workspaces load as one agent window.
 Done-when: tests show a workspace with two windows persists and reloads, focus survives a restart, an old single-agent state loads as one agent window, and a window can be addressed by id on both hosts.
+Done: `packages/server/src/layout.rs` (`Window`, `Layout`, `TmuxHost`, `AcpHost`); the layout rides in the ACP state file (`Saved.layout`, absent = one agent window). tmux keeps its own windows, so it persists nothing here. The hosts are not routed from the wire yet: the control channel (3.3) carries window create/close/focus, and a terminal window of a native ACP workspace is made by the injected tmux host once 3.3 wires it.
 
 ### 3.2 Version negotiation and the legacy shim — [ ]
 Class: implement · Needs: 2.2, 3.1 · Check: `scripts/dev.sh cargo test --workspace`

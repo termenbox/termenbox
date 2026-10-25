@@ -34,6 +34,7 @@ mod health;
 mod helper;
 mod history;
 mod journal;
+mod layout;
 mod link;
 mod locale;
 mod netutil;
