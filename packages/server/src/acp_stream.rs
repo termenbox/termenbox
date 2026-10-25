@@ -9,12 +9,16 @@
 //! Memory per session is bounded by `MAX_ENTRIES` and `MAX_BYTES`; the oldest entries are dropped first.
 use std::collections::{HashMap, VecDeque};
 
+use agent_client_protocol_schema::v1 as acp;
+use agent_client_protocol_schema::MaybeUndefined;
+use serde::Deserialize;
 use serde_json::Value;
 use termenbox_core::events::{DecisionOption, PlanItem};
 use termenbox_core::protocol::{
     AcpBody, AcpCommand, AcpDiff, AcpEntry, AcpInfo, AcpLocation, AcpMode, AcpUsage, AcpView,
 };
 
+use crate::acp::{permission_tool, tool_kind, tool_status};
 use crate::events::{sanitize_block, sanitize_block_cut, sanitize_text};
 
 pub const MAX_ENTRIES: usize = 400;
@@ -87,6 +91,17 @@ pub enum ModeVia {
     None,
 }
 
+/// What `tool_call` and `tool_call_update` share, as far as the stream reads it. A field that is `None` was not sent.
+struct ToolIn<'a> {
+    id: &'a str,
+    title: Option<&'a str>,
+    kind: Option<acp::ToolKind>,
+    status: Option<acp::ToolCallStatus>,
+    raw_input: Option<&'a Value>,
+    content: &'a [acp::ToolCallContent],
+    locations: &'a [acp::ToolCallLocation],
+}
+
 pub struct Stream {
     epoch: u64,
     rev: u64,
@@ -139,91 +154,81 @@ fn weight(body: &AcpBody) -> usize {
     }
 }
 
-fn diffs_of(content: &Value) -> Vec<AcpDiff> {
+fn diffs_of(content: &[acp::ToolCallContent]) -> Vec<AcpDiff> {
     content
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter(|c| s(c, "type") == "diff")
-                .take(DIFFS_PER_TOOL)
-                .map(|c| {
-                    let new_text = s(c, "newText");
-                    let old_text = c.get("oldText").and_then(Value::as_str);
-                    let cutting = |t: &str| sanitize_block(t, DIFF_CHARS, DIFF_LINES);
-                    let (n, o) = (cutting(new_text), old_text.map(cutting));
-                    let truncated = new_text.chars().count() > DIFF_CHARS
-                        || new_text.lines().count() > DIFF_LINES
-                        || old_text.is_some_and(|t| {
-                            t.chars().count() > DIFF_CHARS || t.lines().count() > DIFF_LINES
-                        });
-                    AcpDiff {
-                        path: sanitize_text(s(c, "path"), PATH_CHARS),
-                        old_text: o,
-                        new_text: n,
-                        truncated,
-                    }
-                })
-                .collect()
+        .iter()
+        .filter_map(|c| match c {
+            acp::ToolCallContent::Diff(d) => Some(d),
+            _ => None,
         })
-        .unwrap_or_default()
+        .take(DIFFS_PER_TOOL)
+        .map(|d| {
+            let new_text = d.new_text.as_str();
+            let old_text = d.old_text.as_deref();
+            let cutting = |t: &str| sanitize_block(t, DIFF_CHARS, DIFF_LINES);
+            let (n, o) = (cutting(new_text), old_text.map(cutting));
+            let truncated = new_text.chars().count() > DIFF_CHARS
+                || new_text.lines().count() > DIFF_LINES
+                || old_text.is_some_and(|t| {
+                    t.chars().count() > DIFF_CHARS || t.lines().count() > DIFF_LINES
+                });
+            AcpDiff {
+                path: sanitize_text(&d.path.to_string_lossy(), PATH_CHARS),
+                old_text: o,
+                new_text: n,
+                truncated,
+            }
+        })
+        .collect()
 }
 
-fn locations_of(v: &Value) -> Vec<AcpLocation> {
-    v.as_array()
-        .map(|a| {
-            a.iter()
-                .take(LOCATIONS)
-                .filter(|l| !s(l, "path").is_empty())
-                .map(|l| AcpLocation {
-                    path: sanitize_text(s(l, "path"), PATH_CHARS),
-                    line: l
-                        .get("line")
-                        .and_then(Value::as_u64)
-                        .and_then(|n| u32::try_from(n).ok()),
-                })
-                .collect()
+fn locations_of(v: &[acp::ToolCallLocation]) -> Vec<AcpLocation> {
+    v.iter()
+        .take(LOCATIONS)
+        .filter(|l| !l.path.as_os_str().is_empty())
+        .map(|l| AcpLocation {
+            path: sanitize_text(&l.path.to_string_lossy(), PATH_CHARS),
+            line: l.line,
         })
-        .unwrap_or_default()
+        .collect()
 }
 
-fn plan_items(entries: &Value, text_key: &str) -> Vec<PlanItem> {
+fn plan_item(text: &str, status: &str) -> Option<PlanItem> {
+    Some(PlanItem {
+        text: sanitize_text(text, 200),
+        status: sanitize_text(status, 20),
+    })
+    .filter(|i| !i.text.is_empty())
+}
+
+/// The entries of a `plan` update.
+fn plan_entries(entries: &[acp::PlanEntry]) -> Vec<PlanItem> {
     entries
+        .iter()
+        .take(PLAN_ITEMS)
+        .filter_map(|e| plan_item(&e.content, crate::acp::plan_status(&e.status)))
+        .collect()
+}
+
+/// A todo list a tool call carries in its raw input (kilo): arbitrary JSON, not a schema type.
+fn todo_items(todos: &Value) -> Vec<PlanItem> {
+    todos
         .as_array()
         .map(|a| {
             a.iter()
                 .take(PLAN_ITEMS)
-                .map(|e| PlanItem {
-                    text: sanitize_text(s(e, text_key), 200),
-                    status: sanitize_text(s(e, "status"), 20),
-                })
-                .filter(|i| !i.text.is_empty())
+                .filter_map(|e| plan_item(s(e, "content"), s(e, "status")))
                 .collect()
         })
         .unwrap_or_default()
 }
 
-fn mode_options(list: &Value, id_key: &str) -> Vec<AcpMode> {
-    list.as_array()
-        .map(|a| {
-            a.iter()
-                .take(MAX_MODES)
-                .filter(|m| !s(m, id_key).is_empty())
-                .map(|m| AcpMode {
-                    id: s(m, id_key).to_string(),
-                    name: sanitize_text(
-                        if s(m, "name").is_empty() {
-                            s(m, id_key)
-                        } else {
-                            s(m, "name")
-                        },
-                        40,
-                    ),
-                    description: Some(sanitize_text(s(m, "description"), 160))
-                        .filter(|d| !d.is_empty()),
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+fn mode_option(id: &str, name: &str, description: Option<&str>) -> AcpMode {
+    AcpMode {
+        id: id.to_string(),
+        name: sanitize_text(if name.is_empty() { id } else { name }, 40),
+        description: Some(sanitize_text(description.unwrap_or(""), 160)).filter(|d| !d.is_empty()),
+    }
 }
 
 fn texts_mut(body: &mut AcpBody) -> Vec<&mut String> {
@@ -456,6 +461,11 @@ impl Stream {
         self.open = None;
     }
 
+    /// A turn is open: a prompt was sent and its response has not come.
+    pub fn working(&self) -> bool {
+        self.info.working
+    }
+
     /// The owner sent a prompt.
     pub fn user(&mut self, text: &str) {
         self.close_open();
@@ -524,43 +534,59 @@ impl Stream {
         self.info_changed();
     }
 
-    /// What `session/new`, `session/resume` or `session/load` returned: the modes and the current one.
+    /// What `session/new`, `session/resume` or `session/load` returned: the modes and the current one. The three
+    /// results share these two fields; `sessionId` is read by the handshake, not here.
     pub fn session_state(&mut self, result: &Value) {
-        if let Some(modes) = result.get("modes") {
-            let list = mode_options(&modes["availableModes"], "id");
-            if !list.is_empty() {
-                self.info.modes = list;
-                self.via = ModeVia::Modes;
+        if let Some(r) = crate::acp::decode::<acp::ResumeSessionResponse>(result, "session result")
+        {
+            if let Some(modes) = &r.modes {
+                let list: Vec<AcpMode> = modes
+                    .available_modes
+                    .iter()
+                    .take(MAX_MODES)
+                    .filter(|m| !m.id.0.is_empty())
+                    .map(|m| mode_option(&m.id.0, &m.name, m.description.as_deref()))
+                    .collect();
+                if !list.is_empty() {
+                    self.info.modes = list;
+                    self.via = ModeVia::Modes;
+                }
+                self.info.mode = Some(cut(&modes.current_mode_id.0, 80));
             }
-            if let Some(cur) = modes.get("currentModeId").and_then(Value::as_str) {
-                self.info.mode = Some(cut(cur, 80));
+            if self.via == ModeVia::None {
+                self.config_modes(r.config_options.as_deref().unwrap_or(&[]));
             }
-        }
-        if self.via == ModeVia::None {
-            self.config_modes(&result["configOptions"]);
         }
         self.info_changed();
     }
 
     /// The agent's `mode` config option, for agents that list modes only there (opencode, kilo, gemini).
-    fn config_modes(&mut self, options: &Value) {
-        let Some(opt) = options.as_array().and_then(|a| {
-            a.iter()
-                .find(|o| s(o, "category") == "mode" && o.get("options").is_some())
+    fn config_modes(&mut self, options: &[acp::SessionConfigOption]) {
+        let Some((opt, select)) = options.iter().find_map(|o| match (&o.category, &o.kind) {
+            (Some(acp::SessionConfigOptionCategory::Mode), acp::SessionConfigKind::Select(sel)) => {
+                Some((o, sel))
+            }
+            _ => None,
         }) else {
             return;
         };
-        let list = mode_options(&opt["options"], "value");
+        let list: Vec<AcpMode> = match &select.options {
+            acp::SessionConfigSelectOptions::Ungrouped(list) => list
+                .iter()
+                .take(MAX_MODES)
+                .filter(|o| !o.value.0.is_empty())
+                .map(|o| mode_option(&o.value.0, &o.name, o.description.as_deref()))
+                .collect(),
+            _ => Vec::new(),
+        };
         if list.is_empty() {
             return;
         }
         self.info.modes = list;
         if self.via == ModeVia::None {
-            self.via = ModeVia::Config(cut(s(opt, "id"), 80));
+            self.via = ModeVia::Config(cut(&opt.id.0, 80));
         }
-        if let Some(cur) = opt.get("currentValue").and_then(Value::as_str) {
-            self.info.mode = Some(cut(cur, 80));
-        }
+        self.info.mode = Some(cut(&select.current_value.0, 80));
     }
 
     pub fn set_mode(&mut self, mode: &str) {
@@ -570,88 +596,111 @@ impl Stream {
 
     /// A `session/update` payload.
     pub fn update(&mut self, u: &Value) {
-        match s(u, "sessionUpdate") {
-            "agent_message_chunk" => self.chunk(Chunk::Message, u),
-            "agent_thought_chunk" => self.chunk(Chunk::Thought, u),
-            "tool_call" | "tool_call_update" => {
-                self.close_open();
-                self.tool(u);
+        let update = match acp::SessionUpdate::deserialize(u) {
+            Ok(update) => update,
+            Err(_) => {
+                // Dropped for this message only; an unknown kind is just not ours.
+                crate::acp::drop_update(u);
+                return;
             }
-            "plan" => {
+        };
+        match update {
+            acp::SessionUpdate::AgentMessageChunk(c) => self.chunk(Chunk::Message, &c),
+            acp::SessionUpdate::AgentThoughtChunk(c) => self.chunk(Chunk::Thought, &c),
+            acp::SessionUpdate::ToolCall(t) => {
                 self.close_open();
-                let items = plan_items(&u["entries"], "content");
+                // The schema fills a missing `kind` or `status` in with a default. An agent that repeats a
+                // `tool_call` without them (goose) must not reset what an update said, so only what was sent counts.
+                let sent = |key: &str| matches!(u.get(key), Some(Value::String(_)));
+                self.tool(ToolIn {
+                    id: &t.tool_call_id.0,
+                    title: Some(&t.title),
+                    kind: sent("kind").then_some(t.kind),
+                    status: sent("status").then_some(t.status),
+                    raw_input: t.raw_input.as_ref(),
+                    content: &t.content,
+                    locations: &t.locations,
+                });
+            }
+            acp::SessionUpdate::ToolCallUpdate(t) => {
+                self.close_open();
+                let f = &t.fields;
+                self.tool(ToolIn {
+                    id: &t.tool_call_id.0,
+                    title: f.title.as_deref(),
+                    kind: f.kind,
+                    status: f.status,
+                    raw_input: f.raw_input.as_ref(),
+                    content: f.content.as_deref().unwrap_or(&[]),
+                    locations: f.locations.as_deref().unwrap_or(&[]),
+                });
+            }
+            acp::SessionUpdate::Plan(p) => {
+                self.close_open();
+                let items = plan_entries(&p.entries);
                 if !items.is_empty() {
                     self.set_plan(items);
                 }
             }
-            "usage_update" => {
-                if let (Some(used), Some(size)) = (
-                    u.get("used").and_then(Value::as_u64),
-                    u.get("size").and_then(Value::as_u64),
-                ) {
-                    let cost = u.get("cost").filter(|c| c.is_object()).map(|c| {
-                        sanitize_text(
-                            &format!(
-                                "{} {}",
-                                c.get("amount").map(|a| a.to_string()).unwrap_or_default(),
-                                s(c, "currency")
-                            ),
-                            40,
-                        )
-                    });
-                    self.info.usage = Some(AcpUsage { used, size, cost });
+            acp::SessionUpdate::UsageUpdate(u) => {
+                let cost = u
+                    .cost
+                    .map(|c| sanitize_text(&format!("{} {}", c.amount, c.currency), 40));
+                self.info.usage = Some(AcpUsage {
+                    used: u.used,
+                    size: u.size,
+                    cost,
+                });
+                self.info_changed();
+            }
+            acp::SessionUpdate::SessionInfoUpdate(i) => {
+                if let MaybeUndefined::Value(t) = i.title {
+                    self.info.title =
+                        Some(sanitize_text(&t, TITLE_CHARS)).filter(|t| !t.is_empty());
                     self.info_changed();
                 }
             }
-            "session_info_update" => {
-                if let Some(t) = u.get("title").and_then(Value::as_str) {
-                    self.info.title = Some(sanitize_text(t, TITLE_CHARS)).filter(|t| !t.is_empty());
-                    self.info_changed();
-                }
-            }
-            "current_mode_update" => {
-                self.info.mode = Some(cut(s(u, "currentModeId"), 80)).filter(|m| !m.is_empty());
+            acp::SessionUpdate::CurrentModeUpdate(m) => {
+                self.info.mode = Some(cut(&m.current_mode_id.0, 80)).filter(|m| !m.is_empty());
                 self.info_changed();
             }
-            "config_option_update" => {
-                self.config_modes(&u["configOptions"]);
+            acp::SessionUpdate::ConfigOptionUpdate(c) => {
+                self.config_modes(&c.config_options);
                 self.info_changed();
             }
-            "available_commands_update" => {
-                self.info.commands = u["availableCommands"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .take(MAX_COMMANDS)
-                            .filter(|c| !s(c, "name").is_empty())
-                            .map(|c| AcpCommand {
-                                name: sanitize_text(s(c, "name"), 64),
-                                description: Some(sanitize_text(s(c, "description"), 160))
-                                    .filter(|d| !d.is_empty()),
-                                hint: c
-                                    .get("input")
-                                    .map(|i| sanitize_text(s(i, "hint"), 80))
-                                    .filter(|h| !h.is_empty()),
+            acp::SessionUpdate::AvailableCommandsUpdate(_) => {
+                self.info.commands = crate::acp::available_commands(u)
+                    .iter()
+                    .take(MAX_COMMANDS)
+                    .filter(|c| !c.name.is_empty())
+                    .map(|c| AcpCommand {
+                        name: sanitize_text(&c.name, 64),
+                        description: Some(sanitize_text(&c.description, 160))
+                            .filter(|d| !d.is_empty()),
+                        hint: c
+                            .input
+                            .as_ref()
+                            .map(|i| match i {
+                                acp::AvailableCommandInput::Unstructured(i) => {
+                                    sanitize_text(&i.hint, 80)
+                                }
+                                _ => String::new(),
                             })
-                            .collect()
+                            .filter(|h| !h.is_empty()),
                     })
-                    .unwrap_or_default();
+                    .collect();
                 self.info_changed();
             }
             _ => {}
         }
     }
 
-    fn chunk(&mut self, kind: Chunk, u: &Value) {
-        let content = u.get("content").unwrap_or(&Value::Null);
-        if s(content, "type") != "text" {
+    fn chunk(&mut self, kind: Chunk, c: &acp::ContentChunk) {
+        let acp::ContentBlock::Text(content) = &c.content else {
             return;
-        }
-        let text = s(content, "text");
-        let message_id = u
-            .get("messageId")
-            .and_then(Value::as_str)
-            .map(str::to_string);
+        };
+        let text = content.text.as_str();
+        let message_id = c.message_id.as_ref().map(|m| m.0.to_string());
         let continues = self.open.as_ref().is_some_and(|o| {
             o.kind == kind
                 && (o.message_id.is_none() || message_id.is_none() || o.message_id == message_id)
@@ -708,11 +757,12 @@ impl Stream {
         }
     }
 
-    fn tool(&mut self, u: &Value) {
-        let tool_id = cut(s(u, "toolCallId"), 120);
+    fn tool(&mut self, u: ToolIn) {
+        let tool_id = cut(u.id, 120);
+        let title = u.title.filter(|t| !t.is_empty());
         // kilo keeps its todo list in a `todowrite` call's input: the one place a plan is measured (fact 0040).
-        if let Some(todos) = u.get("rawInput").and_then(|r| r.get("todos")) {
-            let items = plan_items(todos, "content");
+        if let Some(todos) = u.raw_input.and_then(|r| r.get("todos")) {
+            let items = todo_items(todos);
             if !items.is_empty() {
                 self.set_plan(items);
             }
@@ -722,29 +772,15 @@ impl Stream {
             .get(&tool_id)
             .copied()
             .filter(|id| self.body(*id).is_some());
-        let diffs = diffs_of(&u["content"]);
-        let locations = locations_of(&u["locations"]);
+        let diffs = diffs_of(u.content);
+        let locations = locations_of(u.locations);
         match existing {
             None => {
                 let id = self.push(AcpBody::Tool {
                     tool_id: tool_id.clone(),
-                    title: line(s(u, "title"), TITLE_CHARS),
-                    tool_kind: sanitize_text(
-                        if s(u, "kind").is_empty() {
-                            "other"
-                        } else {
-                            s(u, "kind")
-                        },
-                        20,
-                    ),
-                    status: sanitize_text(
-                        if s(u, "status").is_empty() {
-                            "pending"
-                        } else {
-                            s(u, "status")
-                        },
-                        20,
-                    ),
+                    title: line(title.unwrap_or(""), TITLE_CHARS),
+                    tool_kind: tool_kind(u.kind.unwrap_or(acp::ToolKind::Other)).into(),
+                    status: tool_status(u.status.unwrap_or(acp::ToolCallStatus::Pending)).into(),
                     diffs,
                     locations,
                 });
@@ -755,9 +791,9 @@ impl Stream {
             }
             Some(id) => {
                 let Some(AcpBody::Tool {
-                    title,
-                    tool_kind,
-                    status,
+                    title: old_title,
+                    tool_kind: old_kind,
+                    status: old_status,
                     diffs: d,
                     locations: l,
                     tool_id: tid,
@@ -767,21 +803,12 @@ impl Stream {
                 };
                 let body = AcpBody::Tool {
                     tool_id: tid,
-                    title: if s(u, "title").is_empty() {
-                        title
-                    } else {
-                        line(s(u, "title"), TITLE_CHARS)
+                    title: match title {
+                        None => old_title,
+                        Some(t) => line(t, TITLE_CHARS),
                     },
-                    tool_kind: if s(u, "kind").is_empty() {
-                        tool_kind
-                    } else {
-                        sanitize_text(s(u, "kind"), 20)
-                    },
-                    status: if s(u, "status").is_empty() {
-                        status
-                    } else {
-                        sanitize_text(s(u, "status"), 20)
-                    },
+                    tool_kind: u.kind.map_or(old_kind, |k| tool_kind(k).into()),
+                    status: u.status.map_or(old_status, |s| tool_status(s).into()),
                     diffs: if diffs.is_empty() { d } else { diffs },
                     locations: if locations.is_empty() { l } else { locations },
                 };
@@ -795,30 +822,31 @@ impl Stream {
     /// A `session/request_permission`. `options` are the ones that may be shown (one-time kinds only).
     pub fn permission(&mut self, prompt_id: &str, params: &Value, options: Vec<DecisionOption>) {
         self.close_open();
-        let tool = params.get("toolCall").unwrap_or(&Value::Null);
-        let plan = tool
-            .get("rawInput")
+        let tool = permission_tool(params);
+        let f = &tool.fields;
+        let plan = f
+            .raw_input
+            .as_ref()
             .and_then(|r| r.get("plan"))
             .and_then(Value::as_str)
             .or_else(|| {
-                (s(tool, "kind") == "switch_mode")
-                    .then(|| tool["content"][0]["content"]["text"].as_str())
+                (f.kind == Some(acp::ToolKind::SwitchMode))
+                    .then(|| match f.content.as_deref()?.first()? {
+                        acp::ToolCallContent::Content(c) => match &c.content {
+                            acp::ContentBlock::Text(t) => Some(t.text.as_str()),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
                     .flatten()
             })
             .map(|t| sanitize_block(t, PLAN_CHARS, 200))
             .filter(|t| !t.is_empty());
         let id = self.push(AcpBody::Permission {
             prompt_id: sanitize_text(prompt_id, 40),
-            tool_id: cut(s(tool, "toolCallId"), 120),
-            title: line(s(tool, "title"), TITLE_CHARS),
-            tool_kind: sanitize_text(
-                if s(tool, "kind").is_empty() {
-                    "other"
-                } else {
-                    s(tool, "kind")
-                },
-                20,
-            ),
+            tool_id: cut(&tool.tool_call_id.0, 120),
+            title: line(f.title.as_deref().unwrap_or(""), TITLE_CHARS),
+            tool_kind: tool_kind(f.kind.unwrap_or(acp::ToolKind::Other)).into(),
             options: options
                 .into_iter()
                 .map(|o| DecisionOption {
@@ -827,7 +855,7 @@ impl Stream {
                     name: sanitize_text(&o.name, 40),
                 })
                 .collect(),
-            diffs: diffs_of(&tool["content"]),
+            diffs: diffs_of(f.content.as_deref().unwrap_or(&[])),
             plan,
             state: "open".into(),
             chosen: None,

@@ -2,18 +2,28 @@
 //! speaking Agent Client Protocol (JSON-RPC 2.0, one message per line); the server owns the child, so a client
 //! disconnecting changes nothing. There is no terminal: a session is its event stream and its answers.
 //!
-//! This is a small client instead of the `agent-client-protocol` crate: the crate (Apache-2.0) brings the whole
-//! SDK model and its async runtime glue for the six methods and nine updates used here, which costs binary
-//! size and build time on a 512 MB / 1 vCPU host (`resource-constraints`) for no gain.
+//! The protocol types (requests, results, `session/update` kinds, permission requests) come from the
+//! `agent-client-protocol-schema` crate, built with `default-features = false` (types and serde only, protocol v1).
+//! The transport is ours: the stdio line reader, the request table, the timeouts and the caps below. There is no
+//! SDK runtime glue beside tokio (`resource-constraints`).
+//!
+//! Decoding is lenient. Agents deviate from the schema (fact 0040), so a message that does not decode into its type
+//! is dropped for that message only: it is counted (`DROPPED`) and logged by kind without its content, and it never
+//! fails the turn or the session. An update kind we do not handle stays ignored. Fields we depend on are required by
+//! the schema types, everything else is optional there.
 //!
 //! Text from the agent is untrusted (0095): lines are length-capped, chunks are buffered to a fixed size, and
-//! everything that reaches the hub is cleaned by `events::sanitize_kind`. Nothing the agent says is audit-logged.
+//! everything that reaches the hub is cleaned by `events::sanitize_kind`, after decoding. Nothing the agent says is
+//! audit-logged.
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use agent_client_protocol_schema::v1 as acp;
+use agent_client_protocol_schema::{MaybeUndefined, ProtocolVersion};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -41,9 +51,10 @@ const MAX_PROMPT: usize = 16 * 1024;
 const MAX_PENDING: usize = 8;
 const MAX_TOOLS: usize = 64;
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30);
-/// Sessions at once when the config does not say. An agent child is a Node or Rust process of a few hundred MB
-/// (see the measurements in the PR that added this), so the owner sets the real number for the agents they use.
-const DEFAULT_MAX_SESSIONS: usize = 2;
+/// Sessions at once when the config does not say. The default is 6 and there is no memory floor: an agent child is
+/// a Node or Rust process of a few hundred MB, so the box sizes it (six adapters on 512 MB can hit the OOM killer).
+/// `resource-constraints` covers termenbox's own processes, not the agents it starts.
+const DEFAULT_MAX_SESSIONS: usize = 6;
 
 // ---------------------------------------------------------------------------------------------------
 // Allowlist config
@@ -60,14 +71,64 @@ pub struct AgentProfile {
     /// Variables removed from the child's environment (claude's adapter refuses to start with `CLAUDECODE`).
     #[serde(default)]
     pub env_remove: Vec<String>,
+    /// Advertise form elicitation in `initialize`. Without it opencode's questions go unanswered and block the turn.
+    #[serde(default)]
+    pub elicitation_form: bool,
 }
 
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct AcpConfig {
     #[serde(default = "default_max")]
     pub max_sessions: usize,
+    /// Keep the built-in agents beside the ones in this file (a same-named entry in the file wins).
+    #[serde(default)]
+    pub builtin: bool,
     #[serde(default)]
     pub agents: HashMap<String, AgentProfile>,
+}
+
+/// The agents termenbox knows how to start (fact 0040), used when there is no file or the file sets `builtin`.
+/// The adapters are not shipped: the owner installs them, and `acp_agents` lists only those on `PATH`.
+pub fn builtin_agents() -> HashMap<String, AgentProfile> {
+    HashMap::from([
+        (
+            "claude".to_string(),
+            AgentProfile {
+                command: "claude-agent-acp".into(),
+                args: vec![],
+                env: HashMap::new(),
+                env_remove: vec!["CLAUDECODE".into()],
+                elicitation_form: false,
+            },
+        ),
+        (
+            "opencode".to_string(),
+            AgentProfile {
+                command: "opencode".into(),
+                args: vec!["acp".into()],
+                env: HashMap::new(),
+                env_remove: vec![],
+                elicitation_form: true,
+            },
+        ),
+    ])
+}
+
+/// Whether `command` can be started: a path (it has a `/`) must be an executable file, a bare name must be one in
+/// some `PATH` entry. Checked on every call, so an install shows up without a restart.
+pub fn on_path(command: &str) -> bool {
+    fn executable(p: &std::path::Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p)
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    if command.contains('/') {
+        return executable(std::path::Path::new(command));
+    }
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|d| executable(&d.join(command))))
+        .unwrap_or(false)
 }
 
 fn default_max() -> usize {
@@ -78,20 +139,22 @@ impl Default for AcpConfig {
     fn default() -> Self {
         Self {
             max_sessions: DEFAULT_MAX_SESSIONS,
-            agents: HashMap::new(),
+            builtin: true,
+            agents: builtin_agents(),
         }
     }
 }
 
 impl AcpConfig {
     /// ```toml
-    /// max_sessions = 2
+    /// max_sessions = 6
+    /// builtin = true # keep claude and opencode beside the agents below
     /// [agents.claude]
     /// command = "claude-agent-acp"
     /// env_remove = ["CLAUDECODE"]
     /// ```
     pub fn parse(text: &str) -> Result<Self> {
-        let cfg: Self = toml::from_str(text).map_err(|e| anyhow!("acp agents file: {e}"))?;
+        let mut cfg: Self = toml::from_str(text).map_err(|e| anyhow!("acp agents file: {e}"))?;
         if !(1..=16).contains(&cfg.max_sessions) {
             return Err(anyhow!("max_sessions must be 1 to 16"));
         }
@@ -100,10 +163,15 @@ impl AcpConfig {
                 return Err(anyhow!("agent `{name}` needs a plain name and a command"));
             }
         }
+        if cfg.builtin {
+            for (name, a) in builtin_agents() {
+                cfg.agents.entry(name).or_insert(a);
+            }
+        }
         Ok(cfg)
     }
 
-    /// A missing file is an empty allowlist: no ACP agent can be started.
+    /// No file means the built-in agents. A file is the whole allowlist unless it sets `builtin = true`.
     pub fn load(path: &std::path::Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(text) => Self::parse(&text),
@@ -121,6 +189,129 @@ impl AcpConfig {
 enum Chunk {
     Message,
     Thought,
+}
+
+/// Messages from the agent that did not decode into their schema type and were dropped (never the turn or the
+/// session). Counted, not stored: what the agent sent is untrusted and is not logged.
+pub(crate) static DROPPED: AtomicU64 = AtomicU64::new(0);
+
+/// Notes one dropped message by its kind (a fixed label, never agent text).
+pub(crate) fn dropped(what: &str) {
+    let total = DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+    tracing::debug!(what, total, "dropped an ACP message that did not decode");
+}
+
+/// Decodes one value into a schema type without copying it. `None` (counted) when it does not fit.
+pub(crate) fn decode<T: serde::de::DeserializeOwned>(v: &Value, what: &str) -> Option<T> {
+    match T::deserialize(v) {
+        Ok(t) => Some(t),
+        Err(_) => {
+            dropped(what);
+            None
+        }
+    }
+}
+
+/// The wire form of a request or result built from schema types.
+fn wire<T: Serialize>(t: &T) -> Value {
+    serde_json::to_value(t).unwrap_or(Value::Null)
+}
+
+/// The wire name of a tool kind (what a client shows and the history keeps).
+pub(crate) fn tool_kind(k: acp::ToolKind) -> &'static str {
+    match k {
+        acp::ToolKind::Read => "read",
+        acp::ToolKind::Edit => "edit",
+        acp::ToolKind::Delete => "delete",
+        acp::ToolKind::Move => "move",
+        acp::ToolKind::Search => "search",
+        acp::ToolKind::Execute => "execute",
+        acp::ToolKind::Think => "think",
+        acp::ToolKind::Fetch => "fetch",
+        acp::ToolKind::SwitchMode => "switch_mode",
+        _ => "other",
+    }
+}
+
+/// The wire name of a tool call status.
+pub(crate) fn tool_status(s: acp::ToolCallStatus) -> &'static str {
+    match s {
+        acp::ToolCallStatus::InProgress => "in_progress",
+        acp::ToolCallStatus::Completed => "completed",
+        acp::ToolCallStatus::Failed => "failed",
+        _ => "pending",
+    }
+}
+
+/// The wire name of a plan entry's status.
+pub(crate) fn plan_status(s: &acp::PlanEntryStatus) -> &'static str {
+    match s {
+        acp::PlanEntryStatus::InProgress => "in_progress",
+        acp::PlanEntryStatus::Completed => "completed",
+        _ => "pending",
+    }
+}
+
+/// The wire name of a stop reason.
+pub(crate) fn stop_reason(r: acp::StopReason) -> &'static str {
+    match r {
+        acp::StopReason::EndTurn => "end_turn",
+        acp::StopReason::MaxTokens => "max_tokens",
+        acp::StopReason::MaxTurnRequests => "max_turn_requests",
+        acp::StopReason::Refusal => "refusal",
+        acp::StopReason::Cancelled => "cancelled",
+        _ => "other",
+    }
+}
+
+/// The update kinds this client handles; one that fails to decode is counted, any other is just not ours.
+const HANDLED_UPDATES: [&str; 11] = [
+    "agent_message_chunk",
+    "agent_thought_chunk",
+    "tool_call",
+    "tool_call_update",
+    "plan",
+    "usage_update",
+    "session_info_update",
+    "current_mode_update",
+    "config_option_update",
+    "available_commands_update",
+    "user_message_chunk",
+];
+
+/// An update that did not decode: counted when it is a kind we handle, ignored when it is not. Returns its kind.
+pub(crate) fn drop_update(u: &Value) -> &str {
+    let kind = s(u, "sessionUpdate");
+    if HANDLED_UPDATES.contains(&kind) {
+        dropped(kind);
+    }
+    kind
+}
+
+/// The commands of an `available_commands_update`. The schema requires a `description`; agents leave it out and
+/// nothing here depends on it, so a missing one reads as empty. An element that is not a command is skipped.
+pub(crate) fn available_commands(u: &Value) -> Vec<acp::AvailableCommand> {
+    u.get("availableCommands")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|c| {
+                    let mut c = c.as_object()?.clone();
+                    c.entry("description").or_insert_with(|| json!(""));
+                    acp::AvailableCommand::deserialize(Value::Object(c)).ok()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The `toolCall` of a `session/request_permission`, decoded on its own so that a request whose tool call is odd
+/// is still shown (with what could be read) and answered.
+pub(crate) fn permission_tool(params: &Value) -> acp::ToolCallUpdate {
+    params
+        .get("toolCall")
+        .and_then(|t| decode(t, "permission tool call"))
+        .unwrap_or_else(|| acp::ToolCallUpdate::new("", acp::ToolCallUpdateFields::new()))
 }
 
 /// Turns `session/update` payloads into the agent event model. Streamed chunks are joined into one event,
@@ -163,40 +354,55 @@ impl UpdateMapper {
         })
     }
 
-    fn chunk(&mut self, kind: Chunk, u: &Value) -> Vec<EventKind> {
+    fn chunk(&mut self, kind: Chunk, c: &acp::ContentChunk) -> Vec<EventKind> {
         let mut out = Vec::new();
         if self.buf.as_ref().map(|(k, _)| *k != kind).unwrap_or(false) {
             out.extend(self.flush());
         }
-        let content = u.get("content").unwrap_or(&Value::Null);
-        if s(content, "type") == "text" {
+        if let acp::ContentBlock::Text(t) = &c.content {
             let buf = &mut self.buf.get_or_insert((kind, String::new())).1;
             let room = MAX_CHUNK_BUFFER.saturating_sub(buf.len());
-            buf.push_str(cap(s(content, "text"), room));
+            buf.push_str(cap(&t.text, room));
         }
         out
     }
 
     pub fn map(&mut self, u: &Value) -> Vec<EventKind> {
-        let kind = s(u, "sessionUpdate");
-        match kind {
-            "agent_message_chunk" => return self.chunk(Chunk::Message, u),
-            "agent_thought_chunk" => return self.chunk(Chunk::Thought, u),
+        let update = match acp::SessionUpdate::deserialize(u) {
+            Ok(update) => update,
+            Err(_) => {
+                // Dropped for this message only. A kind that is not a chunk still ends the chunk in progress.
+                let kind = drop_update(u);
+                if matches!(kind, "agent_message_chunk" | "agent_thought_chunk") {
+                    return Vec::new();
+                }
+                return self.flush().into_iter().collect();
+            }
+        };
+        match &update {
+            acp::SessionUpdate::AgentMessageChunk(c) => return self.chunk(Chunk::Message, c),
+            acp::SessionUpdate::AgentThoughtChunk(c) => return self.chunk(Chunk::Thought, c),
             _ => {}
         }
         let mut out: Vec<EventKind> = self.flush().into_iter().collect();
-        match kind {
-            "tool_call" => {
-                let id = s(u, "toolCallId").to_string();
-                let name = match s(u, "kind") {
-                    "" => "tool".to_string(),
-                    k => k.to_string(),
-                };
-                let summary = first_line(s(u, "title"));
+        match update {
+            acp::SessionUpdate::ToolCall(t) => {
+                let id = t.tool_call_id.to_string();
+                // The schema reads a missing `kind` as `other`; the event keeps saying `tool` for an agent that sends none
+                // (goose does), so the history is unchanged.
+                let name = match u.get("kind") {
+                    Some(Value::String(_)) => tool_kind(t.kind),
+                    _ => "tool",
+                }
+                .to_string();
+                let summary = first_line(&t.title);
                 if self.tools.len() >= MAX_TOOLS {
                     self.tools.clear();
                 }
-                let done = matches!(s(u, "status"), "completed" | "failed");
+                let done = matches!(
+                    t.status,
+                    acp::ToolCallStatus::Completed | acp::ToolCallStatus::Failed
+                );
                 out.push(EventKind::Tool {
                     name: name.clone(),
                     summary: summary.clone(),
@@ -212,76 +418,62 @@ impl UpdateMapper {
                     self.tools.insert(id, (name, summary));
                 }
             }
-            "tool_call_update" => {
-                let id = s(u, "toolCallId");
+            acp::SessionUpdate::ToolCallUpdate(t) => {
+                let id = t.tool_call_id.to_string();
                 let (name, mut summary) = self
                     .tools
-                    .get(id)
+                    .get(&id)
                     .cloned()
                     .unwrap_or_else(|| ("tool".into(), String::new()));
-                if !s(u, "title").is_empty() {
-                    summary = first_line(s(u, "title"));
+                if let Some(title) = t.fields.title.as_deref().filter(|t| !t.is_empty()) {
+                    summary = first_line(title);
                 }
-                if matches!(s(u, "status"), "completed" | "failed") {
-                    self.tools.remove(id);
+                if matches!(
+                    t.fields.status,
+                    Some(acp::ToolCallStatus::Completed | acp::ToolCallStatus::Failed)
+                ) {
+                    self.tools.remove(&id);
                     out.push(EventKind::Tool {
                         name,
                         summary,
                         phase: ToolPhase::Finished,
                     });
-                } else if let Some(t) = self.tools.get_mut(id) {
+                } else if let Some(t) = self.tools.get_mut(&id) {
                     t.1 = summary;
                 }
             }
-            "plan" => {
-                let items: Vec<PlanItem> = u
-                    .get("entries")
-                    .and_then(Value::as_array)
-                    .map(|a| {
-                        a.iter()
-                            .take(crate::events::PLAN_ITEMS)
-                            .map(|e| PlanItem {
-                                text: s(e, "content").to_string(),
-                                status: s(e, "status").to_string(),
-                            })
-                            .collect()
+            acp::SessionUpdate::Plan(p) => {
+                let items: Vec<PlanItem> = p
+                    .entries
+                    .iter()
+                    .take(crate::events::PLAN_ITEMS)
+                    .map(|e| PlanItem {
+                        text: e.content.clone(),
+                        status: plan_status(&e.status).to_string(),
                     })
-                    .unwrap_or_default();
+                    .collect();
                 if !items.is_empty() {
                     out.push(EventKind::Plan { items });
                 }
             }
-            "usage_update" => {
-                if let (Some(used), Some(size)) = (
-                    u.get("used").and_then(Value::as_u64),
-                    u.get("size").and_then(Value::as_u64),
-                ) {
-                    let cost = u.get("cost").filter(|c| c.is_object()).map(|c| {
-                        format!(
-                            "{} {}",
-                            c.get("amount").map(|a| a.to_string()).unwrap_or_default(),
-                            s(c, "currency")
-                        )
-                    });
-                    out.push(EventKind::Usage { used, size, cost });
+            acp::SessionUpdate::UsageUpdate(u) => {
+                let cost = u.cost.map(|c| format!("{} {}", c.amount, c.currency));
+                out.push(EventKind::Usage {
+                    used: u.used,
+                    size: u.size,
+                    cost,
+                });
+            }
+            acp::SessionUpdate::SessionInfoUpdate(i) => {
+                if let MaybeUndefined::Value(title) = i.title {
+                    out.push(EventKind::Title { title });
                 }
             }
-            "session_info_update" => {
-                if let Some(title) = u.get("title").and_then(Value::as_str) {
-                    out.push(EventKind::Title {
-                        title: title.to_string(),
-                    });
-                }
-            }
-            "current_mode_update" => out.push(EventKind::Mode {
-                mode: s(u, "currentModeId").to_string(),
+            acp::SessionUpdate::CurrentModeUpdate(m) => out.push(EventKind::Mode {
+                mode: m.current_mode_id.to_string(),
             }),
-            "available_commands_update" => out.push(EventKind::Commands {
-                names: u
-                    .get("availableCommands")
-                    .and_then(Value::as_array)
-                    .map(|a| a.iter().map(|c| s(c, "name").to_string()).collect())
-                    .unwrap_or_default(),
+            acp::SessionUpdate::AvailableCommandsUpdate(_) => out.push(EventKind::Commands {
+                names: available_commands(u).into_iter().map(|c| c.name).collect(),
             }),
             _ => {}
         }
@@ -290,19 +482,31 @@ impl UpdateMapper {
 }
 
 /// The options of a `session/request_permission` that may be shown: `allow_once` and `reject_once` only
-/// (decision 0104); `allow_always`, `reject_always` and anything unknown are dropped.
+/// (decision 0104); `allow_always`, `reject_always` and anything unknown are dropped. Each option is decoded on its
+/// own, so one the schema does not know costs only itself.
 pub fn permission_options(params: &Value) -> Vec<DecisionOption> {
     params
         .get("options")
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
-                .filter(|o| matches!(s(o, "kind"), "allow_once" | "reject_once"))
-                .filter(|o| !s(o, "optionId").is_empty())
+                .filter_map(|o| acp::PermissionOption::deserialize(o).ok())
+                .filter(|o| {
+                    matches!(
+                        o.kind,
+                        acp::PermissionOptionKind::AllowOnce
+                            | acp::PermissionOptionKind::RejectOnce
+                    )
+                })
+                .filter(|o| !o.option_id.0.is_empty())
                 .map(|o| DecisionOption {
-                    id: s(o, "optionId").to_string(),
-                    kind: s(o, "kind").to_string(),
-                    name: s(o, "name").to_string(),
+                    id: o.option_id.to_string(),
+                    kind: match o.kind {
+                        acp::PermissionOptionKind::AllowOnce => "allow_once",
+                        _ => "reject_once",
+                    }
+                    .into(),
+                    name: o.name,
                 })
                 .collect()
         })
@@ -352,9 +556,19 @@ struct Live {
     changed: watch::Sender<u64>,
     out: mpsc::UnboundedSender<String>,
     kill: Mutex<Option<oneshot::Sender<()>>>,
+    /// Writes the state file (set by the backend). A turn opening or closing changes what a restart interrupts, so
+    /// it is written then, not only when a session is made or closed.
+    saver: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Live {
+    fn persist(&self) {
+        let save = self.saver.lock().unwrap().clone();
+        if let Some(save) = save {
+            save();
+        }
+    }
+
     fn emit(&self, kind: EventKind) {
         if let Some(hub) = &self.hub {
             hub.report(&self.event_name, Source::Acp, Confidence::High, kind);
@@ -429,7 +643,12 @@ impl Live {
         };
         match reply {
             Ok(Ok(v)) => Ok(v),
-            Ok(Err(e)) => Err(anyhow!("{method}: {}", cap(s(&e, "message"), 200))),
+            Ok(Err(e)) => {
+                let message = acp::Error::deserialize(&e)
+                    .map(|e| e.message)
+                    .unwrap_or_default();
+                Err(anyhow!("{method}: {}", cap(&message, 200)))
+            }
             Err(_) => Err(anyhow!("the agent exited")),
         }
     }
@@ -452,7 +671,7 @@ impl Live {
             // fs and terminal are not advertised, and extension requests are not ours to answer.
             (_, Some(id)) => self.send(json!({
                 "jsonrpc": "2.0", "id": id,
-                "error": {"code": -32601, "message": "Method not found"}
+                "error": wire(&acp::Error::method_not_found())
             })),
             ("session/update", None) => self.on_update(&v["params"]["update"]),
             _ => {}
@@ -480,7 +699,7 @@ impl Live {
             let mut g = self.inner.lock().unwrap();
             if g.perms.len() >= MAX_PENDING {
                 drop(g);
-                return self.respond(&rpc_id, json!({"outcome": {"outcome": "cancelled"}}));
+                return self.respond(&rpc_id, cancelled());
             }
             g.perm_seq += 1;
             let id = format!("acp-{}", g.perm_seq);
@@ -494,8 +713,14 @@ impl Live {
             id
         };
         self.stream(|st| st.permission(&prompt_id, params, options.clone()));
-        let tool = params.get("toolCall").unwrap_or(&Value::Null);
-        let detail = Some(first_line(s(tool, "title"))).filter(|d| !d.is_empty());
+        let detail = Some(first_line(
+            permission_tool(params)
+                .fields
+                .title
+                .as_deref()
+                .unwrap_or(""),
+        ))
+        .filter(|d| !d.is_empty());
         self.block(&prompt_id, true);
         self.emit(EventKind::Prompt {
             id: prompt_id,
@@ -516,7 +741,7 @@ impl Live {
             .map(|(_, p)| p)
             .collect();
         for p in perms {
-            self.respond(&p.rpc_id, json!({"outcome": {"outcome": "cancelled"}}));
+            self.respond(&p.rpc_id, cancelled());
         }
         self.stream(|st| st.cancel_open_permissions());
     }
@@ -540,6 +765,13 @@ impl Live {
             });
         }
     }
+}
+
+/// The answer to a permission request that nobody is going to take.
+fn cancelled() -> Value {
+    wire(&acp::RequestPermissionResponse::new(
+        acp::RequestPermissionOutcome::Cancelled,
+    ))
 }
 
 /// Reads one line of at most `max` bytes. `Ok(None)` is end of input; `Ok(Some(None))` a line that was too long
@@ -606,6 +838,7 @@ fn spawn_agent(
     let (out, mut out_rx) = mpsc::unbounded_channel::<String>();
     let (kill_tx, mut kill_rx) = oneshot::channel::<()>();
     let live = Arc::new(Live {
+        saver: Mutex::new(None),
         event_name,
         dir: dir.to_string(),
         hub,
@@ -666,45 +899,90 @@ fn spawn_agent(
     Ok(live)
 }
 
+/// No file system and no terminal: the agent runs its own tools (decision 0111).
+fn initialize_request(elicitation_form: bool) -> acp::InitializeRequest {
+    let mut caps = acp::ClientCapabilities::new()
+        .fs(acp::FileSystemCapabilities::new()
+            .read_text_file(false)
+            .write_text_file(false))
+        .terminal(false);
+    if elicitation_form {
+        // Serialises as `"elicitation": {"form": {}}`.
+        caps = caps.elicitation(
+            acp::ElicitationCapabilities::new().form(acp::ElicitationFormCapabilities::new()),
+        );
+    }
+    acp::InitializeRequest::new(ProtocolVersion::V1)
+        .client_capabilities(caps)
+        .client_info(acp::Implementation::new(
+            "termenbox",
+            env!("CARGO_PKG_VERSION"),
+        ))
+}
+
+/// The `initialize` params. The schema always writes `auth: {terminal: false}` (the default); it is left out, as it
+/// has always been, so the agents are sent the same bytes as before.
+fn initialize_params(req: &acp::InitializeRequest) -> Value {
+    let mut params = wire(req);
+    if let Some(caps) = params
+        .get_mut("clientCapabilities")
+        .and_then(Value::as_object_mut)
+    {
+        caps.remove("auth");
+    }
+    params
+}
+
 /// `initialize`, then `session/new` or (after a restart) `session/resume` / `session/load`.
-async fn handshake(live: &Live, dir: &str, resume: Option<&str>) -> Result<String> {
+async fn handshake(
+    live: &Live,
+    dir: &str,
+    resume: Option<&str>,
+    elicitation_form: bool,
+) -> Result<String> {
     let init = live
         .request(
             "initialize",
-            json!({
-                "protocolVersion": 1,
-                // No file system and no terminal: the agent runs its own tools (decision 0111).
-                "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false},
-                "clientInfo": {"name": "termenbox", "version": env!("CARGO_PKG_VERSION")},
-            }),
+            initialize_params(&initialize_request(elicitation_form)),
             Some(SETUP_TIMEOUT),
         )
         .await?;
-    let caps = &init["agentCapabilities"];
-    let params = |id: &str| json!({"sessionId": id, "cwd": dir, "mcpServers": []});
+    // An `initialize` result that does not decode offers nothing: the session can be new, but not resumed.
+    let caps = decode::<acp::InitializeResponse>(&init, "initialize result")
+        .map(|r| r.agent_capabilities)
+        .unwrap_or_default();
     match resume {
         None => {
             let r = live
                 .request(
                     "session/new",
-                    json!({"cwd": dir, "mcpServers": []}),
+                    wire(&acp::NewSessionRequest::new(dir)),
                     Some(SETUP_TIMEOUT),
                 )
                 .await?;
+            let new: acp::NewSessionResponse = decode(&r, "session/new result")
+                .ok_or_else(|| anyhow!("the agent's session/new answer has no session id"))?;
             live.stream(|st| st.session_state(&r));
-            Ok(s(&r, "sessionId").to_string())
+            Ok(new.session_id.to_string())
         }
-        Some(id) if caps["sessionCapabilities"].get("resume").is_some() => {
+        Some(id) if caps.session_capabilities.resume.is_some() => {
+            // `mcpServers` is always sent (the schema leaves an empty list out), as every agent has been sent it.
+            let mut params = wire(&acp::ResumeSessionRequest::new(id.to_string(), dir));
+            params["mcpServers"] = json!([]);
             let r = live
-                .request("session/resume", params(id), Some(SETUP_TIMEOUT))
+                .request("session/resume", params, Some(SETUP_TIMEOUT))
                 .await?;
             live.stream(|st| st.session_state(&r));
             Ok(id.to_string())
         }
-        Some(id) if caps["loadSession"].as_bool() == Some(true) => {
+        Some(id) if caps.load_session => {
             live.inner.lock().unwrap().replaying = true;
             let r = live
-                .request("session/load", params(id), Some(SETUP_TIMEOUT))
+                .request(
+                    "session/load",
+                    wire(&acp::LoadSessionRequest::new(id.to_string(), dir)),
+                    Some(SETUP_TIMEOUT),
+                )
                 .await;
             let r = {
                 let mut g = live.inner.lock().unwrap();
@@ -723,19 +1001,122 @@ async fn handshake(live: &Live, dir: &str, resume: Option<&str>) -> Result<Strin
 // The backend
 // ---------------------------------------------------------------------------------------------------
 
+/// Agents running now in a locked session table.
+fn running_in(sessions: &HashMap<String, Entry>) -> usize {
+    sessions
+        .values()
+        .filter(|e| {
+            e.live
+                .as_ref()
+                .map(|l| l.inner.lock().unwrap().status == SessionStatus::Running)
+                .unwrap_or(false)
+        })
+        .count()
+}
+
+/// Writes the sessions to the state file: running ones with their ACP id and whether a turn is open, the others with
+/// why they are not running.
+fn write_state(path: &std::path::Path, sessions: &Mutex<HashMap<String, Entry>>) {
+    let mut saved: Vec<Saved> = sessions
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(name, e)| {
+            let (acp_id, reason, retry, turn_open) = match &e.live {
+                Some(l) => {
+                    let g = l.inner.lock().unwrap();
+                    // A crashed or ended agent is not kept, as before.
+                    if g.status != SessionStatus::Running {
+                        return None;
+                    }
+                    (g.acp_id.clone(), None, false, g.stream.working())
+                }
+                // Not running: kept with why, so a restart or a cap does not lose the session.
+                None => (
+                    e.acp_id.clone(),
+                    e.reason.clone(),
+                    e.retry || e.restoring,
+                    e.turn_open,
+                ),
+            };
+            Some(Saved {
+                name: name.clone(),
+                agent: e.agent.clone(),
+                dir: e.dir.clone(),
+                acp_id,
+                reason,
+                retry,
+                turn_open,
+            })
+        })
+        .collect();
+    saved.sort_by(|a, b| a.name.cmp(&b.name));
+    if let Ok(text) = serde_json::to_string(&saved) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct Saved {
     name: String,
     agent: String,
     dir: String,
+    /// Empty for an entry that never started (it was over the cap at the restart).
     acp_id: String,
+    /// Why this entry has no running agent; shown as the session's "Stopped: ..." line.
+    #[serde(default)]
+    reason: Option<String>,
+    /// Tried again at the next restore.
+    #[serde(default)]
+    retry: bool,
+    /// A turn was running when this was saved: a restart interrupted it.
+    #[serde(default)]
+    turn_open: bool,
 }
 
 struct Entry {
     agent: String,
     dir: String,
-    /// `None` for a session that could not be brought back after a restart.
+    /// `None` for a session with no running agent: not restored yet, not restorable, or over the cap.
     live: Option<Arc<Live>>,
+    /// Why there is no agent (shown to the owner).
+    reason: Option<String>,
+    /// A restore is starting this session's agent now; the entry holds its name and slot meanwhile.
+    restoring: bool,
+    /// For an entry with no live agent, what `save` writes back: the ACP id to resume, whether the next restore
+    /// tries again, and whether a turn was open.
+    acp_id: String,
+    retry: bool,
+    turn_open: bool,
+}
+
+impl Entry {
+    fn running(agent: &str, dir: &str, live: Arc<Live>) -> Self {
+        Self {
+            agent: agent.to_string(),
+            dir: dir.to_string(),
+            live: Some(live),
+            reason: None,
+            restoring: false,
+            acp_id: String::new(),
+            retry: false,
+            turn_open: false,
+        }
+    }
+
+    /// An entry without a running agent. `retry`: the next restore tries to start it again.
+    fn stopped(s: &Saved, reason: String, retry: bool) -> Self {
+        Self {
+            agent: s.agent.clone(),
+            dir: s.dir.clone(),
+            live: None,
+            reason: Some(reason),
+            restoring: false,
+            acp_id: s.acp_id.clone(),
+            retry,
+            turn_open: s.turn_open,
+        }
+    }
 }
 
 pub struct AcpBackend {
@@ -743,7 +1124,7 @@ pub struct AcpBackend {
     hub: Option<EventHub>,
     state_file: Option<PathBuf>,
     event_prefix: String,
-    sessions: Mutex<HashMap<String, Entry>>,
+    sessions: Arc<Mutex<HashMap<String, Entry>>>,
     /// Sessions being started, counted against the cap so two creates cannot both pass it.
     starting: Mutex<usize>,
 }
@@ -755,7 +1136,7 @@ impl AcpBackend {
             hub: None,
             state_file: None,
             event_prefix: String::new(),
-            sessions: Mutex::new(HashMap::new()),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
             starting: Mutex::new(0),
         }
     }
@@ -782,57 +1163,38 @@ impl AcpBackend {
         let e = g.get(id)?;
         Some(match &e.live {
             Some(l) => l.inner.lock().unwrap().status.clone(),
-            None => SessionStatus::Ended,
+            None if e.restoring => SessionStatus::Running,
+            None => SessionStatus::Failed(e.reason.clone().unwrap_or_default()),
         })
     }
 
     fn live(&self, id: &str) -> Result<Arc<Live>> {
-        self.sessions
-            .lock()
-            .unwrap()
-            .get(id)
-            .and_then(|e| e.live.clone())
-            .ok_or_else(|| anyhow!("Unknown session"))
+        let g = self.sessions.lock().unwrap();
+        let e = g.get(id).ok_or_else(|| anyhow!("Unknown session"))?;
+        match &e.live {
+            Some(l) => Ok(l.clone()),
+            None if e.restoring => Err(anyhow!("This session is still being restored")),
+            None => Err(anyhow!("Unknown session")),
+        }
     }
 
     fn save(&self) {
         let Some(path) = &self.state_file else { return };
-        let saved: Vec<Saved> = self
-            .sessions
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|(name, e)| {
-                let l = e.live.as_ref()?;
-                let g = l.inner.lock().unwrap();
-                (g.status == SessionStatus::Running).then(|| Saved {
-                    name: name.clone(),
-                    agent: e.agent.clone(),
-                    dir: e.dir.clone(),
-                    acp_id: g.acp_id.clone(),
-                })
-            })
-            .collect();
-        if let Ok(text) = serde_json::to_string(&saved) {
-            let _ = std::fs::write(path, text);
-        }
+        write_state(path, &self.sessions);
     }
 
     fn running(&self) -> usize {
-        self.sessions
-            .lock()
-            .unwrap()
-            .values()
-            .filter(|e| {
-                e.live
-                    .as_ref()
-                    .map(|l| l.inner.lock().unwrap().status == SessionStatus::Running)
-                    .unwrap_or(false)
-            })
-            .count()
+        running_in(&self.sessions.lock().unwrap())
     }
 
-    async fn start(&self, name: &str, agent: &str, dir: &str, resume: Option<&str>) -> Result<()> {
+    async fn start(
+        &self,
+        name: &str,
+        agent: &str,
+        dir: &str,
+        resume: Option<&str>,
+        interrupted: bool,
+    ) -> Result<()> {
         let profile = self
             .config
             .agents
@@ -846,16 +1208,27 @@ impl AcpBackend {
             self.hub.clone(),
             format!("{}{name}", self.event_prefix),
         )?;
-        let id = match handshake(&live, dir, resume).await {
+        let id = match handshake(&live, dir, resume, profile.elicitation_form).await {
             Ok(id) => id,
             Err(e) => {
                 if let Some(k) = live.kill.lock().unwrap().take() {
                     let _ = k.send(());
                 }
+                // The agent refused `session/new` (gemini: -32000 when not logged in): say what to do about it.
+                let msg = e.to_string();
+                if let (None, Some(why)) = (resume, msg.strip_prefix("session/new: ")) {
+                    return Err(anyhow!(
+                        "{agent} would not start: {why}. Log in to it on the server, then try again."
+                    ));
+                }
                 return Err(e);
             }
         };
         live.inner.lock().unwrap().acp_id = id;
+        if let Some(path) = self.state_file.clone() {
+            let sessions = self.sessions.clone();
+            *live.saver.lock().unwrap() = Some(Arc::new(move || write_state(&path, &sessions)));
+        }
         if resume.is_some() {
             // `session/load` replays are not shown (they would arrive as one burst), so say what is missing.
             live.stream(|st| {
@@ -865,47 +1238,92 @@ impl AcpBackend {
                 )
             });
         }
-        live.turn_close(AgentState::Idle);
+        if interrupted {
+            // The turn that was running when the server stopped is gone with the old agent process.
+            live.stream(|st| st.notice("error", "A server restart interrupted the running turn."));
+        }
+        live.turn_close(if interrupted {
+            AgentState::Error
+        } else {
+            AgentState::Idle
+        });
         // The agent is known from the start (there is no process to scan): Home and the tabs show its icon.
         if let Some(hub) = &self.hub {
             hub.set_agent(&format!("{}{name}", self.event_prefix), agent);
         }
-        self.sessions.lock().unwrap().insert(
-            name.to_string(),
-            Entry {
-                agent: agent.to_string(),
-                dir: dir.to_string(),
-                live: Some(live),
-            },
-        );
+        self.sessions
+            .lock()
+            .unwrap()
+            .insert(name.to_string(), Entry::running(agent, dir, live));
         Ok(())
     }
 
-    /// After a restart: brings back the saved sessions with `session/resume` or `session/load`; a session the
-    /// agent cannot take back is marked ended (it stays in the list until closed).
+    /// After a restart: brings back the saved sessions with `session/resume` or `session/load`. A session the
+    /// agent cannot take back stays in the list with the reason (the view says "Stopped: ...") until it is closed
+    /// or the next restore starts it; one over the cap waits the same way.
+    ///
+    /// Every saved name gets a placeholder entry at once, under the same locks `create_with` takes, so while the
+    /// (slow) starts run neither its name nor its slot can be taken by a new session.
     pub async fn restore(&self) {
         let Some(path) = &self.state_file else { return };
         let Ok(text) = std::fs::read_to_string(path) else {
             return;
         };
         let saved: Vec<Saved> = serde_json::from_str(&text).unwrap_or_default();
-        for s in saved.into_iter().take(self.config.max_sessions) {
-            if !valid_name(&s.name) || !valid_dir(&s.dir) {
-                continue;
+        let mut todo: Vec<Saved> = Vec::new();
+        {
+            // The same order as `create_with`: `starting`, then `sessions`.
+            let mut starting = self.starting.lock().unwrap();
+            let mut sessions = self.sessions.lock().unwrap();
+            let mut free = self
+                .config
+                .max_sessions
+                .saturating_sub(running_in(&sessions) + *starting);
+            for s in saved {
+                if !valid_name(&s.name) {
+                    // Not shown: a hostile name is never put in a list. Logged once, without the name.
+                    tracing::warn!("dropped a saved ACP session with an invalid name");
+                    continue;
+                }
+                if sessions.contains_key(&s.name) {
+                    continue;
+                }
+                if !valid_dir(&s.dir) {
+                    let why = "The saved directory is not valid".to_string();
+                    sessions.insert(s.name.clone(), Entry::stopped(&s, why, false));
+                } else if s.reason.is_some() && !s.retry {
+                    // Stopped for a reason a retry will not change: kept as it was.
+                    let why = s.reason.clone().unwrap_or_default();
+                    sessions.insert(s.name.clone(), Entry::stopped(&s, why, false));
+                } else if free == 0 {
+                    let why = format!(
+                        "Not restored: at most {} agent sessions run at once",
+                        self.config.max_sessions
+                    );
+                    sessions.insert(s.name.clone(), Entry::stopped(&s, why, true));
+                } else {
+                    free -= 1;
+                    *starting += 1;
+                    let mut e = Entry::stopped(&s, String::new(), true);
+                    e.reason = None;
+                    e.restoring = true;
+                    sessions.insert(s.name.clone(), e);
+                    todo.push(s);
+                }
             }
-            if self
-                .start(&s.name, &s.agent, &s.dir, Some(&s.acp_id))
-                .await
-                .is_err()
-            {
-                self.sessions.lock().unwrap().insert(
-                    s.name.clone(),
-                    Entry {
-                        agent: s.agent,
-                        dir: s.dir,
-                        live: None,
-                    },
-                );
+        }
+        for s in todo {
+            // An entry that never started has no conversation to resume: it starts afresh.
+            let resume = (!s.acp_id.is_empty()).then_some(s.acp_id.as_str());
+            let started = self
+                .start(&s.name, &s.agent, &s.dir, resume, s.turn_open)
+                .await;
+            if let Err(e) = started {
+                let why = format!("Could not restore: {e}");
+                self.sessions
+                    .lock()
+                    .unwrap()
+                    .insert(s.name.clone(), Entry::stopped(&s, why, true));
                 if let Some(hub) = &self.hub {
                     hub.report(
                         &format!("{}{}", self.event_prefix, s.name),
@@ -913,11 +1331,13 @@ impl AcpBackend {
                         Confidence::High,
                         EventKind::Turn {
                             open: false,
-                            outcome: Some(AgentState::Done),
+                            outcome: Some(AgentState::Error),
                         },
                     );
                 }
             }
+            *self.starting.lock().unwrap() -= 1;
+            self.save();
         }
         self.save();
     }
@@ -943,7 +1363,11 @@ impl AcpBackend {
             let perm = g.perms.remove(prompt_id).unwrap();
             live.respond(
                 &perm.rpc_id,
-                json!({"outcome": {"outcome": "selected", "optionId": option_id}}),
+                wire(&acp::RequestPermissionResponse::new(
+                    acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                        option_id.to_string(),
+                    )),
+                )),
             );
         }
         live.stream(|st| st.permission_answered(prompt_id, option_id));
@@ -952,8 +1376,8 @@ impl AcpBackend {
         Ok(())
     }
 
-    /// The session view's stream (T0). A session that could not be brought back after a restart has no agent, so it
-    /// is shown as ended.
+    /// The session view's stream (T0). A session with no running agent (being restored, over the cap, or one the
+    /// agent could not take back) is shown as such, with the reason.
     fn stream_view(
         &self,
         id: &str,
@@ -961,10 +1385,16 @@ impl AcpBackend {
         epoch: Option<u64>,
         info_seen: u64,
     ) -> Result<(AcpView, u64)> {
-        let (live, agent, dir) = {
+        let (live, agent, dir, restoring, reason) = {
             let g = self.sessions.lock().unwrap();
             let e = g.get(id).ok_or_else(|| anyhow!("Unknown session"))?;
-            (e.live.clone(), e.agent.clone(), e.dir.clone())
+            (
+                e.live.clone(),
+                e.agent.clone(),
+                e.dir.clone(),
+                e.restoring,
+                e.reason.clone(),
+            )
         };
         match live {
             Some(l) => {
@@ -973,7 +1403,18 @@ impl AcpBackend {
             }
             None => {
                 let mut st = Stream::new(&agent, &dir, 0);
-                st.status("ended", None);
+                if restoring {
+                    st.notice(
+                        "info",
+                        "Restoring after a server restart. Open this session again in a moment.",
+                    );
+                } else {
+                    // A failure, not "Done": the view says "Stopped: <reason>" and Close works.
+                    let why = reason
+                        .as_deref()
+                        .unwrap_or("The agent could not be restored");
+                    st.status("failed", Some(why));
+                }
                 Ok(st.view(id, after, epoch, info_seen))
             }
         }
@@ -998,7 +1439,10 @@ impl AcpBackend {
             ModeVia::Modes => {
                 live.request(
                     "session/set_mode",
-                    json!({"sessionId": acp_id, "modeId": mode}),
+                    wire(&acp::SetSessionModeRequest::new(
+                        acp_id.clone(),
+                        mode.to_string(),
+                    )),
                     Some(SETUP_TIMEOUT),
                 )
                 .await?
@@ -1006,7 +1450,11 @@ impl AcpBackend {
             ModeVia::Config(config_id) => {
                 live.request(
                     "session/set_config_option",
-                    json!({"sessionId": acp_id, "configId": config_id, "value": mode}),
+                    wire(&acp::SetSessionConfigOptionRequest::new(
+                        acp_id.clone(),
+                        config_id.clone(),
+                        acp::SessionConfigOptionValue::value_id(mode.to_string()),
+                    )),
                     Some(SETUP_TIMEOUT),
                 )
                 .await?
@@ -1022,9 +1470,10 @@ impl AcpBackend {
         let live = self.live(id)?;
         live.cancel_pending();
         let acp_id = live.inner.lock().unwrap().acp_id.clone();
-        live.send(
-            json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": acp_id}}),
-        );
+        live.send(json!({
+            "jsonrpc": "2.0", "method": "session/cancel",
+            "params": wire(&acp::CancelNotification::new(acp_id.clone()))
+        }));
         Ok(())
     }
 }
@@ -1072,6 +1521,9 @@ impl SessionBackend for AcpBackend {
         let agent = template
             .filter(|t| self.config.agents.contains_key(*t))
             .ok_or_else(|| anyhow!("Unknown agent"))?;
+        if !on_path(&self.config.agents[agent].command) {
+            return Err(anyhow!("That agent is not installed on this server"));
+        }
         let dir = match dir.filter(|d| !d.is_empty()) {
             Some(d) if valid_dir(d) => d.to_string(),
             Some(_) => return Err(anyhow!("The directory must be an absolute path")),
@@ -1088,9 +1540,13 @@ impl SessionBackend for AcpBackend {
                     self.config.max_sessions
                 ));
             }
+            // A restore holds this lock while it takes the names it is bringing back.
+            if self.sessions.lock().unwrap().contains_key(name) {
+                return Err(anyhow!("A session with that name exists"));
+            }
             *starting += 1;
         }
-        let r = self.start(name, agent, &dir, None).await;
+        let r = self.start(name, agent, &dir, None, false).await;
         *self.starting.lock().unwrap() -= 1;
         r?;
         self.save();
@@ -1125,6 +1581,7 @@ impl SessionBackend for AcpBackend {
             title: first_line(text),
         });
         live.stream(|st| st.user(text));
+        live.persist();
         if let Some(hub) = &live.hub {
             hub.record_project(&live.event_name, &live.dir);
         }
@@ -1133,7 +1590,10 @@ impl SessionBackend for AcpBackend {
             let r = live
                 .request(
                     "session/prompt",
-                    json!({"sessionId": acp_id, "prompt": [{"type": "text", "text": text}]}),
+                    wire(&acp::PromptRequest::new(
+                        acp_id.clone(),
+                        vec![acp::ContentBlock::Text(acp::TextContent::new(text.clone()))],
+                    )),
                     None,
                 )
                 .await;
@@ -1148,7 +1608,8 @@ impl SessionBackend for AcpBackend {
                 live.emit(k);
             }
             // What the agent says this turn used, as it says it. `thoughtTokens` is reported apart from the output
-            // count and is not added to it.
+            // count and is not added to it. `usage` is read from the raw result: the schema types it only behind
+            // `unstable_end_turn_token_usage`, which stays off.
             if let (Ok(v), Some(hub)) = (&r, &live.hub) {
                 if let Some(u) = v.get("usage").filter(|u| u.is_object()) {
                     let n = |k: &str| u.get(k).and_then(Value::as_u64);
@@ -1166,12 +1627,19 @@ impl SessionBackend for AcpBackend {
             if live.inner.lock().unwrap().status != SessionStatus::Running {
                 return;
             }
+            // A result whose stop reason does not decode ends the turn as `Idle`, without a notice.
+            let stop = r
+                .as_ref()
+                .ok()
+                .and_then(|v| decode::<acp::PromptResponse>(v, "session/prompt result"))
+                .map(|p| stop_reason(p.stop_reason));
             live.stream(|st| match &r {
-                Ok(v) => st.turn_end(v["stopReason"].as_str(), None),
+                Ok(_) => st.turn_end(stop, None),
                 Err(e) => st.turn_end(None, Some(&e.to_string())),
             });
+            live.persist();
             live.turn_close(match r {
-                Ok(v) if s(&v, "stopReason") == "end_turn" => AgentState::Done,
+                Ok(_) if stop == Some("end_turn") => AgentState::Done,
                 Ok(_) => AgentState::Idle,
                 Err(_) => AgentState::Error,
             });
@@ -1180,7 +1648,13 @@ impl SessionBackend for AcpBackend {
     }
 
     fn acp_agents(&self) -> Vec<String> {
-        let mut v: Vec<String> = self.config.agents.keys().cloned().collect();
+        let mut v: Vec<String> = self
+            .config
+            .agents
+            .iter()
+            .filter(|(_, a)| on_path(&a.command))
+            .map(|(name, _)| name.clone())
+            .collect();
         v.sort();
         v
     }
@@ -1238,5 +1712,7 @@ impl SessionBackend for AcpBackend {
     }
 }
 
+#[cfg(test)]
+mod golden;
 #[cfg(test)]
 mod tests;

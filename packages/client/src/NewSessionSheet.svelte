@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { NativeSelect } from './lib/ui/native-select';
   import AgentIcon from './AgentIcon.svelte';
-  import { recentDirs, suggestName, TEMPLATES, validDir, validName } from './lib/newsession';
+  import { backendFor, hasViews, loadView, managerOptions, recentDirs, resolveView, saveView, suggestName, TEMPLATES, validDir, validName, viewControl, viewStore, type View } from './lib/newsession';
   import type { HubServer, HubSession } from './lib/hub';
   import type { WindowMap } from './lib/windows';
 
@@ -18,7 +18,9 @@
 
   let dialog: HTMLDialogElement;
   let serverId = servers.find(s => s.id === initialServerId)?.id ?? servers[0]?.id ?? '';
-  let backend = '';
+  let manager = '';
+  /** The View the person picked for this agent; `view` is what applies (some agents have no choice). */
+  let wanted: View = 'terminal';
   let template = 'claude';
   let dir = '';
   let name = '';
@@ -26,13 +28,26 @@
   onMount(() => dialog.showModal());
 
   $: server = servers.find(s => s.id === serverId);
-  $: if (server && (!backend || !server.backends.includes(backend))) backend = server.backends[0] ?? '';
+  $: managers = managerOptions(server);
+  $: if (server && (!manager || !managers.includes(manager))) manager = managers[0] ?? '';
+  $: acpAgents = server?.acpAgents ?? [];
+  // With tmux and acp both on the server the choice is the View, made after the agent. An agent tmux cannot start (one the
+  // owner added) is offered too, and is always the agent view.
+  $: views = hasViews(server);
+  // Only acp on the server (or picked as the manager): the agents are the ACP ones.
+  $: acpOnly = !!server && !views && manager === 'acp';
+  $: choices = acpOnly ? acpAgents.map(id => ({ id, label: TEMPLATES.find(t => t.id === id)?.label ?? id }))
+    : views ? [...TEMPLATES, ...acpAgents.filter(id => !TEMPLATES.some(t => t.id === id)).map(id => ({ id, label: id }))] : TEMPLATES;
+  $: if (acpOnly && !acpAgents.includes(template)) template = acpAgents[0] ?? '';
+  $: if (!acpOnly && !choices.some(t => t.id === template)) template = 'claude';
+  // The remembered view for this agent on this server is loaded when either changes; a click then overrides it.
+  $: wanted = loadView(viewStore(), serverId, template);
+  $: control = viewControl(server, template);
+  $: view = resolveView(server, template, wanted);
+  $: backend = server ? backendFor(server, manager, template, wanted) : '';
   // An ACP session (T0): the server starts the agent itself, in a directory, from the owner's list of agents.
   $: acp = !!server && backend === 'acp';
-  $: acpAgents = server?.acpAgents ?? [];
-  $: choices = acp ? acpAgents.map(id => ({ id, label: TEMPLATES.find(t => t.id === id)?.label ?? id })) : TEMPLATES;
-  $: if (acp && !acpAgents.includes(template)) template = acpAgents[0] ?? '';
-  $: if (!acp && !TEMPLATES.some(t => t.id === template)) template = 'claude';
+  function pick(v: View) { wanted = v; saveView(viewStore(), serverId, template, v); }
   $: dirs = recentDirs(windows, `${serverId}/`);
   $: taken = sessions.filter(s => s.serverId === serverId).map(s => s.id);
   $: if (!nameTouched) name = suggestName(dir, template, taken);
@@ -54,8 +69,8 @@
     {#if servers.length > 1 && !locked}
       <label>Server <NativeSelect bind:value={serverId}>{#each servers as s}<option value={s.id}>{s.server.server_name || 'Server'}</option>{/each}</NativeSelect></label>
     {/if}
-    {#if server && server.backends.length > 1}
-      <label>Manager <NativeSelect bind:value={backend}>{#each server.backends as b}<option value={b}>{b === 'acp' ? 'Agent session (ACP)' : b}</option>{/each}</NativeSelect></label>
+    {#if managers.length > 1}
+      <label>Manager <NativeSelect bind:value={manager}>{#each managers as b}<option value={b}>{b === 'acp' ? 'Agent session (ACP)' : b}</option>{/each}</NativeSelect></label>
     {/if}
     {#if tmux || acp}
       <div class="templates" role="radiogroup" aria-label="Start with">
@@ -65,6 +80,12 @@
           </button>
         {/each}
       </div>
+      {#if control === 'choose' && manager === 'tmux'}
+        <div class="view" role="radiogroup" aria-label="View" data-testid="view">
+          <button type="button" role="radio" aria-checked={view === 'terminal'} class:on={view === 'terminal'} data-testid="view-terminal" on:click={() => pick('terminal')}>Terminal <small>agent's own TUI</small></button>
+          <button type="button" role="radio" aria-checked={view === 'acp'} class:on={view === 'acp'} data-testid="view-acp" on:click={() => pick('acp')}>Agent view <small>ACP</small></button>
+        </div>
+      {/if}
       <label class="stack">Directory <input bind:value={dir} placeholder={acp ? '/home/you/project' : '/home/you/project (optional)'} autocapitalize="off" autocomplete="off" spellcheck="false" inputmode="url" /></label>
       {#if dirs.length}
         <div class="dirs" aria-label="Directories in use">{#each dirs as d}<button type="button" class="secondary" on:click={() => dir = d}>{d}</button>{/each}</div>
@@ -84,7 +105,10 @@
   form { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
   .templates { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; }
   .templates button { display: flex; align-items: center; gap: 8px; min-height: 48px; text-align: left; background: var(--bg); color: var(--fg); border: 1px solid var(--border); }
-  .templates button.on { border-color: var(--accent); }
+  .templates button.on, .view button.on { border-color: var(--accent); }
+  .view { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .view button { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; text-align: left; background: var(--bg); color: var(--fg); border: 1px solid var(--border); }
+  .view small { color: var(--fg-muted); }
   label { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.85rem; }
   label.stack { flex-direction: column; align-items: stretch; }
   input, button { min-height: 44px; min-width: 44px; }

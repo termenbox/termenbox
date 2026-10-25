@@ -32,6 +32,7 @@ libc = "0.2"
 toml = { version = "0.8", default-features = false, features = ["parse"] }
 semver = "1"
 percent-encoding = "2.3"
+agent-client-protocol-schema = { version = "1.12", default-features = false }
 
 [dev-dependencies]
 tokio-tungstenite = "0.21"

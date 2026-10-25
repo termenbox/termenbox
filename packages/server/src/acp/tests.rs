@@ -139,6 +139,8 @@ fn fake_agent() {
                 "loadSession": mode.contains("load"),
                 "sessionCapabilities": if mode.contains("resume") { json!({"resume": {}}) } else { json!({}) }
             }})),
+            "session/new" if mode.contains("authfail") => put(json!({"jsonrpc": "2.0", "id": id,
+                "error": {"code": -32000, "message": "Authentication required"}})),
             "session/new" if mode.contains("modes") => reply(json!({"sessionId": "acp-1",
                 "modes": {"currentModeId": "ask", "availableModes": [
                     {"id": "ask", "name": "Ask", "description": "Ask first"}, {"id": "plan", "name": "Plan"}]}})),
@@ -197,6 +199,7 @@ fn profile(mode: &str, log: &Path) -> AgentProfile {
             ("FAKE_LOG".to_string(), log.display().to_string()),
         ]),
         env_remove: vec![],
+        elicitation_form: false,
     }
 }
 
@@ -204,6 +207,7 @@ fn rig_with(mode: &str, max: usize, dir: PathBuf, state: bool) -> Rig {
     let log = dir.join(format!("{}.log", uuid::Uuid::new_v4()));
     let config = AcpConfig {
         max_sessions: max,
+        builtin: false,
         agents: HashMap::from([("fake".to_string(), profile(mode, &log))]),
     };
     let hub = EventHub::new([7; 32]);
@@ -280,10 +284,127 @@ fn the_allowlist_file_parses_and_refuses_nonsense() {
     assert!(AcpConfig::parse("max_sessions = 0").is_err());
     assert!(AcpConfig::parse("[agents.\"a b\"]\ncommand = \"x\"").is_err());
     assert!(AcpConfig::parse("[agents.x]\ncommand = \"\"").is_err());
+}
+
+#[test]
+fn no_file_means_the_built_ins_and_a_file_is_exclusive_unless_it_asks() {
+    let none = AcpConfig::load(Path::new("/nonexistent/acp.toml")).unwrap();
+    assert_eq!(none, AcpConfig::default());
+    assert_eq!(none.agents, builtin_agents());
+    assert_eq!(none.max_sessions, 6);
+
+    let only = AcpConfig::parse("[agents.mine]\ncommand = \"mine\"").unwrap();
+    assert_eq!(only.agents.keys().collect::<Vec<_>>(), ["mine"]);
+    assert_eq!(only.max_sessions, 6);
+
+    let both =
+        AcpConfig::parse("builtin = true\nmax_sessions = 3\n[agents.mine]\ncommand = \"mine\"")
+            .unwrap();
+    assert_eq!(both.max_sessions, 3);
+    let mut names: Vec<_> = both.agents.keys().cloned().collect();
+    names.sort();
+    assert_eq!(names, ["claude", "mine", "opencode"]);
+
+    // A same-named entry in the file wins over the built-in.
+    let over =
+        AcpConfig::parse("builtin = true\n[agents.claude]\ncommand = \"my-claude\"").unwrap();
+    assert_eq!(over.agents["claude"].command, "my-claude");
+    assert!(over.agents["claude"].env_remove.is_empty());
+    assert!(over.agents.contains_key("opencode"));
+
+    // An old file without the new keys parses unchanged.
+    let old = AcpConfig::parse(
+        "max_sessions = 2\n[agents.claude]\ncommand = \"claude-agent-acp\"\nenv_remove = [\"CLAUDECODE\"]\n",
+    )
+    .unwrap();
+    assert!(!old.builtin && !old.agents["claude"].elicitation_form);
+    assert_eq!(old.agents.len(), 1);
+}
+
+#[test]
+fn each_built_in_matches_the_probe_script() {
+    let probe = include_str!("../../../../scripts/acp-probe.mjs");
+    let b = builtin_agents();
+    assert!(probe.contains("opencode: ['opencode', 'acp']"));
     assert_eq!(
-        AcpConfig::load(Path::new("/nonexistent/acp.toml")).unwrap(),
-        AcpConfig::default()
+        (b["opencode"].command.as_str(), &b["opencode"].args[..]),
+        ("opencode", &["acp".to_string()][..])
     );
+    assert!(b["opencode"].elicitation_form);
+    assert!(probe.contains("claude: [`${NM}/claude-agent-acp`]"));
+    assert_eq!(b["claude"].command, "claude-agent-acp");
+    assert!(b["claude"].args.is_empty());
+    assert_eq!(b["claude"].env_remove, ["CLAUDECODE"]);
+}
+
+#[test]
+fn on_path_finds_executables_in_path_and_by_absolute_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tmp();
+    let exe = d.join("tbx-fake-adapter");
+    let plain = d.join("tbx-not-exec");
+    std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+    std::fs::write(&plain, "x").unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(on_path(exe.to_str().unwrap()));
+    assert!(!on_path(plain.to_str().unwrap()));
+    assert!(!on_path(d.join("missing").to_str().unwrap()));
+    assert!(
+        !on_path(d.to_str().unwrap()),
+        "a directory is not a command"
+    );
+
+    // PATH is process-wide: this is the only test that changes it.
+    let old = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths: Vec<_> = std::env::split_paths(&old).collect();
+    paths.push(d.clone());
+    std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+    assert!(on_path("tbx-fake-adapter"));
+    assert!(!on_path("tbx-not-exec"));
+    assert!(!on_path("tbx-never-installed"));
+    std::env::set_var("PATH", old);
+}
+
+#[tokio::test]
+async fn an_adapter_installed_later_shows_up_and_a_missing_one_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tmp();
+    let cmd = d.join("tbx-late-adapter");
+    let config = AcpConfig {
+        max_sessions: 2,
+        builtin: false,
+        agents: HashMap::from([(
+            "late".to_string(),
+            AgentProfile {
+                command: cmd.display().to_string(),
+                args: vec![],
+                env: HashMap::new(),
+                env_remove: vec![],
+                elicitation_form: false,
+            },
+        )]),
+    };
+    let backend = AcpBackend::new(config);
+    assert!(backend.acp_agents().is_empty());
+    let e = backend
+        .create_with("x", None, d.to_str(), Some("late"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.to_string(), "That agent is not installed on this server");
+
+    std::fs::write(&cmd, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&cmd, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(backend.acp_agents(), ["late"]);
+}
+
+#[test]
+fn elicitation_is_advertised_only_when_the_profile_asks() {
+    let off = initialize_params(&initialize_request(false));
+    assert!(off["clientCapabilities"].get("elicitation").is_none());
+    let on = initialize_params(&initialize_request(true));
+    assert_eq!(on["clientCapabilities"]["elicitation"], json!({"form": {}}));
 }
 
 #[tokio::test]
@@ -692,16 +813,25 @@ async fn after_a_restart_sessions_come_back_by_resume_or_load_else_end() {
         b.backend.kill("s1").await.unwrap();
         a.backend.kill("s1").await.unwrap();
     }
-    // An agent that offers neither: the session is ended, not silently gone.
+    // An agent that offers neither: the session stays, failed with the reason, not silently gone and not "Done".
     let dir = tmp();
     let a = rig_with("", 2, dir.clone(), true);
     a.create("s1").await;
     let b = rig_with("", 2, dir.clone(), true);
     b.backend.restore().await;
-    assert_eq!(b.backend.status("s1"), Some(SessionStatus::Ended));
+    assert!(matches!(
+        b.backend.status("s1"),
+        Some(SessionStatus::Failed(_))
+    ));
     assert_eq!(b.backend.list().await.unwrap().len(), 1);
     assert!(b.backend.send_text("s1", "hi").await.is_err());
-    assert_eq!(last_state(&b, "s1"), Some(AgentState::Done));
+    assert_eq!(last_state(&b, "s1"), Some(AgentState::Error));
+    let info = view(&b, "s1").info.unwrap();
+    assert_eq!(info.status, "failed");
+    assert!(info
+        .status_text
+        .unwrap()
+        .contains("neither resume nor load"));
     a.backend.kill("s1").await.unwrap();
 }
 
@@ -937,6 +1067,260 @@ async fn a_restored_session_says_that_its_earlier_output_is_not_shown() {
     assert!(!bodies(&v)
         .iter()
         .any(|e| matches!(e, AcpBody::Message { text, .. } if text.contains("REPLAYED"))));
+    a.backend.kill("s1").await.unwrap();
+    b.backend.kill("s1").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_refused_session_new_tells_the_owner_to_log_in() {
+    let r = rig("authfail");
+    let e = r
+        .backend
+        .create_with("s1", None, r.dir.to_str(), Some("fake"))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        e,
+        "fake would not start: Authentication required. Log in to it on the server, then try again."
+    );
+    assert!(r.backend.list().await.unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Restore (step 3)
+// ---------------------------------------------------------------------------------------------------
+
+fn saved_file(dir: &Path) -> Vec<Value> {
+    serde_json::from_str(&std::fs::read_to_string(dir.join("sessions.json")).unwrap()).unwrap()
+}
+
+/// The hub reduces a closed turn with an error outcome to the Error state (the Failed attention item).
+fn is_error_turn(k: &EventKind) -> bool {
+    matches!(
+        k,
+        EventKind::State {
+            state: AgentState::Error
+        }
+    )
+}
+
+#[tokio::test]
+async fn over_the_cap_the_rest_wait_and_survive_a_second_save_and_restore() {
+    let dir = tmp();
+    let a = rig_with("resume", 2, dir.clone(), true);
+    a.create("a").await;
+    a.create("b").await;
+    // The server restarts with room for one.
+    let b = rig_with("resume", 1, dir.clone(), true);
+    b.backend.restore().await;
+    assert_eq!(b.backend.status("a"), Some(SessionStatus::Running));
+    assert!(matches!(
+        b.backend.status("b"),
+        Some(SessionStatus::Failed(_))
+    ));
+    let v = view(&b, "b").info.unwrap();
+    assert_eq!(v.status, "failed");
+    assert!(v.status_text.unwrap().contains("at most 1 agent sessions"));
+    // A second save keeps the waiting entry, with its id and a retry.
+    b.backend.save();
+    let file = saved_file(&dir);
+    assert_eq!(file.len(), 2, "{file:?}");
+    assert_eq!(file[1]["name"], "b");
+    assert_eq!(file[1]["retry"], true);
+    assert_eq!(file[1]["acp_id"], "acp-1");
+    // The next restore, with room, starts it.
+    let c = rig_with("resume", 2, dir.clone(), true);
+    c.backend.restore().await;
+    assert_eq!(c.backend.status("a"), Some(SessionStatus::Running));
+    assert_eq!(c.backend.status("b"), Some(SessionStatus::Running));
+    for n in ["a", "b"] {
+        b.backend.kill(n).await.ok();
+        c.backend.kill(n).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_failed_start_is_retried_at_the_next_restore_and_reports_an_error() {
+    let dir = tmp();
+    let a = rig_with("resume", 2, dir.clone(), true);
+    a.create("s1").await;
+    // This time the agent can neither resume nor load.
+    let b = rig_with("", 2, dir.clone(), true);
+    b.backend.restore().await;
+    assert_eq!(last_state(&b, "s1"), Some(AgentState::Error));
+    assert!(b.kinds("s1").iter().any(is_error_turn));
+    assert_eq!(saved_file(&dir)[0]["retry"], true);
+    // Closing it removes it from the file.
+    let again = rig_with("resume", 2, dir.clone(), true);
+    again.backend.restore().await;
+    assert_eq!(again.backend.status("s1"), Some(SessionStatus::Running));
+    assert_eq!(saved_file(&dir)[0]["reason"], Value::Null);
+    again.backend.kill("s1").await.unwrap();
+    assert!(saved_file(&dir).is_empty());
+}
+
+#[tokio::test]
+async fn an_invalid_directory_is_kept_with_a_reason_and_an_invalid_name_is_dropped() {
+    let dir = tmp();
+    let f =
+        |name: &str, d: &str| json!({"name": name, "agent": "fake", "dir": d, "acp_id": "acp-1"});
+    std::fs::write(
+        dir.join("sessions.json"),
+        json!([
+            f("bad-dir", "relative/path"),
+            f("a b", "/tmp"),
+            f("ok", dir.to_str().unwrap())
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let r = rig_with("resume", 3, dir.clone(), true);
+    r.backend.restore().await;
+    let names: Vec<_> = r
+        .backend
+        .list()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    assert_eq!(names, ["bad-dir", "ok"]);
+    let info = view(&r, "bad-dir").info.unwrap();
+    assert_eq!(info.status, "failed");
+    assert!(info.status_text.unwrap().contains("directory"));
+    let file = saved_file(&dir);
+    assert_eq!(file.len(), 2);
+    assert_eq!(file[0]["retry"], false);
+    // Not retried: a second restore leaves it as it was, and Close removes it.
+    let again = rig_with("resume", 3, dir.clone(), true);
+    again.backend.restore().await;
+    assert!(matches!(
+        again.backend.status("bad-dir"),
+        Some(SessionStatus::Failed(_))
+    ));
+    again.backend.kill("bad-dir").await.unwrap();
+    again.backend.kill("ok").await.unwrap();
+    r.backend.kill("ok").await.ok();
+}
+
+#[tokio::test]
+async fn a_create_during_restore_respects_the_cap_and_the_names() {
+    let dir = tmp();
+    let a = rig_with("resume", 2, dir.clone(), true);
+    a.create("s1").await;
+    a.create("s2").await;
+    let b = rig_with("resume", 2, dir.clone(), true);
+    let (_, checks) = tokio::join!(b.backend.restore(), async {
+        // The saved names are taken and the slots are spoken for while the starts run.
+        let same = b
+            .backend
+            .create_with("s1", None, b.dir.to_str(), Some("fake"))
+            .await
+            .unwrap_err()
+            .to_string();
+        let other = b
+            .backend
+            .create_with("s3", None, b.dir.to_str(), Some("fake"))
+            .await
+            .unwrap_err()
+            .to_string();
+        let send = b
+            .backend
+            .send_text("s1", "hi")
+            .await
+            .unwrap_err()
+            .to_string();
+        let shown = view(&b, "s1");
+        (
+            same,
+            other,
+            send,
+            bodies(&shown),
+            b.backend.list().await.unwrap().len(),
+        )
+    });
+    let (same, other, send, shown, listed) = checks;
+    assert!(same.contains("exists"), "{same}");
+    assert!(other.contains("At most 2"), "{other}");
+    assert!(send.contains("still being restored"), "{send}");
+    assert!(shown
+        .iter()
+        .any(|e| matches!(e, AcpBody::Notice { text, .. } if text.contains("Restoring"))));
+    assert_eq!(listed, 2);
+    // Done restoring: the slots are free of the placeholders and still counted by the running agents.
+    assert_eq!(b.backend.status("s1"), Some(SessionStatus::Running));
+    assert!(b
+        .backend
+        .create_with("s3", None, b.dir.to_str(), Some("fake"))
+        .await
+        .is_err());
+    for n in ["s1", "s2"] {
+        b.backend.kill(n).await.unwrap();
+        a.backend.kill(n).await.ok();
+    }
+    assert_eq!(*b.backend.starting.lock().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_turn_open_at_the_restart_is_said_once_and_raises_one_failure() {
+    let dir = tmp();
+    let a = rig_with("resume", 2, dir.clone(), true);
+    a.create("s1").await;
+    a.prompt("s1", "perm").await;
+    until("the open turn", || {
+        view(&a, "s1").info.map(|i| i.working).unwrap_or(false)
+    })
+    .await;
+    // Nothing saved it by hand: the file follows the turn.
+    assert_eq!(saved_file(&dir)[0]["turn_open"], true);
+    let b = rig_with("resume", 2, dir.clone(), true);
+    b.backend.restore().await;
+    assert_eq!(b.backend.status("s1"), Some(SessionStatus::Running));
+    assert!(bodies(&view(&b, "s1")).iter().any(|e| matches!(e,
+        AcpBody::Notice { level, text } if level == "error" && text.contains("interrupted the running turn"))));
+    assert_eq!(b.kinds("s1").iter().filter(|k| is_error_turn(k)).count(), 1);
+    assert_eq!(last_state(&b, "s1"), Some(AgentState::Error));
+    // The restored session is idle and nothing is open any more.
+    assert_eq!(saved_file(&dir)[0]["turn_open"], false);
+    b.backend.kill("s1").await.unwrap();
+    a.backend.kill("s1").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_restart_without_an_open_turn_says_nothing_of_one_and_an_old_file_loads() {
+    let dir = tmp();
+    // The file as it was before step 3: four fields only.
+    std::fs::write(
+        dir.join("sessions.json"),
+        json!([{"name": "s1", "agent": "fake", "dir": dir.to_str().unwrap(), "acp_id": "acp-1"}])
+            .to_string(),
+    )
+    .unwrap();
+    let r = rig_with("resume", 2, dir.clone(), true);
+    r.backend.restore().await;
+    assert_eq!(r.backend.status("s1"), Some(SessionStatus::Running));
+    assert!(!r.kinds("s1").iter().any(is_error_turn));
+    assert!(!bodies(&view(&r, "s1")).iter().any(|e| matches!(e,
+        AcpBody::Notice { text, .. } if text.contains("interrupted"))));
+    r.backend.kill("s1").await.unwrap();
+}
+
+#[tokio::test]
+async fn the_saved_turn_flag_follows_the_turn_so_a_finished_turn_is_not_called_interrupted() {
+    let dir = tmp();
+    let a = rig_with("resume", 2, dir.clone(), true);
+    a.create("s1").await;
+    assert_eq!(saved_file(&dir)[0]["turn_open"], false);
+    a.prompt("s1", "updates").await;
+    until("the turn", || {
+        last_state(&a, "s1") == Some(AgentState::Done)
+    })
+    .await;
+    assert_eq!(saved_file(&dir)[0]["turn_open"], false);
+    let b = rig_with("resume", 2, dir.clone(), true);
+    b.backend.restore().await;
+    assert!(!b.kinds("s1").iter().any(is_error_turn));
     a.backend.kill("s1").await.unwrap();
     b.backend.kill("s1").await.unwrap();
 }

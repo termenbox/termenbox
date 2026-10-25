@@ -176,7 +176,7 @@ async function runContext(browser, label) {
         await tap(bottom.locator('[data-destination=sessions]'));
         await tap(page.locator(`[role=tab][aria-label*="${session}"]`).first());
       } else {
-        await sidebar.locator(`[data-key$="/${session}"]`).click();
+        await sidebar.locator(`[data-key$="/${session}"], [data-key$=":${session}"]`).click();
       }
       await page.locator('.xterm-rows').waitFor();
     };

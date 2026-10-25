@@ -86,9 +86,15 @@ struct Args {
     )]
     client_url: String,
 
-    /// Session manager: `tmux` (built in), `auto` (tmux) or `command` (any CLI, see TERMENBOX_BACKEND_*).
+    /// Session manager: `tmux` (built in), `acp` (agents the server starts), `command` (any CLI, see
+    /// TERMENBOX_BACKEND_*), a comma list of them, or `auto` (tmux, plus acp when TERMENBOX_ACP=on).
     #[arg(long, env = "TERMENBOX_BACKEND", default_value = "auto")]
     backend: String,
+
+    /// `on` lets `auto` offer the built-in ACP agents that are installed; `off` (default) keeps `auto` at tmux, so session
+    /// ids stay bare (with two managers they are `tmux:<name>`). Off until the adapters' terms of use are settled (0137).
+    #[arg(long, env = "TERMENBOX_ACP", default_value = "off")]
+    acp: String,
 
     /// For `command`: a label shown in logs, e.g. zellij.
     #[arg(long, env = "TERMENBOX_BACKEND_NAME", default_value = "command")]
@@ -457,10 +463,26 @@ fn clean_server_name(raw: &str) -> String {
     }
 }
 
-/// `TERMENBOX_BACKEND`: one manager (`tmux`, `command`), a comma list of them, or `auto` (tmux).
-async fn resolve_backends(spec: &str, _mode: &RunMode) -> anyhow::Result<Vec<String>> {
+/// `TERMENBOX_ACP`: `on` or `off`, nothing else.
+fn parse_acp(v: &str) -> anyhow::Result<bool> {
+    match v {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        other => Err(anyhow::anyhow!(
+            "unknown TERMENBOX_ACP `{other}` (on or off)"
+        )),
+    }
+}
+
+/// `TERMENBOX_BACKEND`: one manager (`tmux`, `acp`, `command`), a comma list of them (taken as written), or `auto`
+/// (tmux, plus acp when `acp_on`). Registering acp is free: no child starts until a session is created.
+fn resolve_backends(spec: &str, acp_on: bool) -> anyhow::Result<Vec<String>> {
     let mut kinds: Vec<String> = if spec == "auto" {
-        vec!["tmux".to_string()]
+        let mut v = vec!["tmux".to_string()];
+        if acp_on {
+            v.push("acp".to_string());
+        }
+        v
     } else {
         spec.split(',')
             .map(|s| s.trim().to_string())
@@ -489,7 +511,7 @@ fn build_backend(
                 .with_events(env)
                 .with_event_prefix(prefix),
         )),
-        // ACP agents the server starts itself (decision 0111): only those in the owner's allowlist file.
+        // ACP agents the server starts itself (decision 0111): the built-ins and the owner's allowlist file.
         "acp" => {
             let config = acp::AcpConfig::load(&args.config_dir.join("acp-agents.toml"))?;
             let backend = Arc::new(
@@ -516,7 +538,7 @@ fn build_backend(
             )?))
         }
         other => Err(anyhow::anyhow!(
-            "unknown TERMENBOX_BACKEND `{other}` (tmux, command, acp or auto)"
+            "unknown TERMENBOX_BACKEND `{other}` (tmux, acp, command or auto)"
         )),
     }
 }
@@ -783,7 +805,7 @@ async fn main() -> anyhow::Result<()> {
             }
         });
     }
-    let kinds = resolve_backends(&args.backend, &mode).await?;
+    let kinds = resolve_backends(&args.backend, parse_acp(&args.acp)?)?;
     // With several managers every session id is `manager:name`; with one it stays the plain name.
     let prefix_of = |k: &str| {
         if kinds.len() > 1 {
@@ -1270,5 +1292,30 @@ mod udp_port_tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod backend_spec_tests {
+    use super::{parse_acp, resolve_backends};
+
+    #[test]
+    fn auto_adds_acp_unless_it_is_off_and_a_list_is_taken_as_written() {
+        assert_eq!(resolve_backends("auto", true).unwrap(), ["tmux", "acp"]);
+        assert_eq!(resolve_backends("auto", false).unwrap(), ["tmux"]);
+        assert_eq!(resolve_backends("tmux", true).unwrap(), ["tmux"]);
+        assert_eq!(
+            resolve_backends("command, acp", false).unwrap(),
+            ["command", "acp"]
+        );
+        assert!(resolve_backends("herdr", true).is_err());
+    }
+
+    #[test]
+    fn terminal_acp_is_on_or_off_and_anything_else_names_the_variable() {
+        assert!(parse_acp("on").unwrap());
+        assert!(!parse_acp("off").unwrap());
+        let e = parse_acp("yes").unwrap_err().to_string();
+        assert!(e.contains("TERMENBOX_ACP"), "{e}");
     }
 }
