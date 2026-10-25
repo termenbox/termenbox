@@ -58,7 +58,7 @@ export class ScriptedServer {
     switch (m.type) {
       case 'hello': this.send(ws, { type: 'challenge', nonce: 'nonce', server_id: 'one' }); break;
       case 'auth':
-        this.send(ws, { type: 'auth_ok', user: 'tester', server_name: 'one', version: '0.1.31', backends: ['tmux'], control_mode: true, prefix: 'C-b' });
+        this.send(ws, { type: 'auth_ok', protocol: 1, user: 'tester', server_name: 'one', version: '0.1.31', backends: ['tmux'], control_mode: true, prefix: 'C-b' });
         this.send(ws, { type: 'workspaces', workspaces: this.workspaces() });
         this.send(ws, this.snapshot());
         break;
