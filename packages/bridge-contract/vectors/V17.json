@@ -7,8 +7,7 @@
   ],
   "config": {
     "t_detach": 100,
-    "t_human": 100,
-    "t_token": 50
+    "t_human": 100
   },
   "session": {
     "session_id": "sess-17",

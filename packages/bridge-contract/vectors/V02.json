@@ -1,6 +1,6 @@
 {
   "id": "V02",
-  "title": "A re-attach with a tampered token is rejected and does not terminate",
+  "title": "A re-attach naming a history that is not a prefix is rejected and does not terminate",
   "covers": [
     "T7",
     "I4",
@@ -22,17 +22,14 @@
     {
       "do": "reattach",
       "error": true,
-      "token": "tampered",
-      "proof": "valid",
+      "prefix": "hash-mismatch",
       "then_cell": [
         "Det",
         "None"
       ]
     },
     {
-      "do": "reattach",
-      "token": "current",
-      "proof": "valid"
+      "do": "reattach"
     }
   ],
   "expect": {

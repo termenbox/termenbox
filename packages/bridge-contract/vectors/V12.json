@@ -3,6 +3,7 @@
   "title": "Human resolves while detached: queue drains only after resume (Rule D)",
   "covers": [
     "I13",
+    "I14",
     "rule D"
   ],
   "session": {
@@ -34,9 +35,7 @@
       ]
     },
     {
-      "do": "reattach",
-      "token": "current",
-      "proof": "valid"
+      "do": "reattach"
     }
   ],
   "expect": {
@@ -45,10 +44,9 @@
       "DETACHMENT",
       "RESUME_PREPARED",
       "HUMAN_PENDING",
-      "RESUME_PREPARED",
       "TOOL_CALL_QUEUED",
+      "TOOL_CALL_ANSWERED",
       "HUMAN_RESOLVED",
-      "RESUME_PREPARED",
       "RESUME_STARTED",
       "RESUME_VERIFIED",
       "TOOL_CALL_DRAINED"

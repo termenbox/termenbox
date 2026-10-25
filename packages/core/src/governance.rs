@@ -4,26 +4,17 @@
 //! (`Attachment x Human x Lifecycle`), and the bridge's committed events project onto the existing `Block`
 //! event of the reducer. Nothing here changes a wire shape (guardrail `protocol-core-stays-acp-v1`).
 //!
-//! The bridge keeps its log in an in-memory `Storage` (axiom A1 needs a durable one; see
-//! `docs/plans/bridge-contract-crate.md`) and is `!Send`: the server owns a governor on one task.
+//! The bridge keeps its log in an in-memory `MemStorage` (axiom A1 needs a durable `Storage`; see
+//! `docs/plans/bridge-contract-crate.md`). `Bridge` is `Send`, the governor holds one workspace's client.
 
-use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
 
 use bridge_contract::{
-    Attachment, Bridge, BridgeError, ClientKey, Clock, Config, Event, Human, Kind, SessionIdentity, Storage,
+    Attachment, Bridge, BridgeError, ClientKey, Clock, Config, Event, HmacVerifier, Human, Kind,
+    MemStorage, SessionIdentity, SystemClock,
 };
 
 use crate::events::EventKind;
-
-/// Wall clock in seconds since the epoch, the unit the bridge's timers use.
-struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now(&self) -> f64 {
-        SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
-    }
-}
 
 /// Where a workspace's client stands, as the bridge sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,18 +28,26 @@ pub enum Standing {
 pub struct Governor {
     bridge: Bridge,
     workspace: String,
+    key_id: String,
 }
 
 impl Governor {
-    /// Attaches `workspace` for `principal` with `scope`; `key_secret` stays with the server (I11).
+    /// Attaches `workspace` for `principal` with `scope`; the key registered here proves possession at
+    /// re-attach (I11). `HmacVerifier` is the crate's stand-in until a real signature scheme is plugged in.
     pub fn attach(
         workspace: &str,
         principal: &str,
         scope: &[&str],
         key: &ClientKey,
-        mac_key: &[u8],
     ) -> Result<Governor, BridgeError> {
-        Self::attach_with(workspace, principal, scope, key, mac_key, Rc::new(SystemClock), Config::default())
+        Self::attach_with(
+            workspace,
+            principal,
+            scope,
+            key,
+            Arc::new(SystemClock),
+            Config::default(),
+        )
     }
 
     pub fn attach_with(
@@ -56,11 +55,10 @@ impl Governor {
         principal: &str,
         scope: &[&str],
         key: &ClientKey,
-        mac_key: &[u8],
-        clock: Rc<dyn Clock>,
+        clock: Arc<dyn Clock>,
         cfg: Config,
     ) -> Result<Governor, BridgeError> {
-        let mut bridge = Bridge::new(Storage::new(mac_key), clock, cfg)?;
+        let mut bridge = Bridge::new(MemStorage::new(), clock, Arc::new(HmacVerifier), cfg)?;
         let id = SessionIdentity {
             session_id: workspace.to_string(),
             principal_id: principal.to_string(),
@@ -68,12 +66,17 @@ impl Governor {
             task_lineage: vec![],
         };
         bridge.attach(&id, key)?;
-        Ok(Governor { bridge, workspace: workspace.to_string() })
+        Ok(Governor {
+            bridge,
+            workspace: workspace.to_string(),
+            key_id: key.key_id.clone(),
+        })
     }
 
     /// The client's connection dropped (a detach, not a kill).
     pub fn client_disconnected(&mut self, reason: &str) -> Result<(), BridgeError> {
-        self.bridge.client_disconnect(&self.workspace, reason)
+        self.bridge
+            .client_disconnect(&self.workspace, Some(&self.key_id), reason)
     }
 
     /// The agent waits for the human.
@@ -85,7 +88,7 @@ impl Governor {
         self.bridge.human_resolve(&self.workspace)
     }
 
-    /// Evaluates the detach, human and token timers; call on a tick.
+    /// Evaluates the detach, human and call timers; call on a tick.
     pub fn tick(&mut self) -> Result<(), BridgeError> {
         self.bridge.tick(Some(&self.workspace))
     }
@@ -132,10 +135,17 @@ mod tests {
     use super::*;
     use bridge_contract::FakeClock;
 
-    fn governor(clock: Rc<FakeClock>) -> Governor {
+    fn governor(clock: Arc<FakeClock>) -> Governor {
         let key = ClientKey::new("k1", b"client-secret");
-        Governor::attach_with("ws1", "owner", &["read", "write"], &key, b"mac-key-0123456789", clock, Config::default())
-            .unwrap()
+        Governor::attach_with(
+            "ws1",
+            "owner",
+            &["read", "write"],
+            &key,
+            clock,
+            Config::default(),
+        )
+        .unwrap()
     }
 
     #[test]

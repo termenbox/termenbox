@@ -1,11 +1,11 @@
 {
   "id": "V20",
-  "title": "T_token greater than T_detach is a configuration error",
+  "title": "T_human greater than T_detach is a configuration error",
   "covers": [
-    "I9"
+    "TIMERS"
   ],
   "config": {
-    "t_token": 3600,
+    "t_human": 3600,
     "t_detach": 1800
   },
   "session": {

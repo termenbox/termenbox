@@ -7,7 +7,8 @@
     "recovery"
   ],
   "config": {
-    "t_human": 100
+    "t_human": 100,
+    "t_call": 100
   },
   "session": {
     "session_id": "sess-11",

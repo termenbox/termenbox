@@ -1,0 +1,46 @@
+{
+  "id": "V28",
+  "title": "Persistent profile: resume after six days away",
+  "covers": [
+    "E.5",
+    "L1"
+  ],
+  "config": {
+    "t_detach": 604800
+  },
+  "session": {
+    "session_id": "sess-28",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "advance",
+      "seconds": 518400
+    },
+    {
+      "do": "reattach"
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "RESUME_STARTED",
+      "RESUME_VERIFIED"
+    ],
+    "cell": [
+      "Att",
+      "None"
+    ],
+    "scope_version": 0
+  }
+}

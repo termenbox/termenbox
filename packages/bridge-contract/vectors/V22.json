@@ -1,0 +1,43 @@
+{
+  "id": "V22",
+  "title": "A second registered device joins an attached session",
+  "covers": [
+    "E.2",
+    "I15"
+  ],
+  "session": {
+    "session_id": "sess-22",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "add_client",
+      "client": "ck-2"
+    },
+    {
+      "do": "join",
+      "client": "ck-2"
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "CLIENT_ADDED",
+      "CLIENT_JOINED"
+    ],
+    "cell": [
+      "Att",
+      "None"
+    ],
+    "scope_version": 0,
+    "clients": [
+      "ck-1",
+      "ck-2"
+    ]
+  }
+}

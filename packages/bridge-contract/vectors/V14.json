@@ -36,9 +36,7 @@
       "seconds": 200
     },
     {
-      "do": "reattach",
-      "token": "current",
-      "proof": "valid"
+      "do": "reattach"
     }
   ],
   "expect": {
@@ -48,8 +46,8 @@
       "DETACHMENT",
       "RESUME_PREPARED",
       "TOOL_CALL_QUEUED",
+      "TOOL_CALL_ANSWERED",
       "HUMAN_RESOLVED",
-      "RESUME_PREPARED",
       "RESUME_STARTED",
       "RESUME_VERIFIED",
       "TOOL_CALL_EXPIRED"

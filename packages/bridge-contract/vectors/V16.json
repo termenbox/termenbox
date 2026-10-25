@@ -1,6 +1,6 @@
 {
   "id": "V16",
-  "title": "Re-issuing the token does not restart T_detach",
+  "title": "Later events do not restart T_detach",
   "covers": [
     "L1"
   ],
@@ -38,7 +38,6 @@
       "DETACHMENT",
       "RESUME_PREPARED",
       "HUMAN_PENDING",
-      "RESUME_PREPARED",
       "DETACH_TIMEOUT",
       "TERMINATION"
     ],

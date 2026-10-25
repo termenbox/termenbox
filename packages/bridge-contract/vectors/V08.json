@@ -1,6 +1,6 @@
 {
   "id": "V08",
-  "title": "A token without proof of possession is rejected",
+  "title": "A request without a valid signature is rejected",
   "covers": [
     "I11"
   ],
@@ -20,7 +20,6 @@
     {
       "do": "reattach",
       "error": true,
-      "token": "current",
       "proof": "invalid"
     }
   ],
@@ -37,7 +36,7 @@
     ],
     "scope_version": 0,
     "last_event_payload": {
-      "reason": "bad_proof"
+      "reason": "bad_signature"
     }
   }
 }

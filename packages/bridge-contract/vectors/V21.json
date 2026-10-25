@@ -1,0 +1,47 @@
+{
+  "id": "V21",
+  "title": "Resume after a scope change made while the client was away",
+  "covers": [
+    "E.1",
+    "I4",
+    "I10"
+  ],
+  "session": {
+    "session_id": "sess-21",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "narrow",
+      "scope": [
+        "read:docs"
+      ]
+    },
+    {
+      "do": "reattach"
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "AUTHORITY_NARROWED",
+      "RESUME_STARTED",
+      "RESUME_VERIFIED"
+    ],
+    "cell": [
+      "Att",
+      "None"
+    ],
+    "scope_version": 1
+  }
+}

@@ -1,8 +1,7 @@
 {
   "id": "V07",
-  "title": "A superseded token is rejected",
+  "title": "A nonce that was used once is never accepted again",
   "covers": [
-    "I4",
     "I11"
   ],
   "session": {
@@ -19,13 +18,20 @@
       "do": "disconnect"
     },
     {
-      "do": "escalate"
+      "do": "reattach",
+      "as": "n1"
+    },
+    {
+      "do": "disconnect"
     },
     {
       "do": "reattach",
       "error": true,
-      "token": "previous",
-      "proof": "valid"
+      "nonce": "n1",
+      "then_cell": [
+        "Det",
+        "None"
+      ]
     }
   ],
   "expect": {
@@ -33,17 +39,19 @@
       "ATTACHED",
       "DETACHMENT",
       "RESUME_PREPARED",
-      "HUMAN_PENDING",
+      "RESUME_STARTED",
+      "RESUME_VERIFIED",
+      "DETACHMENT",
       "RESUME_PREPARED",
       "RESUME_REJECTED"
     ],
     "cell": [
       "Det",
-      "Pend"
+      "None"
     ],
     "scope_version": 0,
     "last_event_payload": {
-      "reason": "superseded"
+      "reason": "nonce_used"
     }
   }
 }

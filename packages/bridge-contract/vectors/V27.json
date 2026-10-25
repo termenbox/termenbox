@@ -1,0 +1,43 @@
+{
+  "id": "V27",
+  "title": "A widening announced by the runtime is reported and a revert requested",
+  "covers": [
+    "E.4",
+    "I3"
+  ],
+  "session": {
+    "session_id": "sess-27",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "extend",
+      "source": "observed",
+      "scope": [
+        "read:docs",
+        "exec:shell",
+        "exec:sudo"
+      ]
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "AUTHORITY_EXTENSION_REJECTED"
+    ],
+    "cell": [
+      "Att",
+      "None"
+    ],
+    "scope_version": 0,
+    "reverts": 1,
+    "last_event_payload": {
+      "source": "observed"
+    }
+  }
+}

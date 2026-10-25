@@ -37,7 +37,6 @@
       "DETACHMENT",
       "RESUME_PREPARED",
       "HUMAN_PENDING",
-      "RESUME_PREPARED",
       "AUTHORITY_EXTENSION_REJECTED"
     ],
     "cell": [

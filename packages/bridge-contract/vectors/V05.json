@@ -1,6 +1,6 @@
 {
   "id": "V05",
-  "title": "Expired token terminates on authenticated re-attach",
+  "title": "An expired nonce is rejected and does not terminate; a fresh one resumes",
   "covers": [
     "T13",
     "I9"
@@ -19,14 +19,24 @@
       "do": "disconnect"
     },
     {
+      "do": "challenge",
+      "as": "n1"
+    },
+    {
       "do": "advance",
-      "seconds": 900
+      "seconds": 60
     },
     {
       "do": "reattach",
       "error": true,
-      "token": "current",
-      "proof": "valid"
+      "nonce": "n1",
+      "then_cell": [
+        "Det",
+        "None"
+      ]
+    },
+    {
+      "do": "reattach"
     }
   ],
   "expect": {
@@ -34,11 +44,13 @@
       "ATTACHED",
       "DETACHMENT",
       "RESUME_PREPARED",
-      "RESUME_TOKEN_EXPIRED",
-      "TERMINATION"
+      "RESUME_REJECTED",
+      "RESUME_STARTED",
+      "RESUME_VERIFIED"
     ],
     "cell": [
-      "Terminated"
+      "Att",
+      "None"
     ],
     "scope_version": 0
   }

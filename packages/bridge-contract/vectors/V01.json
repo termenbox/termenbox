@@ -26,9 +26,7 @@
       "do": "disconnect"
     },
     {
-      "do": "reattach",
-      "token": "current",
-      "proof": "valid"
+      "do": "reattach"
     }
   ],
   "expect": {
