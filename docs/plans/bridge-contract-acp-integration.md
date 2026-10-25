@@ -59,15 +59,17 @@ The proof authorises (control plane); `(epoch, rev)` replays data (0139). A vali
 
 ## 4. Decisions
 
-1. **`T_detach` = 7 days** (owner, 2026-10-25). With challenge-response there is no token TTL to couple to it. `T_human` defaults to `T_detach`, so a permission left unanswered does not end the session after 24 h. `T_call` (an open permission is answered `cancelled` after it) is shown to the owner in settings; default proposed 24 h, owner to confirm. Config: `TERMENBOX_GOV_DETACH`, `_HUMAN`, `_CALL`.
-2. **MAC key custody** (proposed, open): HKDF from the server's persisted signing key, label `termenbox.dev/bridge-mac/v1`; nothing new on disk. Amend `security-secrets-handling` to name the derivation.
-3. **Proof algorithm** (proposed, open): a `Verifier` trait in the crate (upstream E.7); Termenbox supplies ECDSA P-256 (`cert.rs`). Ed25519 is not the client key: WebCrypto Ed25519 needs Safari 17, the floor is 16.4 (0112).
-4. **Mode widening** (proposed, open): bypass modes only at first. The owner's `set_mode` is *enforced* (refused without a fresh grant); an agent's own mode update is *observed*: log `AUTHORITY_EXTENSION_REJECTED` and send `session/set_mode` back to the granted mode (upstream E.4).
+All four confirmed by the owner on 2026-10-25.
+
+1. **`T_detach` = 7 days** (owner, 2026-10-25). With challenge-response there is no token TTL to couple to it. `T_human` defaults to `T_detach`, so a permission left unanswered does not end the session after 24 h. `T_call` (an open permission is answered `cancelled` after it) is shown to the owner in settings; default 24 h (owner confirmed, 2026-10-25). Config: `TERMENBOX_GOV_DETACH`, `_HUMAN`, `_CALL`.
+2. **MAC key custody** (confirmed): HKDF from the server's persisted signing key, label `termenbox.dev/bridge-mac/v1`; nothing new on disk. Amend `security-secrets-handling` to name the derivation.
+3. **Proof algorithm** (confirmed): a `Verifier` trait in the crate (upstream E.7); Termenbox supplies ECDSA P-256 (`cert.rs`). Ed25519 is not the client key: WebCrypto Ed25519 needs Safari 17, the floor is 16.4 (0112).
+4. **Mode widening** (confirmed): bypass modes only at first. The owner's `set_mode` is *enforced* (refused without a fresh grant); an agent's own mode update is *observed*: log `AUTHORITY_EXTENSION_REJECTED` and send `session/set_mode` back to the granted mode (upstream E.4).
 
 ## 5. Steps
 
 ### 5.1 Upstream spec and crate changes — [ ]
-Class: implement (in the paper repo) · Needs: owner decisions 4.2-4.4 · Check: in the paper repo, `cd paper/supplementary && python3 -I run_vectors.py && (cd rust-bridge && cargo test)`
+Class: implement (in the paper repo) · Needs: none (decisions 4.2-4.4 confirmed) · Check: in the paper repo, `cd paper/supplementary && python3 -I run_vectors.py && (cd rust-bridge && cargo test)`
 Do: paper plan steps E.1-E.7 (mint-on-reconnect with prefix pinning, multiple clients, answer binding, coverage and I3 split, timer derivation, vectors/TLC/mutants, crate API: `Storage` trait, `Send + Sync`, `Verifier` trait). Then re-vendor here and update `VENDOR.md`.
 Done-when: the vendored crate passes the upstream vectors and exposes a `Send` bridge over a pluggable storage.
 
