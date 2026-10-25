@@ -1,0 +1,483 @@
+{
+  "updates": [
+    {
+      "sessionUpdate": "user_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "fix the build"
+      }
+    },
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "Looking at it."
+      }
+    },
+    {
+      "sessionUpdate": "agent_thought_chunk",
+      "content": {
+        "type": "text",
+        "text": "The lockfile is stale."
+      }
+    },
+    {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "t1",
+      "title": "Edit build.rs",
+      "kind": "edit",
+      "status": "in_progress",
+      "locations": [
+        {
+          "path": "/work/build.rs",
+          "line": 3
+        }
+      ],
+      "content": [
+        {
+          "type": "diff",
+          "path": "/work/build.rs",
+          "oldText": "a",
+          "newText": "b"
+        }
+      ]
+    },
+    {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "t1",
+      "status": "completed"
+    },
+    {
+      "sessionUpdate": "plan",
+      "entries": [
+        {
+          "content": "Read the log",
+          "priority": "high",
+          "status": "completed"
+        },
+        {
+          "content": "Fix it",
+          "priority": "medium",
+          "status": "in_progress"
+        }
+      ]
+    },
+    {
+      "sessionUpdate": "available_commands_update",
+      "availableCommands": [
+        {
+          "name": "compact",
+          "description": "Shrink the context"
+        }
+      ]
+    },
+    {
+      "sessionUpdate": "current_mode_update",
+      "currentModeId": "plan"
+    },
+    {
+      "sessionUpdate": "config_option_update",
+      "configOptions": [
+        {
+          "id": "model",
+          "name": "Model",
+          "type": "select",
+          "currentValue": "a",
+          "options": [
+            {
+              "value": "a",
+              "name": "A"
+            },
+            {
+              "value": "b",
+              "name": "B"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "sessionUpdate": "session_info_update",
+      "title": "Fix the build"
+    },
+    {
+      "sessionUpdate": "usage_update",
+      "used": 1200,
+      "size": 200000
+    },
+    {
+      "sessionUpdate": "notice",
+      "severity": "warning",
+      "title": "Rate limited",
+      "description": "Slowing down."
+    },
+    {
+      "sessionUpdate": "compaction_update",
+      "compactionId": "c1",
+      "status": "completed",
+      "summary": [
+        {
+          "type": "text",
+          "text": "Earlier work, summarised."
+        }
+      ]
+    },
+    {
+      "sessionUpdate": "compaction_summary_chunk",
+      "compactionId": "c1",
+      "content": {
+        "type": "text",
+        "text": "Earlier work"
+      }
+    }
+  ],
+  "view": {
+    "session": "w",
+    "epoch": 1,
+    "rev": 14,
+    "reset": true,
+    "first": 1,
+    "entries": [
+      {
+        "id": 1,
+        "rev": 3,
+        "kind": "message",
+        "text": "Looking at it."
+      },
+      {
+        "id": 2,
+        "rev": 6,
+        "kind": "thought",
+        "text": "The lockfile is stale."
+      },
+      {
+        "id": 3,
+        "rev": 8,
+        "kind": "tool",
+        "tool_id": "t1",
+        "title": "Edit build.rs",
+        "tool_kind": "edit",
+        "status": "completed",
+        "diffs": [
+          {
+            "path": "/work/build.rs",
+            "old_text": "a",
+            "new_text": "b"
+          }
+        ],
+        "locations": [
+          {
+            "path": "/work/build.rs",
+            "line": 3
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "rev": 9,
+        "kind": "plan",
+        "items": [
+          {
+            "text": "Read the log",
+            "status": "completed"
+          },
+          {
+            "text": "Fix it",
+            "status": "in_progress"
+          }
+        ]
+      }
+    ],
+    "info": {
+      "agent": "agent",
+      "dir": "/work",
+      "title": "Fix the build",
+      "status": "running",
+      "working": false,
+      "mode": "plan",
+      "commands": [
+        {
+          "name": "compact",
+          "description": "Shrink the context"
+        }
+      ],
+      "usage": {
+        "used": 1200,
+        "size": 200000
+      }
+    }
+  },
+  "per_kind": {
+    "user_message_chunk": {
+      "session": "w",
+      "epoch": 1,
+      "rev": 0,
+      "reset": true,
+      "first": 1,
+      "entries": [],
+      "info": {
+        "agent": "agent",
+        "dir": "/work",
+        "status": "running",
+        "working": false
+      }
+    },
+    "agent_message_chunk": {
+      "session": "w",
+      "epoch": 1,
+      "rev": 3,
+      "reset": true,
+      "first": 1,
+      "entries": [
+        {
+          "id": 1,
+          "rev": 3,
+          "kind": "message",
+          "text": "Looking at it."
+        }
+      ],
+      "info": {
+        "agent": "agent",
+        "dir": "/work",
+        "status": "running",
+        "working": false
+      }
+    },
+    "agent_thought_chunk": {
+      "session": "w",
+      "epoch": 1,
+      "rev": 3,
+      "reset": true,
+      "first": 1,
+      "entries": [
+        {
+          "id": 1,
+          "rev": 3,
+          "kind": "thought",
+          "text": "The lockfile is stale."
+        }
+      ],
+      "info": {
+        "agent": "agent",
+        "dir": "/work",
+        "status": "running",
+        "working": false
+      }
+    },
+    "tool_call": {
+      "session": "w",
+      "epoch": 1,
+      "rev": 1,
+      "reset": true,
+      "first": 1,
+      "entries": [
+        {
+          "id": 1,
+          "rev": 1,
+          "kind": "tool",
+          "tool_id": "t1",
+          "title": "Edit build.rs",
+          "tool_kind": "edit",
+          "status": "in_progress",
+          "diffs": [
+            {
+              "path": "/work/build.rs",
+              "old_text": "a",
+              "new_text": "b"
+            }
+          ],
+          "locations": [
+            {
+              "path": "/work/build.rs",
+              "line": 3
+            }
+          ]
+        }
+      ],
+      "info": {
+        "agent": "agent",
+        "dir": "/work",
+        "status": "running",
+        "working": false
+      }
+    },
+    "tool_call_update": {
+      "session": "w",
+      "epoch": 1,
+      "rev": 1,
+      "reset": true,
+      "first": 1,
+      "entries": [
+        {
+          "id": 1,
+          "rev": 1,
+          "kind": "tool",
+          "tool_id": "t1",
+          "title": "",
+          "tool_kind": "other",
+          "status": "completed"
+        }
+      ],
+      "info": {
+        "agent": "agent",
+        "dir": "/work",
+        "status": "running",
+        "working": false
+      }
+    },
+    "plan": {
+      "session": "w",
+      "epoch": 1,
+      "rev": 1,
+      "reset": true,
+      "first": 1,
+      "entries": [
+        {
+          "id": 1,
+          "rev": 1,
+          "kind": "plan",
+          "items": [
+            {
+              "text": "Read the log",
+              "status": "completed"
+            },
+            {
+              "text": "Fix it",
+              "status": "in_progress"
+            }
+          ]
+        }
+      ],
+      "info": {
+        "agent": "agent",
+        "dir": "/work",
+        "status": "running",
+        "working": false
+      }
+    },
+    "available_commands_update": {
+      "session": "w",
+      "epoch": 1,
+      "rev": 1,
+      "reset": true,
+      "first": 1,
+      "entries": [],
+      "info": {
+        "agent": "agent",
+        "dir": "/work",
+        "status": "running",
+        "working": false,
+        "commands": [
+          {
+            "name": "compact",
+            "description": "Shrink the context"
+          }
+        ]
+      }
+    },
+    "current_mode_update": {
+      "session": "w",
+      "epoch": 1,
+      "rev": 1,
+      "reset": true,
+      "first": 1,
+      "entries": [],
+      "info": {
+        "agent": "agent",
+        "dir": "/work",
+        "status": "running",
+        "working": false,
+        "mode": "plan"
+      }
+    },
+    "config_option_update": {
+      "session": "w",
+      "epoch": 1,
+      "rev": 1,
+      "reset": true,
+      "first": 1,
+      "entries": [],
+      "info": {
+        "agent": "agent",
+        "dir": "/work",
+        "status": "running",
+        "working": false
+      }
+    },
+    "session_info_update": {
+      "session": "w",
+      "epoch": 1,
+      "rev": 1,
+      "reset": true,
+      "first": 1,
+      "entries": [],
+      "info": {
+        "agent": "agent",
+        "dir": "/work",
+        "title": "Fix the build",
+        "status": "running",
+        "working": false
+      }
+    },
+    "usage_update": {
+      "session": "w",
+      "epoch": 1,
+      "rev": 1,
+      "reset": true,
+      "first": 1,
+      "entries": [],
+      "info": {
+        "agent": "agent",
+        "dir": "/work",
+        "status": "running",
+        "working": false,
+        "usage": {
+          "used": 1200,
+          "size": 200000
+        }
+      }
+    },
+    "notice": {
+      "session": "w",
+      "epoch": 1,
+      "rev": 0,
+      "reset": true,
+      "first": 1,
+      "entries": [],
+      "info": {
+        "agent": "agent",
+        "dir": "/work",
+        "status": "running",
+        "working": false
+      }
+    },
+    "compaction_update": {
+      "session": "w",
+      "epoch": 1,
+      "rev": 0,
+      "reset": true,
+      "first": 1,
+      "entries": [],
+      "info": {
+        "agent": "agent",
+        "dir": "/work",
+        "status": "running",
+        "working": false
+      }
+    },
+    "compaction_summary_chunk": {
+      "session": "w",
+      "epoch": 1,
+      "rev": 0,
+      "reset": true,
+      "first": 1,
+      "entries": [],
+      "info": {
+        "agent": "agent",
+        "dir": "/work",
+        "status": "running",
+        "working": false
+      }
+    }
+  }
+}
