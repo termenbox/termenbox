@@ -15,7 +15,7 @@ after work sessions; validated via `lint` on demand; queried via
 
 **Termenbox** — a web-based terminal for managing remote AI coding agents
 (Codex, Claude Code) from any mobile browser, with Mosh-level
-session persistence. No native apps. No subscriptions. Self-hosted.
+session persistence. Web-first, with optional native wrappers. No subscriptions. Self-hosted.
 
 ## Key Directories
 
@@ -31,6 +31,7 @@ packages/
   agent/           # termenbox-agent (parked; see issue #19)
   core/            # termenbox-core (Rust, shared protocol types)
   client/          # termenbox-client (Svelte 5, xterm.js WebGL)
+  native/          # termenbox-native (planned, R76: optional Capacitor iOS/Android + Electron desktop)
 ```
 
 ## Quick Commands
@@ -68,13 +69,14 @@ lint
 - **Auth**: GitHub OAuth; one owner per server, claimed with a one-time secret (DECISION-0053)
 - **Workspaces**: server owns tmux/PTY via a WorkspaceBackend trait (DECISION-0054); reconnect = re-attach
 - **Client**: Svelte 5 + xterm.js WebGL; hosted or self-hosted (DECISION-0052)
+- **Wrappers**: optional Capacitor (iOS/Android) + Electron (desktop); one Svelte build, PWA first-class (DECISION-0140)
 - **Deployment**: Docker image (ghcr.io), one command from the client; 512MB RAM, 1 vCPU (FACT-0001)
 - **Branches**: PRs target `develop`, the default branch; `master` moves only for a release (DECISION-0129)
 - **Plan**: docs/plans/termenbox-roadmap.md, tracked in GitHub issues
 
 ## Guardrail Highlights
 
-- No native apps (GUARDRAIL-no-native-apps)
+- Wrappers optional; the web client stays complete (GUARDRAIL-native-wrapper-keeps-web-parity)
 - No paid services (GUARDRAIL-no-paid-services)
 - 512MB RAM / 1 vCPU limit (GUARDRAIL-resource-constraints)
 - Secrets in memory only, never logged (GUARDRAIL-security-secrets-handling)

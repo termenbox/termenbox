@@ -84,6 +84,20 @@ jobs:
       - name: Typecheck the client (svelte-check)
         run: pnpm --filter termenbox-client run check
 
+      # Guardrail native-wrapper-keeps-web-parity: the PWA must not depend on a native wrapper. Native
+      # code lives in packages/native and reaches the shared client only through the capability adapter.
+      - name: Gate - the web client imports no native wrapper
+        run: |
+          if grep -rInE -e '@capacitor/' -e '@capacitor-community/' -e '@electron/' -e '@tauri-apps/' -e "from ['\"]electron['\"]" \
+            packages/client/src packages/client/vite.config.ts; then
+            echo "Native code belongs in packages/native (guardrail native-wrapper-keeps-web-parity)" >&2
+            exit 1
+          fi
+          if grep -nE '"(capacitor|@capacitor/[^"]+|electron|@electron/[^"]+|@tauri-apps/[^"]+)"[[:space:]]*:' packages/client/package.json; then
+            echo "The web client must not depend on a native wrapper (guardrail native-wrapper-keeps-web-parity)" >&2
+            exit 1
+          fi
+
       - run: pnpm --filter termenbox-client run build
 
       - run: pnpm --filter termenbox-client run test

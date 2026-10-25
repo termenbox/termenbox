@@ -144,3 +144,4 @@
 | 0136-a-workspace-exposes-its-agent-windows-over-acp-v1-plus-an-extension-registry | A workspace exposes its agent windows over one protocol, ACP v1 plus an extension registry, behind replaceable ports | product | active | Sergey Strebulaev | - |
 | 0138-a-workspace-holds-windows-and-a-session-is-an-agent-conversation | A workspace is the sandbox that holds windows; a session is one agent conversation (an ACP sessionId) | product | active | Sergey Strebulaev | - |
 | 0139-control-bytes-and-events-travel-on-separate-channels-and-events-replay-from-a-sequence-log | Control, terminal bytes and agent events travel on separate channels, and events replay from a sequence log | product | active | Sergey Strebulaev | - |
+| 0140-native-wrappers-are-optional-and-the-pwa-stays-first-class | Native wrappers are optional enhancements and the PWA stays the reference client | product | active | Sergey Strebulaev | - |
