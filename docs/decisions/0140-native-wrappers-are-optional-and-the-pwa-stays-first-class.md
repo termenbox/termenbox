@@ -17,7 +17,7 @@ tags: [platform, distribution, client, mobile, desktop, product]
 - **Mobile: Capacitor** for iOS and Android.
 - **Desktop: `@capacitor-community/electron`** for Windows, macOS and Linux, driven by the same Capacitor CLI, so one command family builds all five targets.
 - **Native is an enhancement.** Native push, background execution, camera/QR and biometrics may be added, but each one has a web fallback (Web Push, foreground sync, file/QR input, device key). The wrapper's chrome fixes (safe areas, back gesture, viewport, keyboard) are the only native work with no web counterpart, because the web already has the behaviour.
-- **Distribution.** Mobile ships through the App Store and Google Play; desktop ships signed installers. The store developer accounts are a **distribution cost**, not a runtime dependency: the PWA and self-hosted installs still need no paid service (`no-paid-services`, scope note). No subscription and no per-user fee is introduced.
+- **Distribution.** Mobile ships through the App Store and Google Play; desktop ships signed installers. `no-paid-services` is waived strictly for the cost of distribution through the Apple App Store and Google Play: paying for the Apple Developer Program and Google Play Console accounts, desktop code-signing certificates, and the supporting infrastructure needed to publish the wrappers in those stores is an accepted **distribution cost**. The exception covers that cost and nothing else — it is not a runtime dependency, introduces no subscription and no per-user fee, and the PWA and self-hosted installs still need no paid service.
 - **The server is untouched.** The Rust server and its install path stay as they are; a wrapper is a client, not a host.
 - **Guardrail.** `no-native-apps` is superseded by `native-wrapper-keeps-web-parity`: the web client stays complete, the shared client stays free of native imports, and every native enhancement has a web fallback.
 
@@ -39,7 +39,7 @@ The owner wants the product reachable as a home-screen and desktop app with nati
 ## Consequences
 
 - A new workspace `packages/native` holds the Capacitor projects, the Electron target and the capability adapter.
-- CI gains a gate that fails when `packages/client/src` imports a native module, replacing the old guardrail's `packages/client/` grep.
+- CI gains a gate (`scripts/check-native-parity.mjs`, added in its own PR) that fails when `packages/client` imports a native module or depends on one.
 - Signing keys, store credentials and provisioning profiles are release secrets and never logged (`security-secrets-handling`).
 - The web client keeps its own gates: the browser matrix (R36) and the real-device pass (U16) still decide whether the PWA is done. Wrapper checks are labelled per platform (`a-phone-check-names-its-platform`).
 - Decision 0005's "no native wrapper" rationale is superseded; its persistence layers still apply to the web client.

@@ -33,6 +33,10 @@ tags: [client, platform, distribution, parity]
 - A feature the browser physically cannot provide (for example, waking an evicted iOS tab) may be native-only in *delivery*, but its user-visible outcome must still be reachable on the web by another path (Web Push + foreground sync).
 
 ## Enforcement
-- CI: the client job's gate `the web client imports no native wrapper` fails on a native import in `packages/client/src` or `packages/client/vite.config.ts`, or a native package in `packages/client/package.json`.
+- CI (planned, own PR): `scripts/check-native-parity.mjs`, run in the client job, fails on a native import
+  or a native dependency in `packages/client`. It must cover `src`, `functions`, `public`, `installer` and
+  `e2e`, the vite config and `package.json`; fail when a covered path is missing rather than passing; and
+  match `@capacitor/core` and plugin shims, not only wrapper package names. Until that script lands, PR
+  review is the only enforcement of this rule.
 - CI (with R76): a wrapper job builds all five targets and runs the web parity suite; the PWA matrix (R36) stays green independently.
 - PR review: reject a feature that only appears in a wrapper, and reject a platform branch in shared client code.

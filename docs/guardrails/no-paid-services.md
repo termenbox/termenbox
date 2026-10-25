@@ -13,10 +13,12 @@ tags: [product, architecture, cost]
 ## Rule
 **MUST NOT** require any paid external service for core functionality.
 
-**Scope note (decision 0140).** Platform store developer accounts (Apple, Google) and desktop
-code-signing certificates are an accepted **distribution cost** for the optional native wrapper. They are
-not a runtime dependency: the PWA and self-hosted installs still need no paid service, and no
-subscription or per-user fee is introduced. Everything below still applies to the required stack.
+**Exception (decision 0140).** This guardrail does **not** apply to paying for developer accounts
+(Apple Developer Program, Google Play Console), desktop code-signing certificates, or the supporting
+infrastructure needed to publish the native wrappers in those stores. Those are a distribution cost of the
+optional wrapper, not a runtime dependency. Everything else in this guardrail stays in force: no paid runtime
+service, no paid API, no subscription and no per-user fee is introduced, and the PWA and self-hosted installs
+still need no paid service.
 
 ## Scope
 - No paid APIs (Pusher, Ably, Firebase, Supabase, etc.)
