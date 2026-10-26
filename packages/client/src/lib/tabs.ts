@@ -5,9 +5,9 @@ import type { HubWorkspace } from './hub';
 /** With server status, an open Attention item; otherwise (an older server) the raw state. */
 export const needsYou = (agent?: WorkspaceAgent) => agent?.serverStatus ? !!agent.attention : agent?.state === 'needs_input' || agent?.state === 'error';
 export const needsYouCount = (agents: AgentMap) => Object.values(agents).filter(needsYou).length;
-/** Only needs-you moves to the front; otherwise tabs mirror the servers' workspace order. */
-export function tabIds(workspaces: HubWorkspace[], agents: AgentMap): string[] {
-  return [...workspaces.filter(s => needsYou(agents[s.key])), ...workspaces.filter(s => !needsYou(agents[s.key]))].map(s => s.key);
+/** Tabs follow the user's own order of workspaces; what needs you shows in the count and the banner, not by moving a tab. */
+export function tabIds(workspaces: HubWorkspace[]): string[] {
+  return workspaces.map(s => s.key);
 }
 export function tabLabel(workspace: HubWorkspace, agent: WorkspaceAgent | undefined, serverCount: number, now: number): string {
   return [workspace.name, ...(serverCount > 1 ? [workspace.serverName] : []), agent ? chipFor(agent, now).label : 'No status'].join(' · ');

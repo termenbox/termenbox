@@ -100,7 +100,7 @@ await page.getByRole('combobox', { name: 'Search' }).waitFor();
 await page.keyboard.press('Escape');
 t.ok('the shortcut list opens from the palette and names the keys; Settings turns shortcuts off and on');
 
-// 7. The sidebar holds still under the pointer: press on a workspace, a status update arrives, nothing moves; release, then it re-sorts.
+// 7. The sidebar holds still under the pointer: press on a workspace, a status update arrives, nothing moves; release, and still nothing moves: the order is the user's, a state shows on the row.
 await t.api('setState', 'alpha', 'svc-9', 'idle');
 await page.waitForTimeout(2300);
 const rows = '[data-shell=sidebar] [data-key]';
@@ -117,7 +117,7 @@ await page.mouse.move(box.x + box.width + 400, box.y); // release away from the 
 await page.mouse.up();
 await page.waitForTimeout(300);
 const after = await t.rects(rows);
-t.check(JSON.stringify(after) !== JSON.stringify(before), 'the sidebar did not apply the held update after release');
+t.check(JSON.stringify(after) === JSON.stringify(before), 'a workspace that started to need you moved in the sidebar');
 t.ok('no control moves when a status update arrives while the pointer is down');
 
 if (!(await t.end())) failures.push('shell probe');

@@ -28,7 +28,7 @@
 
   let shown: WorkspaceInfo[] = [];
   $: {
-    order = frozen.order(workspaces.map(s => s.id), states, now);
+    order = frozen.order(workspaces.map(s => s.id), now);
     const cache = new Map([...shown, ...workspaces].map(s => [s.id, s]));
     shown = order.map(id => cache.get(id)).filter((s): s is WorkspaceInfo => !!s);
   }
