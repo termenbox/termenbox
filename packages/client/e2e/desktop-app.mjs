@@ -466,7 +466,7 @@ async function phone(shared) {
   t.check((await page.locator('[data-shell=bottom-bar] [data-destination=workspaces][aria-current=page]').count()) === 1, 'phone: Workspaces is not the current destination');
   t.check((await page.locator('.workspace-sheet').count()) === 0, 'phone: a tap on Workspaces opened a sheet');
   // In a terminal, Workspaces shows the same page, not a variant of it.
-  await page.locator('[data-workspace-groups] button').first().click();
+  await page.locator('[data-workspace-groups] button').filter({ has: page.locator('b') }).first().click();
   await page.locator('.xterm').first().waitFor();
   t.check((await page.locator('[data-workspace-groups]').count()) === 0, 'phone: the list stayed on screen over an open workspace');
   await page.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click();
