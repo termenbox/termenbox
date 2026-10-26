@@ -23,8 +23,8 @@ The server's identity is its ed25519 key and pinned DTLS fingerprint (0057). Add
 |---|---|---|
 | 0 | LAN candidates (also the answer where the router lacks NAT hairpin) | none |
 | 1 | Direct: public IPv4 or IPv6; UPnP/NAT-PMP/PCP opens the port on routers that allow it | none |
-| 2 | Hole punch: public STUN for discovery, the directory as mailbox, full ICE on the server | none; built only if measured to be worth it (0124) |
-| 3 | Relay: the quick-tunnel fallback (R33), carrying an inner end-to-end handshake pinned to the server key | none if bundled; deferred while it needs an account |
+| 2 | Hole punch: public STUN for discovery, a signaling Worker in the owner's Cloudflare account, full ICE on the server (0140) | `--setup-cloudflare` once; built ahead of the 0124 numbers |
+| 3 | Relay: the owner's Cloudflare Realtime TURN key (0140); the quick-tunnel fallback (R33) stays an alternative, carrying an inner end-to-end handshake pinned to the server key | the same `--setup-cloudflare`; R33 deferred while it needs an account |
 | 4 | Overlay (Tailscale, WireGuard): its address is just another candidate | the user's own install |
 
 Rungs 0, 1 and 4 need no new server transport. Rung 3 is deferred until a one-line setup exists. Until then a client away from a CGNAT server gets a diagnostic that names the missing relay and offers an overlay.
@@ -51,7 +51,8 @@ The directory, mailbox, STUN, relay and LAN are untrusted. Signaling messages ar
 
 ## Consequences
 
-- Amends 0057 (proposed there): optional STUN, and full ICE on the server if rung 2 is built.
+- Amends 0057 (accepted by 0140): optional STUN, and full ICE on the server for assisted sessions.
+- 0140 builds rungs 2 and 3 now, with signaling and TURN in the owner's account, and lifts the 0124 gate for the build (telemetry still follows).
 - Replaces the `termenbox://` link in the first draft: a custom scheme cannot be registered from a web manifest and does not work on iOS Safari (to confirm in the spike).
 - The R33 tunnel carries WebSocket over a provider's TLS; it needs the inner end-to-end handshake before it can claim 0057's "no tunnel provider can read the traffic".
 - Plan: R62.

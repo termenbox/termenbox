@@ -56,5 +56,6 @@
 | 0055 | A waiting question is pushed again on a ladder until it is answered anywhere, and a push opens its decision card | notifications, agents | active |
 | 0056 | The UX harness builds on existing Playwright pieces, and CI emulates a phone, it does not verify one | client, mobile, ux, ci | active |
 | 0057 | ACP's own extension rules and what the pinned schema crate covers, checked for the extension registry | agents, protocol, client | active |
+| 0058 | Cloudflare STUN is free and unlimited, Cloudflare TURN is free to 1,000 GB a month, and Google publishes no STUN terms | network, cloudflare, limits, transport | active |
 
 <!-- bootstrap-generated: true -->

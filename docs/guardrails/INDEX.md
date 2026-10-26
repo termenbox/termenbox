@@ -61,3 +61,4 @@ a-phone-check-names-its-platform,"A phone check names the platform it ran on, an
 | ux-hard-rules-block-the-pr-the-rest-is-advisory | The UX job fails a pull request on objective rule breaks only; trends, diffs and heuristic findings are advisory | 0135 | ux-acceptance-targets,a-phone-check-names-its-platform | active |
 | protocol-core-stays-acp-v1 | The protocol core stays ACP v1; extensions are namespaced, negotiated and ignorable | 0136 | 0111,0136 | active |
 | control-never-waits-behind-bulk | Control messages never wait behind bulk traffic | 0139 | 0096,0139 | active |
+| relay-credentials-are-owner-scoped-minted-after-auth-and-capped | Relay and signaling resources belong to the owner's account, credentials are minted only after authentication, and relayed bytes are capped | 0140 | 0140,0058 | active |
