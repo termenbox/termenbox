@@ -213,6 +213,7 @@ export class ServerHub {
         const result = applyEvents(e.agents, msg.events); e.agents = result.map;
         if (result.gap) connection.send({ type: 'agent_sync', after: syncRequest(e.agents) });
       }
+      if (msg.type === 'update_status') { e.updateAvailable = msg.available ?? ''; this.publishServers(); }
       if (msg.type === 'update_requested') { e.updating = true; this.publishServers(); }
       if (msg.type === 'error' && e.updating) { e.updating = false; this.publishServers(); }
       if (msg.type === 'candidates') void this.acceptBundle(e, msg.bundle, current);

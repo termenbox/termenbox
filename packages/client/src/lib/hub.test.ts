@@ -44,6 +44,17 @@ describe('ServerHub', () => {
     hub.updateServer('a'); c.emit({ type: 'error', message: 'Only the owner can update this server' });
     expect(get(hub.servers)[0].updating).toBe(false);
   });
+  it('learns of a newly recorded or cleared release without reconnecting', () => {
+    const { hub, connections } = setup(); hub.start([server('a')]);
+    const c = connections[0];
+    c.opts.onState('connected');
+    c.opts.onReady({ type: 'auth_ok', user: 'u', server_name: 'host', version: '0.1.53+abc' }, false);
+    expect(get(hub.servers)[0].updateAvailable).toBe('');
+    c.emit({ type: 'update_status', available: '0.1.54' });
+    expect(get(hub.servers)[0]).toMatchObject({ updateAvailable: '0.1.54', version: '0.1.53+abc' });
+    c.emit({ type: 'update_status', available: '' });
+    expect(get(hub.servers)[0].updateAvailable).toBe('');
+  });
   it('starts every saved server once, even if start or add is repeated', () => {
     const { hub, connections } = setup();
     hub.start([server('a'), server('b')]); hub.start([server('a'), server('b')]); hub.add(server('a'));

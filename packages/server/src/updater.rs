@@ -370,6 +370,9 @@ impl Updater<'_> {
             self.record_available(None)?;
             return Ok(Outcome::UpToDate);
         }
+        // Recorded before anything is downloaded, so the app's card is truthful between the check and the install
+        // (and after an install that failed); a successful install clears it.
+        self.record_available(Some(&manifest.version))?;
         if self.trigger == Trigger::Timer {
             let hold_back = if self.policy.mode == Mode::Notify {
                 Some("notify mode: the owner installs it")
@@ -385,7 +388,6 @@ impl Updater<'_> {
                 None
             };
             if let Some(reason) = hold_back {
-                self.record_available(Some(&manifest.version))?;
                 return Ok(Outcome::Available {
                     version: manifest.version,
                     reason,
@@ -1375,6 +1377,37 @@ mod tests {
             !w.dir.join("update-status.json").exists(),
             "nothing is pending any more"
         );
+    }
+
+    #[tokio::test]
+    async fn auto_records_the_release_it_is_about_to_install_and_clears_it_after() {
+        let Some(w) = world("0.2.0", false, b"new binary") else {
+            return;
+        };
+        // The new server does not run here: nothing is installed, and the release stays recorded.
+        let (f, broken) = (fake(&w), svc(&w, 1, false));
+        let u = with_policy(
+            updater(&w, &f, &broken, "0.1.36"),
+            Channel::Stable,
+            Mode::Auto,
+            Trigger::Timer,
+        );
+        assert!(u.run().await.is_err());
+        let status: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(w.dir.join("update-status.json")).unwrap())
+                .unwrap();
+        assert_eq!(status["available"], "0.2.0");
+        assert_eq!(std::fs::read(&w.binary).unwrap(), b"old binary");
+        // A later run installs it and nothing is pending any more.
+        let s = svc(&w, 1, true);
+        let u = with_policy(
+            updater(&w, &f, &s, "0.1.36"),
+            Channel::Stable,
+            Mode::Auto,
+            Trigger::Timer,
+        );
+        assert!(matches!(u.run().await.unwrap(), Outcome::Updated { .. }));
+        assert!(!w.dir.join("update-status.json").exists());
     }
 
     #[tokio::test]

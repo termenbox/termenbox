@@ -18,6 +18,8 @@ use crate::pty::Attachment;
 /// Clients ping every 5 s, so a minute of silence means the peer is gone.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// A streaming reply changes many times a second; a client that shows it gets one update per this long at most.
+/// How often a connection looks at `update-status.json` to tell its client when the recorded release changed.
+const UPDATE_POLL: Duration = Duration::from_secs(20);
 const ACP_BATCH: Duration = Duration::from_millis(120);
 /// The longest prompt a client may send (the backend caps it again).
 const ACP_PROMPT_BYTES: usize = 16 * 1024;
@@ -282,6 +284,9 @@ impl WorkspaceManager {
         acp_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut event_tick = tokio::time::interval(ACP_BATCH);
         event_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut update_tick = tokio::time::interval(UPDATE_POLL);
+        update_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut update_sent = self.update_available();
         // None once the collector is gone: the arm below then waits for ever instead of spinning on a closed channel.
         let mut health_rx = self.health.as_ref().map(|h| h.subscribe());
         if let Some(u) = self.health.as_ref().and_then(|h| h.latest()) {
@@ -422,6 +427,11 @@ impl WorkspaceManager {
                         // Behind by a few samples: the next one carries the same story.
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => health_rx = None,
+                    }
+                }
+                _ = update_tick.tick() => {
+                    if let Some(msg) = update_change(&mut update_sent, self.update_available()) {
+                        if !send(&link.tx, &msg).await { break; }
                     }
                 }
                 _ = &mut idle => {
@@ -1167,6 +1177,15 @@ async fn next_status(
         Err(RecvError::Lagged(_)) => None,
         Err(RecvError::Closed) => std::future::pending().await,
     }
+}
+
+/// The `update_status` message owed to a client when the recorded release differs from the one it was last told.
+fn update_change(sent: &mut String, now: String) -> Option<ServerMessage> {
+    if *sent == now {
+        return None;
+    }
+    sent.clone_from(&now);
+    Some(ServerMessage::UpdateStatus { available: now })
 }
 
 fn status_message(c: crate::events::StatusChange) -> ServerMessage {
@@ -2035,6 +2054,30 @@ mod scrollback_tests {
         let text = "x".repeat(SCROLLBACK_PART);
         let msg = &scrollback_parts("workspace-with-a-long-name", &text)[0];
         assert!(serde_json::to_string(msg).unwrap().len() < 64 * 1024);
+    }
+}
+
+#[cfg(test)]
+mod update_change_tests {
+    use super::*;
+
+    #[test]
+    fn a_connection_is_told_once_when_the_recorded_release_changes_or_clears() {
+        let mut sent = String::new();
+        assert_eq!(update_change(&mut sent, String::new()), None);
+        assert_eq!(
+            update_change(&mut sent, "0.1.54".into()),
+            Some(ServerMessage::UpdateStatus {
+                available: "0.1.54".into()
+            })
+        );
+        assert_eq!(update_change(&mut sent, "0.1.54".into()), None);
+        assert_eq!(
+            update_change(&mut sent, String::new()),
+            Some(ServerMessage::UpdateStatus {
+                available: String::new()
+            })
+        );
     }
 }
 
