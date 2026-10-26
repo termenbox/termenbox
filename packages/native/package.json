@@ -1,0 +1,12 @@
+{
+  "name": "termenbox-native",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@capacitor-community/electron": "5.0.1",
+    "@capacitor/core": "8.5.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.3"
+  }
+}
