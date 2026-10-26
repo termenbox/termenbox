@@ -36,9 +36,10 @@ async function sidebarAt(shared, width) {
   t.check((await toggle.getAttribute('aria-expanded')) === 'true', `${width}: Workspaces does not say the sidebar is open`);
   const controls = await toggle.getAttribute('aria-controls');
   t.check(controls === 'workspace-sidebar' && (await page.locator(`#${controls}`).count()) === 1, `${width}: Workspaces does not control the sidebar (${controls})`);
-  // The sidebar lists the workspaces, so the top session strip is not shown beside it; closing the sidebar brings the strip back.
+  // The session strip stays at the top whether the sidebar is open or closed.
   const strip = page.locator('header.topbar [role=tablist]');
-  t.check((await strip.count()) === 0, `${width}: the session strip is shown beside the sidebar`);
+  t.check((await strip.count()) === 1, `${width}: the session strip is missing beside the sidebar`);
+  t.check((await strip.getByRole('tab').count()) > 0, `${width}: the session strip beside the sidebar has no tabs`);
   let sizes = 0;
   await nextSize(t, 0, `${width} first `);
   await page.waitForTimeout(400);
@@ -50,7 +51,7 @@ async function sidebarAt(shared, width) {
   t.check((await side.count()) === 0, `${width}: Workspaces did not close the sidebar`);
   t.check((await toggle.getAttribute('aria-expanded')) === 'false' && !(await toggle.getAttribute('aria-controls')), `${width}: expanded state wrong while closed`);
   t.check((await page.locator('[data-shell=bottom-bar]').count()) === 1, `${width}: no destinations left while the sidebar is closed`);
-  t.check((await strip.count()) === 1, `${width}: the session strip did not come back with the sidebar closed`);
+  t.check((await strip.count()) === 1, `${width}: the session strip disappeared with the sidebar closed`);
   t.check((await t.overflow()) <= 0, `${width}: overflow with the sidebar closed`);
   const closed = await nextSize(t, sizes, `${width} closed `);
   t.check(closed.cols > first.cols, `${width}: the server got ${closed.cols} columns with the sidebar closed, not more than ${first.cols}`);
@@ -465,6 +466,11 @@ async function phone(shared) {
   await page.waitForTimeout(300);
   t.check((await page.locator('[data-shell=bottom-bar] [data-destination=workspaces][aria-current=page]').count()) === 1, 'phone: Workspaces is not the current destination');
   t.check((await page.locator('.workspace-sheet').count()) === 0, 'phone: a tap on Workspaces opened a sheet');
+  // The list itself carries the way to start one, not only the empty state.
+  const newButton = page.locator('[data-testid=workspaces-new]');
+  t.check((await newButton.count()) === 1 && (await newButton.isVisible()), 'phone: the Workspaces page has no New workspace button');
+  const newBox = await newButton.boundingBox();
+  t.check(!!newBox && newBox.height >= 44, `phone: the New workspace target is ${newBox?.height} px`);
   // In a terminal, Workspaces shows the same page, not a variant of it.
   await page.locator('[data-workspace-groups] button').filter({ has: page.locator('b') }).first().click();
   await page.locator('.xterm').first().waitFor();
