@@ -128,8 +128,10 @@ export async function startApp(shared, { viewport, deviceScaleFactor, storage = 
   }
   const page = await ctx.newPage();
   const errors = [];
-  page.on('pageerror', (e) => errors.push(String(e)));
-  page.on('console', (m) => { if (m.type() === 'error' && !/WebSocket|favicon|Navigated away from page|Viewport argument key "interactive-widget"/.test(m.text())) errors.push(m.text()); });
+  // Chromium's ResizeObserver loop notice is benign (the app drops it from its own report too) and only shows when two
+  // observers' callbacks land in one frame, which the width changes of the sidebar do.
+  page.on('pageerror', (e) => { if (!/ResizeObserver loop completed with undelivered notifications/.test(String(e))) errors.push(String(e)); });
+  page.on('console', (m) => { if (m.type() === 'error' && !/WebSocket|favicon|Navigated away from page|Viewport argument key "interactive-widget"|ResizeObserver loop completed with undelivered notifications/.test(m.text())) errors.push(m.text()); });
   await page.routeWebSocket(/127\.0\.0\.1:9\/ws/, (ws) => {
     server.sockets.add(ws);
     ws.onMessage((raw) => { try { server.handle(ws, JSON.parse(typeof raw === 'string' ? raw : raw.toString())); } catch { /* binary lane frames are not used here */ } });
