@@ -6,22 +6,27 @@
   "license": "MIT",
   "scripts": {
     "build:client": "pnpm --filter termenbox-client run build",
-    "sync": "cap sync",
-    "sync:android": "cap sync android",
+    "build:bridge": "node scripts/build-bridge.mjs",
+    "typecheck:bridge": "tsc -p bridge/tsconfig.json",
+    "sync": "node scripts/build-bridge.mjs && cap sync && node scripts/inject-bridge.mjs android ios",
+    "sync:android": "node scripts/build-bridge.mjs && cap sync android && node scripts/inject-bridge.mjs android",
     "sync:electron": "cap sync @capacitor-community/electron",
-    "sync:ios": "cap copy ios",
+    "sync:ios": "node scripts/build-bridge.mjs && cap sync ios && node scripts/inject-bridge.mjs ios",
     "open:android": "cap open android",
     "open:electron": "cap open @capacitor-community/electron",
     "open:ios": "cap open ios"
   },
   "dependencies": {
     "@capacitor-community/electron": "5.0.1",
+    "@capacitor-community/keep-awake": "8.0.1",
     "@capacitor/android": "8.5.3",
+    "@capacitor/app": "8.1.2",
     "@capacitor/core": "8.5.3",
     "@capacitor/ios": "8.5.3"
   },
   "devDependencies": {
     "@capacitor/cli": "8.5.3",
+    "esbuild": "^0.28.2",
     "typescript": "^5.0.0"
   }
 }

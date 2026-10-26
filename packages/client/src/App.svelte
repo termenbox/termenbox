@@ -34,6 +34,8 @@
   import { storedBundle } from './lib/paths';
   import { DeleteFailed, deleteMyData, registerServer, SIGN_IN_EXPIRED } from './lib/account';
   import { deviceKey, publicKeyB64, signChallenge, certExpiry, certUserId, avatarUrl } from './lib/device';
+  import { nativeHost } from './lib/platform';
+  import { setKeepAwake } from './lib/keepAwake';
   import AppShell from './AppShell.svelte';
   import AppFrame from './shell/AppFrame.svelte';
   import SettingsView from './shell/SettingsView.svelte';
@@ -385,6 +387,8 @@
   $: alertWaiting(waiting, { sound: $settings.alertSound, vibrate: $settings.alertVibrate });
   // Looking at a workspace clears its finished or failed item on the server; a question stays until it is answered.
   let pageVisible = typeof document === 'undefined' || document.visibilityState !== 'hidden';
+  // The wrapper holds the screen on while a connected workspace is on screen; the PWA uses the Screen Wake Lock API.
+  $: setKeepAwake(!!activeKey && !away && pageVisible && connState === 'connected');
   const acked = new Set<string>();
   function sendAttention(key: string, m: import('./lib/protocol').ClientMessage) {
     const s = hub.findWorkspace(key);
@@ -823,8 +827,17 @@
     };
     window.addEventListener('error', report);
     window.addEventListener('unhandledrejection', report);
+    // A wrapper reports the Android back gesture here; without a native back, the browser handles it.
+    const platform = nativeHost();
+    platform?.onBack(() => {
+      if (activeKey && !away) { showWorkspaceList(); return true; }
+      if (sheetHeight !== 'closed') { sheetHeight = 'closed'; return true; }
+      return false;
+    });
     return () => {
       clearInterval(clock);
+      platform?.onBack(null);
+      setKeepAwake(false);
       stopRouter(); stopAudioUnlock(); stopReplay();
       document.removeEventListener("visibilitychange", visible);
       vv?.removeEventListener('resize', kb);

@@ -29,6 +29,22 @@ normal WebRTC or WebSocket path.
 `appId` is `dev.termenbox.app` and must not change after the first store
 submission.
 
+## Native behavior
+
+The mobile wrappers run a small bridge: `bridge/mobile.ts` is bundled by esbuild and injected as
+`bridge.js` into the copied client build (`scripts/inject-bridge.mjs`). The client reads it as
+`globalThis.__termenboxPlatform`, so `packages/client` keeps no native import.
+
+- **Android back** returns from an open workspace to the workspace list, closes an open sheet, and
+  otherwise minimizes the app.
+- **Keep awake** holds the screen on while a workspace is open, connected and visible; it releases
+  when the user leaves or the app is backgrounded. The bridge uses
+  `@capacitor-community/keep-awake`; the PWA and the Electron build use the Screen Wake Lock API.
+
+Every mobile `sync:*` script (`sync`, `sync:android`, `sync:ios`) rebuilds and injects the bridge;
+`sync:electron` does not, because the desktop build uses the web Wake Lock path. Running `cap sync` by
+hand replaces the copied web assets and drops the injection, so use the scripts.
+
 ## Platform floors and security defaults
 
 The wrappers hold the same browser floor as the PWA (decision 0112): iOS 16.4
@@ -47,8 +63,10 @@ express it.
 ## Stack
 
 - `@capacitor/core`, `@capacitor/cli`, `@capacitor/ios`, `@capacitor/android` — **8.5.3**
+- `@capacitor/app` — **8.1.2**, `@capacitor-community/keep-awake` — **8.0.1**
 - `@capacitor-community/electron` — **5.0.1**
 - Electron — **45.0.0**, `electron-builder` — **26.18.0**
+- esbuild — **0.28.x**, for the bridge bundle only
 
 The pair was verified before the platform projects were committed; see R76. The
 community plugin's template still pins Electron 26, which is end of life, so the
@@ -65,10 +83,14 @@ Run from the repository root:
 # Build the shared client that every wrapper bundles
 pnpm --filter termenbox-native run build:client
 
-# Copy the build into each platform
+# Build and inject the mobile bridge (esbuild; also run by every sync:* script)
+pnpm --filter termenbox-native run build:bridge
+pnpm --filter termenbox-native run typecheck:bridge
+
+# Copy the build (and the bridge) into each platform
 pnpm --filter termenbox-native run sync:android
 pnpm --filter termenbox-native run sync:electron
-pnpm --filter termenbox-native run sync:ios    # copy only; a full sync needs macOS
+pnpm --filter termenbox-native run sync:ios
 
 # Open the platform project
 pnpm --filter termenbox-native run open:android
@@ -76,8 +98,8 @@ pnpm --filter termenbox-native run open:electron
 pnpm --filter termenbox-native run open:ios
 ```
 
-`sync` runs `cap sync` for every configured platform and therefore needs macOS
-for the iOS step. On Linux or Windows use the per-platform scripts.
+`sync` runs `cap sync` for every configured platform and injects the bridge into the mobile
+targets. Syncing works on any host; building a target still needs its own host from the table above.
 
 The Electron project installs its own dependencies and is not part of the pnpm
 workspace, so a normal `pnpm install` does not download an Electron binary:
@@ -94,10 +116,10 @@ Aligning it with the workspace is a later slice.
 
 ## Not here yet
 
-The capability adapter in `packages/client`, native push, camera/QR, biometrics,
-background execution, signing, store metadata and the `native` CI job are later
-R76 slices. The wrapper currently shows the web client with the platform chrome
-only.
+The full capability adapter, native push, camera/QR, biometrics, background
+execution, signing, store metadata and the `native` CI job are later R76 slices.
+The wrapper currently runs the web client with the platform chrome, Android back
+and keep-awake.
 
 See `docs/plans/roadmap/R76.md`,
 `docs/decisions/0140-native-wrappers-are-optional-and-the-pwa-stays-first-class.md`
