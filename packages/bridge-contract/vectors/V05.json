@@ -1,0 +1,57 @@
+{
+  "id": "V05",
+  "title": "An expired nonce is rejected and does not terminate; a fresh one resumes",
+  "covers": [
+    "T13",
+    "I9"
+  ],
+  "session": {
+    "session_id": "sess-05",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "challenge",
+      "as": "n1"
+    },
+    {
+      "do": "advance",
+      "seconds": 60
+    },
+    {
+      "do": "reattach",
+      "error": true,
+      "nonce": "n1",
+      "then_cell": [
+        "Det",
+        "None"
+      ]
+    },
+    {
+      "do": "reattach"
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "RESUME_REJECTED",
+      "RESUME_STARTED",
+      "RESUME_VERIFIED"
+    ],
+    "cell": [
+      "Att",
+      "None"
+    ],
+    "scope_version": 0
+  }
+}

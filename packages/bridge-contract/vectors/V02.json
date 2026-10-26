@@ -1,0 +1,50 @@
+{
+  "id": "V02",
+  "title": "A re-attach naming a history that is not a prefix is rejected and does not terminate",
+  "covers": [
+    "T7",
+    "I4",
+    "I11"
+  ],
+  "session": {
+    "session_id": "sess-02",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "reattach",
+      "error": true,
+      "prefix": "hash-mismatch",
+      "then_cell": [
+        "Det",
+        "None"
+      ]
+    },
+    {
+      "do": "reattach"
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "RESUME_REJECTED",
+      "RESUME_STARTED",
+      "RESUME_VERIFIED"
+    ],
+    "cell": [
+      "Att",
+      "None"
+    ],
+    "scope_version": 0
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "id": "V23",
+  "title": "Only the last departure detaches; the added device resumes",
+  "covers": [
+    "E.2",
+    "I1",
+    "I15"
+  ],
+  "config": {
+    "t_detach": 1800
+  },
+  "session": {
+    "session_id": "sess-23",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "add_client",
+      "client": "ck-2"
+    },
+    {
+      "do": "join",
+      "client": "ck-2"
+    },
+    {
+      "do": "disconnect",
+      "client": "ck-1",
+      "then_cell": [
+        "Att",
+        "None"
+      ]
+    },
+    {
+      "do": "advance",
+      "seconds": 100000
+    },
+    {
+      "do": "disconnect",
+      "client": "ck-2",
+      "then_cell": [
+        "Det",
+        "None"
+      ]
+    },
+    {
+      "do": "reattach",
+      "client": "ck-2"
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "CLIENT_ADDED",
+      "CLIENT_JOINED",
+      "CLIENT_LEFT",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "RESUME_STARTED",
+      "RESUME_VERIFIED"
+    ],
+    "cell": [
+      "Att",
+      "None"
+    ],
+    "scope_version": 0,
+    "clients": [
+      "ck-2"
+    ]
+  }
+}

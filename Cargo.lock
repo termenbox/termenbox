@@ -330,6 +330,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bridge-contract"
+version = "0.5.0"
+dependencies = [
+ "getrandom 0.2.17",
+ "hex",
+ "hmac",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "bs58"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2894,6 +2905,7 @@ name = "termenbox-core"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "bridge-contract",
  "ed25519-dalek",
  "serde",
  "serde_json",

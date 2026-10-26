@@ -1,0 +1,47 @@
+{
+  "id": "V03",
+  "title": "RESUME_VERIFIED marks Res to Att, not entry to Res",
+  "covers": [
+    "T11",
+    "I7"
+  ],
+  "session": {
+    "session_id": "sess-03",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "reattach",
+      "complete": false,
+      "then_cell": [
+        "Res",
+        "None"
+      ]
+    },
+    {
+      "do": "complete_resume"
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "RESUME_STARTED",
+      "RESUME_VERIFIED"
+    ],
+    "cell": [
+      "Att",
+      "None"
+    ],
+    "scope_version": 0
+  }
+}

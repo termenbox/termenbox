@@ -1,0 +1,62 @@
+{
+  "id": "V13",
+  "title": "Queue limit and idempotency keys",
+  "covers": [
+    "I13"
+  ],
+  "config": {
+    "q_max": 2
+  },
+  "session": {
+    "session_id": "sess-13",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "escalate"
+    },
+    {
+      "do": "tool_call",
+      "key": "k1",
+      "tool": "a"
+    },
+    {
+      "do": "tool_call",
+      "key": "k1",
+      "tool": "a"
+    },
+    {
+      "do": "tool_call",
+      "key": "k2",
+      "tool": "b"
+    },
+    {
+      "do": "tool_call",
+      "key": "k3",
+      "tool": "c"
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "HUMAN_PENDING",
+      "TOOL_CALL_QUEUED",
+      "TOOL_CALL_QUEUED",
+      "TOOL_CALL_REJECTED"
+    ],
+    "cell": [
+      "Att",
+      "Pend"
+    ],
+    "scope_version": 0,
+    "queue": [
+      "k1",
+      "k2"
+    ]
+  }
+}

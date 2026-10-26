@@ -1,0 +1,43 @@
+{
+  "id": "V24",
+  "title": "A key that was never registered cannot resume",
+  "covers": [
+    "E.2",
+    "I15"
+  ],
+  "session": {
+    "session_id": "sess-24",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "reattach",
+      "client": "ck-9",
+      "error": true
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "RESUME_REJECTED"
+    ],
+    "cell": [
+      "Det",
+      "None"
+    ],
+    "scope_version": 0,
+    "last_event_payload": {
+      "reason": "unknown_key"
+    }
+  }
+}

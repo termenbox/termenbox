@@ -1,0 +1,57 @@
+{
+  "id": "V07",
+  "title": "A nonce that was used once is never accepted again",
+  "covers": [
+    "I11"
+  ],
+  "session": {
+    "session_id": "sess-07",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "reattach",
+      "as": "n1"
+    },
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "reattach",
+      "error": true,
+      "nonce": "n1",
+      "then_cell": [
+        "Det",
+        "None"
+      ]
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "RESUME_STARTED",
+      "RESUME_VERIFIED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "RESUME_REJECTED"
+    ],
+    "cell": [
+      "Det",
+      "None"
+    ],
+    "scope_version": 0,
+    "last_event_payload": {
+      "reason": "nonce_used"
+    }
+  }
+}

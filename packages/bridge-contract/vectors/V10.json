@@ -1,0 +1,57 @@
+{
+  "id": "V10",
+  "title": "Restart recovers a pending session as detached, then it resumes",
+  "covers": [
+    "I12",
+    "recovery"
+  ],
+  "session": {
+    "session_id": "sess-10",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "escalate"
+    },
+    {
+      "do": "tool_call",
+      "key": "k1",
+      "tool": "shell:ls"
+    },
+    {
+      "do": "restart",
+      "then_cell": [
+        "Det",
+        "Pend"
+      ]
+    },
+    {
+      "do": "reattach"
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "HUMAN_PENDING",
+      "TOOL_CALL_QUEUED",
+      "BRIDGE_RECOVERED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "RESUME_STARTED",
+      "RESUME_VERIFIED"
+    ],
+    "cell": [
+      "Att",
+      "Pend"
+    ],
+    "scope_version": 0,
+    "queue": [
+      "k1"
+    ]
+  }
+}

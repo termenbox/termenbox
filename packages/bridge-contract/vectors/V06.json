@@ -1,0 +1,50 @@
+{
+  "id": "V06",
+  "title": "Scope versioning; narrowing only",
+  "covers": [
+    "T14",
+    "I3",
+    "I10"
+  ],
+  "session": {
+    "session_id": "sess-06",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "narrow",
+      "scope": [
+        "read:docs"
+      ]
+    },
+    {
+      "do": "narrow",
+      "scope": []
+    },
+    {
+      "do": "narrow",
+      "error": true,
+      "scope": [
+        "read:docs"
+      ]
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "AUTHORITY_NARROWED",
+      "AUTHORITY_NARROWED",
+      "AUTHORITY_EXTENSION_REJECTED"
+    ],
+    "cell": [
+      "Att",
+      "None"
+    ],
+    "scope_version": 2
+  }
+}

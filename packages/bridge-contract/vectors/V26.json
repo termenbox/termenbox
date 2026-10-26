@@ -1,0 +1,59 @@
+{
+  "id": "V26",
+  "title": "A second answer to the same call is refused",
+  "covers": [
+    "E.3",
+    "I14"
+  ],
+  "session": {
+    "session_id": "sess-26",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "escalate"
+    },
+    {
+      "do": "tool_call",
+      "key": "k1",
+      "tool": "shell:ls"
+    },
+    {
+      "do": "answer",
+      "key": "k1"
+    },
+    {
+      "do": "answer",
+      "key": "k1",
+      "approve": false,
+      "error": true
+    },
+    {
+      "do": "resolve"
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "HUMAN_PENDING",
+      "TOOL_CALL_QUEUED",
+      "TOOL_CALL_ANSWERED",
+      "HUMAN_RESOLVED",
+      "TOOL_CALL_DRAINED"
+    ],
+    "cell": [
+      "Att",
+      "None"
+    ],
+    "scope_version": 0,
+    "queue": [],
+    "forwarded": [
+      "k1"
+    ]
+  }
+}

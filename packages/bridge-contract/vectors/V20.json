@@ -1,0 +1,24 @@
+{
+  "id": "V20",
+  "title": "T_human greater than T_detach is a configuration error",
+  "covers": [
+    "TIMERS"
+  ],
+  "config": {
+    "t_human": 3600,
+    "t_detach": 1800
+  },
+  "session": {
+    "session_id": "sess-20",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [],
+  "expect": {
+    "config_error": true
+  }
+}
