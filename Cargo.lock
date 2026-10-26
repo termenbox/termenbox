@@ -2914,7 +2914,7 @@ dependencies = [
 
 [[package]]
 name = "termenbox-server"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "aes-gcm",
  "agent-client-protocol-schema",
