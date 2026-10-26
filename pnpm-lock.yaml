@@ -6,6 +6,15 @@ settings:
 
 importers:
 
+  infra/owner-relay:
+    devDependencies:
+      esbuild:
+        specifier: 0.21.5
+        version: 0.21.5
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@26.6.4)(lightningcss@1.32.0)
+
   packages/client:
     dependencies:
       bits-ui:
