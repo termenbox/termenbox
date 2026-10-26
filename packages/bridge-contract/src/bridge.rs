@@ -89,7 +89,11 @@ type Item = (Kind, Value);
 
 fn strs(v: &Value) -> Vec<String> {
     v.as_array()
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -156,7 +160,11 @@ impl Bridge {
                     conn: BTreeSet::from([key]),
                     resuming: None,
                     resume_from: 0,
-                    cell: Cell { att: Attachment::Att, human: Human::None, life: Life::Active },
+                    cell: Cell {
+                        att: Attachment::Att,
+                        human: Human::None,
+                        life: Life::Active,
+                    },
                     detach_deadline: None,
                     human_deadline: None,
                     record: None,
@@ -168,7 +176,9 @@ impl Bridge {
             return;
         }
         let (t_detach, t_human) = (self.cfg.t_detach, self.cfg.t_human);
-        let Some(s) = self.sessions.get_mut(&ev.session_id) else { return };
+        let Some(s) = self.sessions.get_mut(&ev.session_id) else {
+            return;
+        };
         let key_id = p["key_id"].as_str().unwrap_or("").to_string();
         match ev.kind {
             Kind::CLIENT_ADDED => {
@@ -270,23 +280,40 @@ impl Bridge {
 
     /// CLIENT_ADDED: a connected client authorises a further key for the
     /// same principal (I15d). `material` is what the [`Verifier`] needs.
-    pub fn add_client_key(&mut self, sid: &str, via_key_id: &str, new_key_id: &str, material: &[u8]) -> Result<()> {
+    pub fn add_client_key(
+        &mut self,
+        sid: &str,
+        via_key_id: &str,
+        new_key_id: &str,
+        material: &[u8],
+    ) -> Result<()> {
         let s = self.enter(sid)?;
         if !s.conn.contains(via_key_id) {
-            return Err(BridgeError::new("client key registration needs a connected client (I15)"));
+            return Err(BridgeError::new(
+                "client key registration needs a connected client (I15)",
+            ));
         }
         if s.keys.contains(new_key_id) {
             return Err(BridgeError::new("client key already registered"));
         }
         self.storage.register_key(new_key_id, material)?;
-        self.commit(sid, vec![(Kind::CLIENT_ADDED, json!({"key_id": new_key_id, "via": via_key_id}))])?;
+        self.commit(
+            sid,
+            vec![(
+                Kind::CLIENT_ADDED,
+                json!({"key_id": new_key_id, "via": via_key_id}),
+            )],
+        )?;
         Ok(())
     }
 
     /// Known, not terminated (I6); timers evaluated first.
     fn enter(&mut self, sid: &str) -> Result<Session> {
         let terminated = |b: &Bridge| {
-            b.sessions.get(sid).map(|s| s.cell.life == Life::Terminated).unwrap_or(false)
+            b.sessions
+                .get(sid)
+                .map(|s| s.cell.life == Life::Terminated)
+                .unwrap_or(false)
         };
         if !self.sessions.contains_key(sid) {
             return Err(BridgeError::new(format!("unknown session {sid}")));
@@ -343,7 +370,11 @@ impl Bridge {
             return Ok(ToolOutcome::Queued);
         }
         if s.cell.att == Attachment::Att {
-            self.forwarded.push((sid.to_string(), key.unwrap_or("").to_string(), tool.to_string()));
+            self.forwarded.push((
+                sid.to_string(),
+                key.unwrap_or("").to_string(),
+                tool.to_string(),
+            ));
             return Ok(ToolOutcome::Forwarded);
         }
         Err(BridgeError::new("tool call not allowed in this cell"))
@@ -361,15 +392,28 @@ impl Bridge {
 
     /// Keys of queued calls that have no answer yet.
     pub fn unanswered_keys(&self, sid: &str) -> Vec<String> {
-        self.sessions[sid].queue.iter().filter(|c| c.answer.is_none()).map(|c| c.key.clone()).collect()
+        self.sessions[sid]
+            .queue
+            .iter()
+            .filter(|c| c.answer.is_none())
+            .map(|c| c.key.clone())
+            .collect()
     }
 
     /// TOOL_CALL_ANSWERED: the human's decision on a queued call, with the
     /// hash of what the client displayed (I14). The first answer is final.
-    pub fn answer_tool_call(&mut self, sid: &str, key: &str, shown_hash: &str, approve: bool) -> Result<()> {
+    pub fn answer_tool_call(
+        &mut self,
+        sid: &str,
+        key: &str,
+        shown_hash: &str,
+        approve: bool,
+    ) -> Result<()> {
         let s = self.enter(sid)?;
         let Some(entry) = s.queue.iter().find(|c| c.key == key) else {
-            return Err(BridgeError::new(format!("no queued call {key:?} to answer")));
+            return Err(BridgeError::new(format!(
+                "no queued call {key:?} to answer"
+            )));
         };
         if entry.answer.is_some() {
             return Err(BridgeError::new("call already answered (I14)"));
@@ -440,8 +484,11 @@ impl Bridge {
 
     /// RESUME_PREPARED: the bridge's own resume record, once per detachment (I1).
     fn prepared(&self, s: &Session, reason: &str) -> Item {
-        let calls: Vec<Value> =
-            s.queue.iter().map(|c| json!({"key": c.key, "call": c.tool})).collect();
+        let calls: Vec<Value> = s
+            .queue
+            .iter()
+            .map(|c| json!({"key": c.key, "call": c.tool}))
+            .collect();
         (
             Kind::RESUME_PREPARED,
             json!({
@@ -456,7 +503,12 @@ impl Bridge {
 
     /// Transport loss of one client (`key_id`) or of every connected client
     /// (`None`). Only the last departure detaches (I15b).
-    pub fn client_disconnect(&mut self, sid: &str, key_id: Option<&str>, reason: &str) -> Result<()> {
+    pub fn client_disconnect(
+        &mut self,
+        sid: &str,
+        key_id: Option<&str>,
+        reason: &str,
+    ) -> Result<()> {
         let s = self.enter(sid)?;
         if s.cell.att == Attachment::Det {
             return Ok(());
@@ -489,7 +541,10 @@ impl Bridge {
             self.commit(sid, items)?;
             return Ok(());
         }
-        let items = vec![(Kind::DETACHMENT, json!({"reason": reason})), self.prepared(&s, reason)];
+        let items = vec![
+            (Kind::DETACHMENT, json!({"reason": reason})),
+            self.prepared(&s, reason),
+        ];
         self.commit(sid, items)?;
         self.check_timers(sid)
     }
@@ -507,7 +562,10 @@ impl Bridge {
         }
         self.commit(
             sid,
-            vec![(Kind::HUMAN_RESOLVED, json!({"valid_until": self.clock.now() + self.cfg.t_approve}))],
+            vec![(
+                Kind::HUMAN_RESOLVED,
+                json!({"valid_until": self.clock.now() + self.cfg.t_approve}),
+            )],
         )?;
         self.drain(sid)
     }
@@ -581,20 +639,33 @@ impl Bridge {
             _ => {}
         }
         let mut raw = [0u8; 16];
-        getrandom::getrandom(&mut raw).map_err(|e| BridgeError::new(format!("no randomness: {e}")))?;
+        getrandom::getrandom(&mut raw)
+            .map_err(|e| BridgeError::new(format!("no randomness: {e}")))?;
         let nonce = hex::encode(raw);
         let book = self.nonces.entry(sid.to_string()).or_default();
-        book.push_back(NonceRec { nonce: nonce.clone(), issued: self.clock.now(), used: false });
+        book.push_back(NonceRec {
+            nonce: nonce.clone(),
+            issued: self.clock.now(),
+            used: false,
+        });
         while book.len() > NONCE_RECORDS {
             book.pop_front();
         }
-        Ok(Challenge { nonce, ttl_seconds: self.cfg.t_nonce })
+        Ok(Challenge {
+            nonce,
+            ttl_seconds: self.cfg.t_nonce,
+        })
     }
 
     /// Det -> Res on an authentic request; a request while Att is a join
     /// (the replay is returned); while Res it is refused. Every failure is
     /// RESUME_REJECTED with no change of cell (I11e).
-    pub fn begin_resume(&mut self, sid: &str, req: &ResumeRequest, transport_replay: bool) -> Result<Vec<Event>> {
+    pub fn begin_resume(
+        &mut self,
+        sid: &str,
+        req: &ResumeRequest,
+        transport_replay: bool,
+    ) -> Result<Vec<Event>> {
         let s = self.enter(sid)?;
         let mut reason = self.reject_reason(sid, &s, req, transport_replay)?;
         if reason.is_none() && s.cell.att == Attachment::Res {
@@ -608,7 +679,9 @@ impl Bridge {
                     json!({"reason": reason, "key_id": req.key_id, "seq": req.seq}),
                 )],
             )?;
-            return Err(BridgeError::new(format!("re-attach rejected: {reason} (I4/I8/I9/I11)")));
+            return Err(BridgeError::new(format!(
+                "re-attach rejected: {reason} (I4/I8/I9/I11)"
+            )));
         }
         let body = json!({"key_id": req.key_id, "seq": req.seq, "hash": req.hash,
                           "nonce_digest": digest(&req.nonce)});
@@ -621,7 +694,12 @@ impl Bridge {
     }
 
     /// A further client joins an attached session (I15c).
-    pub fn join(&mut self, sid: &str, req: &ResumeRequest, transport_replay: bool) -> Result<Vec<Event>> {
+    pub fn join(
+        &mut self,
+        sid: &str,
+        req: &ResumeRequest,
+        transport_replay: bool,
+    ) -> Result<Vec<Event>> {
         let s = self.enter(sid)?;
         if s.cell.att != Attachment::Att {
             return Err(BridgeError::new("join requires Att"));
@@ -643,7 +721,11 @@ impl Bridge {
             return Ok(Some("unknown_key")); // I15
         }
         let ok = match self.storage.key_material(&req.key_id)? {
-            Some(m) => self.verifier.verify(&m, &request_message(sid, &req.nonce, req.seq, &req.hash), &req.signature),
+            Some(m) => self.verifier.verify(
+                &m,
+                &request_message(sid, &req.nonce, req.seq, &req.hash),
+                &req.signature,
+            ),
             None => false,
         };
         if !ok {
@@ -651,7 +733,11 @@ impl Bridge {
         }
         let now = self.clock.now();
         let t_nonce = self.cfg.t_nonce;
-        let Some(rec) = self.nonces.get_mut(sid).and_then(|b| b.iter_mut().find(|r| r.nonce == req.nonce)) else {
+        let Some(rec) = self
+            .nonces
+            .get_mut(sid)
+            .and_then(|b| b.iter_mut().find(|r| r.nonce == req.nonce))
+        else {
             return Ok(Some("nonce_unknown")); // I11b
         };
         let was_used = rec.used;
@@ -664,7 +750,9 @@ impl Bridge {
         }
         let log = self.storage.read_log(sid)?;
         let on_chain = req.seq >= 0
-            && log.get(req.seq as usize).is_some_and(|e| e.hash() == req.hash);
+            && log
+                .get(req.seq as usize)
+                .is_some_and(|e| e.hash() == req.hash);
         if !on_chain {
             return Ok(Some("prefix_mismatch")); // I4
         }
@@ -673,7 +761,12 @@ impl Bridge {
 
     /// The events a client that acknowledged `seq` has not seen (I4).
     pub fn replay_after(&self, sid: &str, seq: i64) -> Result<Vec<Event>> {
-        Ok(self.storage.read_log(sid)?.into_iter().skip((seq + 1).max(0) as usize).collect())
+        Ok(self
+            .storage
+            .read_log(sid)?
+            .into_iter()
+            .skip((seq + 1).max(0) as usize)
+            .collect())
     }
 
     /// Res -> Att once the hash chain verifies; otherwise terminate. Returns
@@ -700,7 +793,13 @@ impl Bridge {
 
     // ---- authority (I3, I10) -----------------------------------------------
 
-    fn reject_extension(&mut self, sid: &str, s: &Session, proposed: &[String], source: &str) -> Result<()> {
+    fn reject_extension(
+        &mut self,
+        sid: &str,
+        s: &Session,
+        proposed: &[String],
+        source: &str,
+    ) -> Result<()> {
         let cell = format!("{:?}/{:?}", s.cell.att, s.cell.human);
         self.commit(
             sid,
@@ -729,7 +828,8 @@ impl Bridge {
         match source {
             Source::Observed => {
                 self.reject_extension(sid, &s, proposed, "observed")?;
-                self.revert_requests.push((sid.to_string(), s.scope.clone()));
+                self.revert_requests
+                    .push((sid.to_string(), s.scope.clone()));
                 Ok(AuthorityOutcome::Revert)
             }
             Source::Requested => {
@@ -761,7 +861,10 @@ impl Bridge {
         let version = s.scope_version + 1;
         self.commit(
             sid,
-            vec![(Kind::AUTHORITY_NARROWED, json!({"new_scope": proposed, "new_version": version}))],
+            vec![(
+                Kind::AUTHORITY_NARROWED,
+                json!({"new_scope": proposed, "new_version": version}),
+            )],
         )
         .map(|_| ())
     }
@@ -770,7 +873,9 @@ impl Bridge {
         match self.sessions.get(sid) {
             None => Err(BridgeError::new(format!("unknown session {sid}"))),
             Some(s) if s.cell.life == Life::Terminated => Ok(()),
-            Some(_) => self.commit(sid, vec![(Kind::TERMINATION, json!({"reason": reason}))]).map(|_| ()),
+            Some(_) => self
+                .commit(sid, vec![(Kind::TERMINATION, json!({"reason": reason}))])
+                .map(|_| ()),
         }
     }
 
@@ -834,7 +939,9 @@ impl Bridge {
         let mut prev = String::new();
         for (i, ev) in self.storage.read_log(sid)?.iter().enumerate() {
             if ev.sequence != i as u64 || ev.prev_hash != prev {
-                return Err(BridgeError::new(format!("event chain broken at index {i} (I5)")));
+                return Err(BridgeError::new(format!(
+                    "event chain broken at index {i} (I5)"
+                )));
             }
             prev = ev.hash();
         }
@@ -871,6 +978,10 @@ impl Bridge {
     }
 
     pub fn queue_keys(&self, sid: &str) -> Vec<String> {
-        self.sessions[sid].queue.iter().map(|c| c.key.clone()).collect()
+        self.sessions[sid]
+            .queue
+            .iter()
+            .map(|c| c.key.clone())
+            .collect()
     }
 }

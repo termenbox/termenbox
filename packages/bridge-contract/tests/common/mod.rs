@@ -34,7 +34,8 @@ fn encode(ev: &Event) -> String {
 fn decode(line: &str) -> Result<Event> {
     let v: Value = serde_json::from_str(line).map_err(io)?;
     Ok(Event {
-        kind: Kind::parse(v["kind"].as_str().unwrap_or("")).ok_or_else(|| io("unknown event kind"))?,
+        kind: Kind::parse(v["kind"].as_str().unwrap_or(""))
+            .ok_or_else(|| io("unknown event kind"))?,
         session_id: v["session_id"].as_str().unwrap_or("").to_string(),
         sequence: v["sequence"].as_u64().unwrap_or(0),
         prev_hash: v["prev_hash"].as_str().unwrap_or("").to_string(),
@@ -46,11 +47,17 @@ fn decode(line: &str) -> Result<Event> {
 impl FileStorage {
     pub fn new(dir: PathBuf) -> Arc<FileStorage> {
         fs::create_dir_all(dir.join("logs")).expect("storage directory");
-        Arc::new(FileStorage { dir, lock: Mutex::new(()), fail_next: AtomicBool::new(false) })
+        Arc::new(FileStorage {
+            dir,
+            lock: Mutex::new(()),
+            fail_next: AtomicBool::new(false),
+        })
     }
 
     fn log_path(&self, sid: &str) -> PathBuf {
-        self.dir.join("logs").join(format!("{}.jsonl", hex::encode(sid)))
+        self.dir
+            .join("logs")
+            .join(format!("{}.jsonl", hex::encode(sid)))
     }
 
     fn keys_path(&self) -> PathBuf {
@@ -86,15 +93,24 @@ impl Storage for FileStorage {
         // one write of the whole batch, then fsync: the batch is committed
         // when `sync_all` returns
         let body: String = events.iter().map(|e| encode(e) + "\n").collect();
-        let mut f = OpenOptions::new().create(true).append(true).open(self.log_path(sid)).map_err(io)?;
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.log_path(sid))
+            .map_err(io)?;
         f.write_all(body.as_bytes()).map_err(io)?;
         f.sync_all().map_err(io)
     }
 
     fn read_log(&self, sid: &str) -> Result<Vec<Event>> {
         let _g = self.lock.lock().unwrap();
-        let Ok(f) = File::open(self.log_path(sid)) else { return Ok(vec![]) };
-        BufReader::new(f).lines().map(|l| decode(&l.map_err(io)?)).collect()
+        let Ok(f) = File::open(self.log_path(sid)) else {
+            return Ok(vec![]);
+        };
+        BufReader::new(f)
+            .lines()
+            .map(|l| decode(&l.map_err(io)?))
+            .collect()
     }
 
     fn sessions(&self) -> Result<Vec<String>> {
@@ -113,12 +129,16 @@ impl Storage for FileStorage {
         let mut keys = self.read_keys();
         keys.insert(key_id.to_string(), hex::encode(material));
         let mut f = File::create(self.keys_path()).map_err(io)?;
-        f.write_all(serde_json::to_string(&keys).map_err(io)?.as_bytes()).map_err(io)?;
+        f.write_all(serde_json::to_string(&keys).map_err(io)?.as_bytes())
+            .map_err(io)?;
         f.sync_all().map_err(io)
     }
 
     fn key_material(&self, key_id: &str) -> Result<Option<Vec<u8>>> {
         let _g = self.lock.lock().unwrap();
-        Ok(self.read_keys().get(key_id).and_then(|h| hex::decode(h).ok()))
+        Ok(self
+            .read_keys()
+            .get(key_id)
+            .and_then(|h| hex::decode(h).ok()))
     }
 }

@@ -90,12 +90,31 @@ macro_rules! kinds {
 }
 
 kinds!(
-    ATTACHED, CLIENT_JOINED, CLIENT_LEFT, CLIENT_ADDED, DETACHMENT, RESUME_PREPARED,
-    RESUME_STARTED, RESUME_REJECTED, RESUME_VERIFIED, RESUME_FAILED, HUMAN_PENDING,
-    HUMAN_RESOLVED, HUMAN_TIMEOUT, DETACH_TIMEOUT, AUTHORITY_EXTENSION_REJECTED,
-    AUTHORITY_NARROWED, AUTHORITY_NARROWING_REJECTED, TERMINATION, TOOL_CALL_QUEUED,
-    TOOL_CALL_ANSWERED, TOOL_CALL_DRAINED, TOOL_CALL_REJECTED, TOOL_CALL_EXPIRED,
-    BRIDGE_RECOVERED, RECOVERY_FAILED,
+    ATTACHED,
+    CLIENT_JOINED,
+    CLIENT_LEFT,
+    CLIENT_ADDED,
+    DETACHMENT,
+    RESUME_PREPARED,
+    RESUME_STARTED,
+    RESUME_REJECTED,
+    RESUME_VERIFIED,
+    RESUME_FAILED,
+    HUMAN_PENDING,
+    HUMAN_RESOLVED,
+    HUMAN_TIMEOUT,
+    DETACH_TIMEOUT,
+    AUTHORITY_EXTENSION_REJECTED,
+    AUTHORITY_NARROWED,
+    AUTHORITY_NARROWING_REJECTED,
+    TERMINATION,
+    TOOL_CALL_QUEUED,
+    TOOL_CALL_ANSWERED,
+    TOOL_CALL_DRAINED,
+    TOOL_CALL_REJECTED,
+    TOOL_CALL_EXPIRED,
+    BRIDGE_RECOVERED,
+    RECOVERY_FAILED,
 );
 
 /// A governance event, hash-chained to its predecessor (I5).
@@ -182,7 +201,10 @@ pub struct ClientKey {
 
 impl ClientKey {
     pub fn new(key_id: &str, secret: &[u8]) -> Self {
-        ClientKey { key_id: key_id.to_string(), secret: secret.to_vec() }
+        ClientKey {
+            key_id: key_id.to_string(),
+            secret: secret.to_vec(),
+        }
     }
 
     pub fn sign(&self, sid: &str, nonce: &str, seq: i64, hash: &str) -> String {
@@ -217,7 +239,11 @@ impl Verifier for HmacVerifier {
         // constant-time comparison is not needed for a test stand-in, but
         // keep the length check explicit
         want.len() == signature.len()
-            && want.bytes().zip(signature.bytes()).fold(0u8, |a, (x, y)| a | (x ^ y)) == 0
+            && want
+                .bytes()
+                .zip(signature.bytes())
+                .fold(0u8, |a, (x, y)| a | (x ^ y))
+                == 0
     }
 }
 
@@ -260,19 +286,33 @@ impl Config {
         if self.t_call <= self.t_human && self.t_human <= self.t_detach {
             Ok(())
         } else {
-            Err(BridgeError::new("timer bounds: T_call <= T_human <= T_detach is a MUST"))
+            Err(BridgeError::new(
+                "timer bounds: T_call <= T_human <= T_detach is a MUST",
+            ))
         }
     }
 
     /// 30 minutes everywhere (the default profile).
     pub fn interactive_short() -> Config {
-        Config { t_detach: 1800.0, t_human: 1800.0, t_call: 1800.0, t_approve: 900.0, t_nonce: 60.0, q_max: 64 }
+        Config {
+            t_detach: 1800.0,
+            t_human: 1800.0,
+            t_call: 1800.0,
+            t_approve: 900.0,
+            t_nonce: 60.0,
+            q_max: 64,
+        }
     }
 
     /// 7 days everywhere; approvals still expire after 15 minutes.
     pub fn persistent() -> Config {
         let d = 7.0 * 86_400.0;
-        Config { t_detach: d, t_human: d, t_call: d, ..Config::interactive_short() }
+        Config {
+            t_detach: d,
+            t_human: d,
+            t_call: d,
+            ..Config::interactive_short()
+        }
     }
 }
 
@@ -292,7 +332,10 @@ pub struct SystemClock;
 
 impl Clock for SystemClock {
     fn now(&self) -> f64 {
-        SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0)
     }
 }
 
@@ -304,7 +347,9 @@ pub struct FakeClock {
 
 impl FakeClock {
     pub fn new(start: f64) -> Arc<FakeClock> {
-        Arc::new(FakeClock { bits: AtomicU64::new(start.to_bits()) })
+        Arc::new(FakeClock {
+            bits: AtomicU64::new(start.to_bits()),
+        })
     }
 
     pub fn advance(&self, seconds: f64) {
@@ -365,12 +410,23 @@ impl Storage for MemStorage {
         if self.fail_next.swap(false, Ordering::SeqCst) {
             return Err(BridgeError::new("storage: append refused"));
         }
-        self.logs.lock().unwrap().entry(sid.to_string()).or_default().extend(events);
+        self.logs
+            .lock()
+            .unwrap()
+            .entry(sid.to_string())
+            .or_default()
+            .extend(events);
         Ok(())
     }
 
     fn read_log(&self, sid: &str) -> Result<Vec<Event>> {
-        Ok(self.logs.lock().unwrap().get(sid).cloned().unwrap_or_default())
+        Ok(self
+            .logs
+            .lock()
+            .unwrap()
+            .get(sid)
+            .cloned()
+            .unwrap_or_default())
     }
 
     fn sessions(&self) -> Result<Vec<String>> {
@@ -378,7 +434,10 @@ impl Storage for MemStorage {
     }
 
     fn register_key(&self, key_id: &str, material: &[u8]) -> Result<()> {
-        self.keys.lock().unwrap().insert(key_id.to_string(), material.to_vec());
+        self.keys
+            .lock()
+            .unwrap()
+            .insert(key_id.to_string(), material.to_vec());
         Ok(())
     }
 

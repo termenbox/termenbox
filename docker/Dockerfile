@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # The workspace lists every package, so each must be present; only the server is built.
 FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
+COPY packages/bridge-contract ./packages/bridge-contract
 COPY packages/core ./packages/core
 COPY packages/server ./packages/server
 COPY packages/agent ./packages/agent
@@ -21,6 +22,7 @@ FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release -p termenbox-server --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
+COPY packages/bridge-contract ./packages/bridge-contract
 COPY packages/core ./packages/core
 COPY packages/server ./packages/server
 COPY packages/agent ./packages/agent
