@@ -305,6 +305,7 @@ port_report() {
     say "  2. In PowerShell:   wsl --shutdown     (then start WSL again)"
     say "  3. In an admin PowerShell, allow it through Windows Firewall:   New-NetFirewallRule -DisplayName Termenbox -Direction Inbound -Protocol UDP -LocalPort $_port -Action Allow"
     say "  If WSL still blocks it:   Set-NetFirewallHyperVVMSetting -Name '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -DefaultInboundAction Allow"
+    say "  Or, without changing Windows: run   termenbox-server --setup-cloudflare   (a free Cloudflare account of yours; see \"Connecting a home or WSL server\" in the README) and the app punches through or uses your relay."
   fi
   say "Add Server tests the connection from your browser and shows what is blocking it."
 }
