@@ -255,6 +255,8 @@
   const overLimit = hub.overLimit;
   $: selected = $hubServers.find(s => s.id === activeServerId);
   $: selectedServer = selected?.server ?? null;
+  /** Whether a server can take a new workspace now: the sidebar, the palette and the strip hide their create action rather than offering a toast that says no. */
+  $: canCreate = workspaceDestinations($hubServers, selected).length > 0;
   $: workspaces = $allWorkspaces.map(s => ({ ...s, id: s.key }));
   $: activeWorkspaceId = $allWorkspaces.find(s => s.key === activeKey)?.id ?? null;
   $: connection = selected ? hub.connection(selected.id) : null;
@@ -949,10 +951,11 @@
     </div>
   {:else}
     <AppFrame current={$destination} onnavigate={go} servers={$hubServers} workspaces={$allWorkspaces} agents={$allAgents} {activeKey} chrome={servers.length > 0} inWorkspace={!!activeKey && !away} {keyboardOpen}
-      canCreate={workspaceDestinations($hubServers, selected).length > 0} bind:wide bind:helpOpen onopen={attach} onserver={openServer} onrename={renameWorkspace} oncloseworkspace={askCloseWorkspace} onaction={runAction} onshortcut={handleShortcut}
+      canCreate={canCreate} bind:wide bind:helpOpen onopen={attach} onserver={openServer} onrename={renameWorkspace} oncloseworkspace={askCloseWorkspace} onaction={runAction} onshortcut={handleShortcut}
       onback={() => { showWorkspaceList(); sheetHeight = 'half'; }}>
     {#if $destination === 'workspaces' || servers.length === 0}
     <NavigationBar workspaces={tabWorkspaces} agents={$allAgents} servers={$hubServers} windows={$allWindows} {expiring} {link} {activeKey} held={!!actionWorkspace || !!menuWorkspace || cardExpanded || sheetHeld} onopen={attach} onpeek={peek} ontabmenu={openWindowMenu} onactions={(key) => { actionConfirm = false; actionKey = key; }}
+      strip={!wide || !$layout.sidebarOpen || (!!activeKey && !listPage)} onnew={wide && canCreate ? () => newWorkspace() : undefined}
       onlink={() => link && showToast(link.text, link.ok ? 'success' : 'error')} onmenu={() => { titleTapped(); menuOpen = true; }} expanded={wide ? $layout.sidebarOpen : sheetHeight !== 'closed'} controls={wide && $layout.sidebarOpen ? 'workspace-sidebar' : undefined} onworkspaces={() => { if (wide) { toggleSidebar(); return; } crumb('workspaces sheet toggled'); showWorkspaceList(); sheetHeight = sheetHeight === 'closed' ? 'half' : 'closed'; }} />
     {/if}
     <NeedsYouBanner {waiting} {now} collapsed={keyboardOpen} onopen={openWaiting} onhome={() => go('home')} ondismiss={(key, id) => sendAttention(key, { type: 'dismiss', attention_id: id })} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} />
