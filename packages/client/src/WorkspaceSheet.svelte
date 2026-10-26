@@ -9,6 +9,8 @@
   import { HEIGHTS, sheetHeight, snapHeight, type SheetHeight } from './lib/sheet';
   import { settings } from './lib/settings';
   import { representativeWindow, type WindowMap } from './lib/windows';
+  import { moveWorkspace, movedText, orderVersion } from './lib/order';
+  import { RowDragger, type DragView } from './lib/dragsort';
   import type { AgentMap, WorkspaceAgent } from './lib/agents';
   import type { HubServer, HubWorkspace } from './lib/hub';
   import type { AgentState, ClientMessage } from './lib/protocol';
@@ -30,6 +32,8 @@
   export let send: (message: ClientMessage) => void;
   export let onexpanded: (open: boolean) => void = () => {};
   export let onheld: (held: boolean) => void = () => {};
+  /** Opens the workspace's actions (rename, move, detach, close). */
+  export let onactions: ((key: string) => void) | undefined = undefined;
 
   let root: HTMLElement;
   let content: HTMLDivElement;
@@ -55,11 +59,18 @@
   let touches = 0;
   let focusPending = false;
   const frozen = new FrozenOrder();
+  let announcement = '';
+  // Reordering by the handle: the dragged row follows the pointer, a line shows where it lands, the list changes on release.
+  let rowDrag: DragView | null = null;
+  $: canReorder = effectiveView.sort === 'manual' && (shownGroupBy === 'server' || shownGroupBy === 'none');
   $: if (held !== externalHold) { frozen.sheet(held); externalHold = held; revision++; }
   $: if ((height === 'peek' || height === 'closed') && expanded) closeExpanded();
   $: paths = Object.fromEntries(workspaces.map(s => [s.key, representativeWindow(windows[s.key])?.path ?? '']));
   $: effectiveView = view ?? adaptiveDefault(Object.fromEntries(workspaces.filter(s => agents[s.key]).map(s => [s.key, agents[s.key]])));
   $: agentNames = [...new Set(workspaces.map(s => agents[s.key]?.agent ?? s.agent ?? 'shell'))].sort();
+  // The user's own move, from a handle or from the actions sheet, shows at once; only unsolicited reorders wait.
+  let seenOrder = $orderVersion;
+  $: if ($orderVersion !== seenOrder) { seenOrder = $orderVersion; forceRender = true; revision++; }
   $: pixels = dragPixels ?? sheetHeight(height, available);
   $: {
     revision;
@@ -70,7 +81,6 @@
         proposed.push({ key: `server:${s.id}`, label: s.server.server_name || 'Server', serverId: s.id, workspaces: [] });
       }
     }
-    frozen.order(proposed.flatMap(g => g.workspaces.map(s => s.key)), {}, now);
     onheld(frozen.frozen(now));
     if (forceRender || !frozen.frozen(now) || !rendered) {
       forceRender = false;
@@ -79,6 +89,12 @@
       shownWorkspaces = workspaces; shownGroupBy = effectiveView.group; shownWindows = windows;
     }
   }
+  function nameOf(key: string) { return workspaces.find(s => s.key === key)?.name ?? ''; }
+  function drop(key: string, target: { key: string; side: 'before' | 'after' }) {
+    const p = moveWorkspace(workspaces, key, target.side === 'before' ? { before: target.key } : { after: target.key });
+    if (p) announcement = movedText(nameOf(key), p);
+  }
+  const dragger = new RowDragger({ scroller: () => content, onview: (v) => (rowDrag = v), ondrop: drop });
   function closeExpanded() { if (expanded) { frozen.sheet(false); expanded = null; onexpanded(false); revision++; } }
   function toggle(key: string) {
     const next = expanded === key ? null : key;
@@ -130,13 +146,14 @@
       }, 0);
     };
     window.addEventListener('pointerup', release); window.addEventListener('pointercancel', release);
-    return () => { observer.disconnect(); clearInterval(timer); window.removeEventListener('pointerup', release); window.removeEventListener('pointercancel', release); onexpanded(false); onheld(false); };
+    return () => { dragger.destroy(); observer.disconnect(); clearInterval(timer); window.removeEventListener('pointerup', release); window.removeEventListener('pointercancel', release); onexpanded(false); onheld(false); };
   });
 </script>
 
 <section bind:this={root} class="workspace-sheet" class:mobile class:docked={!mobile} class:peek={mobile && height === 'peek'} class:closed={mobile && height === 'closed'} aria-label="Workspace views" data-height={mobile ? height : 'docked'}
   style={mobile ? `height: ${pixels}px; flex-basis: ${pixels}px;` : ''}
   on:pointerdown|capture={(e) => { frozen.touchDown(e.pointerId); touches = frozen.pointerCount; revision++; }} on:focusin={focusField}>
+  <div class="sr" role="status" aria-live="polite">{announcement}</div>
   {#if mobile}
     <button class="handle" aria-label={`Resize workspaces sheet, ${height}`} on:pointerdown={startDrag} on:pointermove={moveDrag} on:pointerup={(e) => endDrag(e)} on:pointercancel={(e) => endDrag(e, true)} on:click={cycle}
       on:keydown={(e) => { if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); const i = HEIGHTS.indexOf(height); height = HEIGHTS[Math.max(0, Math.min(2, i + (e.key === 'ArrowUp' ? 1 : -1)))]; } }}><span aria-hidden="true"></span></button>
@@ -151,7 +168,7 @@
       {#if controls}
         <div class="controls">
           <label>Group <NativeSelect aria-label="Group" value={effectiveView.group} onchange={(e) => change({ group: e.currentTarget.value as SessionView['group'] })}><option value="server">Server</option><option value="agent">Agent</option><option value="status">Status</option><option value="project">Project</option><option value="none">None</option></NativeSelect></label>
-          <label>Sort <NativeSelect aria-label="Sort" value={effectiveView.sort} onchange={(e) => change({ sort: e.currentTarget.value as SessionView['sort'] })}><option value="human">Needs you first</option><option value="response">Last response</option><option value="cache">Cache expiry</option><option value="name">Name</option></NativeSelect></label>
+          <label>Sort <NativeSelect aria-label="Sort" value={effectiveView.sort} onchange={(e) => change({ sort: e.currentTarget.value as SessionView['sort'] })}><option value="manual">My order</option><option value="response">Last response</option><option value="cache">Cache expiry</option><option value="name">Name</option></NativeSelect></label>
           <label>Status <NativeSelect aria-label="Status" value={effectiveView.filter.statuses.length > 1 ? 'multiple' : effectiveView.filter.statuses[0] ?? ''} onchange={(e) => filter({ statuses: e.currentTarget.value ? [e.currentTarget.value as AgentState] : [] })}><option value="">All statuses</option>{#if effectiveView.filter.statuses.length > 1}<option value="multiple" disabled>Multiple statuses</option>{/if}<option value="needs_input">Needs you</option><option value="error">Error</option><option value="working">Working</option><option value="idle">Idle</option><option value="done">Done</option><option value="unknown">No status</option></NativeSelect></label>
           <label>Agent <NativeSelect aria-label="Agent" value={effectiveView.filter.agents[0] ?? ''} onchange={(e) => filter({ agents: e.currentTarget.value ? [e.currentTarget.value] : [] })}><option value="">All agents</option>{#each agentNames as name}<option value={name}>{name}</option>{/each}</NativeSelect></label>
           <label>Server <NativeSelect aria-label="Server" value={effectiveView.filter.servers[0] ?? ''} onchange={(e) => filter({ servers: e.currentTarget.value ? [e.currentTarget.value] : [] })}><option value="">All servers</option>{#each servers as s}<option value={s.id}>{s.server.server_name || 'Server'}</option>{/each}</NativeSelect></label>
@@ -167,9 +184,21 @@
           {#if group.label || group.server}<div class="group-header"><h3>{group.label}</h3>{#if group.server}<ServerStatus server={group.server} {onretry} />{#if group.server.state === 'connected'}<button class="secondary icon" aria-label={`New workspace on ${group.server.server.server_name || 'Server'}`} on:click={() => onnew(group.server?.id)}>+ New</button>{/if}{/if}</div>{/if}
           {#each group.workspaces as workspace (workspace.key)}
             {@const agent = shownAgents[workspace.key]}
-            {#if agent}
-              <WorkspaceCard workspace={workspace} {agent} windows={shownWindows[workspace.key]} ttlMs={$settings.cacheTtlMs} keepWarm={$settings.keepWarm} onpeek={() => onpeek(workspace.key)} onwarm={() => onwarm(workspace.key)} serverName={shownGroupBy !== 'server' && shownServers.length > 1 ? workspace.serverName : ''} now={shownNow} active={workspace.key === activeKey} expanded={workspace.key === expanded} onopen={() => onopen(workspace.key)} ontoggle={() => toggle(workspace.key)} onanswer={(choice, prompt) => answer(workspace.key, choice, prompt)} />
-            {:else}<button class="plain" class:active={workspace.key === activeKey} on:click={() => onopen(workspace.key)}>{workspace.name} <small>{workspace.serverName}</small></button>{/if}
+            {@const dragging = rowDrag?.key === workspace.key}
+            <div class="row" data-row={workspace.key} data-list={workspace.serverId} class:dragging class:before={rowDrag?.target?.key === workspace.key && rowDrag?.target?.side === 'before'} class:after={rowDrag?.target?.key === workspace.key && rowDrag?.target?.side === 'after'}
+              style={dragging ? `transform: translateY(${rowDrag?.dy ?? 0}px)` : ''}>
+              {#if canReorder && group.workspaces.length > 1}
+                <button type="button" class="grip" data-testid="workspace-grip" data-grip aria-label={`Reorder ${workspace.name}. Drag, or use the up and down arrow keys`}
+                  on:pointerdown={(e) => dragger.down(e, workspace.key)} on:pointermove={(e) => dragger.move(e)} on:pointerup={(e) => dragger.up(e)} on:pointercancel={(e) => dragger.up(e, true)} on:keydown={(e) => dragger.key(e, workspace.key)} on:contextmenu|preventDefault>
+                  <svg viewBox="0 0 12 18" width="12" height="18" aria-hidden="true" fill="currentColor"><circle cx="3" cy="3" r="1.5" /><circle cx="9" cy="3" r="1.5" /><circle cx="3" cy="9" r="1.5" /><circle cx="9" cy="9" r="1.5" /><circle cx="3" cy="15" r="1.5" /><circle cx="9" cy="15" r="1.5" /></svg>
+                </button>
+              {/if}
+              <div class="slot">
+                {#if agent}
+                  <WorkspaceCard workspace={workspace} {agent} windows={shownWindows[workspace.key]} ttlMs={$settings.cacheTtlMs} keepWarm={$settings.keepWarm} onpeek={() => onpeek(workspace.key)} onwarm={() => onwarm(workspace.key)} serverName={shownGroupBy !== 'server' && shownServers.length > 1 ? workspace.serverName : ''} now={shownNow} active={workspace.key === activeKey} expanded={workspace.key === expanded} onopen={() => onopen(workspace.key)} ontoggle={() => toggle(workspace.key)} onanswer={(choice, prompt) => answer(workspace.key, choice, prompt)} onactions={onactions ? () => onactions(workspace.key) : undefined} />
+                {:else}<button class="plain" class:active={workspace.key === activeKey} on:click={() => onopen(workspace.key)}>{workspace.name} <small>{workspace.serverName}</small></button>{/if}
+              </div>
+            </div>
           {/each}
           {#if !group.workspaces.length}<p class="empty">No workspaces yet</p>{/if}
         </section>
@@ -202,6 +231,16 @@
   .controls { display: grid; gap: 6px; margin-bottom: 12px; }
   label { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.8rem; }
   input { max-width: 70%; min-width: 0; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .row { display: flex; align-items: flex-start; gap: 2px; position: relative; }
+  .slot { flex: 1; min-width: 0; }
+  /* The handle is the only part that takes the finger away from scrolling (touch-action: none); 44px square. */
+  .grip { flex: 0 0 44px; width: 44px; min-width: 44px; height: 44px; padding: 0; display: flex; align-items: center; justify-content: center; background: transparent; color: var(--fg-muted); border: 0; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; cursor: grab; }
+  .dragging { z-index: 3; opacity: 0.95; filter: drop-shadow(0 4px 10px #0006); }
+  .dragging .grip { cursor: grabbing; }
+  .before::before, .after::after { content: ''; position: absolute; left: 0; right: 0; height: 3px; border-radius: 2px; background: var(--accent); z-index: 2; }
+  .before::before { top: -4px; }
+  .after::after { bottom: 0; }
   .group-header { padding: 12px 4px 6px; }
   .plain { display: flex; align-items: center; justify-content: space-between; width: 100%; margin-bottom: 6px; background: var(--bg); color: var(--fg); text-align: left; border: 1px solid var(--border); overflow-wrap: anywhere; }
   .plain.active { border-color: var(--accent); }

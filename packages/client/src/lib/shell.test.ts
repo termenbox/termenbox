@@ -46,7 +46,7 @@ describe('router', () => {
 describe('workspace list for the sidebar', () => {
   const servers = [server('alpha'), server('beta')];
   const workspaces = [workspace('alpha', 'b'), workspace('alpha', 'a'), workspace('beta', 'c')];
-  it('groups by server, needs-you first, then by name', () => {
+  it('groups by server and keeps the order given: a state does not move a workspace', () => {
     const agents: AgentMap = { 'alpha/b': agent('needs_input'), 'alpha/a': agent('working') };
     const g = navGroups(servers, workspaces, agents);
     expect(g.map((x) => x.server.id)).toEqual(['alpha', 'beta']);
@@ -62,12 +62,12 @@ describe('workspace list for the sidebar', () => {
   it('holds order and membership while a pointer is down, updating state in place', () => {
     const v = new HeldView();
     const before = v.view(navGroups(servers, workspaces, {}), 0);
-    expect(before[0].workspaces.map((s) => s.name)).toEqual(['a', 'b']);
+    expect(before[0].workspaces.map((s) => s.name)).toEqual(['b', 'a']);
     v.down(1);
     const changed = navGroups(servers, [...workspaces, workspace('alpha', 'new')], { 'alpha/b': agent('needs_input') });
     const held = v.view(changed, 10);
-    expect(held[0].workspaces.map((s) => s.name)).toEqual(['a', 'b']); // no reorder, no insert
-    expect(held[0].workspaces[1].state).toBe('needs-you'); // fresh state, same place
+    expect(held[0].workspaces.map((s) => s.name)).toEqual(['b', 'a']); // no insert
+    expect(held[0].workspaces[0].state).toBe('needs-you'); // fresh state, same place
     v.up(1);
     expect(v.view(changed, 20)[0].workspaces.map((s) => s.name)).toEqual(['b', 'a', 'new']);
   });
@@ -75,9 +75,9 @@ describe('workspace list for the sidebar', () => {
     const v = new HeldView();
     v.view(navGroups(servers, workspaces, {}), 0);
     v.scrolled(1000);
-    const next = navGroups(servers, workspaces, { 'alpha/b': agent('needs_input') });
-    expect(v.view(next, 2500)[0].workspaces.map((s) => s.name)).toEqual(['a', 'b']);
-    expect(v.view(next, 3100)[0].workspaces.map((s) => s.name)).toEqual(['b', 'a']);
+    const next = navGroups(servers, [workspaces[1], workspaces[0], workspace('alpha', 'new')], {});
+    expect(v.view(next, 2500)[0].workspaces.map((s) => s.name)).toEqual(['b', 'a']);
+    expect(v.view(next, 3100)[0].workspaces.map((s) => s.name)).toEqual(['a', 'b', 'new']);
   });
 });
 

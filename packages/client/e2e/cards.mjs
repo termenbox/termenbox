@@ -32,12 +32,12 @@ try {
   const names = () => page.$$eval('[role=group][aria-label*=":"] .name', (els) => els.map((e) => e.textContent));
   const sent = () => page.evaluate(() => window.__sent);
 
-  // 1. Every card says its state in words, and the order puts "needs you" first.
+  // 1. Every card says its state in words, and the order is the one given: "needs you" does not jump to the top.
   const text = await page.innerText('body');
   for (const w of ['Needs you', 'Working', 'Done']) if (!text.includes(w)) fail(`no "${w}" chip`);
   const order = await names();
-  if (order[0] !== 'api-refactor') fail(`needs-you card is not first: ${order}`);
-  else console.log('ok  chips carry words and "needs you" comes first');
+  if (order.join() !== 'build,api-refactor,docs,deploy') fail(`a state moved a card: ${order}`);
+  else console.log('ok  chips carry words and a card that needs you stays where it is');
 
   // 1b. A card with server status shows its task and how long it has run.
   if (!text.includes('Wire the touch controller in') || !/running 1 min/.test(text)) fail('the card shows no task title and running time');
@@ -48,7 +48,7 @@ try {
   else console.log('ok  a card with no news says "no update for N min"');
 
   // 3. A one-tap answer carries the prompt id and event number it was read from, and the choice index.
-  await page.getByRole('button', { name: 'Show details' }).first().click();
+  await page.locator('[role=group][aria-label^="api-refactor"]').getByRole('button', { name: 'Show details' }).click();
   await page.getByRole('button', { name: 'No', exact: true }).click();
   const answer = (await sent()).find((m) => m.type === 'answer');
   if (JSON.stringify(answer) !== JSON.stringify({ type: 'answer', workspace: 'api-refactor', prompt_id: '1-ab12cd34', seq: 2, choice: 2 })) fail(`wrong answer message: ${JSON.stringify(answer)}`);
@@ -87,7 +87,7 @@ try {
     await page.waitForFunction(activeInView);
   }
   const tabs = page.getByRole('tab');
-  if (!(await tabs.first().getAttribute('aria-label')).includes('Needs you')) fail('needs-you tabs are not first');
+  if ((await tabs.first().getAttribute('data-key')) !== 'alpha/workspace-0' || !(await tabs.nth(1).getAttribute('aria-label')).includes('Needs you')) fail('a needs-you tab moved from its place, or does not say so');
   if (await page.locator('[role=tab] .badge').count() !== 12) fail('tabs do not name all three servers');
   if ((await page.locator('[role=tablist]').evaluate(e => e.scrollWidth <= e.clientWidth))) fail('12 tabs do not form a scrolling strip');
   const short = await page.locator('header button').evaluateAll(els => els.filter(e => e.getBoundingClientRect().height < 43.5 || e.getBoundingClientRect().width < 43.5).map(e => e.getAttribute('aria-label')));

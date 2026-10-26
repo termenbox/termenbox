@@ -21,6 +21,8 @@
   export let keepWarm = '';
   export let onwarm: () => void = () => {};
   export let onpeek: () => void = () => {};
+  /** Opens the workspace's actions (rename, move, detach, close); missing: no button. */
+  export let onactions: (() => void) | undefined = undefined;
   let pressedAnswer: { choice: number; prompt: NonNullable<WorkspaceAgent['prompt']> } | null = null;
 
   $: chip = chipFor(agent, now);
@@ -92,6 +94,7 @@
       {#if !agent.prompt && !agent.message && !(agent.plan && agent.plan.length) && !(agent.timeline && agent.timeline.length)}
         <p class="note">Nothing reported yet.</p>
       {/if}
+      {#if onactions}<button type="button" class="actions" on:click={onactions} data-testid="workspace-actions">Rename, move or detach…</button>{/if}
     </div>
   {/if}
 </div>
@@ -100,6 +103,7 @@
   .path { max-width: 14em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cache.soon { color: var(--danger); font-weight: 600; }
   .warm { margin: 0 12px 10px; min-height: 44px; }
+  .actions { display: block; width: 100%; min-height: 44px; margin-top: 8px; }
   .sc {
     position: relative;
     margin-bottom: 6px;

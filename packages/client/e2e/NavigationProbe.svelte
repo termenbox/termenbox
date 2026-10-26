@@ -9,6 +9,7 @@
   import WindowMenu from '../src/WindowMenu.svelte';
   import NeedsYouBanner from '../src/NeedsYouBanner.svelte';
   import { openTabs } from '../src/lib/tabs';
+  import { moveWorkspace, placementOf } from '../src/lib/order';
   import { waitingList } from '../src/lib/notify';
   import type { WindowInfo } from '../src/lib/protocol';
   import type { SheetHeight } from '../src/lib/sheet';
@@ -79,10 +80,10 @@
   <main class:mobile>
     <div class="terminal"><p>{activeKey}</p><div class="screen"><textarea class="xterm-helper-textarea" aria-label="Terminal input"></textarea></div><KeyRow bind:mods onkey={() => {}} onpaste={() => {}} oncopy={() => {}} /></div>
     {#if settings}<div class="settings"><SettingsView user="test" onservers={() => {}} onshortcuts={() => {}} onreport={() => {}} onlogout={() => {}} ondeletedata={async () => 0} historyServers={0} ondeletehistory={async () => ({ servers: 0, removed: 0, failedNames: [] })} /></div>{/if}
-    <WorkspaceSheet workspaces={$workspaces} agents={$agents} servers={$servers} {activeKey} {mobile} bind:height held={!!actions} onexpanded={value => expanded = value} onheld={value => sheetHeld = value} onopen={key => { activeKey = key; height = 'closed'; }} onnew={() => {}} onrefresh={() => {}} onretry={id => hub.retry(id)} send={m => { if ('workspace' in m) hub.sendToWorkspace(m.workspace, m); }} />
+    <WorkspaceSheet workspaces={$workspaces} agents={$agents} servers={$servers} {activeKey} {mobile} bind:height held={!!actions} onactions={key => actions = key} onexpanded={value => expanded = value} onheld={value => sheetHeld = value} onopen={key => { activeKey = key; height = 'closed'; }} onnew={() => {}} onrefresh={() => {}} onretry={id => hub.retry(id)} send={m => { if ('workspace' in m) hub.sendToWorkspace(m.workspace, m); }} />
   </main>
   {#if menu}<MenuSheet user="test" onservers={() => {}} onsettings={() => settings = true} onreport={() => {}} onlogout={() => {}} onclose={() => menu = false} />{/if}
-  {#if actionWorkspace}<WorkspaceActions workspace={actionWorkspace} confirmFirst={confirmClose} ondetach={() => { hidden = new Set(hidden).add(actionWorkspace.key); }} oncloseworkspace={() => hub.sendToWorkspace(actionWorkspace.key, { type: 'close_workspace', workspace: actionWorkspace.key })} onclose={() => actions = null} />{/if}
+  {#if actionWorkspace}<WorkspaceActions workspace={actionWorkspace} confirmFirst={confirmClose} onrename={name => hub.rename(actionWorkspace.key, name)} placement={placementOf($workspaces, actionWorkspace.key)} onmove={to => moveWorkspace($workspaces, actionWorkspace.key, to)} ondetach={() => { hidden = new Set(hidden).add(actionWorkspace.key); }} oncloseworkspace={() => hub.sendToWorkspace(actionWorkspace.key, { type: 'close_workspace', workspace: actionWorkspace.key })} onclose={() => actions = null} />{/if}
   {#if menuWorkspace && menuKey}
     <WindowMenu workspace={menuWorkspace} data={$wins[menuWorkspace.key]}
       onselect={index => hub.sendToWorkspace(menuWorkspace.key, { type: 'select_window', workspace: menuWorkspace.key, index })}
