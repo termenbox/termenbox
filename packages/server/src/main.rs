@@ -51,6 +51,7 @@ mod reducer;
 mod release;
 mod requests;
 mod rtc;
+mod stun;
 mod terminfo;
 mod tmuxconf;
 mod transcript;
@@ -985,12 +986,17 @@ async fn main() -> anyhow::Result<()> {
                 args.config_dir.display()
             );
         }
-        let info = rtc::start_with_socket(
-            socket,
+        // STUN shares the transport socket (DECISION-0140): the mapping is only worth anything if the request left it.
+        let stun_servers = stun::servers(lan_only, std::env::var("TERMENBOX_STUN").ok().as_deref());
+        let socket = Arc::new(socket);
+        let (stun_inbox, stun_rx) = stun::channel();
+        let info = rtc::start_shared(
+            socket.clone(),
             rtc_ip,
             cert.clone(),
             rtc::Limits::default(),
             state.clone(),
+            (!stun_servers.is_empty()).then_some(stun_inbox),
         )
         .await?;
         info!(
@@ -1041,7 +1047,12 @@ async fn main() -> anyhow::Result<()> {
             .clone()
             .unwrap_or_else(|| args.client_url.clone());
         let publishes = directory::publishes(!lan_only && public_ip.is_some(), &origin);
-        let hub = candidates::PathHub::new(
+        let stun_rx_out = if stun_servers.is_empty() {
+            tokio::sync::watch::channel(None).1
+        } else {
+            stun::spawn(socket, stun_rx, stun_servers, handle.rx.clone())
+        };
+        let hub = candidates::PathHub::new_with_stun(
             args.config_dir.clone(),
             Arc::new(directory::ServerKey::load_or_create(&args.config_dir)?),
             info.fingerprint.clone(),
@@ -1055,6 +1066,7 @@ async fn main() -> anyhow::Result<()> {
             v6,
             publishes,
             handle.rx.clone(),
+            stun_rx_out,
         );
         if let Err(e) = hub.refresh() {
             tracing::warn!("cannot sign a candidate bundle: {e:#}");

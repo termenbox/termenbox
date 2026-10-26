@@ -176,6 +176,19 @@ pub async fn start_with_socket(
     limits: Limits,
     state: AppState,
 ) -> Result<RtcInfo> {
+    start_shared(Arc::new(socket), public_ip, cert, limits, state, None).await
+}
+
+/// `start_with_socket` on a socket something else also uses: with a `stun` inbox, STUN Binding responses received on
+/// it go to the STUN discovery (`stun.rs`) instead of the ICE agents.
+pub async fn start_shared(
+    socket: Arc<UdpSocket>,
+    public_ip: IpAddr,
+    cert: DtlsCert,
+    limits: Limits,
+    state: AppState,
+    stun: Option<crate::stun::Inbox>,
+) -> Result<RtcInfo> {
     let port = socket.local_addr()?.port();
     let info = RtcInfo {
         ip: public_ip,
@@ -189,18 +202,20 @@ pub async fn start_with_socket(
         limits,
         state,
         wake: Arc::new(Notify::new()),
+        stun,
     };
     tokio::spawn(server.run());
     Ok(info)
 }
 
 struct Server {
-    socket: UdpSocket,
+    socket: Arc<UdpSocket>,
     public_addr: SocketAddr,
     cert: DtlsCert,
     limits: Limits,
     state: AppState,
     wake: Arc<Notify>,
+    stun: Option<crate::stun::Inbox>,
 }
 
 struct Peer {
@@ -305,6 +320,10 @@ impl Server {
                     let Ok((n, src)) = r else { continue };
                     let now = Instant::now();
                     let data = &buf[..n];
+                    // A STUN server's answer to our own Binding request is not an ICE check.
+                    if self.stun.as_ref().is_some_and(|s| s.offer(data)) {
+                        continue;
+                    }
                     if !peers.contains_key(&src) {
                         if let Some(p) = self.admit(&peers, &mut bucket, src, data, now) {
                             peers.insert(src, p);

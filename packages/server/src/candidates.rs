@@ -156,6 +156,8 @@ pub struct Inputs {
     pub mapped4: Option<(Ipv4Addr, u16)>,
     /// A global IPv6 address this server also listens on.
     pub v6: Option<Ipv6Addr>,
+    /// The address free STUN servers saw the transport socket at (`stun.rs`), when it does not depend on the server.
+    pub stun4: Option<(Ipv4Addr, u16)>,
 }
 
 /// The candidate list for `inputs`: cheapest first (LAN, IPv6, IPv4, overlay). A WAN address that is not public
@@ -180,6 +182,12 @@ pub fn candidates(inputs: &Inputs) -> Vec<Candidate> {
     }
     if let Some((ip, port)) = inputs
         .mapped4
+        .filter(|(ip, _)| is_public_unicast(IpAddr::V4(*ip)))
+    {
+        push(CandidateKind::Wan4, IpAddr::V4(ip), port);
+    }
+    if let Some((ip, port)) = inputs
+        .stun4
         .filter(|(ip, _)| is_public_unicast(IpAddr::V4(*ip)))
     {
         push(CandidateKind::Wan4, IpAddr::V4(ip), port);
@@ -312,6 +320,7 @@ pub struct PathHub {
     /// This server publishes to the directory (see `directory::publishes`); signed into every bundle.
     published: bool,
     reach: watch::Receiver<Option<Report>>,
+    stun: watch::Receiver<Option<crate::stun::Mapped>>,
     current: Mutex<Option<Current>>,
 }
 
@@ -329,6 +338,36 @@ impl PathHub {
         published: bool,
         reach: watch::Receiver<Option<Report>>,
     ) -> Arc<Self> {
+        Self::new_with_stun(
+            dir,
+            key,
+            fingerprint,
+            name,
+            port,
+            lan_override,
+            public4,
+            v6,
+            published,
+            reach,
+            watch::channel(None).1,
+        )
+    }
+
+    /// `new`, with the STUN discovery's result as one more input to the candidates.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_stun(
+        dir: PathBuf,
+        key: Arc<ServerKey>,
+        fingerprint: String,
+        name: String,
+        port: u16,
+        lan_override: Option<String>,
+        public4: Option<Ipv4Addr>,
+        v6: Option<Ipv6Addr>,
+        published: bool,
+        reach: watch::Receiver<Option<Report>>,
+        stun: watch::Receiver<Option<crate::stun::Mapped>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             dir,
             key,
@@ -340,6 +379,7 @@ impl PathHub {
             v6,
             published,
             reach,
+            stun,
             current: Mutex::new(None),
         })
     }
@@ -371,6 +411,7 @@ impl PathHub {
             .as_ref()
             .and_then(|r| r.mapping.as_ref())
             .and_then(|m| m.external_ip.map(|ip| (ip, m.external_port)));
+        inputs.stun4 = self.stun.borrow().as_ref().and_then(|m| m.candidate());
         inputs
     }
 
@@ -422,6 +463,8 @@ impl PathHub {
 
     pub async fn run(self: Arc<Self>) {
         let mut reach = self.reach.clone();
+        let mut stun = self.stun.clone();
+        let mut stun_open = true;
         loop {
             if let Err(e) = self.refresh() {
                 warn!("cannot sign a candidate bundle: {e:#}");
@@ -434,6 +477,10 @@ impl PathHub {
                         tokio::time::sleep(RESCAN).await;
                     }
                 }
+                // With no STUN discovery the channel is closed: that branch must then never fire, not spin.
+                open = async {
+                    if stun_open { stun.changed().await.is_ok() } else { std::future::pending().await }
+                } => stun_open = open,
             }
         }
     }
@@ -754,6 +801,34 @@ mod tests {
             pushed.seq,
             paired.seq
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stun_mapped_address_becomes_a_wan4_candidate_and_changes_the_bundle_seq() {
+        use crate::stun::{Mapped, Mapping};
+        let dir = std::env::temp_dir().join(format!("termenbox-seq-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = Arc::new(ServerKey::from_seed([3u8; 32]));
+        let fp = format!("sha-256 {}", vec!["0A"; 32].join(":"));
+        let (tx, rx) = watch::channel(None);
+        let hub = PathHub::new_with_stun(
+            dir.clone(), key, fp, "box".into(), 4443, Some("192.168.1.20".into()),
+            None, None, false, crate::reach::Handle::idle().0.rx, rx,
+        );
+        hub.refresh().unwrap();
+        let first = hub.current_bundle().unwrap();
+        assert!(first.candidates.iter().all(|c| c.kind != CandidateKind::Wan4));
+        assert!(!hub.refresh().unwrap(), "nothing changed: same seq");
+        let mapped = |mapping, addr: &str| Mapped { addr: addr.parse().unwrap(), mapping, answers: 2 };
+        // A symmetric mapping depends on the destination: not advertised.
+        tx.send(Some(mapped(Mapping::Symmetric, "93.184.216.34:50000"))).unwrap();
+        assert!(!hub.refresh().unwrap());
+        tx.send(Some(mapped(Mapping::EndpointIndependent, "93.184.216.34:50000"))).unwrap();
+        assert!(hub.refresh().unwrap());
+        let next = hub.current_bundle().unwrap();
+        assert!(next.seq > first.seq);
+        assert!(next.candidates.iter().any(|c| (c.kind, c.addr.as_str(), c.port) == (CandidateKind::Wan4, "93.184.216.34", 50000)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
