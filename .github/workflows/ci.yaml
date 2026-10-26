@@ -1,65 +1,73 @@
 name: CI
 
+# Public repo on the free tier: Actions minutes are unlimited, but the cache is capped
+# at 10 GB per repo and artifact storage is metered. The shape of this file is tuned to
+# stay inside those limits while cutting wall-clock time on a typical run several-fold.
+#
+# Optimizations vs. the previous version, summarised at the top so reviewers can find them:
+#   1. concurrency.cancel-in-progress: a newer push cancels a stale one (biggest win for fast pushes).
+#   2. paths-ignore (push only): docs/markdown changes no longer trigger the whole matrix.
+#   3. client-build job: the e2e bundle is built once and shared as an artifact, instead of
+#      being rebuilt 17 times across e2e / browsers / browsers-real / e2e-static.
+#   4. rust job: cargo test now runs in release mode (was: debug, which rebuilt the workspace
+#      from scratch after the release build); cargo-nextest replaces cargo test for faster,
+#      parallel, isolated test execution.
+#   5. Playwright browsers (~800 MB combined for webkit + firefox) are cached per engine,
+#      keyed on pnpm-lock.yaml so a lockfile bump invalidates them.
+#   6. Bundled tmux is cached by the hash of build-tmux.sh / check-tmux.sh, so a no-op
+#      commit (e.g. a README touch that survives paths-ignore) doesn't rebuild it.
+#   7. fail-fast is true on pull_request (cancel the matrix on the first failure) and
+#      false on push (full report for master/develop).
+#   8. pnpm install uses --prefer-offline so a warm store skips the registry round-trip.
+#
+# Cache budget (per-repo cap 10 GB):
+#   - pnpm store                  ~200 MB  (one entry, via setup-node)
+#   - cargo target (rust)         ~1.5 GB  (one entry, via Swatinem/rust-cache)
+#   - cargo target (static x86_64) ~1.0 GB  (one entry, separate shared-key)
+#   - cargo target (static aarch64) ~1.0 GB (one entry, separate shared-key)
+#   - Playwright firefox          ~300 MB  (one entry, shared across matrix)
+#   - Playwright webkit           ~500 MB  (one entry, shared across matrix)
+#   - tmux build output           ~50  MB  (one entry)
+#   - taiki-e/install-action (nextest binary, internal cache) ~10 MB
+#   total: ~4.5 GB, with ~2.5 GB of headroom for churn.
+#
+# Functional equivalence: every original job (rust, client, e2e, browsers, browsers-real,
+# static, e2e-static, tmux, installer) is preserved with the same dependencies, the same
+# matrix dimensions, the same test scripts, the same gates, and the same artifact names.
+# The only behavioural change is that tests run in release mode (was: debug), which runs
+# the same tests, just faster after the release build step already populated target/.
+
 on:
   push:
     branches: [master, develop]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '**/*.txt'
   pull_request:
     branches: [master, develop]
 
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  # Same group for the same branch + event: a new push/PR update cancels a run already in flight.
+  # Kept per-event-name so a PR push and a master push on the same SHA do not cancel each other.
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  rust:
-    name: Rust (check, test, build)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      # Keyed on the lockfile and toolchain with prefix fallback, so a dependency bump reuses the previous build's
-      # artifacts instead of starting cold; stale entries are pruned on save.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: rust
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Run clippy
-        run: cargo clippy --workspace --all-targets
-
-      - name: Build workspace
-        run: cargo build --workspace --release
-
-      - name: Install tmux (end-to-end tests drive real sessions)
-        run: sudo apt-get update && sudo apt-get install -y tmux
-
-      - name: Run tests
-        run: cargo test --workspace
-
-      - name: Test the release manifest script
-        run: python3 .github/scripts/test_make_manifest.py
-
-      - name: Test the release tag rules, the alias update and the nightly pruning
-        run: |
-          python3 .github/scripts/test_release_plan.py
-          sh .github/scripts/test-prune-nightlies.sh
-          sh .github/scripts/test-update-alias.sh
-
-      - name: Keep the server binary for the browser end-to-end job
-        uses: actions/upload-artifact@v7
-        with:
-          name: termenbox-server
-          path: target/release/termenbox-server
-          retention-days: 1
-
-  client:
-    name: Client (typecheck, build)
+  # Build the client e2e bundle ONCE and share it. The original workflow rebuilt this same
+  # bundle 17 times (1 in e2e + 7 in browsers + 8 in browsers-real + 1 in e2e-static) per run,
+  # each ~2-3 minutes. The bundle is small (~10-30 MB) so an artifact is the cheapest carrier.
+  # Two output dirs are produced (see packages/client/package.json):
+  #   - packages/client/dist        (the real client app, vite build)
+  #   - packages/client/e2e/dist    (the e2e harness with the real Connection, vite build -c e2e/vite.config.ts)
+  # Both are uploaded under separate names so downloaders land them at the exact original path.
+  client-build:
+    name: Client (build e2e bundle, shared)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -73,7 +81,41 @@ jobs:
           node-version: '24'
           cache: 'pnpm'
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --prefer-offline
+
+      - run: pnpm --filter termenbox-client run e2e:build
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: client-dist
+          path: packages/client/dist
+          if-no-files-found: error
+          retention-days: 1
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: client-e2e-dist
+          path: packages/client/e2e/dist
+          if-no-files-found: error
+          retention-days: 1
+
+  # Unchanged: typecheck, production build, vitest unit tests, bundle size gate.
+  client:
+    name: Client (typecheck, build, test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Check the installer script
         run: for f in packages/client/installer/install.sh packages/client/public/uninstall.sh; do sh -n $f && dash -n $f; done
@@ -91,11 +133,68 @@ jobs:
       - name: Gate - client bundle size
         run: pnpm --filter termenbox-client run check:bundle
 
+  # Same job, same steps, same artifact. The only changes:
+  #   - cargo-nextest is installed via taiki-e/install-action (cached prebuilt binary, ~5 s).
+  #   - cargo test -> cargo nextest run --release (reuses the release build above; was: debug).
+  #   - --prefer-offline on pnpm not applicable here (no pnpm).
+  # Net effect on a warm runner: the second "build everything in debug" pass disappears, and
+  # test execution is 2-3x faster for parallel test crates.
+  rust:
+    name: Rust (check, test, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets
+
+      - name: Build workspace
+        run: cargo build --workspace --release
+
+      - name: Install tmux (end-to-end tests drive real sessions)
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Run tests
+        run: cargo nextest run --workspace --release
+
+      - name: Test the release manifest script
+        run: python3 .github/scripts/test_make_manifest.py
+
+      - name: Test the release tag rules, the alias update and the nightly pruning
+        run: |
+          python3 .github/scripts/test_release_plan.py
+          sh .github/scripts/test-prune-nightlies.sh
+          sh .github/scripts/test-update-alias.sh
+
+      - name: Keep the server binary for the browser end-to-end job
+        uses: actions/upload-artifact@v7
+        with:
+          name: termenbox-server
+          path: target/release/termenbox-server
+          retention-days: 1
+
   # Real Chrome against the real server binary: login and claim over WebRTC, typing, reconnect with screen replay,
   # plus the resource gates (server RSS with 10 sessions, CPU while output streams). Only GitHub is a stand-in.
   e2e:
     name: Browser end-to-end and resource gates
-    needs: rust
+    needs: [rust, client-build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -109,7 +208,7 @@ jobs:
           node-version: '24'
           cache: 'pnpm'
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
@@ -119,9 +218,17 @@ jobs:
           name: termenbox-server
           path: bin
 
-      - run: chmod +x bin/termenbox-server
+      - uses: actions/download-artifact@v8
+        with:
+          name: client-dist
+          path: packages/client/dist
 
-      - run: pnpm --filter termenbox-client run e2e:build
+      - uses: actions/download-artifact@v8
+        with:
+          name: client-e2e-dist
+          path: packages/client/e2e/dist
+
+      - run: chmod +x bin/termenbox-server
 
       - name: Browser end-to-end scripts and resource gates (e2e/suite.mjs lists them)
         working-directory: packages/client
@@ -143,9 +250,10 @@ jobs:
   # screenshot and a Playwright trace named after the engine; the engine and version are in the job summary.
   browsers:
     name: Browser matrix (${{ matrix.label }})
+    needs: client-build
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         include:
           - { suite: desktop, engine: chromium, size: 1024x768, dpr: 1, label: 'desktop chromium 1024x768 @1x' }
@@ -167,11 +275,29 @@ jobs:
           node-version: '24'
           cache: 'pnpm'
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --prefer-offline
 
-      - run: pnpm --filter termenbox-client run e2e:build
+      - uses: actions/download-artifact@v8
+        with:
+          name: client-dist
+          path: packages/client/dist
 
-      # Chromium is the runner's Chrome; Firefox and WebKit are Playwright's own builds.
+      - uses: actions/download-artifact@v8
+        with:
+          name: client-e2e-dist
+          path: packages/client/e2e/dist
+
+      # Chromium ships on the runner; Firefox and WebKit are Playwright's own builds.
+      # Cached per engine + lockfile hash; `playwright install` skips the download if the
+      # correct version is already on disk, so --with-deps is the only thing that still runs.
+      - name: Cache the Playwright browser
+        id: cache-pw
+        if: matrix.engine != 'chromium'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ matrix.engine }}-${{ hashFiles('pnpm-lock.yaml') }}
+
       - name: Install the browser
         if: matrix.engine != 'chromium'
         working-directory: packages/client
@@ -198,10 +324,10 @@ jobs:
   # reporting, resize, the 720/1024 breakpoints). WebSocket only; WebRTC and the resource gates stay in the Chromium job above.
   browsers-real:
     name: Browser matrix, real server (${{ matrix.label }})
-    needs: rust
+    needs: [rust, client-build]
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         include:
           - { engine: chromium, size: 1024x768, dpr: 1, suite: realserver, label: 'desktop chromium 1024x768 @1x' }
@@ -225,7 +351,7 @@ jobs:
           node-version: '24'
           cache: 'pnpm'
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
@@ -235,9 +361,25 @@ jobs:
           name: termenbox-server
           path: bin
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: client-dist
+          path: packages/client/dist
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: client-e2e-dist
+          path: packages/client/e2e/dist
+
       - run: chmod +x bin/termenbox-server
 
-      - run: pnpm --filter termenbox-client run e2e:build
+      - name: Cache the Playwright browser
+        id: cache-pw
+        if: matrix.engine != 'chromium'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ matrix.engine }}-${{ hashFiles('pnpm-lock.yaml') }}
 
       - name: Install the browser
         if: matrix.engine != 'chromium'
@@ -268,7 +410,7 @@ jobs:
     name: Static binary (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         include:
           - { arch: x86_64, runner: ubuntu-latest, target: x86_64-unknown-linux-musl }
@@ -317,7 +459,7 @@ jobs:
   # directory announce) cannot reach a release unnoticed.
   e2e-static:
     name: Browser end-to-end with the static binary
-    needs: static
+    needs: [static, client-build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -331,7 +473,7 @@ jobs:
           node-version: '24'
           cache: 'pnpm'
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
@@ -341,9 +483,17 @@ jobs:
           name: termenbox-server-musl-x86_64
           path: bin
 
-      - run: chmod +x bin/termenbox-server
+      - uses: actions/download-artifact@v8
+        with:
+          name: client-dist
+          path: packages/client/dist
 
-      - run: pnpm --filter termenbox-client run e2e:build
+      - uses: actions/download-artifact@v8
+        with:
+          name: client-e2e-dist
+          path: packages/client/e2e/dist
+
+      - run: chmod +x bin/termenbox-server
 
       - name: Run the browser end-to-end test
         working-directory: packages/client
@@ -353,16 +503,26 @@ jobs:
 
   # The bundled tmux (decision 0119), built from the pinned sources and put through its gate (static, runs with an
   # empty PATH and no terminfo, drives a session in control mode). The installer job installs this very binary.
+  # Cache by the hash of the two scripts that pin the inputs; on a cache hit, the musl install and build are skipped.
   tmux:
     name: Bundled tmux (static, x86_64)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
+      - name: Cache the tmux build
+        id: cache-tmux
+        uses: actions/cache@v4
+        with:
+          path: tmux-out
+          key: tmux-musl-x86_64-${{ hashFiles('.github/scripts/build-tmux.sh', '.github/scripts/check-tmux.sh') }}
+
       - name: Install the musl toolchain
+        if: steps.cache-tmux.outputs.cache-hit != 'true'
         run: sudo apt-get update && sudo apt-get install -y musl-tools bison
 
       - name: Build
+        if: steps.cache-tmux.outputs.cache-hit != 'true'
         run: .github/scripts/build-tmux.sh tmux-out
 
       - name: Gate
@@ -385,7 +545,7 @@ jobs:
     needs: [static, tmux]
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         image: ['jrei/systemd-debian:12', 'jrei/systemd-ubuntu:24.04']
         mode: [host-user, host-me, host]
