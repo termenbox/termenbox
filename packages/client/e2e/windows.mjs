@@ -25,25 +25,28 @@ try {
   const win = (index, command, path, extra = {}) => ({ index, name: `w${index}`, command, path, active: false, ...extra });
   const feed = (server, workspace, windows, rep) => page.evaluate(([s, ses, w, r]) => window.__navigation.windows(s, ses, w, r), [server, workspace, windows, rep]);
 
-  // Two workspaces in one repo, one elsewhere: the repo's tabs are told apart by workspace name.
+  // A tab is titled with its workspace's name; the directory of its representative window is the tooltip.
   await feed('alpha', 'workspace-0', [win(0, 'bash', '/home/u/app', { active: true }), win(1, 'claude', '/home/u/app/api', { agent: 'claude' })], 1);
   await feed('alpha', 'workspace-2', [win(0, 'lazygit', '/home/u/app', { active: true })], 0);
   await feed('alpha', 'workspace-3', [win(0, 'bash', '/srv/other', { active: true })], 0);
   await page.waitForTimeout(2300); // labels follow the shell once no finger is down
   const tab = (key) => page.locator(`[role=tab][data-key="${key}"]`);
   const text = async (key) => (await tab(key).innerText()).replace(/\s+/g, ' ');
-  if (!(await text('alpha/workspace-0')).includes('…/app/api') && !(await text('alpha/workspace-0')).includes('~/app/api')) fail(`tab 0 does not show its agent window path: ${await text('alpha/workspace-0')}`);
-  if (!(await text('alpha/workspace-3')).includes('/srv/other')) fail(`tab 3 does not show its path: ${await text('alpha/workspace-3')}`);
+  const title = (key) => tab(key).getAttribute('title');
+  if (!(await text('alpha/workspace-0')).includes('workspace-0') || (await text('alpha/workspace-0')).includes('app/api')) fail(`tab 0 is not titled with its workspace name: ${await text('alpha/workspace-0')}`);
+  if (!(await text('alpha/workspace-3')).includes('workspace-3') || (await text('alpha/workspace-3')).includes('/srv/other')) fail(`tab 3 is not titled with its workspace name: ${await text('alpha/workspace-3')}`);
+  if ((await title('alpha/workspace-0')) !== '/home/u/app/api') fail(`tab 0 tooltip is not its agent window path: ${await title('alpha/workspace-0')}`);
+  if ((await title('alpha/workspace-3')) !== '/srv/other') fail(`tab 3 tooltip is not its path: ${await title('alpha/workspace-3')}`);
   if ((await tab('alpha/workspace-0').locator('[role=img]').getAttribute('aria-label')) !== 'Claude Code') fail('tab 0 has no agent icon from its representative window');
   if ((await tab('alpha/workspace-2').locator('[role=img]').getAttribute('aria-label')) !== 'lazygit') fail('tab 2 has no program icon');
-  console.log('ok  a tab shows the path and the icon of its representative window');
+  console.log('ok  a tab shows the workspace name, the icon of its representative window and its path as the tooltip');
 
-  // Same path twice: the workspace name is added.
+  // Two workspaces in one directory keep their own names.
   await feed('alpha', 'workspace-2', [win(0, 'bash', '/home/u/app/api', { active: true })], 0);
   await page.waitForTimeout(2300);
   const t0 = await text('alpha/workspace-0'), t2 = await text('alpha/workspace-2');
-  if (!t0.includes('workspace-0') || !t2.includes('workspace-2')) fail(`equal paths were not told apart: ${t0} | ${t2}`);
-  console.log('ok  tabs that would read the same are told apart by workspace name');
+  if (!t0.includes('workspace-0') || !t2.includes('workspace-2') || t0.includes('workspace-2') || t2.includes('workspace-0')) fail(`tabs do not read their own names: ${t0} | ${t2}`);
+  console.log('ok  tabs of one directory read their own workspace names');
 
   // Tapping the open tab lists its windows; ✕ asks before closing a running window and closes only that window.
   await page.evaluate(() => window.__navigation.select('alpha/workspace-0'));

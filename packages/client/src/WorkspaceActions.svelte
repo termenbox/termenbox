@@ -8,11 +8,21 @@
   export let ondetach: () => void;
   export let oncloseworkspace: () => void;
   export let onclose: () => void;
+  /** Sets the name shown for the workspace; the sheet closes with it. Missing: no Rename. */
+  export let onrename: ((name: string) => void) | undefined = undefined;
   /** Opened from "Close workspace" in the windows menu: go straight to the question. */
   export let confirmFirst = false;
   let dialog: HTMLDialogElement;
   /** Close workspace asks first, naming the workspace and its server (guardrail kill-session-needs-confirmation). */
   let confirming = confirmFirst;
+  let renaming = false;
+  let draft = workspace.name;
+  function save() {
+    const next = draft.trim();
+    onclose();
+    if (next && next !== workspace.name) onrename?.(next);
+  }
+  const focusSelect = (el: HTMLInputElement) => { el.focus(); el.select(); };
   const restoreFocus = rememberFocus();
   onMount(() => dialog.showModal());
   onDestroy(restoreFocus);
@@ -23,7 +33,14 @@
     <p role="alert">Close <strong>{workspace.name}</strong> on {workspace.serverName}? Everything running in it ends.</p>
     <button class="danger" on:click={() => { onclose(); oncloseworkspace(); }}>Close workspace</button>
     <button class="secondary" on:click={() => (confirmFirst ? onclose() : (confirming = false))}>Cancel</button>
+  {:else if renaming}
+    <form on:submit|preventDefault={save}>
+      <input use:focusSelect bind:value={draft} aria-label="Workspace name" maxlength="64" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done" data-testid="workspace-rename" />
+      <button type="submit">Save name</button>
+      <button type="button" class="secondary" on:click={() => (renaming = false)}>Cancel</button>
+    </form>
   {:else}
+    {#if onrename}<button on:click={() => { draft = workspace.name; renaming = true; }} data-testid="workspace-rename-item">Rename…</button>{/if}
     <button on:click={() => { onclose(); ondetach(); }}>Detach (keeps it running)</button>
     {#if canClose}<button class="danger" on:click={() => (confirming = true)}>Close workspace…</button>{/if}
     <button class="secondary" on:click={onclose}>Cancel</button>
@@ -34,5 +51,6 @@
   dialog::backdrop { background: #0008; }
   h2, p { overflow-wrap: anywhere; margin-bottom: 12px; }
   button { display: block; width: 100%; min-height: 44px; min-width: 44px; margin-bottom: 8px; }
+  input { display: block; width: 100%; min-height: 44px; margin-bottom: 8px; padding: 0 12px; font-size: 16px; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
   .danger { background: var(--danger); color: var(--bg); }
 </style>

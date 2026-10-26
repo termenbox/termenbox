@@ -199,6 +199,9 @@ pub enum ClientMessage {
     RevokeDevice {
         device: String,
     },
+    /// Owner-only: install the newer release now (decision 0077): the server leaves an `update-now` request for the
+    /// root helper and answers `update_requested`. The service restarts when the update is installed.
+    UpdateServer {},
     /// Owner-only, recently signed in: remove this server (decision 0072). `confirm_name` must equal the
     /// server's name; the flags choose the optional host cleanup (all off by default).
     Uninstall {
@@ -454,6 +457,12 @@ pub enum ServerMessage {
         run_user: String,
         version: String,
     },
+    /// The `update_server` request was handed to the updater; `available` is the version it will install, empty when
+    /// the updater has not recorded one (it checks again and installs nothing if there is none).
+    UpdateRequested {
+        #[serde(default)]
+        available: String,
+    },
     /// The server wiped its configuration and will stop; `mode` is `container` or `host:<user>`.
     UninstallDone {
         mode: String,
@@ -500,6 +509,9 @@ pub enum ServerMessage {
         /// The agents the owner allows as ACP workspaces (decision 0111); empty when the server runs none.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         acp_agents: Vec<String>,
+        /// A newer release this server could install but has not (`update-status.json`); absent when up to date.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        update_available: String,
     },
     Workspaces {
         workspaces: Vec<WorkspaceInfo>,
@@ -1113,10 +1125,14 @@ mod tests {
             tmux_version: "3.6".into(),
             prefix: "C-b".into(),
             acp_agents: vec![],
+            update_available: String::new(),
         })
         .unwrap();
         assert_eq!(v["type"], "auth_ok");
         assert!(v.get("acp_agents").is_none());
+        assert!(v.get("update_available").is_none());
+        let v: ClientMessage = serde_json::from_str(r#"{"type":"update_server"}"#).unwrap();
+        assert_eq!(v, ClientMessage::UpdateServer {});
         let v = serde_json::to_value(ClientMessage::History { from: 1, to: 2 }).unwrap();
         assert_eq!(v["type"], "history");
         assert_eq!(v["from"], 1);

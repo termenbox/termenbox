@@ -5,6 +5,8 @@ export type ClientMessage =
   /** Decision 0117: sent instead of `auth`; the token authorises a read-only preview and nothing is bound. */
   | { type: 'claim_preview'; server_token: string }
   | { type: 'revoke_device'; device: string }
+  /** Owner-only: install the newer release now; the answer is `update_requested`, and the service restarts when it is done. */
+  | { type: 'update_server' }
   | { type: 'uninstall'; confirm_name: string; delete_user?: boolean; remove_tmux?: boolean; kill_workspaces?: boolean }
   | { type: 'agent_sync'; after: Record<string, number> }
   | { type: 'peek'; workspace: string; hash?: string }
@@ -77,10 +79,11 @@ export type ServerMessage =
   | { type: 'device_revoked'; device: string }
   /** Answer to `claim_preview`: `mode` is `container` or `host`; `run_user` is empty in a container. */
   | { type: 'claim_preview'; name: string; mode: string; run_user?: string; version: string }
+  | { type: 'update_requested'; available?: string }
   | { type: 'uninstall_done'; mode: string }
   /** Decision 0123: the server's signed candidate bundle, pushed after `auth_ok`; verify it before use (lib/bundle.ts). */
   | { type: 'candidates'; bundle: string }
-  | { type: 'auth_ok'; protocol?: number; control_channel?: boolean; channels?: string[]; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string; acp_agents?: string[] }
+  | { type: 'auth_ok'; protocol?: number; control_channel?: boolean; channels?: string[]; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string; acp_agents?: string[]; update_available?: string }
   | { type: 'workspaces'; workspaces: WorkspaceInfo[] }
   | { type: 'workspace_attached'; workspace_id: string }
   | { type: 'output'; data: string }

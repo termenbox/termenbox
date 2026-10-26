@@ -15,6 +15,10 @@ export interface HubServer {
   state: ServerState;
   reason: string;
   version: string;
+  /** A newer release the server could install but has not (`auth_ok.update_available`); empty when up to date. */
+  updateAvailable?: string;
+  /** The owner asked this server to update; it restarts when done, and the reconnect brings the new version. */
+  updating?: boolean;
   backends: string[];
   /** The agents the owner allows as ACP workspaces (T0); empty when the server runs none. */
   acpAgents: string[];
@@ -91,7 +95,7 @@ export class ServerHub {
       else this.publish();
       return;
     }
-    const entry: Entry = { id, server, state: 'connecting', reason: '', version: '', backends: [], acpAgents: [], controlMode: false, tmuxVersion: '', prefix: '', connection: null, path: '', failures: [],
+    const entry: Entry = { id, server, state: 'connecting', reason: '', version: '', updateAvailable: '', updating: false, backends: [], acpAgents: [], controlMode: false, tmuxVersion: '', prefix: '', connection: null, path: '', failures: [],
       workspaces: [], agents: {}, windows: {}, refresh: !server.record && !server.bundle && !!server.server_id, everReady: false };
     this.entries.set(id, entry);
     this.connect(entry);
@@ -117,6 +121,15 @@ export class ServerHub {
     if (e) { e.workspaces = e.workspaces.map(s => (s.id === found.id ? { ...s, name } : s)); this.publish(); }
     this.sendToWorkspace(key, { type: 'rename_workspace', workspace: key, name });
     setTimeout(() => this.send(found.serverId, { type: 'list_workspaces' }), 2000);
+  }
+  /** Asks the server to install its newer release; the card shows "Updating" until the server comes back. */
+  updateServer(id: string) {
+    const e = this.entries.get(id);
+    if (!e || e.state !== 'connected') return;
+    e.updating = true; this.publishServers();
+    this.send(id, { type: 'update_server' });
+    // An updater that finds nothing newer restarts nothing: the card must not say "Updating" for good.
+    setTimeout(() => { if (e.updating && e.state === 'connected') { e.updating = false; this.publishServers(); } }, 120_000);
   }
   findWorkspace(key: string): HubWorkspace | undefined {
     for (const e of this.entries.values()) {
@@ -166,7 +179,7 @@ export class ServerHub {
         e.everReady = true;
         const { claim, ...saved } = e.server;
         e.server = { ...saved, server_name: saved.server_name || msg.server_name };
-        e.version = msg.version ?? ''; e.backends = msg.backends ?? []; e.acpAgents = msg.acp_agents ?? [];
+        e.version = msg.version ?? ''; e.updateAvailable = msg.update_available ?? ''; e.updating = false; e.backends = msg.backends ?? []; e.acpAgents = msg.acp_agents ?? [];
         e.controlMode = !!msg.control_mode; e.tmuxVersion = msg.tmux_version ?? ''; e.prefix = msg.prefix ?? '';
         this.publish(); this.opts.onSaved?.(e.server);
         connection.send({ type: 'list_workspaces' });
@@ -200,6 +213,8 @@ export class ServerHub {
         const result = applyEvents(e.agents, msg.events); e.agents = result.map;
         if (result.gap) connection.send({ type: 'agent_sync', after: syncRequest(e.agents) });
       }
+      if (msg.type === 'update_requested') { e.updating = true; this.publishServers(); }
+      if (msg.type === 'error' && e.updating) { e.updating = false; this.publishServers(); }
       if (msg.type === 'candidates') void this.acceptBundle(e, msg.bundle, current);
       if (msg.type === 'server_health') { const { type: _, ...h } = msg; e.health = h; this.publishServers(); }
       if (changed) this.publish();
@@ -230,7 +245,7 @@ export class ServerHub {
   }
   /** The server list alone: a health sample every 10 s per server must not rebuild the workspace, agent and window stores. */
   private publishServers(entries = [...this.entries.values()]) {
-    this.servers.set(entries.map(({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures }) => ({ id, server, state, reason, version, backends, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures })));
+    this.servers.set(entries.map(({ id, server, state, reason, version, updateAvailable, updating, backends, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures }) => ({ id, server, state, reason, version, updateAvailable, updating, backends, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures })));
   }
   private publish() {
     const entries = [...this.entries.values()];
