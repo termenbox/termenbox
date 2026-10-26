@@ -1,5 +1,6 @@
 import { CONTROL_TYPES, type ClientMessage, type ServerMessage } from './protocol';
 import { openRtc } from './rtc';
+import { openAssisted, type AssistedAuth } from './assisted';
 import { openTransport, Unreachable, type Openers, type Target, type Transport } from './transport';
 import { openWs } from './ws';
 import type { Credentials } from './device';
@@ -81,7 +82,7 @@ export interface ConnectionOptions {
   onFatal: (message: string) => void;
 }
 
-const DEFAULT_OPENERS: Openers = { rtc: openRtc, ws: openWs };
+const DEFAULT_OPENERS: Openers = { rtc: openRtc, ws: openWs, assisted: (target, auth, signal) => openAssisted(target, auth, signal) };
 
 /** One authenticated connection to a server that heals itself: transport choice, backoff, heartbeat, wake-up on foreground. */
 export class Connection {
@@ -271,7 +272,8 @@ export class Connection {
 
     let transport: Transport;
     try {
-      transport = await openTransport(await this.opts.target(), this.opts.openers ?? DEFAULT_OPENERS);
+      const target = await this.opts.target();
+      transport = await openTransport(target, this.opts.openers ?? DEFAULT_OPENERS, await this.assistedAuth(target));
     } catch (e) {
       this.opening = false;
       if (this.stopped) return;
@@ -369,6 +371,17 @@ export class Connection {
       }
     } else {
       this.listeners.forEach((fn) => fn(msg));
+    }
+  }
+
+  /** What the assisted path signs its messages with; none when the bundle has no signaling Worker or the device is not signed in. */
+  private async assistedAuth(target: Target): Promise<AssistedAuth | undefined> {
+    const serverId = this.opts.serverId ?? target.bundle?.server_id;
+    if (!target.bundle?.signal || !serverId) return undefined;
+    try {
+      return { ...(await this.opts.credentials()), serverId, claim: this.opts.claim };
+    } catch {
+      return undefined;
     }
   }
 

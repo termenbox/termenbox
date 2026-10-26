@@ -1131,6 +1131,9 @@ async fn main() -> anyhow::Result<()> {
             handle.rx.clone(),
             stun_rx_out,
         );
+        if !lan_only {
+            hub.enable_assisted();
+        }
         if let Err(e) = hub.refresh() {
             tracing::warn!("cannot sign a candidate bundle: {e:#}");
         }
