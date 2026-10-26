@@ -36,7 +36,8 @@ semver = "1"
 percent-encoding = "2.3"
 agent-client-protocol-schema = { version = "1.12", default-features = false }
 
-[dev-dependencies]
-tokio-tungstenite = "0.21"
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
+
+[dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

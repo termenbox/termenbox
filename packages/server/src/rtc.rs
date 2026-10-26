@@ -111,7 +111,7 @@ pub struct AssistedAnswer {
     pub pwd: String,
 }
 
-#[allow(dead_code)] // started by the signal client of step 2.5
+#[allow(dead_code)] // cancel and active are used by the tests; a session that ends early will cancel (step 2.8)
 enum Command {
     Start(AssistedOffer, oneshot::Sender<Result<AssistedAnswer>>),
     Candidate(String, SocketAddr),
@@ -123,14 +123,20 @@ enum Command {
 /// unknown source's first check), an assisted session is a full ICE agent that starts its own checks toward the
 /// client's candidates, which is what a NAT punch needs.
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // started by the signal client of step 2.5
 pub struct Assisted {
     tx: mpsc::UnboundedSender<Command>,
     relay_inbox: mpsc::UnboundedSender<crate::turn::Packet>,
 }
 
-#[allow(dead_code)] // started by the signal client of step 2.5
 impl Assisted {
+    /// A handle with no transport behind it: `start` fails, everything else is ignored.
+    #[cfg(test)]
+    pub fn detached() -> Assisted {
+        let (tx, _) = mpsc::unbounded_channel();
+        let (relay_inbox, _) = mpsc::unbounded_channel();
+        Assisted { tx, relay_inbox }
+    }
+
     /// Where a relay allocation delivers what peers send to it: pass this to `turn::allocate`.
     pub fn relay_inbox(&self) -> mpsc::UnboundedSender<crate::turn::Packet> {
         self.relay_inbox.clone()
@@ -150,10 +156,12 @@ impl Assisted {
     }
 
     /// Ends a session; unknown names are ignored.
+    #[allow(dead_code)] // cancel and active are used by the tests; a session that ends early will cancel (step 2.8)
     pub fn cancel(&self, session: &str) {
         let _ = self.tx.send(Command::Cancel(session.into()));
     }
 
+    #[allow(dead_code)] // cancel and active are used by the tests; a session that ends early will cancel (step 2.8)
     pub async fn active(&self) -> usize {
         let (reply, rx) = oneshot::channel();
         if self.tx.send(Command::Count(reply)).is_err() {

@@ -1778,3 +1778,142 @@ async fn assisted_ice_without_a_relay_still_connects_when_the_allocation_is_refu
     .await;
     assert!(client.is_ok());
 }
+
+/// The server's signaling handler over the fixture's real transport, a fake Cloudflare and a fake TURN server.
+async fn signal_rig(
+    f: &Fixture,
+    turn: Option<&crate::turn::testing::Fake>,
+) -> (
+    crate::signal::Signal,
+    Arc<crate::signal::testing::FakeCloudflare>,
+) {
+    use crate::signal::testing::*;
+    let servers = match turn {
+        Some(t) => json!({
+            "urls": [format!("turn:{}?transport=udp", t.addr)],
+            "username": crate::turn::testing::USER,
+            "credential": crate::turn::testing::PASS,
+        }),
+        None => secret_servers(),
+    };
+    let cf = Arc::new(cloudflare(servers).await);
+    let signal = crate::signal::Signal::new(
+        f.auth.clone(),
+        f.assisted.clone(),
+        crate::signal::Endpoint {
+            host: SocketAddr::new(f.rtc.ip, f.rtc.port),
+            mapped: None,
+        },
+        Some(crate::signal::Minter::new(&cf.base, KEY_ID, TOKEN)),
+        Arc::new(crate::signal::Usage::open(&f.dir, 500)),
+    );
+    (signal, cf)
+}
+
+fn reply_json(r: Option<Vec<u8>>) -> Value {
+    serde_json::from_slice(&r.expect("a reply")).unwrap()
+}
+
+#[tokio::test]
+async fn signal_offer_starts_a_session_the_client_connects_to() {
+    use crate::signal::testing::signed;
+    let f = fixture().await;
+    let (signal, _cf) = signal_rig(&f, None).await;
+    let who = f.who(1, "alice");
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let ufrag = uuid::Uuid::new_v4().simple().to_string();
+    let pwd = format!("{ufrag}0123456789abcdef");
+    let offer = signed(
+        &who.device,
+        &who.cert,
+        &f.server_id,
+        json!({"t": "offer", "ufrag": ufrag, "pwd": pwd,
+               "cands": [socket.local_addr().unwrap().to_string()], "claim": f.claim}),
+    );
+    let answer = reply_json(signal.handle(3, &offer).await);
+    assert_eq!(answer["t"], "answer", "{answer}");
+    assert_eq!(f.assisted.active().await, 1);
+
+    // A signed candidate for that session is taken; the same for a session this client did not start is not.
+    let session = answer["ufrag"].as_str().unwrap().to_string();
+    let extra = signed(
+        &who.device,
+        &who.cert,
+        &f.server_id,
+        json!({"t": "cand", "session": session, "addr": "127.0.0.1:9"}),
+    );
+    assert_eq!(reply_json(signal.handle(3, &extra).await)["t"], "ok");
+    let theirs = signed(
+        &who.device,
+        &who.cert,
+        &f.server_id,
+        json!({"t": "cand", "session": session, "addr": "127.0.0.1:9"}),
+    );
+    assert_eq!(reply_json(signal.handle(4, &theirs).await)["t"], "error");
+
+    let client = RtcClient::dial(
+        socket,
+        IceCreds { ufrag, pass: pwd },
+        IceCreds {
+            ufrag: session,
+            pass: answer["pwd"].as_str().unwrap().into(),
+        },
+        None,
+        &f.rtc.fingerprint,
+    )
+    .await;
+    let mut c = Conn::Rtc(client.expect("connects"));
+    c.send(json!({"type": "list_workspaces"})).await;
+    c.recv_type("error").await;
+}
+
+#[tokio::test]
+async fn signal_offer_that_wants_a_relay_gets_one_and_a_stranger_does_not_start_a_session() {
+    use crate::signal::testing::signed;
+    let f = fixture().await;
+    let mut turn = crate::turn::testing::fake().await;
+    let (signal, cf) = signal_rig(&f, Some(&turn)).await;
+    let who = f.who(1, "alice");
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let ufrag = uuid::Uuid::new_v4().simple().to_string();
+    let pwd = format!("{ufrag}0123456789abcdef");
+    let fields = |claim: &str| {
+        json!({"t": "offer", "ufrag": ufrag, "pwd": pwd, "relay": true,
+               "cands": [socket.local_addr().unwrap().to_string()], "claim": claim})
+    };
+
+    // An unauthenticated offer starts nothing and costs nothing.
+    let stranger = f.who(2, "mallory");
+    let bad = signed(
+        &stranger.device,
+        &stranger.cert,
+        &f.server_id,
+        fields("wrong"),
+    );
+    assert_eq!(reply_json(signal.handle(1, &bad).await)["t"], "error");
+    assert_eq!(f.assisted.active().await, 0);
+    assert_eq!(cf.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    let good = signed(&who.device, &who.cert, &f.server_id, fields(&f.claim));
+    let answer = reply_json(signal.handle(1, &good).await);
+    assert_eq!(answer["t"], "answer", "{answer}");
+    let cands: Vec<String> = answer["cands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap().into())
+        .collect();
+    assert_eq!(
+        cands.len(),
+        2,
+        "the host address and the relayed one: {cands:?}"
+    );
+    assert_eq!(cf.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // The relay is the server's own allocation and goes with the session.
+    f.assisted.cancel(answer["ufrag"].as_str().unwrap());
+    tokio::time::timeout(Duration::from_secs(3), turn.closed.recv())
+        .await
+        .expect("the allocation is released")
+        .unwrap();
+}

@@ -5,8 +5,6 @@
 //!
 //! The relay uses its own UDP socket to the TURN server, so nothing here touches the transport socket. Packets from
 //! peers come out through the inbox the transport handed us; packets to peers go in through `send`.
-#![allow(dead_code)] // allocated by the signal client of step 2.5
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;

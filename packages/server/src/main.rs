@@ -51,6 +51,7 @@ mod reducer;
 mod release;
 mod requests;
 mod rtc;
+mod signal;
 mod stun;
 mod terminfo;
 mod tmuxconf;
@@ -991,7 +992,7 @@ async fn main() -> anyhow::Result<()> {
         let stun_servers = stun::servers(lan_only, std::env::var("TERMENBOX_STUN").ok().as_deref());
         let socket = Arc::new(socket);
         let (stun_inbox, stun_rx) = stun::channel();
-        let info = rtc::start_shared(
+        let (info, assisted) = rtc::start_assisted(
             socket.clone(),
             rtc_ip,
             cert.clone(),
@@ -1053,6 +1054,45 @@ async fn main() -> anyhow::Result<()> {
         } else {
             stun::spawn(socket, stun_rx, stun_servers, handle.rx.clone())
         };
+        // The assisted path (DECISION-0140) exists only once the owner has run the Cloudflare setup (step 2.7), and
+        // never in LAN-only mode.
+        if !lan_only {
+            match signal::Config::load(&args.config_dir) {
+                Ok(Some(cfg)) => {
+                    let usage = Arc::new(signal::Usage::open(
+                        &args.config_dir,
+                        signal::Usage::cap_from_env(
+                            std::env::var("TERMENBOX_RELAY_CAP_GB").ok().as_deref(),
+                        ),
+                    ));
+                    println!("{}", usage.status_line());
+                    let handler = Arc::new(signal::Signal::new(
+                        state.auth.clone(),
+                        assisted,
+                        signal::Endpoint {
+                            host: std::net::SocketAddr::new(info.ip, info.port),
+                            mapped: Some(stun_rx_out.clone()),
+                        },
+                        Some(signal::Minter::new(
+                            signal::CLOUDFLARE_API,
+                            &cfg.turn_key_id,
+                            &cfg.turn_key_token,
+                        )),
+                        usage,
+                    ));
+                    tokio::spawn(signal::run(
+                        cfg.signal,
+                        handler,
+                        signal::Backoff::new(
+                            std::time::Duration::from_secs(1),
+                            std::time::Duration::from_secs(60),
+                        ),
+                    ));
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!("assisted connection is off: {e:#}"),
+            }
+        }
         let hub = candidates::PathHub::new_with_stun(
             args.config_dir.clone(),
             Arc::new(directory::ServerKey::load_or_create(&args.config_dir)?),
