@@ -36,6 +36,9 @@ async function sidebarAt(shared, width) {
   t.check((await toggle.getAttribute('aria-expanded')) === 'true', `${width}: Workspaces does not say the sidebar is open`);
   const controls = await toggle.getAttribute('aria-controls');
   t.check(controls === 'workspace-sidebar' && (await page.locator(`#${controls}`).count()) === 1, `${width}: Workspaces does not control the sidebar (${controls})`);
+  // The sidebar lists the workspaces, so the top session strip is not shown beside it; closing the sidebar brings the strip back.
+  const strip = page.locator('header.topbar [role=tablist]');
+  t.check((await strip.count()) === 0, `${width}: the session strip is shown beside the sidebar`);
   let sizes = 0;
   await nextSize(t, 0, `${width} first `);
   await page.waitForTimeout(400);
@@ -47,6 +50,7 @@ async function sidebarAt(shared, width) {
   t.check((await side.count()) === 0, `${width}: Workspaces did not close the sidebar`);
   t.check((await toggle.getAttribute('aria-expanded')) === 'false' && !(await toggle.getAttribute('aria-controls')), `${width}: expanded state wrong while closed`);
   t.check((await page.locator('[data-shell=bottom-bar]').count()) === 1, `${width}: no destinations left while the sidebar is closed`);
+  t.check((await strip.count()) === 1, `${width}: the session strip did not come back with the sidebar closed`);
   t.check((await t.overflow()) <= 0, `${width}: overflow with the sidebar closed`);
   const closed = await nextSize(t, sizes, `${width} closed `);
   t.check(closed.cols > first.cols, `${width}: the server got ${closed.cols} columns with the sidebar closed, not more than ${first.cols}`);
@@ -455,14 +459,20 @@ async function phone(shared) {
   await t.open();
   t.check((await page.locator('[data-shell=sidebar]').count()) === 0 && (await page.locator('[data-shell=bottom-bar]').count()) === 1, 'phone: the saved desktop layout leaked into a phone');
   await page.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click();
-  const workspaces = page.locator('.workspaces-button');
-  await workspaces.waitFor().catch(() => {});
-  // Tapping Workspaces again, already on Workspaces, brings the list back (and a third tap puts it away).
-  const open = async () => (await workspaces.getAttribute('aria-expanded')) === 'true';
-  const before = await open();
+  await page.locator('.workspaces-button').waitFor();
+  // Workspaces in the bottom bar is the one Workspaces page: a second tap stays on it and opens no sheet of its own.
   await page.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click();
-  await page.waitForFunction(([was]) => (document.querySelector('.workspaces-button')?.getAttribute('aria-expanded') === 'true') !== was, [before], { timeout: 3000 }).catch(() => {});
-  t.check((await open()) !== before, 'phone: a second tap on Workspaces did not toggle the list');
+  await page.waitForTimeout(300);
+  t.check((await page.locator('[data-shell=bottom-bar] [data-destination=workspaces][aria-current=page]').count()) === 1, 'phone: Workspaces is not the current destination');
+  t.check((await page.locator('.workspace-sheet').count()) === 0, 'phone: a tap on Workspaces opened a sheet');
+  // In a terminal, Workspaces shows the same page, not a variant of it.
+  await page.locator('[data-workspace-groups] button').first().click();
+  await page.locator('.xterm').first().waitFor();
+  t.check((await page.locator('[data-workspace-groups]').count()) === 0, 'phone: the list stayed on screen over an open workspace');
+  await page.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click();
+  await page.locator('[data-workspace-groups]').waitFor({ timeout: 3000 }).catch(() => {});
+  t.check((await page.locator('[data-workspace-groups]').count()) === 1, 'phone: Workspaces in a terminal did not show the Workspaces page');
+  t.check((await page.locator('.workspace-sheet').count()) === 0, 'phone: Workspaces in a terminal opened a sheet');
   t.check((await t.overflow()) <= 0, 'phone: overflow');
   const ok = await t.end();
   if (ok) t.ok('390 px ignores the saved sidebar and split');

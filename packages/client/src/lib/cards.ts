@@ -11,9 +11,10 @@ export interface Chip {
   tone: 'need' | 'work' | 'done' | 'error' | 'idle';
 }
 
+/** Marks stay text on every platform: no emoji (iOS draws ❗ and a bare ⚙ as colour emoji, which ignore the tone's colour). */
 const CHIPS: Record<AgentState, Chip> = {
-  needs_input: { label: 'Needs you', icon: '❗', tone: 'need' },
-  working: { label: 'Working', icon: '⚙', tone: 'work' },
+  needs_input: { label: 'Needs you', icon: '!', tone: 'need' },
+  working: { label: 'Working', icon: '⚙\uFE0E', tone: 'work' },
   done: { label: 'Done', icon: '✓', tone: 'done' },
   error: { label: 'Error', icon: '✕', tone: 'error' },
   idle: { label: 'Idle', icon: '·', tone: 'idle' },
