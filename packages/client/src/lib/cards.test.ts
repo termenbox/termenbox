@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ageText, chipFor, FrozenOrder, progress, sortIds, staleText, toolLine } from './cards';
-import type { AgentMap, WorkspaceAgent } from './agents';
+import { ageText, chipFor, FrozenOrder, progress, staleText, toolLine } from './cards';
+import type { WorkspaceAgent } from './agents';
 
 const a = (state: WorkspaceAgent['state'], extra: Partial<WorkspaceAgent> = {}): WorkspaceAgent => ({ state, seq: 1, stale: false, ts: 1000, ...extra });
 
@@ -36,24 +36,23 @@ describe('card text', () => {
 });
 
 describe('order', () => {
-  const agents: AgentMap = { x: a('idle'), y: a('needs_input'), z: a('working') };
-  it('puts needs-you first, then error, working, done, idle, and workspaces without events last', () => {
-    expect(sortIds(['x', 'y', 'z', 'w'], agents)).toEqual(['y', 'z', 'x', 'w']);
+  it('keeps the order it is given: a state never moves a card', () => {
+    const o = new FrozenOrder();
+    expect(o.order(['x', 'y', 'z', 'w'], 0)).toEqual(['x', 'y', 'z', 'w']);
   });
 
   it('holds still while a finger is down, a sheet is open or the list was just scrolled, then applies the change', () => {
     const o = new FrozenOrder(2000);
-    expect(o.order(['x', 'y', 'z'], agents, 0)).toEqual(['y', 'z', 'x']);
-    const later: AgentMap = { ...agents, x: a('needs_input') };
+    expect(o.order(['x', 'y', 'z'], 0)).toEqual(['x', 'y', 'z']);
     o.touchDown();
-    expect(o.order(['x', 'y', 'z'], later, 100)).toEqual(['y', 'z', 'x']); // x needs you now but nothing moves
+    expect(o.order(['z', 'y', 'x'], 100)).toEqual(['x', 'y', 'z']); // the user's order changed but nothing moves
     o.touchUp();
     o.sheet(true);
-    expect(o.order(['x', 'y', 'z'], later, 200)).toEqual(['y', 'z', 'x']);
+    expect(o.order(['z', 'y', 'x'], 200)).toEqual(['x', 'y', 'z']);
     o.sheet(false);
     o.scrolled(300);
-    expect(o.order(['x', 'y', 'z'], later, 1000)).toEqual(['y', 'z', 'x']);
-    expect(o.order(['x', 'y', 'z'], later, 2500)).toEqual(['x', 'y', 'z']); // two seconds after the scroll
+    expect(o.order(['z', 'y', 'x'], 1000)).toEqual(['x', 'y', 'z']);
+    expect(o.order(['z', 'y', 'x'], 2500)).toEqual(['z', 'y', 'x']); // two seconds after the scroll
   });
 
   it('ignores releases of pointers that did not start here, including duplicate releases', () => {
@@ -66,11 +65,11 @@ describe('order', () => {
 
   it('while held, neither insertion nor removal moves controls; both apply after release', () => {
     const o = new FrozenOrder();
-    o.order(['x', 'y'], agents, 0);
+    o.order(['x', 'y'], 0);
     o.touchDown();
-    expect(o.order(['y', 'n', 'z'], agents, 10)).toEqual(['y', 'x']);
-    expect(o.order(['n', 'y'], agents, 20)).toEqual(['y', 'x']);
+    expect(o.order(['y', 'n', 'z'], 10)).toEqual(['x', 'y']);
+    expect(o.order(['n', 'y'], 20)).toEqual(['x', 'y']);
     o.touchUp();
-    expect(o.order(['n', 'y'], agents, 21)).toEqual(['y', 'n']);
+    expect(o.order(['n', 'y'], 21)).toEqual(['n', 'y']);
   });
 });

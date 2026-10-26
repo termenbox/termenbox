@@ -80,6 +80,8 @@ export type ServerMessage =
   /** Answer to `claim_preview`: `mode` is `container` or `host`; `run_user` is empty in a container. */
   | { type: 'claim_preview'; name: string; mode: string; run_user?: string; version: string }
   | { type: 'update_requested'; available?: string }
+  /** The recorded newer release changed while connected; empty when up to date (same as `auth_ok.update_available`). */
+  | { type: 'update_status'; available?: string }
   | { type: 'uninstall_done'; mode: string }
   /** Decision 0123: the server's signed candidate bundle, pushed after `auth_ok`; verify it before use (lib/bundle.ts). */
   | { type: 'candidates'; bundle: string }

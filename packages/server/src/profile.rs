@@ -20,6 +20,9 @@
 //! working = ["esc to interrupt"]
 //! idle    = ["? for shortcuts"]
 //! blocked = ["esc to cancel"]   # a dialog that waits for the human is on screen (any of these on the last lines)
+//! input_rule = "─"              # optional: the character of the rule that closes the input box. What is under the
+//!                               # last such line is the footer and the user's own status line, whose text is theirs
+//!                               # ("120k tokens · $1", "Opus (thinking)"): `working` is never read there
 //!
 //! [task]
 //! prefix = "> "                 # a line starting with this holds the current task (the latest one wins)
@@ -93,6 +96,9 @@ struct Markers {
     /// The footer of a dialog that waits for the human: a permission, a question, a plan to approve.
     #[serde(default)]
     blocked: Vec<String>,
+    /// See the schema at the top: where the agent's own activity line ends and the user's status line begins.
+    #[serde(default)]
+    input_rule: Option<char>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -290,7 +296,27 @@ impl Profile {
                 .filter(|t| !t.is_empty())
                 .map(|t| t.chars().take(crate::events::TASK_CHARS).collect())
         });
-        let working = has(&self.markers.working);
+        // The spinner is drawn above the input box. Under it sits a status line the user may have configured, and
+        // its words (token counts, a model's "(thinking)") must not read as the agent working.
+        let above_box = match self.markers.input_rule {
+            Some(rule) => {
+                let is_rule = |l: &&String| {
+                    let t = l.trim();
+                    t.chars().count() >= 10 && t.chars().all(|c| c == rule)
+                };
+                non_empty
+                    .iter()
+                    .rposition(is_rule)
+                    .map(|cut| &non_empty[..cut])
+            }
+            None => None,
+        };
+        let working = match above_box {
+            Some(lines) => lines[lines.len().saturating_sub(SCAN_LINES)..]
+                .iter()
+                .any(|l| lower_contains(l, &self.markers.working)),
+            None => has(&self.markers.working),
+        };
         // The idle footer (the last lines) is where an agent at its input prompt shows its hints. A question higher up
         // is then the agent's own transcript (a `(y/n)` it printed, a numbered list in a reply), not a dialog that
         // waits: a dialog replaces the footer. Only the dialog markers still say blocked then.

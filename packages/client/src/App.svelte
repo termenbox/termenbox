@@ -54,6 +54,7 @@
   import Resizer from './shell/Resizer.svelte';
   import Home from './Home.svelte';
   import WorkspaceGroups from './WorkspaceGroups.svelte';
+  import { moveWorkspace, placementOf } from './lib/order';
   import { destination, navigate, parseFocusLink, startRouter, type Destination } from './lib/router';
   import ReportDialog from './ReportDialog.svelte';
   import { buildReport, noteError, recentErrors, scrub } from './lib/report';
@@ -112,7 +113,9 @@
   let wide = false;
   let helpOpen = false;
   /** Off the terminal: another destination, or the servers page (which belongs to Settings). */
-  $: away = serversPage || $destination !== 'workspaces';
+  /** The Workspaces list page is showing instead of the open workspace (the bottom bar's Workspaces); attach() clears it. */
+  let listPage = false;
+  $: away = serversPage || $destination !== 'workspaces' || listPage;
   $: if ($destination !== 'settings') serversPage = false;
   const hub = new ServerHub({
     credentials: async () => {
@@ -585,6 +588,7 @@
     if (hidden.has(key)) { hidden.delete(key); hidden = new Set(hidden); saveHidden(hidden); }
     if (activeServerId && activeServerId !== workspace.serverId) hub.send(activeServerId, { type: 'detach' });
     serversPage = false;
+    listPage = false;
     navigate('workspaces');
     preview = key === activeKey ? null : snapshots.text(key);
     activeKey = key;
@@ -719,15 +723,9 @@
     sheetHeight = 'closed';
   }
 
-  /** A repeat tap on Workspaces in the bottom bar, while in a workspace, brings the list back: the sheet on a phone, the sidebar when wide. */
-  function workspacesAgain() {
-    if (serversPage || servers.length === 0) return;
-    if (wide) toggleSidebar();
-    else sheetHeight = sheetHeight === 'closed' ? 'half' : 'closed';
-  }
-
   function go(dest: Destination) {
     if (dest !== 'settings') serversPage = false;
+    listPage = dest === 'workspaces' && !!activeKey; // Workspaces is one page, wherever it is pressed from; opening a workspace leaves it
     navigate(dest);
   }
 
@@ -950,11 +948,11 @@
       </div>
     </div>
   {:else}
-    <AppFrame current={$destination} onnavigate={go} onrepeat={workspacesAgain} servers={$hubServers} workspaces={$allWorkspaces} agents={$allAgents} {activeKey} chrome={servers.length > 0} inWorkspace={!!activeKey && !away} {keyboardOpen}
+    <AppFrame current={$destination} onnavigate={go} servers={$hubServers} workspaces={$allWorkspaces} agents={$allAgents} {activeKey} chrome={servers.length > 0} inWorkspace={!!activeKey && !away} {keyboardOpen}
       canCreate={workspaceDestinations($hubServers, selected).length > 0} bind:wide bind:helpOpen onopen={attach} onserver={openServer} onrename={renameWorkspace} oncloseworkspace={askCloseWorkspace} onaction={runAction} onshortcut={handleShortcut}
       onback={() => { showWorkspaceList(); sheetHeight = 'half'; }}>
     {#if $destination === 'workspaces' || servers.length === 0}
-    <NavigationBar workspaces={tabWorkspaces} agents={$allAgents} servers={$hubServers} windows={$allWindows} {expiring} {link} {activeKey} held={!!actionWorkspace || !!menuWorkspace || cardExpanded || sheetHeld} onopen={attach} onpeek={peek} ontabmenu={openWindowMenu} onactions={(key) => { actionConfirm = false; actionKey = key; }}
+    <NavigationBar strip={!(servers.length > 0 && wide && $layout.sidebarOpen)} workspaces={tabWorkspaces} agents={$allAgents} servers={$hubServers} windows={$allWindows} {expiring} {link} {activeKey} held={!!actionWorkspace || !!menuWorkspace || cardExpanded || sheetHeld} onopen={attach} onpeek={peek} ontabmenu={openWindowMenu} onactions={(key) => { actionConfirm = false; actionKey = key; }}
       onlink={() => link && showToast(link.text, link.ok ? 'success' : 'error')} onmenu={() => { titleTapped(); menuOpen = true; }} expanded={wide ? $layout.sidebarOpen : sheetHeight !== 'closed'} controls={wide && $layout.sidebarOpen ? 'workspace-sidebar' : undefined} onworkspaces={() => { if (wide) { toggleSidebar(); return; } crumb('workspaces sheet toggled'); showWorkspaceList(); sheetHeight = sheetHeight === 'closed' ? 'half' : 'closed'; }} />
     {/if}
     <NeedsYouBanner {waiting} {now} collapsed={keyboardOpen} onopen={openWaiting} onhome={() => go('home')} ondismiss={(key, id) => sendAttention(key, { type: 'dismiss', attention_id: id })} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} />
@@ -991,8 +989,8 @@
       {:else}
         <div class="workspace" class:mobile={narrow}>
           <div class="terminal-pane">
-            {#if !activeKey}
-              <WorkspaceGroups workspaces={$allWorkspaces} agents={$allAgents} {now} unhealthy={unhealthyServers} onopen={attach} onnew={newWorkspace} />
+            {#if !activeKey || listPage}
+              <WorkspaceGroups workspaces={$allWorkspaces} agents={$allAgents} {now} unhealthy={unhealthyServers} onopen={attach} onnew={newWorkspace} onactions={(key) => { actionConfirm = false; actionKey = key; }} />
             {:else if connection && connState !== 'paused' && activeIsAcp && activeWorkspace}
               {#key activeKey}
                 <AcpView workspaceKey={activeWorkspace.key} name={activeWorkspace.name} agent={activeRow?.agent} fleet={activeRow?.state} stream={$acpStreams[activeWorkspace.key]} {connState} {now} {canShell}
@@ -1032,8 +1030,8 @@
               <div class="card" style="margin: auto;">{activeKey ? 'This server is paused. Resume it in Servers.' : 'Choose a workspace to open its terminal.'}<button class="secondary" on:click={leaveServer}>Servers</button></div>
             {/if}
           </div>
-          {#if !wide && activeKey}
-            <WorkspaceSheet workspaces={$allWorkspaces} agents={$allAgents} servers={$hubServers} windows={$allWindows} onpeek={peek} onwarm={keepWarm} {activeKey} mobile={narrow} bind:height={sheetHeight} held={!!actionWorkspace}
+          {#if !wide && activeKey && !listPage}
+            <WorkspaceSheet workspaces={$allWorkspaces} agents={$allAgents} servers={$hubServers} windows={$allWindows} onpeek={peek} onwarm={keepWarm} {activeKey} mobile={narrow} bind:height={sheetHeight} held={!!actionWorkspace} onactions={(key) => { actionConfirm = false; actionKey = key; }}
               onexpanded={(open) => cardExpanded = open} onheld={(held) => sheetHeld = held} onopen={attach} onnew={newWorkspace} onrefresh={() => { for (const s of $hubServers) hub.send(s.id, { type: 'list_workspaces' }); }} onretry={(id) => hub.retry(id)} send={sendWorkspace} />
           {/if}
         </div>
@@ -1045,7 +1043,7 @@
 
   {#if menuOpen && user}<MenuSheet {user} {avatar} onservers={leaveServer} onsettings={() => go('settings')} onreport={openReport} onlogout={logout} onclose={() => menuOpen = false} unread={unreadCount($inbox)} oninbox={() => inboxOpen = true} />{/if}
   {#if inboxOpen}<InboxSheet items={$inbox} {now} agents={$allAgents} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} onreply={(key, text) => sendWorkspace({ type: 'reply', workspace: key, text })} onopen={openWaiting} onhome={() => go('home')} onread={() => inbox.update(markAllRead)} onclear={() => inbox.set([])} onclose={() => { inboxOpen = false; inbox.update(markAllRead); }} />{/if}
-  {#if actionWorkspace}<WorkspaceActions workspace={actionWorkspace} canClose={['tmux', 'acp'].includes(backendOf(actionWorkspace))} confirmFirst={actionConfirm} onrename={(name) => renameWorkspace(actionWorkspace.key, name)} ondetach={() => detach(actionWorkspace.key)} oncloseworkspace={() => closeWorkspace(actionWorkspace.key)} onclose={() => actionKey = null} />{/if}
+  {#if actionWorkspace}<WorkspaceActions workspace={actionWorkspace} canClose={['tmux', 'acp'].includes(backendOf(actionWorkspace))} confirmFirst={actionConfirm} onrename={(name) => renameWorkspace(actionWorkspace.key, name)} placement={placementOf($allWorkspaces, actionWorkspace.key)} onmove={(to) => moveWorkspace($allWorkspaces, actionWorkspace.key, to)} ondetach={() => detach(actionWorkspace.key)} oncloseworkspace={() => closeWorkspace(actionWorkspace.key)} onclose={() => actionKey = null} />{/if}
   {#if menuWorkspace && menuKey}
     <WindowMenu workspace={menuWorkspace} data={$allWindows[menuWorkspace.key]} supported={backendOf(menuWorkspace) === 'tmux'}
       onselect={(index) => hub.sendToWorkspace(menuWorkspace.key, { type: 'select_window', workspace: menuWorkspace.key, index })}

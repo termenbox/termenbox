@@ -5,6 +5,7 @@ import type { ClientMessage, ServerHealth, ServerListItem, ServerMessage, Worksp
 import type { Target } from './transport';
 import { storedBundle, type PathFailure } from './paths';
 import { BundleRejected, decodeBundle, verifyBundle } from './bundle';
+import { orderVersion, orderWorkspaces } from './order';
 import { applyWindowList, forgetWindows, type WindowMap } from './windows';
 
 export type HubConnection = Pick<Connection, 'start' | 'close' | 'subscribe' | 'send'> & Partial<Pick<Connection, 'kind' | 'pathLabel' | 'rtt' | 'drops' | 'retry' | 'retryNow'>>;
@@ -82,7 +83,11 @@ export class ServerHub {
   readonly connectedCount = derived(this.servers, servers => servers.filter(s => s.state === 'connected').length);
   readonly overLimit = derived(this.connectedCount, count => count > 6);
 
-  constructor(private opts: Options) {}
+  constructor(private opts: Options) {
+    // The user's own order of workspaces (lib/order.ts) changed: list again, in the new order.
+    let seen: number | undefined;
+    orderVersion.subscribe(n => { if (seen !== undefined && n !== seen) this.publish(); seen = n; });
+  }
 
   start(servers: ServerListItem[]) { for (const server of servers) this.add(server); }
   add(server: ServerListItem) {
@@ -213,6 +218,7 @@ export class ServerHub {
         const result = applyEvents(e.agents, msg.events); e.agents = result.map;
         if (result.gap) connection.send({ type: 'agent_sync', after: syncRequest(e.agents) });
       }
+      if (msg.type === 'update_status') { e.updateAvailable = msg.available ?? ''; this.publishServers(); }
       if (msg.type === 'update_requested') { e.updating = true; this.publishServers(); }
       if (msg.type === 'error' && e.updating) { e.updating = false; this.publishServers(); }
       if (msg.type === 'candidates') void this.acceptBundle(e, msg.bundle, current);
@@ -250,8 +256,8 @@ export class ServerHub {
   private publish() {
     const entries = [...this.entries.values()];
     this.publishServers(entries);
-    this.allWorkspaces.set(entries.filter(e => e.state !== 'paused').flatMap(e => e.workspaces.map(s => ({ ...s,
-      serverId: e.id, serverName: e.server.server_name || 'Server', key: workspaceKey(e.id, s.id) }))));
+    this.allWorkspaces.set(orderWorkspaces(entries.filter(e => e.state !== 'paused').flatMap(e => e.workspaces.map(s => ({ ...s,
+      serverId: e.id, serverName: e.server.server_name || 'Server', key: workspaceKey(e.id, s.id) })))));
     this.agents.set(Object.fromEntries(entries.filter(e => e.state !== 'paused').flatMap(e => Object.entries(e.agents).map(([id, a]) => [workspaceKey(e.id, id), a]))));
     this.windows.set(Object.fromEntries(entries.filter(e => e.state !== 'paused').flatMap(e => Object.entries(e.windows).map(([id, w]) => [workspaceKey(e.id, id), w]))));
   }

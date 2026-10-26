@@ -7,7 +7,7 @@ import { shortPath } from './windows';
 
 export type Preset = 'needs' | 'working' | 'cache' | 'recent' | 'server';
 export type GroupBy = 'server' | 'agent' | 'status' | 'project' | 'none';
-export type SortBy = 'human' | 'response' | 'cache' | 'name';
+export type SortBy = 'manual' | 'response' | 'cache' | 'name';
 export interface SessionView {
   preset?: Preset;
   group: GroupBy;
@@ -24,14 +24,14 @@ export const PRESETS: { id: Preset; label: string }[] = [
   { id: 'recent', label: 'Recent' }, { id: 'server', label: 'By server' },
 ];
 const GROUPS: GroupBy[] = ['server', 'agent', 'status', 'project', 'none'];
-const SORTS: SortBy[] = ['human', 'response', 'cache', 'name'];
+const SORTS: SortBy[] = ['manual', 'response', 'cache', 'name'];
 const STATES: AgentState[] = ['idle', 'working', 'needs_input', 'done', 'error', 'unknown'];
 const KEY = 'termenbox_session_view';
 
 /** A fresh object: editing free controls never mutates a shared preset. */
 export function presetView(preset: Preset): SessionView {
   const filter: SessionView['filter'] = { statuses: [], agents: [], servers: [], query: '' };
-  let group: GroupBy = 'none', sort: SortBy = 'human';
+  let group: GroupBy = 'none', sort: SortBy = 'manual';
   if (preset === 'needs') filter.statuses = ['needs_input', 'error'];
   if (preset === 'working') { filter.statuses = ['working']; group = 'server'; sort = 'name'; }
   if (preset === 'cache') { filter.statuses = ['idle', 'done']; filter.cacheExpiring = true; sort = 'cache'; }
@@ -73,13 +73,12 @@ export function applyView(workspaces: HubWorkspace[], agents: AgentMap, view: Se
     return true;
   });
   const byName = (a: HubWorkspace, b: HubWorkspace) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key);
+  // "My order" is the order given (the user's own, lib/order.ts); the others tie-break by name.
+  const given = new Map(selected.map((s, i) => [s.key, i]));
   selected.sort((a, b) => {
     const aa = agents[a.key], bb = agents[b.key];
     let order = 0;
-    if (view.sort === 'human') {
-      order = Number(needsYou(bb)) - Number(needsYou(aa));
-      if (!order && needsYou(aa) && needsYou(bb)) order = (aa?.waitingSince ?? aa?.ts ?? now) - (bb?.waitingSince ?? bb?.ts ?? now);
-    }
+    if (view.sort === 'manual') return given.get(a.key)! - given.get(b.key)!;
     if (view.sort === 'response') order = cmp(bb?.lastResponseAt ?? -Infinity, aa?.lastResponseAt ?? -Infinity);
     if (view.sort === 'cache') order = cmp(remaining(a) ?? Infinity, remaining(b) ?? Infinity);
     return order || byName(a, b);
@@ -106,6 +105,7 @@ export function saveView(view: SessionView, storage: Pick<Storage, 'setItem'> | 
 export function loadView(storage: Pick<Storage, 'getItem'> | undefined = deviceStorage()): SessionView | null {
   try {
     const v = JSON.parse(storage?.getItem(KEY) ?? 'null');
+    if (v?.sort === 'human') v.sort = 'manual'; // "Needs you first" is gone: a saved view keeps everything else
     if (!v || !GROUPS.includes(v.group) || !SORTS.includes(v.sort) || !v.filter) return null;
     const f = v.filter;
     if (!Array.isArray(f.statuses) || !f.statuses.every((s: AgentState) => STATES.includes(s)) ||

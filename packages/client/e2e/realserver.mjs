@@ -184,7 +184,6 @@ async function runContext(browser, label) {
     const input = page.locator('textarea[aria-label="Terminal input"]');
     await open('alpha');
     await waitFor(async () => (await screen()).includes('READY-alpha'), 'the attached screen of alpha');
-    const term = await page.locator('.xterm').elementHandle();
     await input.focus();
     await page.keyboard.type(`echo typed-${tag}-$((20+22))`);
     await page.keyboard.press('Enter');
@@ -315,6 +314,7 @@ async function runContext(browser, label) {
       return { rows: rows.children.length, slack: host.height - s.height, rowH, dpr: devicePixelRatio };
     });
     const size = page.viewportSize();
+    const term = await page.locator('.xterm').elementHandle(); // taken here: Workspaces in the bottom bar detaches a phone's terminal, so an earlier handle is stale
     const before = await fit();
     check(before.slack >= -1 && before.slack < before.rowH + 1, `fit leaves ${before.slack}px of ${before.rowH}px rows at ${size.width}x${size.height}`);
     await page.setViewportSize({ width: size.width, height: size.height - 200 });

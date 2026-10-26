@@ -4,6 +4,7 @@ import { ServerHub, newWorkspaceTargets, serverKey, workspaceDestinations, type 
 import type { ConnectionOptions } from './connection';
 import type { ClientMessage, ServerListItem, ServerMessage } from './protocol';
 import type { Target } from './transport';
+import { moveWorkspace } from './order';
 
 const server = (id: string): ServerListItem => ({ server_id: id, server_url: '', server_name: id, registered_at: 0 });
 class Fake implements HubConnection {
@@ -43,6 +44,17 @@ describe('ServerHub', () => {
     expect(get(hub.servers)[0]).toMatchObject({ version: '0.1.54+def', updateAvailable: '', updating: false });
     hub.updateServer('a'); c.emit({ type: 'error', message: 'Only the owner can update this server' });
     expect(get(hub.servers)[0].updating).toBe(false);
+  });
+  it('learns of a newly recorded or cleared release without reconnecting', () => {
+    const { hub, connections } = setup(); hub.start([server('a')]);
+    const c = connections[0];
+    c.opts.onState('connected');
+    c.opts.onReady({ type: 'auth_ok', user: 'u', server_name: 'host', version: '0.1.53+abc' }, false);
+    expect(get(hub.servers)[0].updateAvailable).toBe('');
+    c.emit({ type: 'update_status', available: '0.1.54' });
+    expect(get(hub.servers)[0]).toMatchObject({ updateAvailable: '0.1.54', version: '0.1.53+abc' });
+    c.emit({ type: 'update_status', available: '' });
+    expect(get(hub.servers)[0].updateAvailable).toBe('');
   });
   it('starts every saved server once, even if start or add is repeated', () => {
     const { hub, connections } = setup();
@@ -325,5 +337,17 @@ describe('ServerHub candidate bundles (decision 0123)', () => {
     connections[0].emit({ type: 'workspaces', workspaces: [{ id: 'one', name: 'one', agent: null }] });
     expect(get(hub.allWorkspaces).map(s => s.name)).toEqual(['one']);
     vi.useRealTimers();
+  });
+  it('lists workspaces in the user\'s order, whatever the server sends, and appends a new one', () => {
+    const { hub, connections } = setup();
+    hub.start([server('ord')]);
+    connections[0].ready();
+    const ws = (...ids: string[]) => ({ type: 'workspaces' as const, workspaces: ids.map(id => ({ id, name: id, agent: null })) });
+    connections[0].emit(ws('one', 'two', 'three'));
+    expect(get(hub.allWorkspaces).map(s => s.name)).toEqual(['one', 'two', 'three']);
+    expect(moveWorkspace(get(hub.allWorkspaces), serverKey(server('ord')) + '/three', 'top')).toEqual({ position: 1, count: 3 });
+    expect(get(hub.allWorkspaces).map(s => s.name)).toEqual(['three', 'one', 'two']); // the store lists again at once
+    connections[0].emit(ws('two', 'one', 'new', 'three'));
+    expect(get(hub.allWorkspaces).map(s => s.name)).toEqual(['three', 'one', 'two', 'new']);
   });
 });

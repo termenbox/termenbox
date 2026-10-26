@@ -135,6 +135,7 @@ impl ServerClient {
             | ServerMessage::DeviceRevoked { .. }
             | ServerMessage::UninstallDone { .. }
             | ServerMessage::UpdateRequested { .. }
+            | ServerMessage::UpdateStatus { .. }
             | ServerMessage::Candidates { .. } => {}
             ServerMessage::Workspaces { workspaces } => {
                 info!("Received {} workspaces", workspaces.len());

@@ -463,6 +463,12 @@ pub enum ServerMessage {
         #[serde(default)]
         available: String,
     },
+    /// The release the updater has recorded changed while this connection was open (`update-status.json`);
+    /// `available` is empty when the server is up to date. Same meaning as `auth_ok.update_available`.
+    UpdateStatus {
+        #[serde(default)]
+        available: String,
+    },
     /// The server wiped its configuration and will stop; `mode` is `container` or `host:<user>`.
     UninstallDone {
         mode: String,
@@ -1034,6 +1040,23 @@ impl Display for AgentEventType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_status_names_the_available_release() {
+        let v = serde_json::to_value(ServerMessage::UpdateStatus {
+            available: "0.1.54".into(),
+        })
+        .unwrap();
+        assert_eq!(v["type"], "update_status");
+        assert_eq!(v["available"], "0.1.54");
+        let back: ServerMessage = serde_json::from_str(r#"{"type":"update_status"}"#).unwrap();
+        assert_eq!(
+            back,
+            ServerMessage::UpdateStatus {
+                available: String::new()
+            }
+        );
+    }
 
     #[test]
     fn quiet_hours_are_read_in_the_owners_local_time() {

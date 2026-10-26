@@ -93,7 +93,7 @@
                 <AgentBadge agent={s.agent} state={s.state} size={20} />
                 <input use:focusSelect bind:value={draft} aria-label="Workspace name" maxlength="64" autocomplete="off" spellcheck="false" data-rename={s.key}
                   onkeydown={(e) => editKey(e, s.key, s.name)} onblur={() => commit(s.key, s.name)}
-                  class="h-9 min-w-0 flex-1 rounded-control border border-accent bg-bg px-2 text-base text-fg outline-none" />
+                  class="h-11 min-w-0 flex-1 rounded-control border border-accent bg-bg px-2 text-base text-fg outline-none" />
               </div>
             {:else}
               <button type="button" data-key={s.key} aria-current={s.key === activeKey ? 'true' : undefined} onclick={() => onopen(s.key)} ondblclick={() => startEdit(s.key, s.name)} onkeydown={(e) => rowKey(e, s.key, s.name)}

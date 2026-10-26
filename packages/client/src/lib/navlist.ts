@@ -18,16 +18,13 @@ export function fleetOf(agent?: WorkspaceAgent): FleetState {
 export interface NavWorkspace { key: string; name: string; serverId: string; serverName: string; state: FleetState; agent?: string }
 export interface NavGroup { server: HubServer; workspaces: NavWorkspace[] }
 
-const RANK: Record<FleetState, number> = { 'needs-you': 0, failed: 1, working: 2, finished: 3, idle: 4 };
-
-/** Servers in the hub's order; inside a server, what needs you first, then by name (a stable order for equal states). */
+/** Servers in the hub's order; inside a server, the user's own order of workspaces (a state never moves one). */
 export function navGroups(servers: HubServer[], workspaces: HubWorkspace[], agents: AgentMap): NavGroup[] {
   return servers.map((server) => ({
     server,
     workspaces: workspaces
       .filter((s) => s.serverId === server.id)
-      .map((s): NavWorkspace => ({ key: s.key, name: s.name, serverId: s.serverId, serverName: s.serverName, state: fleetOf(agents[s.key]), agent: agents[s.key]?.agent }))
-      .sort((a, b) => RANK[a.state] - RANK[b.state] || a.name.localeCompare(b.name)),
+      .map((s): NavWorkspace => ({ key: s.key, name: s.name, serverId: s.serverId, serverName: s.serverName, state: fleetOf(agents[s.key]), agent: agents[s.key]?.agent })),
   }));
 }
 
