@@ -54,6 +54,7 @@ describe('a server card', () => {
     expect(out).toContain('Connected</span>');
     expect(out).toMatch(/class="part sep[^"]*">Direct, internet<\/span>/);
     expect(out).toContain('2 workspaces</span>');
+    expect((out.match(/class="dot[^"]*"[^>]*>·<\/span>/g) ?? []).length).toBe(2);
     expect(out).not.toContain('Connected·');
   });
 });

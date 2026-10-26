@@ -99,8 +99,8 @@
               <p class="addr">{server.server_url || (server.record ? `${server.record.ip}:${server.record.udp_port}` : server.bundle ? 'Paired by link' : '')}</p>
               <p class="state" class:ok={state === 'connected'}>
                 <span class="part"><span aria-hidden="true">{state === 'connected' ? '●' : '○'}</span> {word(state)}</span>
-                {#if state === 'connected' && status?.path}<span class="part sep">{status.path}</span>{/if}
-                {#if state === 'connected'}<span class="part sep" data-testid="workspace-count">{workspacesText(counts[serverKey(server)] ?? 0)}</span>{/if}
+                {#if state === 'connected' && status?.path}<span class="dot" aria-hidden="true">·</span><span class="part sep">{status.path}</span>{/if}
+                {#if state === 'connected'}<span class="dot" aria-hidden="true">·</span><span class="part sep" data-testid="workspace-count">{workspacesText(counts[serverKey(server)] ?? 0)}</span>{/if}
               </p>
             </div>
             <span class="slot">{#if status && state !== 'connected'}<ServerIssue name={server.server_name || 'Server'} {status} udpPort={server.record?.udp_port} />{/if}</span>
@@ -128,11 +128,11 @@
   .info p { font-size: 0.8rem; color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .addr { font-size: 0.75rem; }
   .state.ok { color: var(--fg); }
-  /* The state line is one row of parts; the separator is drawn, so it never depends on the spaces around markup. */
+  /* The state line is one row of parts with the separator between them as its own element, so it never depends on the spaces around markup. */
   .state { display: flex; min-width: 0; }
   .part { flex-shrink: 0; white-space: nowrap; }
   .part.sep { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .part.sep::before { content: '·'; margin: 0 0.5em; color: var(--fg-muted); }
+  .dot { flex-shrink: 0; margin: 0 0.5em; color: var(--fg-muted); }
   /* The slot is there whether it holds the issue button or not, so the end of the row never moves. */
   .slot { display: inline-grid; width: 44px; height: 44px; flex-shrink: 0; place-items: center; }
   button { min-height: 44px; min-width: 44px; }
