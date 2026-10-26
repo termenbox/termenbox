@@ -71,8 +71,10 @@ class Signaling {
   private waiters: { want: string[]; resolve: (r: Reply) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }[] = [];
 
   private constructor(private ws: WebSocket, private auth: AssistedAuth, private now: () => number) {
+    // The Durable Object forwards the server's frames as they came, and the server sends binary ones: read both kinds.
+    ws.binaryType = 'arraybuffer';
     ws.onmessage = (e) => {
-      const text = typeof e.data === 'string' ? e.data : '';
+      const text = typeof e.data === 'string' ? e.data : e.data instanceof ArrayBuffer ? new TextDecoder().decode(e.data) : '';
       let r: Reply;
       try { r = JSON.parse(text); } catch { return; }
       if (!r || typeof r.t !== 'string') return;

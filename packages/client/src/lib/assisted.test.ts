@@ -17,17 +17,18 @@ const auth: AssistedAuth = { cert: 'CERT', serverId: 'SERVERID', sign: async (_i
 interface Sent { t: string; n: string; exp: number; cert: string; sig: string; [k: string]: unknown }
 
 /** A signaling Worker with a server behind it: records what the client sent and answers like the real one. */
-function fakeWorker(over: { answer?: () => unknown; relay?: () => unknown; open?: boolean } = {}) {
+function fakeWorker(over: { answer?: () => unknown; relay?: () => unknown; open?: boolean; binary?: boolean } = {}) {
   const sent: Sent[] = [];
   const ws = {
-    onopen: null as null | (() => void), onmessage: null as null | ((e: { data: string }) => void),
+    onopen: null as null | (() => void), onmessage: null as null | ((e: { data: string | ArrayBuffer }) => void), binaryType: '',
     onclose: null as null | (() => void), onerror: null as null | (() => void),
     send(text: string) {
       const m = JSON.parse(text) as Sent;
       sent.push(m);
       const reply = m.t === 'offer' ? (over.answer?.() ?? { t: 'answer', ufrag: 'srvufrag1234567890', pwd: 'srvpwd-0123456789012345678', cands: ['198.51.100.7:4443', '[2001:db8::7]:4443'] })
         : m.t === 'relay' ? (over.relay?.() ?? { t: 'ice', servers: [TURN] }) : { t: 'ok' };
-      queueMicrotask(() => ws.onmessage?.({ data: JSON.stringify(reply) }));
+      const body = JSON.stringify(reply);
+      queueMicrotask(() => ws.onmessage?.({ data: over.binary ? new TextEncoder().encode(body).buffer : body }));
     },
     close: vi.fn(),
   };
@@ -110,6 +111,15 @@ describe('the punch wins', () => {
     expect(peers.made[0].remote).toContain(`a=fingerprint:${FINGERPRINT}`);
     expect(peers.made[0].remote).not.toContain('a=ice-lite');
     expect(w.ws.close).toHaveBeenCalled(); // the Worker is not needed once the session is up
+  });
+});
+
+describe('the Worker delivers binary frames', () => {
+  it('reads the answer from a binary frame, as the Durable Object sends it', async () => {
+    const w = fakeWorker({ binary: true });
+    const t = await run(w, fakePeers(() => 'connect'));
+    expect(t.via).toBe('punched');
+    expect(w.ws.binaryType).toBe('arraybuffer');
   });
 });
 
