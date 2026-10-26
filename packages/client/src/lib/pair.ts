@@ -27,6 +27,9 @@ export interface PairPreview {
   seq: number;
   published: boolean;
   candidates: Candidate[];
+  /** The owner's signaling Worker and whether a TURN key exists (DECISION-0140); both come from the signed bundle. */
+  signal?: string;
+  relay?: boolean;
   payload: string;
   claim?: string;
 }
@@ -37,7 +40,7 @@ export type PairResult = { ok: true; preview: PairPreview } | { ok: false; reaso
 export async function previewPair(link: PairLink, nowSecs = Math.floor(Date.now() / 1000)): Promise<PairResult> {
   try {
     const b = await verifyBundle(link.payload, { nowSecs });
-    return { ok: true, preview: { name: b.name, fingerprint: b.fingerprint, serverId: b.server_id, seq: b.seq, published: b.published, candidates: b.candidates, payload: link.payload, claim: link.claim } };
+    return { ok: true, preview: { name: b.name, fingerprint: b.fingerprint, serverId: b.server_id, seq: b.seq, published: b.published, candidates: b.candidates, signal: b.signal, relay: b.relay, payload: link.payload, claim: link.claim } };
   } catch (e) {
     return { ok: false, reason: e instanceof BundleRejected && e.reason === 'expired' ? 'expired' : 'invalid' };
   }

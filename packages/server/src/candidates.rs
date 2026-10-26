@@ -271,6 +271,9 @@ pub fn sign(
         fingerprint: fingerprint.to_string(),
         name: truncate_name(name),
         candidates: list,
+        // Filled from the owner's `--setup-cloudflare` config once that exists (DECISION-0140).
+        signal: None,
+        relay: false,
     };
     let signature = key.sign(&bundle.signed_bytes()?);
     let wire = bundle.encode(&signature)?;

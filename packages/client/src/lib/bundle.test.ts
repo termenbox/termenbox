@@ -24,9 +24,40 @@ async function sign(bundle: Bundle): Promise<string> {
 describe('candidate bundle (shared vector with packages/core)', () => {
   it('bundle_signature_verifies: the Rust-signed vector decodes to the same fields, bytes and verifies', async () => {
     const { bundle } = decodeBundle(vectors.wire);
-    expect(bundle).toEqual(vectors.bundle);
+    // The Rust side writes the absent assisted fields as null and false; this side leaves them out.
+    const plain = { ...vectors.bundle, signal: undefined, relay: undefined };
+    expect(bundle).toEqual(plain);
     expect(hex(signedBytes(bundle))).toBe(vectors.signed_hex);
-    expect(await verifyBundle(vectors.wire, { nowSecs: NOW, pin: vectors.server_id })).toEqual(vectors.bundle);
+    expect(await verifyBundle(vectors.wire, { nowSecs: NOW, pin: vectors.server_id })).toEqual(plain);
+  });
+
+  it('assisted vector: the Rust-signed tbxb3 bundle carries the signal URL and relay flag and verifies', async () => {
+    const a = vectors.assisted;
+    const { bundle } = decodeBundle(a.wire);
+    expect(bundle).toEqual(a.bundle);
+    expect(hex(signedBytes(bundle))).toBe(a.signed_hex);
+    expect(await verifyBundle(a.wire, { nowSecs: NOW, pin: vectors.server_id })).toEqual(a.bundle);
+  });
+
+  it('flipping any bit of the assisted vector (the signal and the relay flag included) fails', async () => {
+    const bytes = b64urlDecode(vectors.assisted.wire);
+    for (let i = 0; i < bytes.length * 8; i++) {
+      const t = Uint8Array.from(bytes);
+      t[i >> 3] ^= 1 << (i & 7);
+      expect(await reason(verifyBundle(b64urlEncode(t), { nowSecs: NOW })), `bit ${i}`).not.toBe('ok');
+    }
+  });
+
+  it('a bundle without the new fields is still tbxb2; a signal or relay alone signs and round-trips; bad ones are refused', async () => {
+    const base = { ...vectors.bundle, server_id: '', signal: undefined, relay: undefined } as Bundle;
+    expect(new TextDecoder().decode(signedBytes({ ...base, server_id: vectors.server_id }).slice(0, 5))).toBe('tbxb2');
+    for (const extra of [{ relay: true }, { signal: 'wss://x.example/s/1' }, { relay: true, signal: 'wss://x.example/s/1' }]) {
+      const got = await verifyBundle(await sign({ ...base, ...extra }), { nowSecs: 1 });
+      expect(got).toMatchObject(extra);
+    }
+    for (const signal of ['ws://x.example/s', 'https://x.example/s', 'wss://', 'wss://u@x.example/s', `wss://x.example/${'a'.repeat(200)}`]) {
+      expect(() => signedBytes({ ...base, server_id: vectors.server_id, signal }), signal).toThrow(BundleRejected);
+    }
   });
 
   it('tampered_bundle_fails: flipping any bit of the signed vector fails', async () => {

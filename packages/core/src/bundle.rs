@@ -5,18 +5,22 @@
 //! never-identity). The signed bytes are an explicit layout, not JSON, so Rust and TypeScript agree byte for byte
 //! (shared vectors in `testdata/bundle-vectors.json`; the TypeScript side is `packages/client/src/lib/bundle.ts`).
 //!
-//! Layout `tbxb2` (all integers big-endian):
+//! Layout `tbxb2` (all integers big-endian). `tbxb3` (DECISION-0140) is the same plus the two assisted-connection
+//! fields below; a server signs `tbxb3` only when it has either, so a client that knows only `tbxb2` keeps working
+//! against every other server and rejects just the bundles it cannot read:
 //!
 //! ```text
 //! "tbxb2"                 5 bytes  magic and version
 //! server_id               32 bytes ed25519 public key
 //! seq                     u64      increases with every bundle the server signs
 //! expires                 u64      unix seconds; a bundle past it is ignored
-//! flags                   u8       bit 0: this server publishes to the directory; other bits must be 0
+//! flags                   u8       bit 0: this server publishes to the directory; tbxb3 only: bit 1: the owner has a
+//!                                  TURN key (a flag, never the key id or a credential); other bits must be 0
 //! fingerprint             32 bytes SHA-256 of the server's DTLS certificate
 //! name                    u8 length + UTF-8 (at most 64 bytes)
 //! count                   u8       at most 16
 //! count x { kind u8 (1 lan, 2 wan4, 3 wan6, 4 overlay, 5 tunnel), port u16, addr u8 length + UTF-8 }
+//! signal                  tbxb3 only: u8 length + UTF-8, a `wss://` URL of at most 200 bytes; length 0 means none
 //! ```
 //!
 //! The wire form is `base64url(signed bytes || signature (64 bytes))`: one string for the in-band push and the
@@ -26,8 +30,11 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 pub const MAGIC: &[u8; 5] = b"tbxb2";
+/// The layout with the signal URL and the relay flag.
+pub const MAGIC_ASSISTED: &[u8; 5] = b"tbxb3";
 pub const MAX_CANDIDATES: usize = 16;
 pub const MAX_NAME: usize = 64;
+pub const MAX_SIGNAL: usize = 200;
 const SIG_LEN: usize = 64;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +98,12 @@ pub struct Bundle {
     pub fingerprint: String,
     pub name: String,
     pub candidates: Vec<Candidate>,
+    /// The `wss://` URL of the owner's signaling Worker (DECISION-0140), when there is one.
+    #[serde(default)]
+    pub signal: Option<String>,
+    /// The owner has a TURN key, so a relay can be asked for over the signaling channel. A flag only.
+    #[serde(default)]
+    pub relay: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -126,6 +139,15 @@ fn format_fingerprint(bytes: &[u8]) -> String {
     format!("sha-256 {}", hex.join(":"))
 }
 
+/// A signal URL is a plain `wss://` host with no credentials, as the client requires of a tunnel.
+fn valid_signal(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix("wss://") else {
+        return false;
+    };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    s.len() <= MAX_SIGNAL && s.bytes().all(|b| b.is_ascii_graphic()) && !host.is_empty() && !host.contains('@')
+}
+
 fn server_key_bytes(server_id: &str) -> Option<[u8; 32]> {
     B64.decode(server_id).ok()?.try_into().ok()
 }
@@ -136,11 +158,15 @@ impl Bundle {
         if self.candidates.len() > MAX_CANDIDATES || self.name.len() > MAX_NAME {
             return Err(BundleError::Malformed);
         }
-        let mut out = MAGIC.to_vec();
+        if self.signal.as_deref().is_some_and(|s| !valid_signal(s)) {
+            return Err(BundleError::Malformed);
+        }
+        let assisted = self.signal.is_some() || self.relay;
+        let mut out = if assisted { MAGIC_ASSISTED } else { MAGIC }.to_vec();
         out.extend(server_key_bytes(&self.server_id).ok_or(BundleError::Malformed)?);
         out.extend(self.seq.to_be_bytes());
         out.extend(self.expires.to_be_bytes());
-        out.push(self.published as u8);
+        out.push(self.published as u8 | ((self.relay as u8) << 1));
         out.extend(parse_fingerprint(&self.fingerprint).ok_or(BundleError::Malformed)?);
         out.push(self.name.len() as u8);
         out.extend(self.name.as_bytes());
@@ -153,6 +179,11 @@ impl Bundle {
             out.extend(c.port.to_be_bytes());
             out.push(c.addr.len() as u8);
             out.extend(c.addr.as_bytes());
+        }
+        if assisted {
+            let signal = self.signal.as_deref().unwrap_or("");
+            out.push(signal.len() as u8);
+            out.extend(signal.as_bytes());
         }
         Ok(out)
     }
@@ -174,14 +205,16 @@ impl Bundle {
         }
         let (body, sig) = bytes.split_at(bytes.len() - SIG_LEN);
         let mut r = Reader(body);
-        if r.take(5)? != MAGIC {
-            return Err(BundleError::Malformed);
-        }
+        let assisted = match r.take(5)? {
+            m if m == MAGIC => false,
+            m if m == MAGIC_ASSISTED => true,
+            _ => return Err(BundleError::Malformed),
+        };
         let server_id = B64.encode(r.take(32)?);
         let seq = u64::from_be_bytes(r.take(8)?.try_into().unwrap());
         let expires = u64::from_be_bytes(r.take(8)?.try_into().unwrap());
         let flags = r.take(1)?[0];
-        if flags & !1 != 0 {
+        if flags & !(if assisted { 3 } else { 1 }) != 0 {
             return Err(BundleError::Malformed);
         }
         let fingerprint = format_fingerprint(r.take(32)?);
@@ -201,7 +234,14 @@ impl Bundle {
                 String::from_utf8(r.take(len)?.to_vec()).map_err(|_| BundleError::Malformed)?;
             candidates.push(Candidate { kind, addr, port });
         }
-        if !r.0.is_empty() {
+        let signal = if assisted {
+            let len = r.take(1)?[0] as usize;
+            let s = String::from_utf8(r.take(len)?.to_vec()).map_err(|_| BundleError::Malformed)?;
+            (len > 0).then_some(s)
+        } else {
+            None
+        };
+        if signal.as_deref().is_some_and(|s| !valid_signal(s)) || !r.0.is_empty() {
             return Err(BundleError::Malformed);
         }
         let bundle = Bundle {
@@ -212,7 +252,13 @@ impl Bundle {
             fingerprint,
             name,
             candidates,
+            signal,
+            relay: flags & 2 == 2,
         };
+        // tbxb3 with nothing assisted in it is not what a server signs: refuse the second spelling of tbxb2.
+        if assisted && bundle.signal.is_none() && !bundle.relay {
+            return Err(BundleError::Malformed);
+        }
         Ok((bundle, sig.try_into().unwrap()))
     }
 
@@ -296,6 +342,16 @@ mod tests {
                     port: 443,
                 },
             ],
+            signal: None,
+            relay: false,
+        }
+    }
+
+    fn assisted_bundle() -> Bundle {
+        Bundle {
+            signal: Some("wss://termenbox-relay-abc.owner.workers.dev/s/6kpsY".into()),
+            relay: true,
+            ..vector_bundle()
         }
     }
 
@@ -329,6 +385,13 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<Bundle>(v["bundle"].clone()).unwrap(),
             b
+        );
+        let a = assisted_bundle();
+        assert_eq!(v["assisted"]["signed_hex"], hex(&a.signed_bytes().unwrap()));
+        assert_eq!(v["assisted"]["wire"], signed(&a));
+        assert_eq!(
+            serde_json::from_value::<Bundle>(v["assisted"]["bundle"].clone()).unwrap(),
+            a
         );
     }
 
@@ -373,6 +436,69 @@ mod tests {
                 "unknown flag bits are not ignored"
             );
         }
+    }
+
+    /// The assisted layout (DECISION-0140): a signal URL and a relay flag, both signed, in `tbxb3`.
+    #[test]
+    fn signal_and_relay_are_signed_and_round_trip() {
+        let b = assisted_bundle();
+        let wire = signed(&b);
+        assert_eq!(Bundle::verify(&wire, 1, None, None), Ok(b.clone()));
+        assert!(b.signed_bytes().unwrap().starts_with(MAGIC_ASSISTED));
+        // Flipping any bit, in the signal and the relay flag included, fails or is refused.
+        let bytes = B64.decode(&wire).unwrap();
+        for i in 0..bytes.len() * 8 {
+            let mut t = bytes.clone();
+            t[i / 8] ^= 1 << (i % 8);
+            assert!(
+                Bundle::verify(&B64.encode(&t), 1, None, None).is_err(),
+                "bit {i} went unnoticed"
+            );
+        }
+        // Each field alone also signs and verifies.
+        for one in [
+            Bundle { relay: false, ..b.clone() },
+            Bundle { signal: None, ..b },
+        ] {
+            assert_eq!(Bundle::verify(&signed(&one), 1, None, None), Ok(one));
+        }
+    }
+
+    /// Old bundles keep their bytes (so old clients and stored bundles still verify) and old clients are not
+    /// handed a layout they would misread: only a server with the new fields signs `tbxb3`.
+    #[test]
+    fn a_bundle_without_the_new_fields_is_still_tbxb2() {
+        let b = vector_bundle();
+        assert!(b.signed_bytes().unwrap().starts_with(MAGIC));
+        let v: serde_json::Value =
+            serde_json::from_str(include_str!("../testdata/bundle-vectors.json")).unwrap();
+        assert_eq!(Bundle::verify(v["wire"].as_str().unwrap(), 1, None, None), Ok(b));
+    }
+
+    #[test]
+    fn a_bad_signal_url_or_a_bare_tbxb3_is_refused() {
+        for bad in [
+            "ws://x.example/s/1",
+            "https://x.example/s/1",
+            "wss://",
+            "wss://user@x.example/s/1",
+            "wss://x.example/ s",
+            &format!("wss://x.example/{}", "a".repeat(MAX_SIGNAL)),
+        ] {
+            let b = Bundle { signal: Some(bad.into()), ..vector_bundle() };
+            assert_eq!(b.signed_bytes(), Err(BundleError::Malformed), "{bad}");
+        }
+        // tbxb3 carrying neither field is a second spelling of tbxb2, not a bundle.
+        let mut bytes = vector_bundle().signed_bytes().unwrap();
+        bytes[4] = b'3';
+        bytes.push(0);
+        bytes.extend([0u8; SIG_LEN]);
+        assert_eq!(Bundle::decode(&B64.encode(&bytes)), Err(BundleError::Malformed));
+        // The relay bit is unknown in tbxb2.
+        let mut bytes = vector_bundle().signed_bytes().unwrap();
+        bytes[5 + 32 + 8 + 8] = 2;
+        bytes.extend([0u8; SIG_LEN]);
+        assert_eq!(Bundle::decode(&B64.encode(&bytes)), Err(BundleError::Malformed));
     }
 
     #[test]
@@ -440,11 +566,17 @@ mod tests {
     #[ignore]
     fn print_vectors() {
         let b = vector_bundle();
+        let a = assisted_bundle();
         let v = serde_json::json!({
             "server_id": b.server_id,
             "bundle": b,
             "signed_hex": hex(&b.signed_bytes().unwrap()),
             "wire": signed(&b),
+            "assisted": {
+                "bundle": a,
+                "signed_hex": hex(&a.signed_bytes().unwrap()),
+                "wire": signed(&a),
+            },
         });
         println!("{}", serde_json::to_string_pretty(&v).unwrap());
     }
