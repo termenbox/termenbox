@@ -54,6 +54,7 @@ mod rtc;
 mod stun;
 mod terminfo;
 mod tmuxconf;
+mod turn;
 mod transcript;
 mod uninstall;
 mod updater;

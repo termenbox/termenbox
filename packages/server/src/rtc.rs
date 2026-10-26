@@ -99,6 +99,9 @@ pub struct AssistedOffer {
     pub pwd: String,
     pub candidates: Vec<SocketAddr>,
     pub local: Vec<Candidate>,
+    /// An allocation on the owner's TURN key (`turn::allocate_or_none`), offered as a relay candidate. The session
+    /// owns it and releases it when it ends.
+    pub relay: Option<crate::turn::Relay>,
 }
 
 /// The server's ICE credentials for the answer. `ufrag` also names the session in `candidate` and `cancel`.
@@ -123,10 +126,16 @@ enum Command {
 #[allow(dead_code)] // started by the signal client of step 2.5
 pub struct Assisted {
     tx: mpsc::UnboundedSender<Command>,
+    relay_inbox: mpsc::UnboundedSender<crate::turn::Packet>,
 }
 
 #[allow(dead_code)] // started by the signal client of step 2.5
 impl Assisted {
+    /// Where a relay allocation delivers what peers send to it: pass this to `turn::allocate`.
+    pub fn relay_inbox(&self) -> mpsc::UnboundedSender<crate::turn::Packet> {
+        self.relay_inbox.clone()
+    }
+
     pub async fn start(&self, offer: AssistedOffer) -> Result<AssistedAnswer> {
         let (reply, rx) = oneshot::channel();
         self.tx
@@ -277,6 +286,7 @@ pub async fn start_assisted(
 ) -> Result<(RtcInfo, Assisted)> {
     let port = socket.local_addr()?.port();
     let (tx, cmds) = mpsc::unbounded_channel();
+    let (relay_inbox, relay_rx) = mpsc::unbounded_channel();
     let info = RtcInfo {
         ip: public_ip,
         port,
@@ -291,9 +301,10 @@ pub async fn start_assisted(
         wake: Arc::new(Notify::new()),
         stun,
         cmds,
+        relay_rx,
     };
     tokio::spawn(server.run());
-    Ok((info, Assisted { tx }))
+    Ok((info, Assisted { tx, relay_inbox }))
 }
 
 struct Server {
@@ -305,6 +316,7 @@ struct Server {
     wake: Arc<Notify>,
     stun: Option<crate::stun::Inbox>,
     cmds: mpsc::UnboundedReceiver<Command>,
+    relay_rx: mpsc::UnboundedReceiver<crate::turn::Packet>,
 }
 
 struct Peer {
@@ -323,6 +335,8 @@ struct Peer {
     open_ttl: Duration,
     /// A full ICE agent starts its own checks, so it needs the clock advanced; an ICE-lite one only answers.
     full_ice: bool,
+    /// The TURN allocation of an assisted session, if it has one; its packets are sent through it.
+    relay: Option<crate::turn::Relay>,
     last_rx: Instant,
     queue: VecDeque<String>,
     /// Inbound messages the workspace had no room for yet.
@@ -454,6 +468,12 @@ impl Server {
                         p.receive(now, src, self.public_addr, data);
                     }
                 }
+                Some(pkt) = self.relay_rx.recv() => {
+                    let now = Instant::now();
+                    if let Some(p) = assisted.values_mut().find(|p| p.relay.as_ref().is_some_and(|r| r.addr() == pkt.relay)) {
+                        p.receive(now, pkt.peer, pkt.relay, &pkt.data);
+                    }
+                }
                 c = self.cmds.recv(), if commands_open => match c {
                     Some(c) => self.command(c, &mut assisted),
                     None => commands_open = false,
@@ -528,6 +548,9 @@ impl Server {
         for c in offer.local {
             rtc.add_local_candidate(c);
         }
+        if let Some(r) = &offer.relay {
+            rtc.add_local_candidate(Candidate::relayed(r.addr(), r.local(), "udp")?);
+        }
         for addr in offer.candidates {
             rtc.add_remote_candidate(Candidate::host(addr, "udp")?);
         }
@@ -559,6 +582,7 @@ impl Server {
         debug!("new assisted session {}", answer.ufrag);
         let mut peer = Peer::new(rtc, now, self.limits.assisted_ttl);
         peer.full_ice = true;
+        peer.relay = offer.relay;
         assisted.insert(answer.ufrag.clone(), peer);
         Ok(answer)
     }
@@ -653,6 +677,7 @@ impl Peer {
             created: now,
             open_ttl,
             full_ice: false,
+            relay: None,
             last_rx: now,
             queue: VecDeque::new(),
             backlog: VecDeque::new(),
@@ -816,7 +841,12 @@ impl Peer {
             match self.rtc.poll_output() {
                 Ok(Output::Transmit(t)) => {
                     transmits += 1;
-                    let _ = socket.try_send_to(&t.contents, t.destination);
+                    match &self.relay {
+                        Some(r) if t.source == r.addr() => r.send(t.destination, &t.contents),
+                        _ => {
+                            let _ = socket.try_send_to(&t.contents, t.destination);
+                        }
+                    }
                 }
                 Ok(Output::Timeout(t)) => {
                     self.timeout = t;

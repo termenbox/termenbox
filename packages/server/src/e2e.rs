@@ -1614,6 +1614,7 @@ fn assisted_offer(socket: &UdpSocket, ufrag: &str) -> rtc::AssistedOffer {
         pwd: format!("{ufrag}0123456789abcdef"),
         candidates: vec![socket.local_addr().unwrap()],
         local: vec![],
+        relay: None,
     }
 }
 
@@ -1699,4 +1700,81 @@ async fn assisted_ice_refuses_bad_credentials_and_too_many_sessions() {
     let second = assisted_offer(&silent, &uuid::Uuid::new_v4().simple().to_string());
     assert!(f.assisted.start(second).await.is_err());
     assert_eq!(f.assisted.active().await, 1);
+}
+
+#[tokio::test]
+async fn assisted_ice_connects_through_the_relay_with_the_direct_path_blocked() {
+    let f = fixture().await;
+    let mut fake = crate::turn::testing::fake().await;
+    let relay = crate::turn::allocate(
+        &crate::turn::testing::credentials(&fake, crate::turn::testing::PASS),
+        f.assisted.relay_inbox(),
+    )
+    .await
+    .unwrap();
+    let relay_addr = relay.addr();
+
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let ufrag = uuid::Uuid::new_v4().simple().to_string();
+    let mut offer = assisted_offer(&socket, &ufrag);
+    // The server is told only a dead port on the client's IP: its direct checks go nowhere, and the relay still learns
+    // the client's IP for the permission. The client is told only the relayed address, never the server's own.
+    let dead = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    offer.candidates = vec![dead.local_addr().unwrap()];
+    offer.relay = Some(relay);
+    let pwd = offer.pwd.clone();
+    let answer = f.assisted.start(offer).await.unwrap();
+
+    let client = RtcClient::dial(
+        socket,
+        IceCreds { ufrag, pass: pwd },
+        IceCreds {
+            ufrag: answer.ufrag.clone(),
+            pass: answer.pwd,
+        },
+        Some(relay_addr),
+        &f.rtc.fingerprint,
+    )
+    .await;
+    let mut c = Conn::Rtc(client.expect("the session connects through the relay"));
+    c.send(json!({"type": "list_workspaces"})).await;
+    c.recv_type("error").await;
+
+    // Ending the session releases the allocation.
+    f.assisted.cancel(&answer.ufrag);
+    tokio::time::timeout(Duration::from_secs(3), fake.closed.recv())
+        .await
+        .expect("the allocation is released with the session")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn assisted_ice_without_a_relay_still_connects_when_the_allocation_is_refused() {
+    let f = fixture().await;
+    let fake = crate::turn::testing::fake().await;
+    let relay = crate::turn::allocate_or_none(
+        &crate::turn::testing::credentials(&fake, "not-the-password"),
+        f.assisted.relay_inbox(),
+    )
+    .await;
+    assert!(relay.is_none());
+
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let ufrag = uuid::Uuid::new_v4().simple().to_string();
+    let mut offer = assisted_offer(&socket, &ufrag);
+    offer.relay = relay;
+    let pwd = offer.pwd.clone();
+    let answer = f.assisted.start(offer).await.unwrap();
+    let client = RtcClient::dial(
+        socket,
+        IceCreds { ufrag, pass: pwd },
+        IceCreds {
+            ufrag: answer.ufrag,
+            pass: answer.pwd,
+        },
+        None,
+        &f.rtc.fingerprint,
+    )
+    .await;
+    assert!(client.is_ok());
 }

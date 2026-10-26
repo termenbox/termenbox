@@ -22,6 +22,8 @@ serde_json = { workspace = true }
 reqwest = { workspace = true }
 portable-pty = { workspace = true }
 str0m = "0.24.1"
+turn = "0.17.2"
+webrtc-util = "0.17.2"
 sha2 = { workspace = true }
 hmac = { workspace = true }
 qrcode = { version = "0.14", default-features = false }
