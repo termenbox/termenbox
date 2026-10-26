@@ -24,6 +24,7 @@ mod backend;
 mod candidates;
 mod cert;
 mod claude_hooks;
+mod cloudflare;
 mod connection;
 mod control;
 mod directory;
@@ -55,8 +56,8 @@ mod signal;
 mod stun;
 mod terminfo;
 mod tmuxconf;
-mod turn;
 mod transcript;
+mod turn;
 mod uninstall;
 mod updater;
 mod websocket;
@@ -299,6 +300,24 @@ struct Args {
     /// $OPENCODE_CONFIG_DIR, else $XDG_CONFIG_HOME/opencode, else ~/.config/opencode.
     #[arg(long)]
     opencode_dir: Option<PathBuf>,
+
+    /// One-shot, opt-in (decision 0140): set up the assisted connection in your own Cloudflare account (a signaling
+    /// Worker and a TURN key). The account API token is read from stdin, used once and never stored.
+    #[arg(long, default_value = "false")]
+    setup_cloudflare: bool,
+
+    /// One-shot: delete what --setup-cloudflare made (the Worker, its Durable Object and the TURN key). Reads the
+    /// account API token from stdin like --setup-cloudflare.
+    #[arg(long, default_value = "false")]
+    teardown: bool,
+
+    /// With --setup-cloudflare or --teardown: the account, by name or id, when the token sees several.
+    #[arg(long)]
+    cloudflare_account: Option<String>,
+
+    /// With --setup-cloudflare: the workers.dev subdomain to create when the account has none.
+    #[arg(long)]
+    workers_subdomain: Option<String>,
 
     /// Creates the Web Push key (VAPID) in `connectors.env` in the config directory, mode 0600, and prints the
     /// public key. Restart the server afterwards. Does nothing when a key is already there.
@@ -617,6 +636,9 @@ async fn main() -> anyhow::Result<()> {
     if let Some(adapter) = &args.hook {
         events::run_hook(adapter);
         return Ok(());
+    }
+    if args.setup_cloudflare || args.teardown {
+        return run_cloudflare(&args).await;
     }
     if args.setup_push {
         match push::setup(&args.config_dir) {
@@ -1194,6 +1216,43 @@ fn pairing_block(args: &Args, auth: &AuthState) -> anyhow::Result<candidates::Pa
 
 /// `--print-pairing`: for a phone that has no directory path to this server (LAN-only, offline, or behind a NAT with no
 /// relay), and what `--register` prints too.
+/// `--setup-cloudflare` and `--teardown` (decision 0140).
+async fn run_cloudflare(args: &Args) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !(args.setup_cloudflare && args.teardown),
+        "give --setup-cloudflare or --teardown, not both"
+    );
+    std::fs::create_dir_all(&args.config_dir)?;
+    let server_id = directory::ServerKey::load_or_create(&args.config_dir)?.server_id();
+    let api = std::env::var("TERMENBOX_CLOUDFLARE_API").unwrap_or_else(|_| cloudflare::API.into());
+    let params = cloudflare::Params {
+        api: &api,
+        dir: &args.config_dir,
+        server_id: &server_id,
+        account: args.cloudflare_account.as_deref(),
+        subdomain: args.workers_subdomain.as_deref(),
+        cap_gb: signal::Usage::cap_from_env(
+            std::env::var("TERMENBOX_RELAY_CAP_GB").ok().as_deref(),
+        ),
+    };
+    let token = cloudflare::read_token()?;
+    let result = if args.setup_cloudflare {
+        cloudflare::setup(&token, &params).await.map(|r| r.render())
+    } else {
+        cloudflare::teardown(&token, &params)
+            .await
+            .map(|lines| lines.join("\n") + "\n")
+    };
+    match result {
+        Ok(text) => print!("{text}"),
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+    }
+    Ok(())
+}
+
 fn print_pairing(args: &Args, auth: &AuthState) -> anyhow::Result<()> {
     use std::io::IsTerminal;
     let block = pairing_block(args, auth)?;
