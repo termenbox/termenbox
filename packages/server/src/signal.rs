@@ -77,6 +77,46 @@ impl std::fmt::Debug for Config {
 
 pub const CONFIG_FILE: &str = "relay.json";
 
+/// `http(s)` or `ws(s)` URL whose host is this machine: the only plaintext a test override may name.
+fn is_loopback_url(url: &str, scheme: &str) -> bool {
+    let Some(rest) = url.strip_prefix(scheme) else {
+        return false;
+    };
+    ["127.0.0.1", "localhost", "[::1]"].iter().any(|h| {
+        rest.strip_prefix(h)
+            .is_some_and(|r| r.is_empty() || r.starts_with([':', '/']))
+    })
+}
+
+/// Where the server dials the Worker: `TERMENBOX_SIGNAL_DIAL` when it is a loopback `ws://` (the end-to-end test's
+/// fake Worker, which has no certificate the server trusts), otherwise the configured `wss://` URL. The bundle
+/// always advertises the configured URL, so the override changes nothing a client or the directory sees.
+pub fn dial_url(configured: &str, over: Option<&str>) -> String {
+    match over {
+        Some(u) if is_loopback_url(u, "ws://") => u.to_string(),
+        Some(_) => {
+            warn!("TERMENBOX_SIGNAL_DIAL ignored: only a loopback ws:// URL is accepted");
+            configured.to_string()
+        }
+        None => configured.to_string(),
+    }
+}
+
+/// The credential endpoint: `TERMENBOX_RELAY_API` when it is `https://` or a loopback `http://` (a fake in the
+/// end-to-end test), otherwise Cloudflare's.
+pub fn credential_api(over: Option<&str>) -> String {
+    match over {
+        Some(u) if u.starts_with("https://") || is_loopback_url(u, "http://") => u.to_string(),
+        Some(_) => {
+            warn!(
+                "TERMENBOX_RELAY_API ignored: only https:// or a loopback http:// URL is accepted"
+            );
+            CLOUDFLARE_API.to_string()
+        }
+        None => CLOUDFLARE_API.to_string(),
+    }
+}
+
 impl Config {
     /// `None` when the owner has not set the assisted path up.
     pub fn load(dir: &Path) -> Result<Option<Config>> {
@@ -983,6 +1023,42 @@ mod tests {
         let reply = text(r.signal.handle(1, &serde_json::to_vec(&v).unwrap()).await);
         assert!(reply.contains("error"), "{reply}");
         assert_eq!(r.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn test_overrides_accept_only_loopback_plaintext() {
+        let cfg = "wss://w.workers.dev/s/abc";
+        assert_eq!(dial_url(cfg, None), cfg);
+        assert_eq!(
+            dial_url(cfg, Some("ws://127.0.0.1:9/s/abc")),
+            "ws://127.0.0.1:9/s/abc"
+        );
+        assert_eq!(
+            dial_url(cfg, Some("ws://localhost/s/abc")),
+            "ws://localhost/s/abc"
+        );
+        for bad in [
+            "ws://evil.example/s",
+            "ws://127.0.0.1.evil.example/s",
+            "wss://127.0.0.1/s",
+            "ws://10.0.0.1/s",
+        ] {
+            assert_eq!(dial_url(cfg, Some(bad)), cfg, "{bad}");
+        }
+        assert_eq!(credential_api(None), CLOUDFLARE_API);
+        assert_eq!(
+            credential_api(Some("http://127.0.0.1:8/")),
+            "http://127.0.0.1:8/"
+        );
+        assert_eq!(
+            credential_api(Some("https://api.example")),
+            "https://api.example"
+        );
+        assert_eq!(credential_api(Some("http://evil.example")), CLOUDFLARE_API);
+        assert_eq!(
+            credential_api(Some("http://127.0.0.1.evil.example")),
+            CLOUDFLARE_API
+        );
     }
 
     #[test]

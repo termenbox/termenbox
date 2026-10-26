@@ -67,11 +67,12 @@ Context: `packages/client/src/lib/paths.ts` races candidates staggered 150-300 m
 Do: Add the signaling candidate type to the race: open the Worker socket from the bundle's `signal`, send a signed offer, receive the answer and trickled candidates, set `iceServers` to the free STUN list plus the TURN credentials the server returns, and let the browser connect. Show the winner as "Direct", "Punched" or "Relay" in the session header and `PathReport.svelte`. Add the WSL cause to the all-failed diagnostic: when the server reports a NAT'd VM, say that mirrored mode or `--setup-cloudflare` fixes it. Unit tests with a fake signal socket and a fake `RTCPeerConnection`: punch wins, punch times out and relay wins, signal unreachable, credential refused.
 Done-when: the tests cover each of those outcomes and the report text for each, and no new `connect-src` origin is needed in `packages/client/public/_headers`.
 
-### 3.1 End-to-end test of the assisted path — [ ]
+### 3.1 End-to-end test of the assisted path — [~]
 Class: implement · Needs: 2.5, 2.6, 2.8 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && node e2e/run.mjs'`
 Context: `packages/client/e2e/` runs a real server and a headless browser on loopback (see `e2e/pair.mjs` for the pairing e2e and `e2e/browser.mjs` for the launcher). The e2e needs a fake signaling Worker, a fake STUN and a fake TURN on loopback, with the direct path blocked.
 Do: Add `e2e/assisted.mjs`: start the server with `TERMENBOX_STUN` pointing to the fake, the fake Worker URL in its config and direct reachability forced off; load the client with a pairing link carrying `signal` and `relay`; assert the session opens, the header shows "Punched", then block the punch and assert "Relay", then stop the signal and assert the diagnostic names the cause. Register it in `e2e/run.mjs`.
 Done-when: the e2e passes in CI for the punched, relay and signal-down cases, and the corrupted-signature case never previews.
+State: `e2e/assisted.mjs` passes locally on all four (registered in `e2e/suite.mjs server`, the list CI runs; not in `run.mjs`, which holds the resource gates). Open: a green CI run. Seams it needed: `TERMENBOX_SIGNAL_DIAL` and `TERMENBOX_RELAY_API` (loopback only), `TERMENBOX_ASSUME_NAT`, `TERMENBOX_NO_IPV6`, client `localStorage.termenbox_stun`.
 
 ### 3.2 Verify on WSL2 and a phone, then document — [ ]
 Class: review · Needs: 3.1 · Check: `grep -q 'WSL2' docs/facts/0053-*.md && grep -q 'assisted' README.md`

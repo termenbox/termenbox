@@ -1029,7 +1029,8 @@ async fn main() -> anyhow::Result<()> {
         );
         // A global IPv6 address gets a socket of its own on the same port, so a `wan6` candidate is real.
         let mut v6 = None;
-        if !lan_only {
+        // TERMENBOX_NO_IPV6: for a host whose IPv6 does not route, and for tests that must not have a direct way in.
+        if !lan_only && std::env::var_os("TERMENBOX_NO_IPV6").is_none() {
             if let Some(addr) = candidates::global_ipv6(&ifaces) {
                 match tokio::net::UdpSocket::bind((addr, port)).await {
                     Ok(socket) => {
@@ -1057,7 +1058,9 @@ async fn main() -> anyhow::Result<()> {
                 reach::Config {
                     port,
                     gateway: reach::detect_gateway(),
-                    host_public4: netutil::local_route_ip().is_some_and(netutil::is_public_unicast),
+                    // TERMENBOX_ASSUME_NAT: a host whose public address is a 1:1 NAT's, or a test host that must not count as public.
+                    host_public4: std::env::var_os("TERMENBOX_ASSUME_NAT").is_none()
+                        && netutil::local_route_ip().is_some_and(netutil::is_public_unicast),
                     v6,
                     overlay: !candidates::overlay_addrs(&ifaces, None).is_empty(),
                     seen: None,
@@ -1096,14 +1099,19 @@ async fn main() -> anyhow::Result<()> {
                             mapped: Some(stun_rx_out.clone()),
                         },
                         Some(signal::Minter::new(
-                            signal::CLOUDFLARE_API,
+                            &signal::credential_api(
+                                std::env::var("TERMENBOX_RELAY_API").ok().as_deref(),
+                            ),
                             &cfg.turn_key_id,
                             &cfg.turn_key_token,
                         )),
                         usage,
                     ));
                     tokio::spawn(signal::run(
-                        cfg.signal,
+                        signal::dial_url(
+                            &cfg.signal,
+                            std::env::var("TERMENBOX_SIGNAL_DIAL").ok().as_deref(),
+                        ),
                         handler,
                         signal::Backoff::new(
                             std::time::Duration::from_secs(1),

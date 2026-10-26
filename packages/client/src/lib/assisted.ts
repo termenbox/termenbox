@@ -9,6 +9,17 @@ import type { Transport } from './transport';
 
 /** Free public STUN, the same defaults as the server (DECISION-0140). */
 export const STUN_SERVERS: RTCIceServer[] = [{ urls: 'stun:stun.cloudflare.com:3478' }, { urls: 'stun:stun.l.google.com:19302' }];
+/**
+ * The STUN servers to ask: the public defaults, or the comma list in `localStorage.termenbox_stun` (the counterpart of the
+ * server's `TERMENBOX_STUN`, for a network that blocks public STUN, and for the end-to-end test). An empty value means none.
+ */
+export function stunServers(): RTCIceServer[] {
+  try {
+    const v = localStorage.getItem('termenbox_stun');
+    if (v !== null) return v.split(',').map((h) => h.trim()).filter((h) => /^[A-Za-z0-9.:[\]-]{1,100}$/.test(h)).map((h) => ({ urls: `stun:${h}` }));
+  } catch { /* no storage: the defaults */ }
+  return STUN_SERVERS;
+}
 /** How long the punch gets before the relay is asked for, and how long each stage waits for the data channel. */
 export const PUNCH_WINDOW_MS = 5000;
 export const RELAY_WINDOW_MS = 10000;
@@ -138,7 +149,7 @@ class Signaling {
 export function candidateAddr(c: Pick<RTCIceCandidate, 'candidate' | 'address' | 'port' | 'protocol'>): string | null {
   const m = /candidate:\S+ \d+ (\S+) \d+ (\S+) (\d+) typ/.exec(c.candidate);
   const proto = (c.protocol ?? m?.[1] ?? '').toLowerCase();
-  const address = c.address ?? m?.[2];
+  const address = (c.address ?? m?.[2])?.replace(/^\[|\]$/g, ''); // Chromium may hand an IPv6 address over bracketed
   const port = c.port ?? (m ? Number(m[3]) : undefined);
   if (proto !== 'udp' || !address || !port || address.endsWith('.local')) return null;
   return address.includes(':') ? `[${address}]:${port}` : `${address}:${port}`;
@@ -278,7 +289,7 @@ export async function openAssisted(target: AssistedTarget, auth: AssistedAuth, s
     let first: { transport: Transport; pc: RTCPeerConnection } | null = null;
     let punchError: unknown;
     try {
-      first = await attempt(sig, target, { iceServers: STUN_SERVERS, relay: false, windowMs: target.relay ? punchMs : punchMs + relayMs, failure: 'punch' }, deps, signal);
+      first = await attempt(sig, target, { iceServers: stunServers(), relay: false, windowMs: target.relay ? punchMs : punchMs + relayMs, failure: 'punch' }, deps, signal);
     } catch (e) {
       if (!target.relay || signal?.aborted || (e instanceof AssistedError && e.stage === 'signal')) throw e;
       punchError = e;
@@ -298,7 +309,7 @@ export async function openAssisted(target: AssistedTarget, auth: AssistedAuth, s
       if (e instanceof AssistedError && e.stage === 'signal') throw e;
       throw new AssistedError('credential', `${e instanceof Error ? e.message : e}; the direct attempt said: ${punchError instanceof Error ? punchError.message : 'it did not connect'}`);
     }
-    const second = await attempt(sig, target, { iceServers: [...STUN_SERVERS, ...servers], relay: true, windowMs: relayMs, failure: 'relay' }, deps, signal);
+    const second = await attempt(sig, target, { iceServers: [...stunServers(), ...servers], relay: true, windowMs: relayMs, failure: 'relay' }, deps, signal);
     return withVia(second.transport, (await usesRelay(second.pc)) ? 'relay' : 'punched', sig);
   } catch (e) {
     sig.close();

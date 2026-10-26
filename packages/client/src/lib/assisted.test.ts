@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render } from 'svelte/server';
 import PathReport from '../PathReport.svelte';
-import { AssistedError, buildIceAnswer, candidateAddr, openAssisted, type AssistedAuth, type AssistedDeps, type AssistedTarget } from './assisted';
+import { AssistedError, buildIceAnswer, candidateAddr, openAssisted, stunServers, STUN_SERVERS, type AssistedAuth, type AssistedDeps, type AssistedTarget } from './assisted';
 import { openTransport, Unreachable, type Openers, type Transport } from './transport';
 import { allFailedAdvice, buildPaths } from './paths';
 import { FINGERPRINT, bundleOf, newServerKey } from './bundleFixture';
@@ -194,6 +194,22 @@ describe('the pieces', () => {
     expect(c('candidate:1 1 udp 1 2001:db8::1 50000 typ host', '2001:db8::1', 50000, 'udp')).toBe('[2001:db8::1]:50000');
     expect(c('candidate:1 1 udp 1 abc.local 50000 typ host', 'abc.local', 50000, 'udp')).toBeNull();
     expect(c('candidate:1 1 tcp 1 203.0.113.5 9 typ host', '203.0.113.5', 9, 'tcp')).toBeNull();
+  });
+
+  it('candidateAddr does not bracket an IPv6 address twice', () => {
+    expect(candidateAddr({ candidate: 'candidate:1 1 udp 1 [2001:db8::1] 5000 typ host', address: '[2001:db8::1]', port: 5000, protocol: 'udp' })).toBe('[2001:db8::1]:5000');
+  });
+
+  it('stunServers is the public list unless localStorage.termenbox_stun names others', () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal('localStorage', { getItem: (k: string) => store.get(k) ?? null });
+    try {
+      expect(stunServers()).toEqual(STUN_SERVERS);
+      store.set('termenbox_stun', '127.0.0.1:3478, [::1]:3478,bad host');
+      expect(stunServers()).toEqual([{ urls: 'stun:127.0.0.1:3478' }, { urls: 'stun:[::1]:3478' }]);
+      store.set('termenbox_stun', '');
+      expect(stunServers()).toEqual([]);
+    } finally { vi.unstubAllGlobals(); }
   });
 
   it('buildIceAnswer is a full-ICE passive answer with the server\'s candidates', () => {
