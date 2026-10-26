@@ -15,13 +15,14 @@ tags: [product, architecture, cost]
 
 **Exception (decision 0140).** This guardrail does **not** apply to paying for developer accounts
 (Apple Developer Program, Google Play Console) or desktop code-signing certificates. Those are a
-distribution cost of the optional wrapper, not a runtime dependency. The exception covers those fees only:
-it does not cover a recurring build, CI or hosting service. Everything else in this guardrail stays in force:
+distribution cost of the optional wrapper, not a runtime dependency. The exception covers those fees only,
+including the annual renewal of a developer account; it does not cover a recurring build, CI or hosting
+service. Everything else in this guardrail stays in force:
 no paid runtime service, no paid API, no subscription and no per-user fee is introduced, and the PWA and
 self-hosted installs still need no paid service.
 
 ## Scope
-- No paid APIs (Pusher, Ably, Supabase, Firebase Realtime Database/Firestore, etc.)
+- No paid APIs (Pusher, Ably, Supabase, Firebase Realtime Database/Firestore, etc.); FCM is the free push transport named below, not a paid database or API
 - No paid databases (PlanetScale, Neon, etc.) — use embedded/self-hosted only
 - No paid authentication (Auth0, Clerk, etc.) — SSH keys only
 - No paid push notification services (OneSignal, etc.) — self-hosted Web Push, or free APNs/FCM. Free store
@@ -39,7 +40,7 @@ self-hosted installs still need no paid service.
 ## Rationale
 - **Self-hosted principle**: User deploys on their own VPS; no vendor lock-in
 - **Cost predictability**: $5/month VPS only; no per-user/per-session fees
-- **Privacy**: No data leaves the user's infrastructure for the core stack; the optional wrapper's push path is the named exception (0140)
+- **Privacy**: No data leaves the user's infrastructure for the core stack, except push payloads, which reach the browser vendor on the web path and APNs/FCM in a wrapper (see `notifications-carry-no-agent-text`)
 - **License compatibility**: MIT encourages commercial self-hosting without license fees
 
 ## Enforcement

@@ -14,4 +14,4 @@ tags: [notifications, privacy, security]
 **MUST NOT** put task titles, prompts, tool arguments, messages or terminal text in a Web Push, APNs or FCM payload, a badge, or the audit log. **MAY** carry the session's display name, the Attention kind and a time.
 
 ## Check
-A unit test builds a payload from an event whose title and prompt hold a marker string and asserts the marker is absent from the payload bytes.
+A unit test builds a payload from an event whose title and prompt hold a marker string and asserts the marker is absent from the payload bytes. It covers every push path: a separate builder for Web Push, APNs or FCM is tested with the same marker, and a shared builder is tested once.
