@@ -371,8 +371,9 @@ impl Updater<'_> {
             return Ok(Outcome::UpToDate);
         }
         // Recorded before anything is downloaded, so the app's card is truthful between the check and the install
-        // (and after an install that failed); a successful install clears it.
-        self.record_available(Some(&manifest.version))?;
+        // (and after an install that failed); a successful install clears it. It is a hint for the app: a directory
+        // the updater cannot write to never stops the update itself.
+        let _ = self.record_available(Some(&manifest.version));
         if self.trigger == Trigger::Timer {
             let hold_back = if self.policy.mode == Mode::Notify {
                 Some("notify mode: the owner installs it")
