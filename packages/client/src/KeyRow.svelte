@@ -134,7 +134,7 @@
       <div class="absolute inset-x-0 bottom-full z-10 flex max-h-[40vh] flex-wrap content-start gap-2 overflow-y-auto border-t border-line bg-panel p-2 [touch-action:pan-y]" role="group" aria-label="More keys">
         {#each hidden as k (k.id)}
           {@const v = view(k)}
-          <button type="button" class={cap + ' min-w-11 flex-none px-2'} aria-label={v.name} aria-pressed={k.kind === 'mod' ? v.pressed : undefined} data-press-on={k.needs === 'voice' ? 'up' : undefined} use:press={runFromPanel(k, v)}>{v.label}</button>
+          <button type="button" class={cap + ' min-w-11 flex-none px-2'} aria-label={v.name} aria-pressed={k.kind === 'mod' ? v.pressed : undefined} data-press-on={k.id === 'voice' ? 'up' : undefined} use:press={runFromPanel(k, v)}>{v.label}</button>
         {/each}
         <button type="button" class={cap + ' min-w-11 flex-none px-3'} use:press={() => (moreOpen = false)}>Close</button>
       </div>
@@ -142,7 +142,7 @@
     <div class="flex gap-0.5 border-t border-line bg-panel px-1 py-[3px] [overflow:hidden] [contain:inline-size] [overscroll-behavior:contain] [touch-action:none]" role="toolbar" aria-label={label} data-mode="full" bind:clientWidth={width}>
       {#each layout.shown as k (k.id)}
         {@const v = view(k)}
-        <button type="button" class={cap + ' flex-1 basis-0' + (k.small ? ' !text-xs' : '')} aria-label={v.name} aria-pressed={k.kind === 'mod' ? v.pressed : undefined} data-testid={v.testid} data-press-on={k.needs === 'voice' ? 'up' : undefined} use:press={v.run}>{v.label}</button>
+        <button type="button" class={cap + ' flex-1 basis-0' + (k.small ? ' !text-xs' : '')} aria-label={v.name} aria-pressed={k.kind === 'mod' ? v.pressed : undefined} data-testid={v.testid} data-press-on={k.id === 'voice' ? 'up' : undefined} use:press={v.run}>{v.label}</button>
       {/each}
       {#if layout.more}
         <button type="button" class={cap + ' flex-1 basis-0'} aria-label="More keys" aria-expanded={moreOpen} aria-haspopup="true" use:press={() => (moreOpen = !moreOpen)}>⋯</button>
