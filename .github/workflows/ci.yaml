@@ -234,11 +234,8 @@ jobs:
         shell: bash
         working-directory: packages/client
         env:
-          # Firefox refuses to launch as root when HOME is owned by another uid (GitHub Actions sets
-          # HOME=/github/home, owned by uid 1001). WebKit's sandbox check is similar. The chromium leg
-          # runs on the bare runner as user `runner`, where this would break pnpm — so only set it for
-          # the container legs. Playwright's own error message recommends HOME=/root.
-          HOME: ${{ matrix.engine != 'chromium' && '/root' || '' }}
+          # HOME is not set here: an empty string for chromium reaches the server and the browser as HOME="".
+          # The container legs export HOME=/root in the script below.
           RUN_ENGINE: ${{ matrix.engine }}
           RUN_LIST: ${{ matrix.runs }}
           RUN_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
@@ -328,11 +325,8 @@ jobs:
         shell: bash
         working-directory: packages/client
         env:
-          # Firefox refuses to launch as root when HOME is owned by another uid (GitHub Actions sets
-          # HOME=/github/home, owned by uid 1001). WebKit's sandbox check is similar. The chromium leg
-          # runs on the bare runner as user `runner`, where this would break pnpm — so only set it for
-          # the container legs. Playwright's own error message recommends HOME=/root.
-          HOME: ${{ matrix.engine != 'chromium' && '/root' || '' }}
+          # HOME is not set here: an empty string for chromium reaches the server and the browser as HOME="".
+          # The container legs export HOME=/root in the script below.
           TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
           RUN_ENGINE: ${{ matrix.engine }}
           RUN_LIST: ${{ matrix.runs }}
