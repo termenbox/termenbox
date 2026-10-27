@@ -12,10 +12,11 @@ LABEL org.opencontainers.image.source="https://github.com/termenbox/termenbox" \
       org.opencontainers.image.description="Termenbox CI image: node, tmux, git, Playwright browsers" \
       org.opencontainers.image.licenses="MIT"
 
-# tmux is needed by browsers-real (drives real sessions); the rest are Playwright's OS deps,
-# installed once here so --with-deps has nothing left to do at runtime.
+# tmux is needed by browsers-real (drives real sessions); python3 is used by the two-servers e2e
+# script to send a hook event over the events socket; the rest are Playwright's OS deps, installed
+# once here so --with-deps has nothing left to do at runtime.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates tmux git curl openssh-client procps \
+        ca-certificates tmux git curl openssh-client procps python3-minimal \
     && rm -rf /var/lib/apt/lists/*
 
 # Keep in sync with packages/client/package.json's playwright-core pin.
