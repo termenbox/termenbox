@@ -20,10 +20,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Keep in sync with packages/client/package.json's playwright-core pin.
 ENV PLAYWRIGHT_VERSION=1.64.0
-# Bake the browser binaries to a system path: the node image runs jobs as the `node` user, not root,
-# so the default ~/.cache/ms-playwright would land in /root and be invisible to the job.
+# Bake the browser binaries to a system path so they survive across image layers and are easy to
+# chmod. Set world-readable so any user can run them.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN npx -y playwright-core@${PLAYWRIGHT_VERSION} install --with-deps firefox webkit \
     && chmod -R a+rX /opt/playwright-browsers \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf ~/.npm/_npx
+
+# Run job steps as root. The base node image's default USER is `node` (UID 1000), but GitHub Actions
+# bind-mounts /home/runner/work/_temp (owned by UID 1001, the runner user) into the container for
+# ${{ runner.temp }} — E2E_ARTIFACTS and Firefox's profile cache live there. Running as root lets
+# the job write to that path; the alternative of matching the runner's UID 1001 is fragile because
+# the UID can change with the runner image.
+USER root
+
