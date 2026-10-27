@@ -145,7 +145,10 @@ fn valid_signal(s: &str) -> bool {
         return false;
     };
     let host = rest.split(['/', '?', '#']).next().unwrap_or("");
-    s.len() <= MAX_SIGNAL && s.bytes().all(|b| b.is_ascii_graphic()) && !host.is_empty() && !host.contains('@')
+    s.len() <= MAX_SIGNAL
+        && s.bytes().all(|b| b.is_ascii_graphic())
+        && !host.is_empty()
+        && !host.contains('@')
 }
 
 fn server_key_bytes(server_id: &str) -> Option<[u8; 32]> {
@@ -457,7 +460,10 @@ mod tests {
         }
         // Each field alone also signs and verifies.
         for one in [
-            Bundle { relay: false, ..b.clone() },
+            Bundle {
+                relay: false,
+                ..b.clone()
+            },
             Bundle { signal: None, ..b },
         ] {
             assert_eq!(Bundle::verify(&signed(&one), 1, None, None), Ok(one));
@@ -472,7 +478,10 @@ mod tests {
         assert!(b.signed_bytes().unwrap().starts_with(MAGIC));
         let v: serde_json::Value =
             serde_json::from_str(include_str!("../testdata/bundle-vectors.json")).unwrap();
-        assert_eq!(Bundle::verify(v["wire"].as_str().unwrap(), 1, None, None), Ok(b));
+        assert_eq!(
+            Bundle::verify(v["wire"].as_str().unwrap(), 1, None, None),
+            Ok(b)
+        );
     }
 
     #[test]
@@ -485,7 +494,10 @@ mod tests {
             "wss://x.example/ s",
             &format!("wss://x.example/{}", "a".repeat(MAX_SIGNAL)),
         ] {
-            let b = Bundle { signal: Some(bad.into()), ..vector_bundle() };
+            let b = Bundle {
+                signal: Some(bad.into()),
+                ..vector_bundle()
+            };
             assert_eq!(b.signed_bytes(), Err(BundleError::Malformed), "{bad}");
         }
         // tbxb3 carrying neither field is a second spelling of tbxb2, not a bundle.
@@ -493,12 +505,18 @@ mod tests {
         bytes[4] = b'3';
         bytes.push(0);
         bytes.extend([0u8; SIG_LEN]);
-        assert_eq!(Bundle::decode(&B64.encode(&bytes)), Err(BundleError::Malformed));
+        assert_eq!(
+            Bundle::decode(&B64.encode(&bytes)),
+            Err(BundleError::Malformed)
+        );
         // The relay bit is unknown in tbxb2.
         let mut bytes = vector_bundle().signed_bytes().unwrap();
         bytes[5 + 32 + 8 + 8] = 2;
         bytes.extend([0u8; SIG_LEN]);
-        assert_eq!(Bundle::decode(&B64.encode(&bytes)), Err(BundleError::Malformed));
+        assert_eq!(
+            Bundle::decode(&B64.encode(&bytes)),
+            Err(BundleError::Malformed)
+        );
     }
 
     #[test]

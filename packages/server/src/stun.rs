@@ -192,7 +192,11 @@ async fn round(
     } else {
         Mapping::Symmetric
     };
-    Some(Mapped { addr: first, mapping, answers: seen.len() })
+    Some(Mapped {
+        addr: first,
+        mapping,
+        answers: seen.len(),
+    })
 }
 
 /// Starts the discovery on the transport socket. It waits for the reachability report, asks only when
@@ -218,7 +222,11 @@ fn spawn_with(
     tokio::spawn(async move {
         loop {
             let ask = reach.borrow_and_update().as_ref().is_some_and(needed);
-            let found = if ask { round(&socket, &mut rx, &servers, timeout).await } else { None };
+            let found = if ask {
+                round(&socket, &mut rx, &servers, timeout).await
+            } else {
+                None
+            };
             if *tx.borrow() != found {
                 match &found {
                     Some(m) => println!("{}", m.render()),
@@ -310,8 +318,17 @@ mod tests {
         let mut r = rig().await;
         let me = r.socket.local_addr().unwrap();
         let (a, b) = (fake(None, "ok").await, fake(None, "ok").await);
-        let got = round(&r.socket, &mut r.rx, &list(&[a, b]), Duration::from_secs(2)).await.unwrap();
-        assert_eq!(got, Mapped { addr: me, mapping: Mapping::EndpointIndependent, answers: 2 });
+        let got = round(&r.socket, &mut r.rx, &list(&[a, b]), Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(
+            got,
+            Mapped {
+                addr: me,
+                mapping: Mapping::EndpointIndependent,
+                answers: 2
+            }
+        );
         assert_eq!(got.candidate(), Some((Ipv4Addr::LOCALHOST, me.port())));
         assert!(got.render().contains("a punch can work"));
     }
@@ -321,7 +338,9 @@ mod tests {
         let mut r = rig().await;
         let other: SocketAddr = "127.0.0.1:55555".parse().unwrap();
         let (a, b) = (fake(None, "ok").await, fake(Some(other), "ok").await);
-        let got = round(&r.socket, &mut r.rx, &list(&[a, b]), Duration::from_secs(2)).await.unwrap();
+        let got = round(&r.socket, &mut r.rx, &list(&[a, b]), Duration::from_secs(2))
+            .await
+            .unwrap();
         assert_eq!(got.mapping, Mapping::Symmetric);
         assert_eq!(got.candidate(), None);
     }
@@ -331,14 +350,30 @@ mod tests {
         for mode in ["silent", "garbage", "wrong-txid"] {
             let mut r = rig().await;
             let s = fake(None, mode).await;
-            let got = round(&r.socket, &mut r.rx, &list(&[s]), Duration::from_millis(300)).await;
+            let got = round(
+                &r.socket,
+                &mut r.rx,
+                &list(&[s]),
+                Duration::from_millis(300),
+            )
+            .await;
             assert_eq!(got, None, "{mode}");
         }
         // One silent server does not hide the other's answer.
         let mut r = rig().await;
         let (dead, live) = (fake(None, "silent").await, fake(None, "ok").await);
-        let got = round(&r.socket, &mut r.rx, &list(&[dead, live]), Duration::from_millis(300)).await.unwrap();
-        assert_eq!((got.answers, got.mapping), (1, Mapping::EndpointIndependent));
+        let got = round(
+            &r.socket,
+            &mut r.rx,
+            &list(&[dead, live]),
+            Duration::from_millis(300),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (got.answers, got.mapping),
+            (1, Mapping::EndpointIndependent)
+        );
         assert!(got.render().contains("mapping type unknown"));
     }
 
@@ -349,7 +384,10 @@ mod tests {
         v.extend(COOKIE);
         v.extend(tx);
         v.extend([0x00, 0x01, 0, 8, 0, 1, 0x1F, 0x90, 203, 0, 113, 9]);
-        assert_eq!(parse_binding_response(&v, &tx), Some("203.0.113.9:8080".parse().unwrap()));
+        assert_eq!(
+            parse_binding_response(&v, &tx),
+            Some("203.0.113.9:8080".parse().unwrap())
+        );
         for cut in 0..v.len() {
             assert_eq!(parse_binding_response(&v[..cut], &tx), None, "cut {cut}");
         }
@@ -359,7 +397,10 @@ mod tests {
     #[test]
     fn stun_is_off_in_lan_only_mode_and_with_an_empty_list() {
         assert!(servers(true, None).is_empty());
-        assert!(servers(true, Some("stun.example:3478")).is_empty(), "LAN-only wins");
+        assert!(
+            servers(true, Some("stun.example:3478")).is_empty(),
+            "LAN-only wins"
+        );
         assert!(servers(false, Some("")).is_empty());
         assert_eq!(servers(false, Some(" a:1, b:2 ,")), ["a:1", "b:2"]);
         assert_eq!(servers(false, None), DEFAULT_SERVERS);
@@ -369,23 +410,49 @@ mod tests {
     async fn stun_runs_only_for_a_server_that_is_not_directly_reachable() {
         use crate::reach::{Facts, Outcome};
         let nat = |facts: Facts| Report::new(facts, Outcome::default(), 1);
-        assert!(needed(&nat(Facts { gateway: true, ..Facts::default() })));
-        assert!(!needed(&nat(Facts { host_public4: true, ..Facts::default() })));
+        assert!(needed(&nat(Facts {
+            gateway: true,
+            ..Facts::default()
+        })));
+        assert!(!needed(&nat(Facts {
+            host_public4: true,
+            ..Facts::default()
+        })));
 
         // No report yet, and a reachable host, send no packet; a NAT'd one does.
         let mut r = rig().await;
         let probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let at = probe.local_addr().unwrap();
         let (tx, reach) = watch::channel(None);
-        let out = spawn_with(r.socket.clone(), std::mem::replace(&mut r.rx, channel().1), list(&[at]), reach, Duration::from_millis(200), Duration::from_secs(60));
+        let out = spawn_with(
+            r.socket.clone(),
+            std::mem::replace(&mut r.rx, channel().1),
+            list(&[at]),
+            reach,
+            Duration::from_millis(200),
+            Duration::from_secs(60),
+        );
         let mut buf = [0u8; 64];
-        let quiet = tokio::time::timeout(Duration::from_millis(300), probe.recv_from(&mut buf)).await;
+        let quiet =
+            tokio::time::timeout(Duration::from_millis(300), probe.recv_from(&mut buf)).await;
         assert!(quiet.is_err(), "no report: nothing sent");
-        tx.send(Some(nat(Facts { host_public4: true, ..Facts::default() }))).unwrap();
-        let quiet = tokio::time::timeout(Duration::from_millis(300), probe.recv_from(&mut buf)).await;
+        tx.send(Some(nat(Facts {
+            host_public4: true,
+            ..Facts::default()
+        })))
+        .unwrap();
+        let quiet =
+            tokio::time::timeout(Duration::from_millis(300), probe.recv_from(&mut buf)).await;
         assert!(quiet.is_err(), "reachable host: nothing sent");
-        tx.send(Some(nat(Facts { gateway: true, ..Facts::default() }))).unwrap();
-        let (n, _) = tokio::time::timeout(Duration::from_secs(1), probe.recv_from(&mut buf)).await.unwrap().unwrap();
+        tx.send(Some(nat(Facts {
+            gateway: true,
+            ..Facts::default()
+        })))
+        .unwrap();
+        let (n, _) = tokio::time::timeout(Duration::from_secs(1), probe.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(n, 20, "a Binding request");
         assert!(out.borrow().is_none());
     }

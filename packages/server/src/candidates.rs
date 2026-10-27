@@ -849,8 +849,16 @@ mod tests {
         let key = Arc::new(ServerKey::from_seed([3u8; 32]));
         let fp = format!("sha-256 {}", vec!["0A"; 32].join(":"));
         let hub = PathHub::new(
-            dir.clone(), key.clone(), fp.clone(), "box".into(), 4443, Some("192.168.1.20".into()),
-            None, None, false, crate::reach::Handle::idle().0.rx,
+            dir.clone(),
+            key.clone(),
+            fp.clone(),
+            "box".into(),
+            4443,
+            Some("192.168.1.20".into()),
+            None,
+            None,
+            false,
+            crate::reach::Handle::idle().0.rx,
         );
         hub.enable_assisted();
         hub.refresh().unwrap();
@@ -862,12 +870,16 @@ mod tests {
             format!(r#"{{"signal":"{url}","turn_key_id":"k","turn_key_token":"t"}}"#).as_bytes(),
         )
         .unwrap();
-        assert!(hub.refresh().unwrap(), "the new Worker is a change: sign again");
+        assert!(
+            hub.refresh().unwrap(),
+            "the new Worker is a change: sign again"
+        );
         let b = hub.current_bundle().unwrap();
         assert_eq!((b.signal.as_deref(), b.relay), (Some(url), true));
 
         let decode = |lan_only| {
-            let wire = pairing_bundle(&dir, &key, &fp, "box", 4443, Some("192.168.1.20"), lan_only).unwrap();
+            let wire = pairing_bundle(&dir, &key, &fp, "box", 4443, Some("192.168.1.20"), lan_only)
+                .unwrap();
             Bundle::decode(&wire).unwrap().0
         };
         assert_eq!(decode(false).signal.as_deref(), Some(url));
@@ -884,22 +896,47 @@ mod tests {
         let fp = format!("sha-256 {}", vec!["0A"; 32].join(":"));
         let (tx, rx) = watch::channel(None);
         let hub = PathHub::new_with_stun(
-            dir.clone(), key, fp, "box".into(), 4443, Some("192.168.1.20".into()),
-            None, None, false, crate::reach::Handle::idle().0.rx, rx,
+            dir.clone(),
+            key,
+            fp,
+            "box".into(),
+            4443,
+            Some("192.168.1.20".into()),
+            None,
+            None,
+            false,
+            crate::reach::Handle::idle().0.rx,
+            rx,
         );
         hub.refresh().unwrap();
         let first = hub.current_bundle().unwrap();
-        assert!(first.candidates.iter().all(|c| c.kind != CandidateKind::Wan4));
+        assert!(first
+            .candidates
+            .iter()
+            .all(|c| c.kind != CandidateKind::Wan4));
         assert!(!hub.refresh().unwrap(), "nothing changed: same seq");
-        let mapped = |mapping, addr: &str| Mapped { addr: addr.parse().unwrap(), mapping, answers: 2 };
+        let mapped = |mapping, addr: &str| Mapped {
+            addr: addr.parse().unwrap(),
+            mapping,
+            answers: 2,
+        };
         // A symmetric mapping depends on the destination: not advertised.
-        tx.send(Some(mapped(Mapping::Symmetric, "93.184.216.34:50000"))).unwrap();
+        tx.send(Some(mapped(Mapping::Symmetric, "93.184.216.34:50000")))
+            .unwrap();
         assert!(!hub.refresh().unwrap());
-        tx.send(Some(mapped(Mapping::EndpointIndependent, "93.184.216.34:50000"))).unwrap();
+        tx.send(Some(mapped(
+            Mapping::EndpointIndependent,
+            "93.184.216.34:50000",
+        )))
+        .unwrap();
         assert!(hub.refresh().unwrap());
         let next = hub.current_bundle().unwrap();
         assert!(next.seq > first.seq);
-        assert!(next.candidates.iter().any(|c| (c.kind, c.addr.as_str(), c.port) == (CandidateKind::Wan4, "93.184.216.34", 50000)));
+        assert!(next
+            .candidates
+            .iter()
+            .any(|c| (c.kind, c.addr.as_str(), c.port)
+                == (CandidateKind::Wan4, "93.184.216.34", 50000)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
