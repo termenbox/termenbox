@@ -4,7 +4,7 @@
   import KeyRow from './KeyRow.svelte';
   import { History, PROMPT_KEYS, complete, completions, enterCompletes, insertAt, keyEffect, type Command, type KeyEffect } from './lib/acpPrompt';
   import { keyRowConfig, rowMode } from './lib/keyrow';
-  import { nextVoiceLang, parseVoiceLang, pickLanguage, recognizerFactory, Voice, type VoiceLang } from './lib/terminal/voice';
+  import { IOS_KEYBOARD_HINT, nextVoiceLang, parseVoiceLang, pickLanguage, recognizerFactory, Voice, type VoiceLang } from './lib/terminal/voice';
 
   /** The prompt line of an ACP workspace (U07b): one multi-line field above the key row, in the dock the soft keyboard
    *  never covers (guardrail soft-keyboard-never-hides-input: the shell is sized by AppShell and this sits at its
@@ -103,6 +103,7 @@
     onInterim: (t) => (interim = t),
     onState: (on) => { listening = on; if (on) voiceError = ''; },
     onError: (m) => { voiceError = m; setTimeout(() => (voiceError = ''), 5000); },
+    onFallback: () => { voiceError = IOS_KEYBOARD_HINT; setTimeout(() => (voiceError = ''), 8000); },
   }) : null;
   onMount(() => { const stop = () => voice?.stop(); window.addEventListener('pagehide', stop); return () => { window.removeEventListener('pagehide', stop); voice?.stop(); }; });
   function cycleLang() {

@@ -61,7 +61,7 @@ export function errorMessage(code: string): string | null {
   switch (code) {
     case 'not-allowed':
     case 'service-not-allowed':
-      return 'Microphone is blocked. Allow it in the browser settings to dictate.';
+      return `Microphone is blocked. Allow it in the browser settings to dictate. (${code})`;
     case 'audio-capture':
       return 'No microphone found.';
     case 'not-readable':
@@ -77,6 +77,15 @@ export function errorMessage(code: string): string | null {
       return `Dictation failed (${code}).`;
   }
 }
+
+/** What the phone says about itself; an iPad that asks for desktop sites reports as a Mac with a touch screen. */
+export function isIOS(nav: { userAgent?: string; platform?: string; maxTouchPoints?: number } | undefined = (globalThis as { navigator?: Navigator }).navigator): boolean {
+  if (!nav) return false;
+  return /iPad|iPhone|iPod/.test(nav.userAgent ?? '') || (nav.platform === 'MacIntel' && (nav.maxTouchPoints ?? 0) > 1);
+}
+
+/** The words for a phone whose recognizer refuses the page while the keyboard's own dictation works. */
+export const IOS_KEYBOARD_HINT = "Dictation from this key isn't available on this phone. Use the mic on the keyboard.";
 
 /** The browser pieces the permission check reads; a browser without them is handled below. */
 export interface MicScope {
@@ -153,6 +162,12 @@ export interface VoiceHandlers {
   /** Listening started or stopped. */
   onState: (listening: boolean) => void;
   onError: (message: string) => void;
+  /**
+   * On iOS, the recognizer refused a page whose microphone check passed (Safari, and more so a home-screen app, often
+   * does). The keyboard's own dictation still reaches the input, so the person is pointed there instead of at a
+   * "blocked" settings screen that is not the problem. Without this handler the error is shown as usual.
+   */
+  onFallback?: (code: string) => void;
 }
 
 /** One dictation key: tap to start, tap to stop. */
@@ -171,6 +186,7 @@ export class Voice {
     private readonly lang: () => string,
     private readonly on: VoiceHandlers,
     private readonly ask: () => Promise<string | null> = askMicrophone,
+    private readonly ios: boolean = isIOS(),
   ) {}
 
   get listening(): boolean {
@@ -237,6 +253,10 @@ export class Voice {
       } catch { /* already closing */ }
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') {
         this.micReady = false; // permission may have been revoked: check again on the next tap
+      }
+      if (this.ios && this.on.onFallback && (e.error === 'not-allowed' || e.error === 'service-not-allowed')) {
+        this.on.onFallback(e.error);
+        return;
       }
       const msg = errorMessage(e.error);
       if (msg) this.on.onError(msg);
