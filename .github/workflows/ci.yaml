@@ -214,6 +214,9 @@ jobs:
           - { engine: firefox, runs: 'desktop:1024x768:1 desktop:1440x900:2' }
           - { engine: webkit, runs: 'desktop:1024x768:1 desktop:1440x900:2 phone:390x844:3' }
     container: ${{ matrix.engine != 'chromium' && 'ghcr.io/termenbox/termenbox-ci:latest' || '' }}
+    # Actions sets HOME=/github/home (owned by the runner uid) in a container; Firefox refuses to start as root there.
+    env:
+      HOME: ${{ matrix.engine != 'chromium' && '/root' || '/home/runner' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -278,6 +281,9 @@ jobs:
           - { name: webkit-desktop, engine: webkit, runs: 'realserver:1024x768:1 realserver:1440x900:2' }
           - { name: webkit-phone, engine: webkit, runs: 'realserver:390x844:3 phone-real:390x844:3' }
     container: ${{ matrix.engine != 'chromium' && 'ghcr.io/termenbox/termenbox-ci:latest' || '' }}
+    # Actions sets HOME=/github/home (owned by the runner uid) in a container; Firefox refuses to start as root there.
+    env:
+      HOME: ${{ matrix.engine != 'chromium' && '/root' || '/home/runner' }}
     steps:
       - uses: actions/checkout@v7
 
