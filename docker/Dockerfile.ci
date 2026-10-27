@@ -1,0 +1,38 @@
+# CI image for the browser matrix jobs (ci.yaml: browsers, browsers-real). Pre-bakes Playwright's
+# OS dependencies and the Firefox/WebKit binaries so the matrix jobs never run apt-get at all: a
+# stalled TCP read on azure.archive.ubuntu.com used to hang `playwright-core install --with-deps`
+# (WebKit pulls the GStreamer + codec stack — libavcodec60, libvpx9, libx264-164, ...) and apt has
+# no default read timeout. apt stalls now happen here, at image-build time, where Docker retries
+# and the build is off the critical path.
+#
+# The Playwright version is pinned to match packages/client/package.json; bump both together.
+# Rebuilt weekly and on change (.github/workflows/ci-image.yaml).
+FROM node:22-bookworm-slim
+LABEL org.opencontainers.image.source="https://github.com/termenbox/termenbox" \
+      org.opencontainers.image.description="Termenbox CI image: node, tmux, git, Playwright browsers" \
+      org.opencontainers.image.licenses="MIT"
+
+# tmux is needed by browsers-real (drives real sessions); python3 is used by the two-servers e2e
+# script to send a hook event over the events socket; the rest are Playwright's OS deps, installed
+# once here so --with-deps has nothing left to do at runtime.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates tmux git curl openssh-client procps python3-minimal \
+    && rm -rf /var/lib/apt/lists/*
+
+# Keep in sync with packages/client/package.json's playwright-core pin.
+ENV PLAYWRIGHT_VERSION=1.64.0
+# Bake the browser binaries to a system path so they survive across image layers and are easy to
+# chmod. Set world-readable so any user can run them.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+RUN npx -y playwright-core@${PLAYWRIGHT_VERSION} install --with-deps firefox webkit \
+    && chmod -R a+rX /opt/playwright-browsers \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf ~/.npm/_npx
+
+# Run job steps as root. The base node image's default USER is `node` (UID 1000), but GitHub Actions
+# bind-mounts /home/runner/work/_temp (owned by UID 1001, the runner user) into the container for
+# ${{ runner.temp }} — E2E_ARTIFACTS and Firefox's profile cache live there. Running as root lets
+# the job write to that path; the alternative of matching the runner's UID 1001 is fragile because
+# the UID can change with the runner image.
+USER root
+

@@ -2,9 +2,9 @@
 id: relay-credentials-are-owner-scoped-minted-after-auth-and-capped
 title: Relay and signaling resources belong to the owner's account, credentials are minted only after authentication, and relayed bytes are capped
 status: active
-governed-by: 0140-assisted-connection-runs-on-the-owners-cloudflare-account
-grounded-in: [0140-assisted-connection-runs-on-the-owners-cloudflare-account, 0058]
-derivation-note: Given 0140 (the relay and signaling live in the owner's Cloudflare account) and FACT-0058 (TURN overage bills the account and has no hard cap), an unauthenticated credential or a project key would turn a free tier into someone's bill.
+governed-by: 0141-assisted-connection-runs-on-the-owners-cloudflare-account
+grounded-in: [0141-assisted-connection-runs-on-the-owners-cloudflare-account, 0058]
+derivation-note: Given 0141 (the relay and signaling live in the owner's Cloudflare account) and FACT-0058 (TURN overage bills the account and has no hard cap), an unauthenticated credential or a project key would turn a free tier into someone's bill.
 tags: [security, network, cost, cloudflare, guardrail]
 ---
 

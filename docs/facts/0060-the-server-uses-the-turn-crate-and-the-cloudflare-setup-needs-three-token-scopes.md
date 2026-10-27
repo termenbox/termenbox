@@ -3,7 +3,7 @@ id: 0060
 title: The server uses the turn crate for its relay, and the Cloudflare setup needs three token scopes
 status: active
 kind: observation
-governed-by: 0140-assisted-connection-runs-on-the-owners-cloudflare-account
+governed-by: 0141-assisted-connection-runs-on-the-owners-cloudflare-account
 tags: [turn, cloudflare, durable-object, api-token, transport]
 date: 2026-10-26
 last-verified: 2026-10-26

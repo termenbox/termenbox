@@ -19,6 +19,7 @@ bootstrap-generated: true
 | compatibility | Browser/version support matrix |
 | crypto | Encryption, signatures, key derivation |
 | deployment | VPS, Docker, systemd, networking |
+| desktop | Desktop client, window chrome and desktop wrappers |
 | distribution | App store, PWA, installation |
 | guardrail | Derived normative rule |
 | hooks | Shell integration, agent detection |
@@ -29,8 +30,11 @@ bootstrap-generated: true
 | mobile | Touch, gestures, battery, background |
 | monorepo | Repository structure, workspaces |
 | network | Transport, protocols, binding |
+| parity | Web/native feature parity |
 | performance | Latency, throughput, memory, CPU |
+| platform | Native or browser platform detection and wrapper targets |
 | privacy | What user data is collected, kept or sent |
+| product | Product scope, positioning and promises |
 | protocol | Wire format, handshake, sync |
 | pwa | Progressive Web App features |
 | rendering | Terminal display, WebGL, xterm.js |

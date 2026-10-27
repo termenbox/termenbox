@@ -1,5 +1,5 @@
 ---
-id: 0140-assisted-connection-runs-on-the-owners-cloudflare-account
+id: 0141-assisted-connection-runs-on-the-owners-cloudflare-account
 title: A server that cannot be reached directly is helped by free public STUN, a signaling Worker and a TURN key that live in the owner's Cloudflare account, never in the project's
 status: active
 track: product
@@ -39,7 +39,7 @@ STUN, the Worker, the Durable Object and the relay are untrusted. The DTLS finge
 - The server needs a TURN client (UDP) with allocation refresh; `str0m` is sans-IO and has none (spike in the plan).
 - The client reaches the Worker over `wss:`, which the hosted CSP (`connect-src 'self' wss:`, `packages/client/public/_headers`) already allows; a plain `https:` fetch to it would need a CSP change, so the channel is WebSocket only.
 - A Cloudflare account is required for the assisted path only; it stays optional, and rungs 0, 1 and 4 need none.
-- Plan: R76, `docs/plans/assisted-connect-stun-turn.md`.
+- Plan: R77, `docs/plans/assisted-connect-stun-turn.md`.
 
 ## Open risks
 

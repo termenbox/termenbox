@@ -2,7 +2,7 @@
 
 <p align="center">
   <b>Run Claude Code and Codex on your own server, from your phone.</b><br>
-  A self-hosted web terminal for AI coding agents. Workspaces live in tmux and survive dropped connections. No app to install, no subscription.
+  A self-hosted web terminal for AI coding agents. Workspaces live in tmux and survive dropped connections. No app required, no subscription.
 </p>
 
 <p align="center">
@@ -97,7 +97,7 @@ On the same network as your phone, no: scan the QR and it connects over the LAN.
 
 <details><summary><b>What does it cost?</b></summary>
 
-Nothing beyond the machine you run it on. There is no subscription and no native app.
+Nothing beyond the machine you run it on. There is no subscription, and using Termenbox never requires installing an app — the browser is the product.
 </details>
 
 <details><summary><b>Who can open a workspace?</b></summary>

@@ -3,7 +3,7 @@ id: 0058
 title: Cloudflare STUN is free and unlimited, Cloudflare TURN is free to 1,000 GB a month, and Google publishes no STUN terms
 status: active
 kind: observation
-governed-by: 0140-assisted-connection-runs-on-the-owners-cloudflare-account
+governed-by: 0141-assisted-connection-runs-on-the-owners-cloudflare-account
 tags: [network, cloudflare, limits, transport]
 date: 2026-10-26
 last-verified: 2026-10-26
@@ -30,5 +30,5 @@ Read from Cloudflare's documentation and a web search; nothing here was run agai
 
 ## Consequences
 
-- STUN can be a default, but only as a replaceable hint (0140).
+- STUN can be a default, but only as a replaceable hint (0141).
 - The server mints TURN credentials itself and caps relayed bytes, because Cloudflare gives no hard spend limit.

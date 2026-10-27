@@ -3,7 +3,7 @@ id: 0059
 title: STUN-only punching failed from an iPhone on cellular to a WSL2 NAT server, and the Cloudflare TURN relay connected
 status: active
 kind: observation
-governed-by: 0140-assisted-connection-runs-on-the-owners-cloudflare-account
+governed-by: 0141-assisted-connection-runs-on-the-owners-cloudflare-account
 tags: [network, nat, stun, turn, wsl, ios, cellular, transport]
 date: 2026-10-26
 last-verified: 2026-10-26
@@ -34,6 +34,6 @@ Measured by the same run: time to connect over the relay was 7.8 s from the page
 
 ## Consequences
 
-- On this carrier, STUN-only is not enough; the relay is needed, as DECISION-0140 assumes. A symmetric NAT against a port-restricted one cannot punch.
+- On this carrier, STUN-only is not enough; the relay is needed, as DECISION-0141 assumes. A symmetric NAT against a port-restricted one cannot punch.
 - Cloudflare's credential endpoint returns 403 (error 1010) to the default Python user agent; the server's credential call must send its own `User-Agent`.
 - The mapped port in WSL2 NAT mode differs from the local port, so the server cannot assume the two match (step 2.2).

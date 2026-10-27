@@ -2,8 +2,9 @@
 
 | ID | Title | Governed By | Grounded In | Status |
 |---|---|---|---|---|
-| no-native-apps | No Native Applications | 0011 | 0002,0003,0010 | active |
-| no-paid-services | No Paid Services in Required Stack | 0011 | 0001,0013 | active |
+| no-native-apps | No Native Applications | 0011 | 0002,0003,0010 | superseded |
+| native-wrapper-keeps-web-parity | Native wrappers are optional and the web client stays complete | 0140 | 0002,0003,0010,0140 | active |
+| no-paid-services | No Paid Services in Required Stack | 0011,0140 | 0001,0013 | active |
 | minimum-browser-support | Minimum Browser Support Policy | 0001,0005 | 0003,0004 | active |
 | resource-constraints | Resource Constraints (512MB RAM, 1 vCPU) | 0001 | 0001 | active |
 | security-secrets-handling | Secrets Handling (Memory Only, No Logs) | 0006,0009 | 0008,0011 | active |
@@ -61,4 +62,4 @@ a-phone-check-names-its-platform,"A phone check names the platform it ran on, an
 | ux-hard-rules-block-the-pr-the-rest-is-advisory | The UX job fails a pull request on objective rule breaks only; trends, diffs and heuristic findings are advisory | 0135 | ux-acceptance-targets,a-phone-check-names-its-platform | active |
 | protocol-core-stays-acp-v1 | The protocol core stays ACP v1; extensions are namespaced, negotiated and ignorable | 0136 | 0111,0136 | active |
 | control-never-waits-behind-bulk | Control messages never wait behind bulk traffic | 0139 | 0096,0139 | active |
-| relay-credentials-are-owner-scoped-minted-after-auth-and-capped | Relay and signaling resources belong to the owner's account, credentials are minted only after authentication, and relayed bytes are capped | 0140 | 0140,0058 | active |
+| relay-credentials-are-owner-scoped-minted-after-auth-and-capped | Relay and signaling resources belong to the owner's account, credentials are minted only after authentication, and relayed bytes are capped | 0141 | 0140,0058 | active |
