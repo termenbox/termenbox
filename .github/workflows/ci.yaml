@@ -197,6 +197,11 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # The browser binaries and their OS deps (GStreamer + codec stack for WebKit) are baked into the
+  # CI image (docker/Dockerfile.ci, .github/workflows/ci-image.yaml); the matrix jobs start from it
+  # so `playwright-core install --with-deps` — which used to stall on azure.archive.ubuntu.com — no
+  # longer runs at all. Chromium is the runner's Chrome, so the chromium leg stays on the bare
+  # runner and skips the container.
   browsers:
     name: Browser matrix (${{ matrix.engine }})
     runs-on: ubuntu-latest
@@ -208,6 +213,7 @@ jobs:
           - { engine: chromium, runs: 'desktop:1024x768:1 desktop:1440x900:2' }
           - { engine: firefox, runs: 'desktop:1024x768:1 desktop:1440x900:2' }
           - { engine: webkit, runs: 'desktop:1024x768:1 desktop:1440x900:2 phone:390x844:3' }
+    container: ${{ matrix.engine != 'chromium' && 'ghcr.io/termenbox/termenbox-ci:latest' || '' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -223,12 +229,6 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - run: pnpm --filter termenbox-client run e2e:build
-
-      # Chromium is the runner's Chrome; Firefox and WebKit are Playwright's own builds.
-      - name: Install the browser
-        if: matrix.engine != 'chromium'
-        working-directory: packages/client
-        run: pnpm exec playwright-core install --with-deps ${{ matrix.engine }}
 
       - name: Run the scripts (size:ratio list from the matrix)
         shell: bash
@@ -261,6 +261,9 @@ jobs:
   # reporting, resize, the 720/1024 breakpoints). WebSocket only; WebRTC and the resource gates stay in the Chromium job above.
   # The phone scripts that need the real server: touch.mjs, run.mjs and wizard.mjs stay in the Chromium server job (CDP,
   # resource gates, fake camera). Four legs of two runs each keep the legs about the same length.
+  #
+  # Firefox and WebKit run in the CI image (docker/Dockerfile.ci) so their browser binaries, OS deps and tmux are already
+  # present and no apt step runs in the matrix. Chromium uses the runner's Chrome and the runner's tmux.
   browsers-real:
     name: Browser matrix, real server (${{ matrix.name }})
     needs: rust-build
@@ -274,6 +277,7 @@ jobs:
           - { name: firefox, engine: firefox, runs: 'realserver:1024x768:1 realserver:1440x900:2' }
           - { name: webkit-desktop, engine: webkit, runs: 'realserver:1024x768:1 realserver:1440x900:2' }
           - { name: webkit-phone, engine: webkit, runs: 'realserver:390x844:3 phone-real:390x844:3' }
+    container: ${{ matrix.engine != 'chromium' && 'ghcr.io/termenbox/termenbox-ci:latest' || '' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -288,9 +292,6 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
-
       - uses: actions/download-artifact@v8
         with:
           name: termenbox-server
@@ -299,11 +300,6 @@ jobs:
       - run: chmod +x bin/termenbox-server
 
       - run: pnpm --filter termenbox-client run e2e:build
-
-      - name: Install the browser
-        if: matrix.engine != 'chromium'
-        working-directory: packages/client
-        run: pnpm exec playwright-core install --with-deps ${{ matrix.engine }}
 
       - name: Run the scripts (suite:size:ratio list from the matrix)
         shell: bash
