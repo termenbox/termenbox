@@ -269,7 +269,7 @@ jobs:
   # present and no apt step runs in the matrix. Chromium uses the runner's Chrome and the runner's tmux.
   browsers-real:
     name: Browser matrix, real server (${{ matrix.name }})
-    needs: rust-build
+    needs: [rust-build, static]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -300,7 +300,8 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: termenbox-server
+          # The CI image's glibc is older than the runner's the glibc build links against: its legs take the static binary.
+          name: ${{ matrix.engine == 'chromium' && 'termenbox-server' || 'termenbox-server-musl-x86_64' }}
           path: bin
 
       - run: chmod +x bin/termenbox-server
