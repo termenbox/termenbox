@@ -1091,15 +1091,13 @@ async fn terminal_bytes_use_their_own_lane_and_status_is_not_held_up_by_output(k
     assert!(raw.contains("lane-42"), "{raw:?}");
 
     // A flood of output, and in the middle of it a hook says the agent needs the owner.
-    c.send_term(b"head -c 4000000 /dev/zero | tr '\\0' 'x'; echo\n")
-        .await;
+    // `yes x | head` is far cheaper than `head /dev/zero | tr` (no per-byte tr process), so the flood
+    // starts flowing even on a loaded CI runner where the shell competes for CPU with parallel tests.
+    c.send_term(b"yes x | head -c 4000000; echo\n").await;
     let line = json!({"session": name, "token": f.hub.token(&name), "adapter": "claude",
         "data": {"hook_event_name": "Notification", "message": "needs a decision"}})
     .to_string()
         + "\n";
-    let mut s = tokio::net::UnixStream::connect(&f.events_socket)
-        .await
-        .unwrap();
     let (mut bytes, mut chunks) = (0usize, 0usize);
     // Wait until the flood is really flowing, then send the event.
     while bytes < 200_000 {
@@ -1110,6 +1108,13 @@ async fn terminal_bytes_use_their_own_lane_and_status_is_not_held_up_by_output(k
         }
     }
     let sent = Instant::now();
+    // Connect the events socket here, not earlier: under load the flood-wait above can take long
+    // enough for the server's 2 s idle-connection read timeout (events.rs::serve_socket) to close
+    // the stream before the write. The real hook (events.rs::run_hook) connects and writes back to
+    // back; the test now matches that pattern.
+    let mut s = tokio::net::UnixStream::connect(&f.events_socket)
+        .await
+        .unwrap();
     s.write_all(line.as_bytes()).await.unwrap();
     let mut during = 0usize;
     let waited = loop {
@@ -1171,7 +1176,8 @@ async fn a_flood_of_output_on_the_single_pipe_still_reaches_the_client(kind: Kin
     c.recv_type("workspaces").await;
     c.send(json!({"type":"attach","workspace_id":name})).await;
     c.recv_type("workspace_attached").await;
-    c.send(json!({"type":"input","data":B64.encode("timeout 5 sh -c 'while :; do seq 1 5000; done'; echo end-$((40+2))\n")})).await;
+    c.send(json!({"type":"input","data":B64.encode("timeout 5 yes x; echo end-$((40+2))\n")}))
+        .await;
     let start = Instant::now();
     let mut seen = String::new();
     while start.elapsed() < Duration::from_secs(20) {
@@ -1465,17 +1471,21 @@ async fn a_cancel_during_an_output_flood_is_acknowledged_within_the_bound(kind: 
     c.recv_type("workspaces").await;
     c.send(json!({"type":"attach","workspace_id":name})).await;
     c.recv_type("workspace_attached").await;
-    c.send(json!({"type":"input","data":B64.encode("timeout 20 sh -c 'while :; do seq 1 5000; done'\n")})).await;
-    // Wait until the flood is running: a few hundred KB of output seen.
+    c.send(json!({"type":"input","data":B64.encode("timeout 20 yes x\n")}))
+        .await;
+    // Wait until the flood is running: enough output to prove it is flowing. The threshold is modest:
+    // under load the WebSocket/WebRTC transport backpressures and `yes` cannot sustain MBs in 15 s
+    // alongside parallel tests. The flood's volume is not what this test measures; the control_ack
+    // timing below is.
     let mut seen = 0usize;
     let start = Instant::now();
-    while seen < 300_000 && start.elapsed() < Duration::from_secs(15) {
+    while seen < 50_000 && start.elapsed() < Duration::from_secs(15) {
         let Some(v) = c.recv().await else { break };
         if v["type"] == "output" || v["type"] == "term" {
             seen += v["data"].as_str().map_or(0, str::len);
         }
     }
-    assert!(seen >= 300_000, "the flood never started: {seen} bytes");
+    assert!(seen >= 50_000, "the flood never started: {seen} bytes");
     let sent = Instant::now();
     c.send_control(json!({"type":"detach","req":42})).await;
     let mut waited = None;
