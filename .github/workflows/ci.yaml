@@ -234,15 +234,14 @@ jobs:
         shell: bash
         working-directory: packages/client
         env:
-          # Firefox refuses to launch as root when HOME is owned by another uid (GitHub Actions sets
-          # HOME=/github/home, owned by uid 1001). WebKit's sandbox check is similar. The chromium leg
-          # runs on the bare runner as user `runner`, where this would break pnpm — so only set it for
-          # the container legs. Playwright's own error message recommends HOME=/root.
-          HOME: ${{ matrix.engine != 'chromium' && '/root' || '' }}
           RUN_ENGINE: ${{ matrix.engine }}
           RUN_LIST: ${{ matrix.runs }}
           RUN_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
         run: |
+          # Firefox/WebKit run as root in the container; Playwright needs HOME=/root (the container's
+          # default HOME=/github/home is owned by uid 1001 and fails the sandbox check). Chromium runs
+          # on the bare runner as user `runner` and keeps its inherited HOME.
+          [ "$RUN_ENGINE" != "chromium" ] && export HOME=/root
           fail=0
           for run in $RUN_LIST; do
             IFS=: read -r suite size dpr <<< "$run"
@@ -302,11 +301,6 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # tmux is in the CI image for the container legs; the chromium leg runs on the bare runner.
-      - name: Install tmux
-        if: matrix.engine == 'chromium'
-        run: sudo apt-get update && sudo apt-get install -y tmux
-
       # Chromium leg keeps using the dynamic build from rust-build (it runs on the bare ubuntu-latest runner
       # where glibc 2.39 is available). The container legs use the static musl build (no glibc dependency).
       - uses: actions/download-artifact@v8
@@ -329,16 +323,12 @@ jobs:
         shell: bash
         working-directory: packages/client
         env:
-          # Firefox refuses to launch as root when HOME is owned by another uid (GitHub Actions sets
-          # HOME=/github/home, owned by uid 1001). WebKit's sandbox check is similar. The chromium leg
-          # runs on the bare runner as user `runner`, where this would break pnpm — so only set it for
-          # the container legs. Playwright's own error message recommends HOME=/root.
-          HOME: ${{ matrix.engine != 'chromium' && '/root' || '' }}
           TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
           RUN_ENGINE: ${{ matrix.engine }}
           RUN_LIST: ${{ matrix.runs }}
           RUN_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
         run: |
+          [ "$RUN_ENGINE" != "chromium" ] && export HOME=/root
           fail=0
           for run in $RUN_LIST; do
             IFS=: read -r suite size dpr <<< "$run"
