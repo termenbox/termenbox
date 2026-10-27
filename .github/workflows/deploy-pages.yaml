@@ -41,7 +41,13 @@ jobs:
   deploy:
     name: Deploy ${{ inputs.channel }} to Cloudflare Pages
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: ${{ inputs.channel }}
+    # Two deployments of one channel never overlap (the D1 migrations in particular). A newer one waits, and a newer
+    # one replaces an older one that is still waiting: the last deployment is the one that matters.
+    concurrency:
+      group: deploy-pages-${{ inputs.channel }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
         with:
@@ -61,9 +67,11 @@ jobs:
         with:
           version: 9
 
+      # The same Node as ci.yaml (the canonical build): what is deployed is built the way it was tested. Node 20 is past
+      # its end of life. The pnpm store cache has the same key as CI's, so it is restored, not rebuilt.
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -78,6 +86,9 @@ jobs:
           # This channel's own address, baked into its installer; the Environment variable wins over the repository one.
           TERMENBOX_CLIENT_ORIGIN: ${{ vars.TERMENBOX_CLIENT_ORIGIN }}
 
+      # Still the latest wrangler on every run, in a job that holds the Cloudflare token and the secrets below. To pin
+      # it by the lockfile: `pnpm --filter termenbox-client add -D wrangler`, then use
+      # `pnpm --filter termenbox-client exec wrangler` here and in the steps that follow instead of `wrangler`.
       - name: Install Wrangler
         run: npm install -g wrangler
 

@@ -6,61 +6,39 @@ on:
   pull_request:
     branches: [master, develop]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+# A new push to a PR cancels the stale run. Every push to master/develop gets a group of its own (the commit), so no
+# run is cancelled or replaced while pending: each merge gets a full result, a chance to refresh the caches, and can
+# be found by the nightly (`workflow_run`) and by a release gate that asks for a green run of a commit.
+#
+# This file is canonical for the build setup: release-build.yaml follows it (same cargo env, same cache keys, the
+# bundled tmux restored from what the tmux job saved) and never writes the caches itself.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Caches (Swatinem/rust-cache) are written only by pushes to master/develop (save-if). A PR restores from its base
+# branch and never writes, so PR branches cannot evict the 10 GB budget that master/develop caches live in.
+#
+# Job graph (the critical path is rust-build -> e2e / browsers-real; lint and tests run beside it, not before it):
+#   client                                        (typecheck, build, unit tests, bundle gate)
+#   rust-lint | rust-build | rust-test            (three cargo jobs in parallel instead of one long chain)
+#   browsers                                      (scripted servers, no binary: starts immediately)
+#   e2e, browsers-real        needs rust-build    (real server binary)
+#   static (x86_64, aarch64) -> e2e-static, installer (+ tmux)
+#   ci                                            (single result for branch protection)
 
 jobs:
-  rust:
-    name: Rust (check, test, build)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      # Keyed on the lockfile and toolchain with prefix fallback, so a dependency bump reuses the previous build's
-      # artifacts instead of starting cold; stale entries are pruned on save.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: rust
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Run clippy
-        run: cargo clippy --workspace --all-targets
-
-      - name: Build workspace
-        run: cargo build --workspace --release
-
-      - name: Install tmux (end-to-end tests drive real sessions)
-        run: sudo apt-get update && sudo apt-get install -y tmux
-
-      - name: Run tests
-        run: cargo test --workspace
-
-      - name: Test the release manifest script
-        run: python3 .github/scripts/test_make_manifest.py
-
-      - name: Test the release tag rules, the alias update and the nightly pruning
-        run: |
-          python3 .github/scripts/test_release_plan.py
-          sh .github/scripts/test-prune-nightlies.sh
-          sh .github/scripts/test-update-alias.sh
-
-      - name: Keep the server binary for the browser end-to-end job
-        uses: actions/upload-artifact@v7
-        with:
-          name: termenbox-server
-          path: target/release/termenbox-server
-          retention-days: 1
-
   client:
     name: Client (typecheck, build)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -91,12 +69,93 @@ jobs:
       - name: Gate - client bundle size
         run: pnpm --filter termenbox-client run check:bundle
 
+  rust-lint:
+    name: Rust (fmt, clippy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-lint
+          save-if: ${{ github.event_name == 'push' }}
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets
+
+  # The release server binary the browser jobs drive. Nothing else runs in this job, so e2e and browsers-real start as
+  # soon as it is compiled instead of waiting for clippy and the debug test build.
+  rust-build:
+    name: Rust (release build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-release
+          save-if: ${{ github.event_name == 'push' }}
+
+      - name: Build workspace
+        run: cargo build --workspace --release
+
+      - name: Keep the server binary for the browser end-to-end job
+        uses: actions/upload-artifact@v7
+        with:
+          name: termenbox-server
+          path: target/release/termenbox-server
+          retention-days: 1
+
+  rust-test:
+    name: Rust (tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-test
+          save-if: ${{ github.event_name == 'push' }}
+
+      - name: Install tmux (end-to-end tests drive real sessions)
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      - name: Test the release manifest script
+        run: python3 .github/scripts/test_make_manifest.py
+
+      - name: Test the release tag rules, the alias update and the nightly pruning
+        run: |
+          python3 .github/scripts/test_release_plan.py
+          sh .github/scripts/test-prune-nightlies.sh
+          sh .github/scripts/test-update-alias.sh
+
   # Real Chrome against the real server binary: login and claim over WebRTC, typing, reconnect with screen replay,
   # plus the resource gates (server RSS with 10 sessions, CPU while output streams). Only GitHub is a stand-in.
   e2e:
     name: Browser end-to-end and resource gates
-    needs: rust
+    needs: rust-build
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
 
@@ -138,23 +197,17 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # R36: the built client against scripted servers, no server binary, on every engine we support. Desktop runs at two
-  # sizes and pixel ratios; the phone scripts run on WebKit (Chromium's run in the job above). A failure leaves a
-  # screenshot and a Playwright trace named after the engine; the engine and version are in the job summary.
   browsers:
-    name: Browser matrix (${{ matrix.label }})
+    name: Browser matrix (${{ matrix.engine }})
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { suite: desktop, engine: chromium, size: 1024x768, dpr: 1, label: 'desktop chromium 1024x768 @1x' }
-          - { suite: desktop, engine: chromium, size: 1440x900, dpr: 2, label: 'desktop chromium 1440x900 @2x' }
-          - { suite: desktop, engine: firefox, size: 1024x768, dpr: 1, label: 'desktop firefox 1024x768 @1x' }
-          - { suite: desktop, engine: firefox, size: 1440x900, dpr: 2, label: 'desktop firefox 1440x900 @2x' }
-          - { suite: desktop, engine: webkit, size: 1024x768, dpr: 1, label: 'desktop webkit 1024x768 @1x' }
-          - { suite: desktop, engine: webkit, size: 1440x900, dpr: 2, label: 'desktop webkit 1440x900 @2x' }
-          - { suite: phone, engine: webkit, size: 390x844, dpr: 3, label: 'phone webkit @3x' }
+          - { engine: chromium, runs: 'desktop:1024x768:1 desktop:1440x900:2' }
+          - { engine: firefox, runs: 'desktop:1024x768:1 desktop:1440x900:2' }
+          - { engine: webkit, runs: 'desktop:1024x768:1 desktop:1440x900:2 phone:390x844:3' }
     steps:
       - uses: actions/checkout@v7
 
@@ -177,42 +230,50 @@ jobs:
         working-directory: packages/client
         run: pnpm exec playwright-core install --with-deps ${{ matrix.engine }}
 
-      - name: Run the ${{ matrix.suite }} scripts
+      - name: Run the scripts (size:ratio list from the matrix)
+        shell: bash
         working-directory: packages/client
         env:
-          E2E_ENGINE: ${{ matrix.engine }}
-          E2E_VIEWPORT: ${{ matrix.size }}
-          E2E_DPR: ${{ matrix.dpr }}
-          E2E_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
-        run: node e2e/suite.mjs ${{ matrix.suite }}
+          RUN_ENGINE: ${{ matrix.engine }}
+          RUN_LIST: ${{ matrix.runs }}
+          RUN_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
+        run: |
+          fail=0
+          for run in $RUN_LIST; do
+            IFS=: read -r suite size dpr <<< "$run"
+            tag="$suite-$RUN_ENGINE-$size-${dpr}x"
+            echo "=== $tag ==="
+            mkdir -p "$RUN_ARTIFACTS/$tag"
+            E2E_ENGINE="$RUN_ENGINE" E2E_VIEWPORT="$size" E2E_DPR="$dpr" E2E_ARTIFACTS="$RUN_ARTIFACTS/$tag" \
+              node e2e/suite.mjs "$suite" || { echo "::error::$tag failed"; fail=1; }
+          done
+          exit $fail
 
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
-          name: e2e-failure-${{ matrix.suite }}-${{ matrix.engine }}-${{ matrix.size }}-${{ matrix.dpr }}x
+          name: e2e-failure-${{ matrix.engine }}
           path: ${{ runner.temp }}/e2e-artifacts
           if-no-files-found: ignore
           retention-days: 7
 
   # R36: the same engines against the real server binary and real tmux (attach, switch, reconnect, keys, selection, mouse
   # reporting, resize, the 720/1024 breakpoints). WebSocket only; WebRTC and the resource gates stay in the Chromium job above.
+  # The phone scripts that need the real server: touch.mjs, run.mjs and wizard.mjs stay in the Chromium server job (CDP,
+  # resource gates, fake camera). Four legs of two runs each keep the legs about the same length.
   browsers-real:
-    name: Browser matrix, real server (${{ matrix.label }})
-    needs: rust
+    name: Browser matrix, real server (${{ matrix.name }})
+    needs: rust-build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { engine: chromium, size: 1024x768, dpr: 1, suite: realserver, label: 'desktop chromium 1024x768 @1x' }
-          - { engine: chromium, size: 1440x900, dpr: 2, suite: realserver, label: 'desktop chromium 1440x900 @2x' }
-          - { engine: firefox, size: 1024x768, dpr: 1, suite: realserver, label: 'desktop firefox 1024x768 @1x' }
-          - { engine: firefox, size: 1440x900, dpr: 2, suite: realserver, label: 'desktop firefox 1440x900 @2x' }
-          - { engine: webkit, size: 1024x768, dpr: 1, suite: realserver, label: 'desktop webkit 1024x768 @1x' }
-          - { engine: webkit, size: 1440x900, dpr: 2, suite: realserver, label: 'desktop webkit 1440x900 @2x' }
-          - { engine: webkit, size: 390x844, dpr: 3, suite: realserver, label: 'phone webkit @3x' }
-          # The phone scripts that need the real server: touch.mjs, run.mjs and wizard.mjs stay in the Chromium server job (CDP, resource gates, fake camera).
-          - { engine: webkit, size: 390x844, dpr: 3, suite: phone-real, label: 'phone webkit scripts @3x' }
+          - { name: chromium, engine: chromium, runs: 'realserver:1024x768:1 realserver:1440x900:2' }
+          - { name: firefox, engine: firefox, runs: 'realserver:1024x768:1 realserver:1440x900:2' }
+          - { name: webkit-desktop, engine: webkit, runs: 'realserver:1024x768:1 realserver:1440x900:2' }
+          - { name: webkit-phone, engine: webkit, runs: 'realserver:390x844:3 phone-real:390x844:3' }
     steps:
       - uses: actions/checkout@v7
 
@@ -244,20 +305,32 @@ jobs:
         working-directory: packages/client
         run: pnpm exec playwright-core install --with-deps ${{ matrix.engine }}
 
-      - name: Run the ${{ matrix.suite }} scripts
+      - name: Run the scripts (suite:size:ratio list from the matrix)
+        shell: bash
         working-directory: packages/client
         env:
           TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
-          E2E_ENGINE: ${{ matrix.engine }}
-          E2E_VIEWPORT: ${{ matrix.size }}
-          E2E_DPR: ${{ matrix.dpr }}
-          E2E_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
-        run: node e2e/suite.mjs ${{ matrix.suite }}
+          RUN_ENGINE: ${{ matrix.engine }}
+          RUN_LIST: ${{ matrix.runs }}
+          RUN_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
+        run: |
+          fail=0
+          for run in $RUN_LIST; do
+            IFS=: read -r suite size dpr <<< "$run"
+            tag="$suite-$RUN_ENGINE-$size-${dpr}x"
+            echo "=== $tag ==="
+            mkdir -p "$RUN_ARTIFACTS/$tag"
+            E2E_ENGINE="$RUN_ENGINE" E2E_VIEWPORT="$size" E2E_DPR="$dpr" E2E_ARTIFACTS="$RUN_ARTIFACTS/$tag" \
+              node e2e/suite.mjs "$suite" || { echo "::error::$tag failed"; fail=1; }
+            # The runs used to be separate machines: leave nothing of one run for the next.
+            tmux kill-server 2>/dev/null || true
+          done
+          exit $fail
 
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
-          name: e2e-failure-${{ matrix.suite }}-${{ matrix.engine }}-${{ matrix.size }}-${{ matrix.dpr }}x
+          name: e2e-failure-real-${{ matrix.name }}
           path: ${{ runner.temp }}/e2e-artifacts
           if-no-files-found: ignore
           retention-days: 7
@@ -267,6 +340,7 @@ jobs:
   static:
     name: Static binary (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -288,6 +362,7 @@ jobs:
         with:
           shared-key: static-${{ matrix.arch }}
           key: ${{ matrix.target }}
+          save-if: ${{ github.event_name == 'push' }}
 
       - name: Build
         env:
@@ -319,6 +394,7 @@ jobs:
     name: Browser end-to-end with the static binary
     needs: static
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -353,22 +429,53 @@ jobs:
 
   # The bundled tmux (decision 0119), built from the pinned sources and put through its gate (static, runs with an
   # empty PATH and no terminfo, drives a session in control mode). The installer job installs this very binary.
+  #
+  # The build does not depend on the version or the commit, only on the pinned sources in build-tmux.sh, so it is cached
+  # by the hash of that script: a hit skips the toolchain install and the build, and the gate runs either way.
+  # Both architectures are built here because the releases ship both and restore exactly these entries (a release run
+  # only reads them). Only the x86_64 binary is uploaded as an artifact, as before; the installer job uses that one.
+  # The cache is written by pushes only, after the gate has passed. Keep every input of the build inside build-tmux.sh
+  # (or add the other files to the hash below), or a change to them will not rebuild.
   tmux:
-    name: Bundled tmux (static, x86_64)
-    runs-on: ubuntu-latest
+    name: Bundled tmux (static, ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-latest }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v7
 
+      - name: Restore the tmux build
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: tmux-out
+          key: tmux-${{ matrix.arch }}-${{ hashFiles('.github/scripts/build-tmux.sh') }}
+
       - name: Install the musl toolchain
+        if: steps.cache.outputs.cache-hit != 'true'
         run: sudo apt-get update && sudo apt-get install -y musl-tools bison
 
       - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
         run: .github/scripts/build-tmux.sh tmux-out
 
       - name: Gate
         run: .github/scripts/check-tmux.sh tmux-out/tmux
 
+      - name: Save the tmux build
+        if: github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: tmux-out
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
       - uses: actions/upload-artifact@v7
+        if: matrix.arch == 'x86_64'
         with:
           name: tmux-musl-x86_64
           path: |
@@ -384,6 +491,7 @@ jobs:
     name: Native installer (${{ matrix.image }}, ${{ matrix.mode }})
     needs: [static, tmux]
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -425,3 +533,16 @@ jobs:
       - name: Service log (on failure)
         if: failure()
         run: docker exec machine journalctl -u termenbox --no-pager | tail -50
+
+  # One result for branch protection: require this check instead of the individual jobs, and the graph above can be
+  # reshaped without touching the repository settings again.
+  ci:
+    name: CI result
+    if: ${{ always() }}
+    needs: [client, rust-lint, rust-build, rust-test, e2e, browsers, browsers-real, static, e2e-static, tmux, installer]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail unless every job succeeded
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
+        run: exit 1
