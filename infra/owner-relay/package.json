@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "The signaling Worker an owner deploys to their own Cloudflare account (DECISION-0140). Holds no secret and stores nothing.",
+  "description": "The signaling Worker an owner deploys to their own Cloudflare account (DECISION-0141). Holds no secret and stores nothing.",
   "scripts": {
     "build": "node build.mjs",
     "test": "vitest run"

@@ -301,7 +301,7 @@ struct Args {
     #[arg(long)]
     opencode_dir: Option<PathBuf>,
 
-    /// One-shot, opt-in (decision 0140): set up the assisted connection in your own Cloudflare account (a signaling
+    /// One-shot, opt-in (decision 0141): set up the assisted connection in your own Cloudflare account (a signaling
     /// Worker and a TURN key). The account API token is read from stdin, used once and never stored.
     #[arg(long, default_value = "false")]
     setup_cloudflare: bool,
@@ -1010,7 +1010,7 @@ async fn main() -> anyhow::Result<()> {
                 args.config_dir.display()
             );
         }
-        // STUN shares the transport socket (DECISION-0140): the mapping is only worth anything if the request left it.
+        // STUN shares the transport socket (DECISION-0141): the mapping is only worth anything if the request left it.
         let stun_servers = stun::servers(lan_only, std::env::var("TERMENBOX_STUN").ok().as_deref());
         let socket = Arc::new(socket);
         let (stun_inbox, stun_rx) = stun::channel();
@@ -1079,7 +1079,7 @@ async fn main() -> anyhow::Result<()> {
         } else {
             stun::spawn(socket, stun_rx, stun_servers, handle.rx.clone())
         };
-        // The assisted path (DECISION-0140) exists only once the owner has run the Cloudflare setup (step 2.7), and
+        // The assisted path (DECISION-0141) exists only once the owner has run the Cloudflare setup (step 2.7), and
         // never in LAN-only mode.
         if !lan_only {
             match signal::Config::load(&args.config_dir) {
@@ -1227,7 +1227,7 @@ fn pairing_block(args: &Args, auth: &AuthState) -> anyhow::Result<candidates::Pa
 
 /// `--print-pairing`: for a phone that has no directory path to this server (LAN-only, offline, or behind a NAT with no
 /// relay), and what `--register` prints too.
-/// `--setup-cloudflare` and `--teardown` (decision 0140).
+/// `--setup-cloudflare` and `--teardown` (decision 0141).
 async fn run_cloudflare(args: &Args) -> anyhow::Result<()> {
     anyhow::ensure!(
         !(args.setup_cloudflare && args.teardown),

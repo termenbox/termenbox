@@ -5,7 +5,7 @@
 //! never-identity). The signed bytes are an explicit layout, not JSON, so Rust and TypeScript agree byte for byte
 //! (shared vectors in `testdata/bundle-vectors.json`; the TypeScript side is `packages/client/src/lib/bundle.ts`).
 //!
-//! Layout `tbxb2` (all integers big-endian). `tbxb3` (DECISION-0140) is the same plus the two assisted-connection
+//! Layout `tbxb2` (all integers big-endian). `tbxb3` (DECISION-0141) is the same plus the two assisted-connection
 //! fields below; a server signs `tbxb3` only when it has either, so a client that knows only `tbxb2` keeps working
 //! against every other server and rejects just the bundles it cannot read:
 //!
@@ -98,7 +98,7 @@ pub struct Bundle {
     pub fingerprint: String,
     pub name: String,
     pub candidates: Vec<Candidate>,
-    /// The `wss://` URL of the owner's signaling Worker (DECISION-0140), when there is one.
+    /// The `wss://` URL of the owner's signaling Worker (DECISION-0141), when there is one.
     #[serde(default)]
     pub signal: Option<String>,
     /// The owner has a TURN key, so a relay can be asked for over the signaling channel. A flag only.
@@ -438,7 +438,7 @@ mod tests {
         }
     }
 
-    /// The assisted layout (DECISION-0140): a signal URL and a relay flag, both signed, in `tbxb3`.
+    /// The assisted layout (DECISION-0141): a signal URL and a relay flag, both signed, in `tbxb3`.
     #[test]
     fn signal_and_relay_are_signed_and_round_trip() {
         let b = assisted_bundle();

@@ -274,7 +274,7 @@ pub fn sign(
     sign_assisted(key, seq, fingerprint, name, published, list, None)
 }
 
-/// The owner's signaling Worker URL for a bundle (DECISION-0140): present only when `--setup-cloudflare` has run and
+/// The owner's signaling Worker URL for a bundle (DECISION-0141): present only when `--setup-cloudflare` has run and
 /// the server is not LAN-only. A relay is always on offer with it, since the setup makes the TURN key too.
 pub fn assisted_signal(dir: &Path, enabled: bool) -> Option<String> {
     if !enabled {

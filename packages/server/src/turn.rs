@@ -1,4 +1,4 @@
-//! TURN client for the assisted connection (DECISION-0140, step 2.6): when the server's NAT blocks inbound packets
+//! TURN client for the assisted connection (DECISION-0141, step 2.6): when the server's NAT blocks inbound packets
 //! (WSL2 in NAT mode, a symmetric NAT) the server allocates a relay on the owner's Cloudflare TURN key and offers
 //! the relayed address as a candidate. The `turn` crate (FACT-0060) owns the allocation: it refreshes it at half its
 //! lifetime, creates a permission for each peer the first time we send to it, and releases it on close.

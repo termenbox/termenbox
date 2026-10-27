@@ -6,7 +6,7 @@ import { b64urlDecode, b64urlEncode } from '../../functions/api/directory/_lib';
 import type { Bundle, Candidate, CandidateKind } from './protocol';
 
 const MAGIC = 'tbxb2';
-// The same layout plus the signal URL and the relay flag; a server signs it only when it has either (DECISION-0140).
+// The same layout plus the signal URL and the relay flag; a server signs it only when it has either (DECISION-0141).
 const MAGIC_ASSISTED = 'tbxb3';
 const KINDS: CandidateKind[] = ['lan', 'wan4', 'wan6', 'overlay', 'tunnel'];
 const SIG_LEN = 64;

@@ -1,4 +1,4 @@
-//! The server's side of the assisted connection's signaling (DECISION-0140, step 2.5). The server dials out to the
+//! The server's side of the assisted connection's signaling (DECISION-0141, step 2.5). The server dials out to the
 //! owner's Worker (`infra/owner-relay`) and answers what clients send through it. The Worker is only a switchboard:
 //! it holds no secret and checks nothing, so every message is verified here (GUARDRAIL
 //! relay-credentials-are-owner-scoped-minted-after-auth-and-capped).

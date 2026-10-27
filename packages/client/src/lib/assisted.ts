@@ -1,4 +1,4 @@
-// The assisted path (DECISION-0140): a server that no client can reach on a UDP port is reached by punching a hole
+// The assisted path (DECISION-0141): a server that no client can reach on a UDP port is reached by punching a hole
 // through both NATs, and by a TURN relay when the punch does not connect. The browser does ICE and TURN itself;
 // this file carries the offer and the candidates to the server over the owner's signaling Worker (`wss:` only, so the
 // hosted CSP needs no new origin) and builds the session from the answer. The Worker is untrusted: every message is
@@ -7,7 +7,7 @@ import { b64url, type Credentials } from './device';
 import { CHANNEL_ID, CONTROL_CHANNEL_ID, randomUfrag, RtcTransport, setIceCredentials, TERM_CHANNEL_ID } from './rtc';
 import type { Transport } from './transport';
 
-/** Free public STUN, the same defaults as the server (DECISION-0140). */
+/** Free public STUN, the same defaults as the server (DECISION-0141). */
 export const STUN_SERVERS: RTCIceServer[] = [{ urls: 'stun:stun.cloudflare.com:3478' }, { urls: 'stun:stun.l.google.com:19302' }];
 /**
  * The STUN servers to ask: the public defaults, or the comma list in `localStorage.termenbox_stun` (the counterpart of the

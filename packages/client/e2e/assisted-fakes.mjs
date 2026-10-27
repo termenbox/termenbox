@@ -1,4 +1,4 @@
-// Loopback stand-ins for everything the assisted path (DECISION-0140) reaches outside the machine, for e2e/assisted.mjs:
+// Loopback stand-ins for everything the assisted path (DECISION-0141) reaches outside the machine, for e2e/assisted.mjs:
 //   * `startNat`    a STUN server whose answers put each host behind a public alias, and the aliases that forward between
 //                   hosts like a cone NAT. `nat.cut = true` drops every forwarded packet: the punch fails.
 //   * `startTurn`   a TURN server (RFC 5766, long-term credentials, UDP) with Send/Data indications and channels.

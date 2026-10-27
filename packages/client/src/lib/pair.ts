@@ -27,7 +27,7 @@ export interface PairPreview {
   seq: number;
   published: boolean;
   candidates: Candidate[];
-  /** The owner's signaling Worker and whether a TURN key exists (DECISION-0140); both come from the signed bundle. */
+  /** The owner's signaling Worker and whether a TURN key exists (DECISION-0141); both come from the signed bundle. */
   signal?: string;
   relay?: boolean;
   payload: string;

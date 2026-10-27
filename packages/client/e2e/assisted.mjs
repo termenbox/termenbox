@@ -1,4 +1,4 @@
-// The assisted path end to end (DECISION-0140, R76): a real termenbox-server that is not directly reachable, a real
+// The assisted path end to end (DECISION-0141, R77): a real termenbox-server that is not directly reachable, a real
 // Chromium, and loopback stand-ins for the owner's Worker, the STUN server, the TURN server and Cloudflare's credential
 // endpoint (assisted-fakes.mjs). The server announces an address nothing can reach, so the only ways in are the punch
 // through the stand-in NAT, the relay when the NAT is cut, and nothing when the Worker is gone.

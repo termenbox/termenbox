@@ -1,4 +1,4 @@
-// The owner's signaling Worker (DECISION-0140): `GET /s/<keyhash>` upgrades to a WebSocket and joins the Durable Object
+// The owner's signaling Worker (DECISION-0141): `GET /s/<keyhash>` upgrades to a WebSocket and joins the Durable Object
 // of that server. It holds no secret and answers nothing else.
 export { Relay } from './relay';
 

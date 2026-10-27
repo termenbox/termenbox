@@ -1,5 +1,5 @@
 //! WebRTC-direct transport (DECISION-0057): one UDP port, ICE-lite, no signaling, no STUN/TURN. An assisted session
-//! (DECISION-0140) shares the port but is a full ICE agent that starts its own checks, so it can punch a NAT.
+//! (DECISION-0141) shares the port but is a full ICE agent that starts its own checks, so it can punch a NAT.
 //!
 //! The browser builds the remote workspace description itself from the server's IP, port and DTLS
 //! fingerprint (from the signed directory record) and rewrites its own ICE ufrag/pwd to one random

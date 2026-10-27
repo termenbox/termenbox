@@ -1,4 +1,4 @@
-//! STUN discovery for the assisted connection (DECISION-0140, step 2.2): the public address a server behind a NAT is
+//! STUN discovery for the assisted connection (DECISION-0141, step 2.2): the public address a server behind a NAT is
 //! seen at, found with free STUN servers (FACT-0058) from the very UDP socket the WebRTC transport serves. A mapping
 //! only helps a punch if the Binding request leaves that socket, so the discovery shares it: `rtc.rs` hands every
 //! Binding response it receives to the `Inbox`, and the request's random transaction id (not the source address)
