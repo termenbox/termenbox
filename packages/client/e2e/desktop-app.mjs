@@ -36,9 +36,14 @@ async function sidebarAt(shared, width) {
   t.check((await toggle.getAttribute('aria-expanded')) === 'true', `${width}: Workspaces does not say the sidebar is open`);
   const controls = await toggle.getAttribute('aria-controls');
   t.check(controls === 'workspace-sidebar' && (await page.locator(`#${controls}`).count()) === 1, `${width}: Workspaces does not control the sidebar (${controls})`);
-  // The sidebar lists the workspaces, so the top session strip is not shown beside it; closing the sidebar brings the strip back.
+  // In a workspace the session strip stays at the top beside the sidebar, and its + starts another workspace.
   const strip = page.locator('header.topbar [role=tablist]');
-  t.check((await strip.count()) === 0, `${width}: the session strip is shown beside the sidebar`);
+  t.check((await strip.count()) === 1, `${width}: the session strip is missing beside the sidebar`);
+  t.check((await strip.getByRole('tab').count()) > 0, `${width}: the session strip beside the sidebar has no tabs`);
+  const stripNew = page.locator('[data-testid=strip-new]');
+  t.check((await stripNew.count()) === 1, `${width}: the strip has no New workspace action`);
+  const stripNewBox = await stripNew.boundingBox();
+  t.check(!!stripNewBox && stripNewBox.width >= 44 && stripNewBox.height >= 44, `${width}: the strip's New workspace target is ${stripNewBox?.width}x${stripNewBox?.height}`);
   let sizes = 0;
   await nextSize(t, 0, `${width} first `);
   await page.waitForTimeout(400);
@@ -50,7 +55,7 @@ async function sidebarAt(shared, width) {
   t.check((await side.count()) === 0, `${width}: Workspaces did not close the sidebar`);
   t.check((await toggle.getAttribute('aria-expanded')) === 'false' && !(await toggle.getAttribute('aria-controls')), `${width}: expanded state wrong while closed`);
   t.check((await page.locator('[data-shell=bottom-bar]').count()) === 1, `${width}: no destinations left while the sidebar is closed`);
-  t.check((await strip.count()) === 1, `${width}: the session strip did not come back with the sidebar closed`);
+  t.check((await strip.count()) === 1, `${width}: the session strip disappeared with the sidebar closed`);
   t.check((await t.overflow()) <= 0, `${width}: overflow with the sidebar closed`);
   const closed = await nextSize(t, sizes, `${width} closed `);
   t.check(closed.cols > first.cols, `${width}: the server got ${closed.cols} columns with the sidebar closed, not more than ${first.cols}`);
@@ -452,6 +457,42 @@ async function shortcuts(shared) {
   return ok;
 }
 
+/** The desktop create actions: the page's + New everywhere, and the strip's + New while the collapsed sidebar leaves the strip as the only workspace chrome. */
+async function workspacesCreate(shared) {
+  const t = await startApp(shared, { viewport: { width: 1280, height: 800 }, storage: { [WORKSPACE]: JSON.stringify({ sidebarOpen: false, sidebarWidth: 264, splitOpen: false, splitWidth: 900 }) } });
+  const { page } = t;
+  await t.open();
+  await page.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click();
+  await page.locator('[data-workspace-groups]').waitFor();
+  // The page itself carries the way to start one, with the side menu collapsed.
+  const pageNew = page.locator('[data-testid=workspaces-new]');
+  t.check((await pageNew.count()) === 1 && (await pageNew.isVisible()), 'desktop: the Workspaces page has no New workspace button');
+  const pageBox = await pageNew.boundingBox();
+  t.check(!!pageBox && pageBox.width >= 44 && pageBox.height >= 44, `desktop: the page's New workspace target is ${pageBox?.width}x${pageBox?.height}`);
+  // With the side menu collapsed the strip is the only workspace chrome, so it carries the action too.
+  const strip = page.locator('header.topbar [role=tablist]');
+  t.check((await strip.count()) === 1, 'desktop: no session strip on the Workspaces page with the sidebar collapsed');
+  const stripNew = page.locator('[data-testid=strip-new]');
+  t.check((await stripNew.count()) === 1 && (await stripNew.isVisible()), 'desktop: the strip has no New workspace button');
+  await stripNew.click();
+  const dialog = page.getByRole('dialog', { name: 'New workspace' });
+  await dialog.waitFor({ timeout: 5000 }).catch(() => {});
+  t.check(await dialog.isVisible().catch(() => false), 'desktop: the strip does not start a workspace');
+  await page.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'detached' }).catch(() => {});
+  // Opening the side menu drops the third list: the page and the sidebar keep the action, the strip goes.
+  await page.locator('.workspaces-button').click();
+  await page.locator('[data-shell=sidebar]').waitFor();
+  t.check((await strip.count()) === 0, 'desktop: the strip is repeated beside the open sidebar on the Workspaces page');
+  t.check(await pageNew.isVisible(), 'desktop: the page loses its New workspace button with the sidebar open');
+  // In a workspace the strip comes back beside the sidebar.
+  await t.openWorkspace('s1');
+  t.check((await strip.count()) === 1, 'desktop: the strip is missing beside the sidebar in a workspace');
+  const ok = await t.end();
+  if (ok) t.ok('desktop create actions: the page and the strip, no third list beside the open sidebar, the strip beside it in a workspace');
+  return ok;
+}
+
 /** A phone width keeps its own sheet and bottom bar whatever the desktop layout was saved as. */
 async function phone(shared) {
   const t = await startApp(shared, { viewport: { width: 390, height: 844 }, storage: { [WORKSPACE]: JSON.stringify({ sidebarOpen: false, sidebarWidth: 480, splitOpen: true, splitWidth: 900 }) } });
@@ -465,6 +506,12 @@ async function phone(shared) {
   await page.waitForTimeout(300);
   t.check((await page.locator('[data-shell=bottom-bar] [data-destination=workspaces][aria-current=page]').count()) === 1, 'phone: Workspaces is not the current destination');
   t.check((await page.locator('.workspace-sheet').count()) === 0, 'phone: a tap on Workspaces opened a sheet');
+  // The list itself carries the way to start one, not only the empty state.
+  const newButton = page.locator('[data-testid=workspaces-new]');
+  t.check((await newButton.count()) === 1 && (await newButton.isVisible()), 'phone: the Workspaces page has no New workspace button');
+  const newBox = await newButton.boundingBox();
+  t.check(!!newBox && newBox.height >= 44, `phone: the New workspace target is ${newBox?.height} px`);
+  t.check((await page.locator('[data-testid=strip-new]').count()) === 0, 'phone: the desktop strip create action reached a phone');
   // In a terminal, Workspaces shows the same page, not a variant of it.
   await page.locator('[data-workspace-groups] button').filter({ has: page.locator('b') }).first().click();
   await page.locator('.xterm').first().waitFor();
@@ -725,6 +772,7 @@ export async function realApp() {
     results.push(await resizeWhileActive(shared));
     results.push(await clipboardDenied(shared));
     results.push(await zoom200(shared));
+    results.push(await workspacesCreate(shared));
     results.push(await phone(shared));
   } finally {
     await shared.stop();
