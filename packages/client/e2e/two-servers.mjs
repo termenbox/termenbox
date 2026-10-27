@@ -138,8 +138,13 @@ try {
   };
   await createWorkspaces(a, ['api', 'web', 'docs']);
   await createWorkspaces(b, ['infra']);
+  // Wait for the workspace panes to be alive (pane_dead == 0). The process name is unreliable: bash
+  // invoked through the `aider` symlink may report a different name depending on the kernel and base image.
   for (const s of [a, b]) {
-    await waitFor(() => s.tmux('list-panes', '-a', '-F', '#{pane_current_command}').includes('aider'), `${s.label} agents`);
+    await waitFor(() => {
+      const cmds = s.tmux('list-panes', '-a', '-F', '#{pane_dead} #{pane_current_command}');
+      return cmds.trim().split('\n').every((l) => l.startsWith('0 '));
+    }, `${s.label} agents`);
   }
   for (const [s, name] of [[a, 'api'], [a, 'web'], [a, 'docs'], [b, 'infra']]) s.tmux('send-keys', '-t', `=${name}:`, `READY-${name}`, 'Enter');
 
@@ -218,7 +223,8 @@ try {
   const sendNeedsInput = (s, name) =>
     s.tmux(
       'new-window', '-d', '-t', `=${name}:`,
-      `python3 -c 'import os,socket,json;c=socket.socket(socket.AF_UNIX);c.connect(os.environ["TERMENBOX_EVENT_SOCKET"]);c.send((json.dumps({"session":os.environ["TERMENBOX_SESSION"],"token":os.environ["TERMENBOX_EVENT_TOKEN"],"adapter":"claude","data":{"hook_event_name":"Notification","message":"Allow rm?"}})+"\\n").encode())'`,
+      // node instead of python3: node is guaranteed in the container and on the bare runner.
+      `node -e 'const n=require("net");const c=n.connect(process.env.TERMENBOX_EVENT_SOCKET);c.write(JSON.stringify({session:process.env.TERMENBOX_SESSION,token:process.env.TERMENBOX_EVENT_TOKEN,adapter:"claude",data:{hook_event_name:"Notification",message:"Allow rm?"}})+"\\n");c.end()'`,
     );
   sendNeedsInput(a, 'docs');
   await page.getByRole('status').filter({ hasText: /needs you/i }).first().waitFor({ timeout: 15000 });
