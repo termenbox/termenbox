@@ -19,7 +19,7 @@
   import { handleClipboardWrites } from './lib/terminal/osc52';
   import { dropColorReplies, setEnterKeyHint, silenceColorQueries } from './lib/terminal/inputGuards';
   import { WordTracker } from './lib/terminal/wordTracker';
-  import { nextVoiceLang, parseVoiceLang, pickLanguage, recognizerFactory, Voice, type VoiceLang } from './lib/terminal/voice';
+  import { IOS_KEYBOARD_HINT, nextVoiceLang, parseVoiceLang, pickLanguage, recognizerFactory, Voice, type VoiceLang } from './lib/terminal/voice';
   import { linkAt } from './lib/terminal/links';
   import { cellAt } from './lib/selection';
   import { PinchZoom } from './lib/terminal/pinch';
@@ -268,6 +268,11 @@
           voiceError = m;
           clearTimeout(voiceErrorTimer);
           voiceErrorTimer = setTimeout(() => (voiceError = ''), 5000);
+        },
+        onFallback: () => {
+          voiceError = IOS_KEYBOARD_HINT;
+          clearTimeout(voiceErrorTimer);
+          voiceErrorTimer = setTimeout(() => (voiceError = ''), 8000);
         },
       })
     : null;

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { askMicrophone, errorMessage, mapResults, nextVoiceLang, parseVoiceLang, pickLanguage, recognizerFactory, Voice, type Recognizer, type RecognizerEvent } from './voice';
+import { askMicrophone, errorMessage, isIOS, mapResults, nextVoiceLang, parseVoiceLang, pickLanguage, recognizerFactory, Voice, type Recognizer, type RecognizerEvent } from './voice';
 
 const ev = (resultIndex: number, ...rs: [string, boolean][]): RecognizerEvent => ({
   resultIndex,
@@ -189,6 +189,50 @@ describe('Voice', () => {
     expect(voice.listening).toBe(false);
     expect(on.onState).toHaveBeenLastCalledWith(false);
     expect(on.onError).toHaveBeenCalled();
+  });
+});
+
+describe('iOS fallback', () => {
+  const setup = (ios: boolean, withFallback = true) => {
+    const rec = fake();
+    const on = { onText: vi.fn(), onInterim: vi.fn(), onState: vi.fn(), onError: vi.fn(), ...(withFallback ? { onFallback: vi.fn() } : {}) };
+    const voice = new Voice(() => rec, () => 'en-US', on, async () => null, ios);
+    return { rec, on, voice };
+  };
+
+  it.each(['not-allowed', 'service-not-allowed'])('points an iPhone at the keyboard mic on %s instead of "blocked"', async (code) => {
+    const { rec, on, voice } = setup(true);
+    await voice.toggle();
+    rec.onerror?.({ error: code });
+    expect((on as { onFallback: unknown }).onFallback).toHaveBeenCalledWith(code);
+    expect(on.onError).not.toHaveBeenCalled();
+    expect(on.onState).toHaveBeenLastCalledWith(false);
+  });
+
+  it('keeps the error elsewhere, with the code in it, and for other iOS errors', async () => {
+    const other = setup(false);
+    await other.voice.toggle();
+    other.rec.onerror?.({ error: 'service-not-allowed' });
+    expect(other.on.onError).toHaveBeenCalledWith(expect.stringContaining('(service-not-allowed)'));
+    const ios = setup(true);
+    await ios.voice.toggle();
+    ios.rec.onerror?.({ error: 'audio-capture' });
+    expect(ios.on.onError).toHaveBeenCalledWith('No microphone found.');
+  });
+
+  it('still shows the error when nothing handles the fallback', async () => {
+    const { rec, on, voice } = setup(true, false);
+    await voice.toggle();
+    rec.onerror?.({ error: 'not-allowed' });
+    expect(on.onError).toHaveBeenCalled();
+  });
+
+  it('reads an iPhone, an iPad and a desktop-mode iPad, and nothing else', () => {
+    expect(isIOS({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)' })).toBe(true);
+    expect(isIOS({ userAgent: 'Mozilla/5.0 (Macintosh)', platform: 'MacIntel', maxTouchPoints: 5 })).toBe(true);
+    expect(isIOS({ userAgent: 'Mozilla/5.0 (Macintosh)', platform: 'MacIntel', maxTouchPoints: 0 })).toBe(false);
+    expect(isIOS({ userAgent: 'Mozilla/5.0 (Linux; Android 14)' })).toBe(false);
+    expect(isIOS(undefined)).toBe(false);
   });
 });
 
