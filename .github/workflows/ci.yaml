@@ -13,10 +13,14 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
-# A new push to a PR cancels the stale run. master/develop runs are never cancelled (while one runs, only the newest
-# pending run is kept), so every merge gets a full result and a chance to refresh the caches.
+# A new push to a PR cancels the stale run. Every push to master/develop gets a group of its own (the commit), so no
+# run is cancelled or replaced while pending: each merge gets a full result, a chance to refresh the caches, and can
+# be found by the nightly (`workflow_run`) and by a release gate that asks for a green run of a commit.
+#
+# This file is canonical for the build setup: release-build.yaml follows it (same cargo env, same cache keys, the
+# bundled tmux restored from what the tmux job saved) and never writes the caches itself.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Caches (Swatinem/rust-cache) are written only by pushes to master/develop (save-if). A PR restores from its base
@@ -255,7 +259,8 @@ jobs:
 
   # R36: the same engines against the real server binary and real tmux (attach, switch, reconnect, keys, selection, mouse
   # reporting, resize, the 720/1024 breakpoints). WebSocket only; WebRTC and the resource gates stay in the Chromium job above.
-  # The phone scripts that need the real server: touch.mjs, run.mjs and wizard.mjs stay in the Chromium server job (CDP, resource gates, fake camera). Four legs of two runs each keep the legs about the same length.
+  # The phone scripts that need the real server: touch.mjs, run.mjs and wizard.mjs stay in the Chromium server job (CDP,
+  # resource gates, fake camera). Four legs of two runs each keep the legs about the same length.
   browsers-real:
     name: Browser matrix, real server (${{ matrix.name }})
     needs: rust-build
@@ -424,23 +429,53 @@ jobs:
 
   # The bundled tmux (decision 0119), built from the pinned sources and put through its gate (static, runs with an
   # empty PATH and no terminfo, drives a session in control mode). The installer job installs this very binary.
+  #
+  # The build does not depend on the version or the commit, only on the pinned sources in build-tmux.sh, so it is cached
+  # by the hash of that script: a hit skips the toolchain install and the build, and the gate runs either way.
+  # Both architectures are built here because the releases ship both and restore exactly these entries (a release run
+  # only reads them). Only the x86_64 binary is uploaded as an artifact, as before; the installer job uses that one.
+  # The cache is written by pushes only, after the gate has passed. Keep every input of the build inside build-tmux.sh
+  # (or add the other files to the hash below), or a change to them will not rebuild.
   tmux:
-    name: Bundled tmux (static, x86_64)
-    runs-on: ubuntu-latest
+    name: Bundled tmux (static, ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-latest }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v7
 
+      - name: Restore the tmux build
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: tmux-out
+          key: tmux-${{ matrix.arch }}-${{ hashFiles('.github/scripts/build-tmux.sh') }}
+
       - name: Install the musl toolchain
+        if: steps.cache.outputs.cache-hit != 'true'
         run: sudo apt-get update && sudo apt-get install -y musl-tools bison
 
       - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
         run: .github/scripts/build-tmux.sh tmux-out
 
       - name: Gate
         run: .github/scripts/check-tmux.sh tmux-out/tmux
 
+      - name: Save the tmux build
+        if: github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: tmux-out
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
       - uses: actions/upload-artifact@v7
+        if: matrix.arch == 'x86_64'
         with:
           name: tmux-musl-x86_64
           path: |
@@ -499,7 +534,8 @@ jobs:
         if: failure()
         run: docker exec machine journalctl -u termenbox --no-pager | tail -50
 
-  # One result for branch protection: require this check instead of the individual jobs, and the graph above can be reshaped without touching the repository settings again.
+  # One result for branch protection: require this check instead of the individual jobs, and the graph above can be
+  # reshaped without touching the repository settings again.
   ci:
     name: CI result
     if: ${{ always() }}
