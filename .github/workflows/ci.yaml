@@ -238,6 +238,10 @@ jobs:
           RUN_LIST: ${{ matrix.runs }}
           RUN_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
         run: |
+          # Firefox/WebKit run as root in the container; Playwright needs HOME=/root (the container's
+          # default HOME=/github/home is owned by uid 1001 and fails the sandbox check). Chromium runs
+          # on the bare runner as user `runner` and keeps its inherited HOME.
+          [ "$RUN_ENGINE" != "chromium" ] && export HOME=/root
           fail=0
           for run in $RUN_LIST; do
             IFS=: read -r suite size dpr <<< "$run"
@@ -264,9 +268,14 @@ jobs:
   #
   # Firefox and WebKit run in the CI image (docker/Dockerfile.ci) so their browser binaries, OS deps and tmux are already
   # present and no apt step runs in the matrix. Chromium uses the runner's Chrome and the runner's tmux.
+  #
+  # The server binary downloaded for the non-chromium legs is the static musl build (decision 0075), not the dynamic
+  # build from rust-build. The CI image is bookworm-slim (glibc 2.36), but the dynamic binary is built on
+  # ubuntu-latest (glibc 2.39) and refuses to load inside the container: "GLIBC_2.38 not found". The static musl
+  # binary has no glibc dependency and is also the production binary, so this matches what users install.
   browsers-real:
     name: Browser matrix, real server (${{ matrix.name }})
-    needs: rust-build
+    needs: [rust-build, static]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -292,9 +301,18 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Chromium leg keeps using the dynamic build from rust-build (it runs on the bare ubuntu-latest runner
+      # where glibc 2.39 is available). The container legs use the static musl build (no glibc dependency).
       - uses: actions/download-artifact@v8
+        if: matrix.engine == 'chromium'
         with:
           name: termenbox-server
+          path: bin
+
+      - uses: actions/download-artifact@v8
+        if: matrix.engine != 'chromium'
+        with:
+          name: termenbox-server-musl-x86_64
           path: bin
 
       - run: chmod +x bin/termenbox-server
@@ -310,6 +328,7 @@ jobs:
           RUN_LIST: ${{ matrix.runs }}
           RUN_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
         run: |
+          [ "$RUN_ENGINE" != "chromium" ] && export HOME=/root
           fail=0
           for run in $RUN_LIST; do
             IFS=: read -r suite size dpr <<< "$run"
