@@ -35,6 +35,7 @@ async fn serve(app: Router) -> String {
 struct Fixture {
     ws_addr: String,
     rtc: RtcInfo,
+    assisted: rtc::Assisted,
     claim: String,
     signer: Signer,
     server_id: String,
@@ -96,6 +97,10 @@ async fn fixture() -> Fixture {
 
 /// `history_runs` finished tasks of a long-lived server are already in its history, as on a machine in daily use.
 async fn fixture_with(history_runs: usize) -> Fixture {
+    fixture_full(history_runs, rtc::Limits::default()).await
+}
+
+async fn fixture_full(history_runs: usize, limits: rtc::Limits) -> Fixture {
     keep_tmux_alive();
     let dir = std::env::temp_dir().join(format!("termenbox-e2e-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -154,12 +159,13 @@ async fn fixture_with(history_runs: usize) -> Fixture {
     )
     .await
     .unwrap();
-    let rtc = rtc::start_with_socket(
-        socket,
+    let (rtc, assisted) = rtc::start_assisted(
+        Arc::new(socket),
         Ipv4Addr::LOCALHOST.into(),
         cert,
-        rtc::Limits::default(),
+        limits,
         state.clone(),
+        None,
     )
     .await
     .unwrap();
@@ -183,6 +189,7 @@ async fn fixture_with(history_runs: usize) -> Fixture {
     Fixture {
         ws_addr: serve(router(state, false)).await,
         rtc,
+        assisted,
         claim,
         signer,
         server_id,
@@ -400,27 +407,42 @@ impl RtcClient {
     /// Resolves once the data channel is open, or errors after 5 s.
     async fn connect(info: &RtcInfo, pinned_fingerprint: &str) -> Result<RtcClient, String> {
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let local = socket.local_addr().unwrap();
         let server = SocketAddr::new(info.ip, info.port);
         let ufrag: String = uuid::Uuid::new_v4().simple().to_string();
+        let local = IceCreds {
+            ufrag: ufrag.clone(),
+            pass: ufrag,
+        };
+        let remote = IceCreds {
+            ufrag: SERVER_UFRAG.into(),
+            pass: SERVER_PWD.into(),
+        };
+        RtcClient::dial(socket, local, remote, Some(server), pinned_fingerprint).await
+    }
 
+    /// The ICE agent of a browser. With no `server` address it knows nothing of the server and can only answer the
+    /// checks the server starts (it learns the server's address from them).
+    async fn dial(
+        socket: UdpSocket,
+        local_creds: IceCreds,
+        remote_creds: IceCreds,
+        server: Option<SocketAddr>,
+        pinned_fingerprint: &str,
+    ) -> Result<RtcClient, String> {
+        let local = socket.local_addr().unwrap();
         let mut rtc = Rtc::builder().build(Instant::now());
         rtc.add_local_candidate(Candidate::host(local, "udp").unwrap());
-        rtc.add_remote_candidate(Candidate::host(server, "udp").unwrap());
+        if let Some(server) = server {
+            rtc.add_remote_candidate(Candidate::host(server, "udp").unwrap());
+        }
         let cid: ChannelId;
         let term_cid: ChannelId;
         let ctl_cid: ChannelId;
         {
             let mut d = rtc.direct_api();
             d.set_ice_controlling(true);
-            d.set_local_ice_credentials(IceCreds {
-                ufrag: ufrag.clone(),
-                pass: ufrag.clone(),
-            });
-            d.set_remote_ice_credentials(IceCreds {
-                ufrag: SERVER_UFRAG.into(),
-                pass: SERVER_PWD.into(),
-            });
+            d.set_local_ice_credentials(local_creds);
+            d.set_remote_ice_credentials(remote_creds);
             d.set_remote_fingerprint(parse_fingerprint(pinned_fingerprint));
             d.start_dtls(true).unwrap();
             d.start_sctp(true);
@@ -1593,4 +1615,315 @@ async fn half_open_flood_is_capped_and_real_clients_still_get_in() {
     let mut c = Conn::open(Kind::Rtc, &f).await;
     c.send(json!({"type":"list_workspaces"})).await;
     c.recv_type("error").await;
+}
+
+/// A browser-side offer for an assisted session whose only candidate is `socket`'s address.
+fn assisted_offer(socket: &UdpSocket, ufrag: &str) -> rtc::AssistedOffer {
+    rtc::AssistedOffer {
+        ufrag: ufrag.into(),
+        pwd: format!("{ufrag}0123456789abcdef"),
+        candidates: vec![socket.local_addr().unwrap()],
+        local: vec![],
+        relay: None,
+    }
+}
+
+async fn wait_active(f: &Fixture, want: usize) -> bool {
+    for _ in 0..50 {
+        if f.assisted.active().await == want {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
+#[tokio::test]
+async fn assisted_ice_connects_with_checks_started_by_the_server() {
+    let f = fixture().await;
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let ufrag = uuid::Uuid::new_v4().simple().to_string();
+    let offer = assisted_offer(&socket, &ufrag);
+    let pwd = offer.pwd.clone();
+    let answer = f.assisted.start(offer).await.unwrap();
+    assert_eq!(f.assisted.active().await, 1);
+
+    // The client is told nothing of the server's address: the only way through is a check from the server.
+    let client = RtcClient::dial(
+        socket,
+        IceCreds { ufrag, pass: pwd },
+        IceCreds {
+            ufrag: answer.ufrag.clone(),
+            pass: answer.pwd,
+        },
+        None,
+        &f.rtc.fingerprint,
+    )
+    .await;
+    let mut c = Conn::Rtc(client.expect("the assisted session connects"));
+    c.send(json!({"type": "list_workspaces"})).await;
+    c.recv_type("error").await;
+
+    f.assisted.cancel(&answer.ufrag);
+    assert!(wait_active(&f, 0).await, "teardown leaves a session behind");
+}
+
+#[tokio::test]
+async fn assisted_ice_gives_up_on_a_candidate_that_never_answers() {
+    let f = fixture_full(
+        0,
+        rtc::Limits {
+            assisted_ttl: Duration::from_millis(600),
+            ..Default::default()
+        },
+    )
+    .await;
+    // Bound but never read from, so every check goes unanswered.
+    let silent = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let ufrag = uuid::Uuid::new_v4().simple().to_string();
+    f.assisted
+        .start(assisted_offer(&silent, &ufrag))
+        .await
+        .unwrap();
+    assert_eq!(f.assisted.active().await, 1);
+    assert!(
+        wait_active(&f, 0).await,
+        "an unanswered session is never dropped"
+    );
+}
+
+#[tokio::test]
+async fn assisted_ice_refuses_bad_credentials_and_too_many_sessions() {
+    let f = fixture_full(
+        0,
+        rtc::Limits {
+            max_assisted: 1,
+            ..Default::default()
+        },
+    )
+    .await;
+    let silent = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let mut bad = assisted_offer(&silent, "short");
+    assert!(f.assisted.start(bad).await.is_err());
+    bad = assisted_offer(&silent, &uuid::Uuid::new_v4().simple().to_string());
+    f.assisted.start(bad).await.unwrap();
+    let second = assisted_offer(&silent, &uuid::Uuid::new_v4().simple().to_string());
+    assert!(f.assisted.start(second).await.is_err());
+    assert_eq!(f.assisted.active().await, 1);
+}
+
+#[tokio::test]
+async fn assisted_ice_connects_through_the_relay_with_the_direct_path_blocked() {
+    let f = fixture().await;
+    let mut fake = crate::turn::testing::fake().await;
+    let relay = crate::turn::allocate(
+        &crate::turn::testing::credentials(&fake, crate::turn::testing::PASS),
+        f.assisted.relay_inbox(),
+    )
+    .await
+    .unwrap();
+    let relay_addr = relay.addr();
+
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let ufrag = uuid::Uuid::new_v4().simple().to_string();
+    let mut offer = assisted_offer(&socket, &ufrag);
+    // The server is told only a dead port on the client's IP: its direct checks go nowhere, and the relay still learns
+    // the client's IP for the permission. The client is told only the relayed address, never the server's own.
+    let dead = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    offer.candidates = vec![dead.local_addr().unwrap()];
+    offer.relay = Some(relay);
+    let pwd = offer.pwd.clone();
+    let answer = f.assisted.start(offer).await.unwrap();
+
+    let client = RtcClient::dial(
+        socket,
+        IceCreds { ufrag, pass: pwd },
+        IceCreds {
+            ufrag: answer.ufrag.clone(),
+            pass: answer.pwd,
+        },
+        Some(relay_addr),
+        &f.rtc.fingerprint,
+    )
+    .await;
+    let mut c = Conn::Rtc(client.expect("the session connects through the relay"));
+    c.send(json!({"type": "list_workspaces"})).await;
+    c.recv_type("error").await;
+
+    // Ending the session releases the allocation.
+    f.assisted.cancel(&answer.ufrag);
+    tokio::time::timeout(Duration::from_secs(3), fake.closed.recv())
+        .await
+        .expect("the allocation is released with the session")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn assisted_ice_without_a_relay_still_connects_when_the_allocation_is_refused() {
+    let f = fixture().await;
+    let fake = crate::turn::testing::fake().await;
+    let relay = crate::turn::allocate_or_none(
+        &crate::turn::testing::credentials(&fake, "not-the-password"),
+        f.assisted.relay_inbox(),
+    )
+    .await;
+    assert!(relay.is_none());
+
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let ufrag = uuid::Uuid::new_v4().simple().to_string();
+    let mut offer = assisted_offer(&socket, &ufrag);
+    offer.relay = relay;
+    let pwd = offer.pwd.clone();
+    let answer = f.assisted.start(offer).await.unwrap();
+    let client = RtcClient::dial(
+        socket,
+        IceCreds { ufrag, pass: pwd },
+        IceCreds {
+            ufrag: answer.ufrag,
+            pass: answer.pwd,
+        },
+        None,
+        &f.rtc.fingerprint,
+    )
+    .await;
+    assert!(client.is_ok());
+}
+
+/// The server's signaling handler over the fixture's real transport, a fake Cloudflare and a fake TURN server.
+async fn signal_rig(
+    f: &Fixture,
+    turn: Option<&crate::turn::testing::Fake>,
+) -> (
+    crate::signal::Signal,
+    Arc<crate::signal::testing::FakeCloudflare>,
+) {
+    use crate::signal::testing::*;
+    let servers = match turn {
+        Some(t) => json!({
+            "urls": [format!("turn:{}?transport=udp", t.addr)],
+            "username": crate::turn::testing::USER,
+            "credential": crate::turn::testing::PASS,
+        }),
+        None => secret_servers(),
+    };
+    let cf = Arc::new(cloudflare(servers).await);
+    let signal = crate::signal::Signal::new(
+        f.auth.clone(),
+        f.assisted.clone(),
+        crate::signal::Endpoint {
+            host: SocketAddr::new(f.rtc.ip, f.rtc.port),
+            mapped: None,
+        },
+        Some(crate::signal::Minter::new(&cf.base, KEY_ID, TOKEN)),
+        Arc::new(crate::signal::Usage::open(&f.dir, 500)),
+    );
+    (signal, cf)
+}
+
+fn reply_json(r: Option<Vec<u8>>) -> Value {
+    serde_json::from_slice(&r.expect("a reply")).unwrap()
+}
+
+#[tokio::test]
+async fn signal_offer_starts_a_session_the_client_connects_to() {
+    use crate::signal::testing::signed;
+    let f = fixture().await;
+    let (signal, _cf) = signal_rig(&f, None).await;
+    let who = f.who(1, "alice");
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let ufrag = uuid::Uuid::new_v4().simple().to_string();
+    let pwd = format!("{ufrag}0123456789abcdef");
+    let offer = signed(
+        &who.device,
+        &who.cert,
+        &f.server_id,
+        json!({"t": "offer", "ufrag": ufrag, "pwd": pwd,
+               "cands": [socket.local_addr().unwrap().to_string()], "claim": f.claim}),
+    );
+    let answer = reply_json(signal.handle(3, &offer).await);
+    assert_eq!(answer["t"], "answer", "{answer}");
+    assert_eq!(f.assisted.active().await, 1);
+
+    // A signed candidate for that session is taken; the same for a session this client did not start is not.
+    let session = answer["ufrag"].as_str().unwrap().to_string();
+    let extra = signed(
+        &who.device,
+        &who.cert,
+        &f.server_id,
+        json!({"t": "cand", "session": session, "addr": "127.0.0.1:9"}),
+    );
+    assert_eq!(reply_json(signal.handle(3, &extra).await)["t"], "ok");
+    let theirs = signed(
+        &who.device,
+        &who.cert,
+        &f.server_id,
+        json!({"t": "cand", "session": session, "addr": "127.0.0.1:9"}),
+    );
+    assert_eq!(reply_json(signal.handle(4, &theirs).await)["t"], "error");
+
+    let client = RtcClient::dial(
+        socket,
+        IceCreds { ufrag, pass: pwd },
+        IceCreds {
+            ufrag: session,
+            pass: answer["pwd"].as_str().unwrap().into(),
+        },
+        None,
+        &f.rtc.fingerprint,
+    )
+    .await;
+    let mut c = Conn::Rtc(client.expect("connects"));
+    c.send(json!({"type": "list_workspaces"})).await;
+    c.recv_type("error").await;
+}
+
+#[tokio::test]
+async fn signal_offer_that_wants_a_relay_gets_one_and_a_stranger_does_not_start_a_session() {
+    use crate::signal::testing::signed;
+    let f = fixture().await;
+    let mut turn = crate::turn::testing::fake().await;
+    let (signal, cf) = signal_rig(&f, Some(&turn)).await;
+    let who = f.who(1, "alice");
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let ufrag = uuid::Uuid::new_v4().simple().to_string();
+    let pwd = format!("{ufrag}0123456789abcdef");
+    let fields = |claim: &str| {
+        json!({"t": "offer", "ufrag": ufrag, "pwd": pwd, "relay": true,
+               "cands": [socket.local_addr().unwrap().to_string()], "claim": claim})
+    };
+
+    // An unauthenticated offer starts nothing and costs nothing.
+    let stranger = f.who(2, "mallory");
+    let bad = signed(
+        &stranger.device,
+        &stranger.cert,
+        &f.server_id,
+        fields("wrong"),
+    );
+    assert_eq!(reply_json(signal.handle(1, &bad).await)["t"], "error");
+    assert_eq!(f.assisted.active().await, 0);
+    assert_eq!(cf.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    let good = signed(&who.device, &who.cert, &f.server_id, fields(&f.claim));
+    let answer = reply_json(signal.handle(1, &good).await);
+    assert_eq!(answer["t"], "answer", "{answer}");
+    let cands: Vec<String> = answer["cands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap().into())
+        .collect();
+    assert_eq!(
+        cands.len(),
+        2,
+        "the host address and the relayed one: {cands:?}"
+    );
+    assert_eq!(cf.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // The relay is the server's own allocation and goes with the session.
+    f.assisted.cancel(answer["ufrag"].as_str().unwrap());
+    tokio::time::timeout(Duration::from_secs(3), turn.closed.recv())
+        .await
+        .expect("the allocation is released")
+        .unwrap();
 }

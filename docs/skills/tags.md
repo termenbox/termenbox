@@ -15,6 +15,7 @@ bootstrap-generated: true
 | auth | Authentication, authorization, identity |
 | build | Compilation, packaging, CI/CD |
 | client | Browser-facing code (Svelte, WASM, UI) |
+| cloudflare | Cloudflare services the project or an owner uses (Workers, TURN, STUN, R2, D1) |
 | compatibility | Browser/version support matrix |
 | crypto | Encryption, signatures, key derivation |
 | deployment | VPS, Docker, systemd, networking |
@@ -45,6 +46,7 @@ bootstrap-generated: true
 | tiers | Free, Pro, Team and Enterprise boundaries |
 | billing | Payment, entitlements, invoicing |
 | transport | WebTransport, WebSocket, QUIC |
+| wsl | WSL2 and other NAT'd VM hosts |
 | wasm | WebAssembly, Rust→WASM, wasm-bindgen |
 
 <!-- Umbrella tags (carried by >50% of active decisions): -->

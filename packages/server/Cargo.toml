@@ -22,6 +22,8 @@ serde_json = { workspace = true }
 reqwest = { workspace = true }
 portable-pty = { workspace = true }
 str0m = "0.24.1"
+turn = "0.17.2"
+webrtc-util = "0.17.2"
 sha2 = { workspace = true }
 hmac = { workspace = true }
 qrcode = { version = "0.14", default-features = false }
@@ -34,7 +36,8 @@ semver = "1"
 percent-encoding = "2.3"
 agent-client-protocol-schema = { version = "1.12", default-features = false }
 
-[dev-dependencies]
-tokio-tungstenite = "0.21"
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
+
+[dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

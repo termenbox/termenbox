@@ -145,3 +145,4 @@
 | 0138-a-workspace-holds-windows-and-a-session-is-an-agent-conversation | A workspace is the sandbox that holds windows; a session is one agent conversation (an ACP sessionId) | product | active | Sergey Strebulaev | - |
 | 0139-control-bytes-and-events-travel-on-separate-channels-and-events-replay-from-a-sequence-log | Control, terminal bytes and agent events travel on separate channels, and events replay from a sequence log | product | active | Sergey Strebulaev | - |
 | 0140-native-wrappers-are-optional-and-the-pwa-stays-first-class | Native wrappers are optional enhancements and the PWA stays the reference client | product | active | Sergey Strebulaev | - |
+| 0141-assisted-connection-runs-on-the-owners-cloudflare-account | A server that cannot be reached directly is helped by free public STUN, a signaling Worker and a TURN key that live in the owner's Cloudflare account, never in the project's | product | active | Sergey Strebulaev | - |

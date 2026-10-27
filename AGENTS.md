@@ -65,6 +65,7 @@ lint
 - **Baseline**: hybrid MVP (DECISION-0051); v1-only designs (SSP, SSH auth, WASM) are deferred
 - **Transport**: WebRTC data channel direct to one UDP port, no STUN/TURN/signaling (DECISION-0057); WebSocket fallback
 - **Paths**: one identity (key + fingerprint) over raced signed candidates `lan|wan4|wan6|overlay|tunnel`; `--print-pairing`, `TERMENBOX_LAN_ONLY` (DECISION-0123)
+- **Assisted path**: free STUN, a signaling Worker and a TURN key in the owner's Cloudflare account, set up by `--setup-cloudflare` (DECISION-0141)
 - **Directory**: signed records (Pages Functions + D1) map server key -> address/fingerprint (DECISION-0056)
 - **Auth**: GitHub OAuth; one owner per server, claimed with a one-time secret (DECISION-0053)
 - **Workspaces**: server owns tmux/PTY via a WorkspaceBackend trait (DECISION-0054); reconnect = re-attach

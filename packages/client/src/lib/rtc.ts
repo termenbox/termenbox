@@ -50,7 +50,7 @@ export function buildAnswer(r: RtcTarget, mid: string): string {
   ].join('\r\n');
 }
 
-class RtcTransport implements Transport {
+export class RtcTransport implements Transport {
   readonly kind = 'rtc' as const;
   onmessage: ((text: string) => void) | null = null;
   onclose: (() => void) | null = null;

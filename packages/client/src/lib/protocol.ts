@@ -344,6 +344,10 @@ export interface Bundle {
   fingerprint: string;
   name: string;
   candidates: Candidate[];
+  /** The owner's signaling Worker (`wss://`), when the server has one (DECISION-0141). */
+  signal?: string;
+  /** The owner has a TURN key: a relay can be asked for over the signaling channel. A flag, never a credential. */
+  relay?: boolean;
 }
 
 export interface ServerListItem {

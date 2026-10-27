@@ -5,7 +5,7 @@ import type { Bundle, CandidateKind, ServerListItem } from './protocol';
 import type { DirRecord } from './directory';
 import { verifyBundle } from './bundle';
 
-export type PathKind = CandidateKind | 'ws';
+export type PathKind = CandidateKind | 'ws' | 'signal';
 
 export interface Path {
   /** `lan 192.168.1.20:4443`: what is remembered as the winner. */
@@ -17,8 +17,10 @@ export interface Path {
   port: number;
   /** The DTLS fingerprint pinned for this server; the browser refuses a connection to any other. */
   fingerprint?: string;
-  /** For a tunnel: the WebSocket URL. */
+  /** For a tunnel: the WebSocket URL. For the assisted path: the owner's signaling Worker. */
   url?: string;
+  /** The assisted path only: the server has a TURN key, so a relay can be asked for. */
+  relay?: boolean;
 }
 
 export interface PathFailure {
@@ -36,12 +38,14 @@ export const LABELS: Record<PathKind, string> = {
   overlay: 'Direct, overlay',
   tunnel: 'Tunnel',
   ws: 'Tunnel',
+  // Becomes "Punched" or "Relay" once the session is up (assisted.ts).
+  signal: 'Assisted',
 };
 
 /** Tunnels are the fallback tier: they start only when no direct path won (a relay is slower and shared). */
 export const isTunnel = (p: Path) => p.kind === 'tunnel' || p.kind === 'ws';
 
-const keyOf = (kind: PathKind, addr: string, port: number) => (kind === 'ws' || kind === 'tunnel' ? `${kind} ${addr}` : `${kind} ${addr.includes(':') ? `[${addr}]` : addr}:${port}`);
+const keyOf = (kind: PathKind, addr: string, port: number) => (kind === 'ws' || kind === 'tunnel' || kind === 'signal' ? `${kind} ${addr}` : `${kind} ${addr.includes(':') ? `[${addr}]` : addr}:${port}`);
 
 /** Every path the client knows for a server: the bundle's candidates, the directory record and a tunnel URL. */
 export function buildPaths(input: { bundle?: Bundle | null; record?: Pick<DirRecord, 'ip' | 'udp_port' | 'fingerprint' | 'ws_url'> | null; wsUrl?: string }): Path[] {
@@ -56,12 +60,13 @@ export function buildPaths(input: { bundle?: Bundle | null; record?: Pick<DirRec
     else add({ kind: c.kind, addr: c.addr, port: c.port, fingerprint: bundle!.fingerprint });
   }
   if (record?.ip) add({ kind: record.ip.includes(':') ? 'wan6' : 'wan4', addr: record.ip, port: record.udp_port, fingerprint: record.fingerprint });
+  if (bundle?.signal) add({ kind: 'signal', addr: bundle.signal, port: 0, url: bundle.signal, fingerprint: bundle.fingerprint, relay: bundle.relay === true });
   const ws = record?.ws_url || input.wsUrl;
   if (ws) add({ kind: 'ws', addr: ws, port: 0, url: ws });
   return out;
 }
 
-const COST: Record<PathKind, number> = { lan: 0, wan6: 1, wan4: 2, overlay: 3, tunnel: 4, ws: 4 };
+const COST: Record<PathKind, number> = { lan: 0, wan6: 1, wan4: 2, overlay: 3, signal: 4, tunnel: 5, ws: 5 };
 
 /** The remembered winner first, then cheapest first (LAN, IPv6, IPv4, overlay, tunnel). */
 export function orderPaths(paths: Path[], winner?: string): Path[] {
@@ -77,6 +82,7 @@ export function fixFor(path: Path): string {
     case 'lan': return 'Join the same Wi-Fi as the server (and allow local network access for this browser if it asks).';
     case 'wan4': return `Open UDP port ${path.port} on the server's firewall or router, or run a server that opens it itself (UPnP).`;
     case 'wan6': return `Open UDP port ${path.port} for IPv6 on the server's firewall; this network may also have no IPv6.`;
+    case 'signal': return 'Check that the server is running and that its signaling Worker exists (`termenbox-server --setup-cloudflare`).';
     case 'overlay': return 'Turn the overlay (Tailscale or WireGuard) on for this device and the server.';
     default: return 'Check that the tunnel is running on the server.';
   }
@@ -96,7 +102,7 @@ export function noWayFromOutside(paths: Path[]): boolean {
 /** What to say when every path failed, beyond the per-path lines. */
 export function allFailedAdvice(paths: Path[]): string {
   if (noWayFromOutside(paths)) {
-    return 'This server advertises only a LAN address: no public address and no relay. That usually means it sits behind carrier-grade NAT (CGNAT) or a router that blocks incoming UDP. Away from its network, reach it over an overlay such as Tailscale or WireGuard, or from the same Wi-Fi.';
+    return 'This server advertises only a LAN address: no public address and no relay. That usually means it sits behind carrier-grade NAT (CGNAT) or a router that blocks incoming UDP. Away from its network, reach it over an overlay such as Tailscale or WireGuard, or from the same Wi-Fi. If it runs in WSL2 or another VM behind NAT, switch WSL2 to mirrored networking, or run `termenbox-server --setup-cloudflare` on it for a punched or relayed connection.';
   }
   return '';
 }
@@ -153,7 +159,7 @@ function raceTier<T extends { close(): void }>(
         (e) => {
           if (done) return;
           const reason = e instanceof Error ? e.message : String(e);
-          failures.push({ path, reason, fix: fixFor(path) });
+          failures.push({ path, reason, fix: (e as { fix?: string } | null)?.fix ?? fixFor(path) });
           settled++;
           if (settled === tier.length) finish(null);
           else launch();

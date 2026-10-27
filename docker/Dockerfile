@@ -16,6 +16,8 @@ COPY packages/bridge-contract ./packages/bridge-contract
 COPY packages/core ./packages/core
 COPY packages/server ./packages/server
 COPY packages/agent ./packages/agent
+# --setup-cloudflare embeds the owner's signaling Worker.
+COPY infra/owner-relay/dist ./infra/owner-relay/dist
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
@@ -26,6 +28,8 @@ COPY packages/bridge-contract ./packages/bridge-contract
 COPY packages/core ./packages/core
 COPY packages/server ./packages/server
 COPY packages/agent ./packages/agent
+# --setup-cloudflare embeds the owner's signaling Worker.
+COPY infra/owner-relay/dist ./infra/owner-relay/dist
 # A release sets the full SemVer (0.1.36-nightly.20261022) so the image reports its channel; empty means the crate's.
 ARG TERMENBOX_RELEASE_VERSION=
 RUN if [ -z "$TERMENBOX_RELEASE_VERSION" ]; then unset TERMENBOX_RELEASE_VERSION; fi; \

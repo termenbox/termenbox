@@ -24,6 +24,7 @@ mod backend;
 mod candidates;
 mod cert;
 mod claude_hooks;
+mod cloudflare;
 mod connection;
 mod control;
 mod directory;
@@ -51,9 +52,12 @@ mod reducer;
 mod release;
 mod requests;
 mod rtc;
+mod signal;
+mod stun;
 mod terminfo;
 mod tmuxconf;
 mod transcript;
+mod turn;
 mod uninstall;
 mod updater;
 mod websocket;
@@ -296,6 +300,24 @@ struct Args {
     /// $OPENCODE_CONFIG_DIR, else $XDG_CONFIG_HOME/opencode, else ~/.config/opencode.
     #[arg(long)]
     opencode_dir: Option<PathBuf>,
+
+    /// One-shot, opt-in (decision 0141): set up the assisted connection in your own Cloudflare account (a signaling
+    /// Worker and a TURN key). The account API token is read from stdin, used once and never stored.
+    #[arg(long, default_value = "false")]
+    setup_cloudflare: bool,
+
+    /// One-shot: delete what --setup-cloudflare made (the Worker, its Durable Object and the TURN key). Reads the
+    /// account API token from stdin like --setup-cloudflare.
+    #[arg(long, default_value = "false")]
+    teardown: bool,
+
+    /// With --setup-cloudflare or --teardown: the account, by name or id, when the token sees several.
+    #[arg(long)]
+    cloudflare_account: Option<String>,
+
+    /// With --setup-cloudflare: the workers.dev subdomain to create when the account has none.
+    #[arg(long)]
+    workers_subdomain: Option<String>,
 
     /// Creates the Web Push key (VAPID) in `connectors.env` in the config directory, mode 0600, and prints the
     /// public key. Restart the server afterwards. Does nothing when a key is already there.
@@ -614,6 +636,9 @@ async fn main() -> anyhow::Result<()> {
     if let Some(adapter) = &args.hook {
         events::run_hook(adapter);
         return Ok(());
+    }
+    if args.setup_cloudflare || args.teardown {
+        return run_cloudflare(&args).await;
     }
     if args.setup_push {
         match push::setup(&args.config_dir) {
@@ -985,12 +1010,17 @@ async fn main() -> anyhow::Result<()> {
                 args.config_dir.display()
             );
         }
-        let info = rtc::start_with_socket(
-            socket,
+        // STUN shares the transport socket (DECISION-0141): the mapping is only worth anything if the request left it.
+        let stun_servers = stun::servers(lan_only, std::env::var("TERMENBOX_STUN").ok().as_deref());
+        let socket = Arc::new(socket);
+        let (stun_inbox, stun_rx) = stun::channel();
+        let (info, assisted) = rtc::start_assisted(
+            socket.clone(),
             rtc_ip,
             cert.clone(),
             rtc::Limits::default(),
             state.clone(),
+            (!stun_servers.is_empty()).then_some(stun_inbox),
         )
         .await?;
         info!(
@@ -999,7 +1029,8 @@ async fn main() -> anyhow::Result<()> {
         );
         // A global IPv6 address gets a socket of its own on the same port, so a `wan6` candidate is real.
         let mut v6 = None;
-        if !lan_only {
+        // TERMENBOX_NO_IPV6: for a host whose IPv6 does not route, and for tests that must not have a direct way in.
+        if !lan_only && std::env::var_os("TERMENBOX_NO_IPV6").is_none() {
             if let Some(addr) = candidates::global_ipv6(&ifaces) {
                 match tokio::net::UdpSocket::bind((addr, port)).await {
                     Ok(socket) => {
@@ -1027,7 +1058,9 @@ async fn main() -> anyhow::Result<()> {
                 reach::Config {
                     port,
                     gateway: reach::detect_gateway(),
-                    host_public4: netutil::local_route_ip().is_some_and(netutil::is_public_unicast),
+                    // TERMENBOX_ASSUME_NAT: a host whose public address is a 1:1 NAT's, or a test host that must not count as public.
+                    host_public4: std::env::var_os("TERMENBOX_ASSUME_NAT").is_none()
+                        && netutil::local_route_ip().is_some_and(netutil::is_public_unicast),
                     v6,
                     overlay: !candidates::overlay_addrs(&ifaces, None).is_empty(),
                     seen: None,
@@ -1041,7 +1074,56 @@ async fn main() -> anyhow::Result<()> {
             .clone()
             .unwrap_or_else(|| args.client_url.clone());
         let publishes = directory::publishes(!lan_only && public_ip.is_some(), &origin);
-        let hub = candidates::PathHub::new(
+        let stun_rx_out = if stun_servers.is_empty() {
+            tokio::sync::watch::channel(None).1
+        } else {
+            stun::spawn(socket, stun_rx, stun_servers, handle.rx.clone())
+        };
+        // The assisted path (DECISION-0141) exists only once the owner has run the Cloudflare setup (step 2.7), and
+        // never in LAN-only mode.
+        if !lan_only {
+            match signal::Config::load(&args.config_dir) {
+                Ok(Some(cfg)) => {
+                    let usage = Arc::new(signal::Usage::open(
+                        &args.config_dir,
+                        signal::Usage::cap_from_env(
+                            std::env::var("TERMENBOX_RELAY_CAP_GB").ok().as_deref(),
+                        ),
+                    ));
+                    println!("{}", usage.status_line());
+                    let handler = Arc::new(signal::Signal::new(
+                        state.auth.clone(),
+                        assisted,
+                        signal::Endpoint {
+                            host: std::net::SocketAddr::new(info.ip, info.port),
+                            mapped: Some(stun_rx_out.clone()),
+                        },
+                        Some(signal::Minter::new(
+                            &signal::credential_api(
+                                std::env::var("TERMENBOX_RELAY_API").ok().as_deref(),
+                            ),
+                            &cfg.turn_key_id,
+                            &cfg.turn_key_token,
+                        )),
+                        usage,
+                    ));
+                    tokio::spawn(signal::run(
+                        signal::dial_url(
+                            &cfg.signal,
+                            std::env::var("TERMENBOX_SIGNAL_DIAL").ok().as_deref(),
+                        ),
+                        handler,
+                        signal::Backoff::new(
+                            std::time::Duration::from_secs(1),
+                            std::time::Duration::from_secs(60),
+                        ),
+                    ));
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!("assisted connection is off: {e:#}"),
+            }
+        }
+        let hub = candidates::PathHub::new_with_stun(
             args.config_dir.clone(),
             Arc::new(directory::ServerKey::load_or_create(&args.config_dir)?),
             info.fingerprint.clone(),
@@ -1055,7 +1137,11 @@ async fn main() -> anyhow::Result<()> {
             v6,
             publishes,
             handle.rx.clone(),
+            stun_rx_out,
         );
+        if !lan_only {
+            hub.enable_assisted();
+        }
         if let Err(e) = hub.refresh() {
             tracing::warn!("cannot sign a candidate bundle: {e:#}");
         }
@@ -1141,6 +1227,43 @@ fn pairing_block(args: &Args, auth: &AuthState) -> anyhow::Result<candidates::Pa
 
 /// `--print-pairing`: for a phone that has no directory path to this server (LAN-only, offline, or behind a NAT with no
 /// relay), and what `--register` prints too.
+/// `--setup-cloudflare` and `--teardown` (decision 0141).
+async fn run_cloudflare(args: &Args) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !(args.setup_cloudflare && args.teardown),
+        "give --setup-cloudflare or --teardown, not both"
+    );
+    std::fs::create_dir_all(&args.config_dir)?;
+    let server_id = directory::ServerKey::load_or_create(&args.config_dir)?.server_id();
+    let api = std::env::var("TERMENBOX_CLOUDFLARE_API").unwrap_or_else(|_| cloudflare::API.into());
+    let params = cloudflare::Params {
+        api: &api,
+        dir: &args.config_dir,
+        server_id: &server_id,
+        account: args.cloudflare_account.as_deref(),
+        subdomain: args.workers_subdomain.as_deref(),
+        cap_gb: signal::Usage::cap_from_env(
+            std::env::var("TERMENBOX_RELAY_CAP_GB").ok().as_deref(),
+        ),
+    };
+    let token = cloudflare::read_token()?;
+    let result = if args.setup_cloudflare {
+        cloudflare::setup(&token, &params).await.map(|r| r.render())
+    } else {
+        cloudflare::teardown(&token, &params)
+            .await
+            .map(|lines| lines.join("\n") + "\n")
+    };
+    match result {
+        Ok(text) => print!("{text}"),
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+    }
+    Ok(())
+}
+
 fn print_pairing(args: &Args, auth: &AuthState) -> anyhow::Result<()> {
     use std::io::IsTerminal;
     let block = pairing_block(args, auth)?;

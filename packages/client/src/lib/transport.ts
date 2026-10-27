@@ -1,7 +1,10 @@
 import type { DirRecord } from './directory';
 import type { RtcTarget } from './rtc';
 import type { Bundle } from './protocol';
+import type { AssistedAuth, AssistedTarget, Via } from './assisted';
 import { buildPaths, isTunnel, orderPaths, racePaths, Unreachable, type Path } from './paths';
+
+const VIA_LABELS: Record<Via, string> = { punched: 'Punched', relay: 'Relay' };
 
 export { Unreachable };
 
@@ -21,6 +24,8 @@ export interface Transport {
   sendControl?(text: string): boolean;
   /** The path that carried this transport, when it was found by the race over candidate paths. */
   path?: Path;
+  /** The assisted path only: whether the session was punched through or went over the relay. */
+  via?: Via;
 }
 
 /** Where a server can be reached. A directory record is preferred; a plain WebSocket URL is the fallback. */
@@ -36,6 +41,8 @@ export interface Target {
 export interface Openers {
   rtc(target: RtcTarget, timeoutMs: number, signal?: AbortSignal): Promise<Transport>;
   ws(url: string, timeoutMs: number, signal?: AbortSignal): Promise<Transport>;
+  /** The assisted path through the owner's signaling Worker; absent where there is no device identity to sign with. */
+  assisted?(target: AssistedTarget, auth: AssistedAuth, signal?: AbortSignal): Promise<Transport>;
 }
 
 /** ICE, DTLS and the data channel take several round trips; on a slow mobile link 5 s was too short and looped. */
@@ -55,8 +62,8 @@ export function describeRtcFailure(record: DirRecord, cause?: string): string {
  * Opens the best available transport: WebRTC-direct from the directory record first, then the
  * WebSocket (tunnel) fallback. Throws Unreachable with a message the UI can show.
  */
-export async function openTransport(target: Target, openers: Openers): Promise<Transport> {
-  if (target.bundle?.candidates.length) return raceTransport(target, openers);
+export async function openTransport(target: Target, openers: Openers, auth?: AssistedAuth): Promise<Transport> {
+  if (target.bundle?.candidates.length || (auth && target.bundle?.signal)) return raceTransport(target, openers, auth);
   const attempts: string[] = [];
   let rtcFailure: string | null = null;
 
@@ -87,10 +94,14 @@ export async function openTransport(target: Target, openers: Openers): Promise<T
  * the remembered winner and the cheapest paths first, staggered 150-300 ms; the first to connect wins and the rest are
  * cancelled. Every attempt pins the server's DTLS fingerprint, whichever address it came from.
  */
-async function raceTransport(target: Target, openers: Openers): Promise<Transport> {
-  const paths = orderPaths(buildPaths({ bundle: target.bundle, record: target.record, wsUrl: target.wsUrl }), target.winner);
-  const { value, path } = await racePaths(paths, (p, signal) =>
-    isTunnel(p) ? openers.ws(p.url!, WS_TIMEOUT_MS, signal) : openers.rtc({ ip: p.addr, udp_port: p.port, fingerprint: p.fingerprint! }, RTC_TIMEOUT_MS, signal));
-  value.path = path;
+async function raceTransport(target: Target, openers: Openers, auth?: AssistedAuth): Promise<Transport> {
+  // The assisted path signs with the device key: without an identity (or an opener) it is not a candidate at all.
+  const usable = (p: Path) => p.kind !== 'signal' || (!!auth && !!openers.assisted);
+  const paths = orderPaths(buildPaths({ bundle: target.bundle, record: target.record, wsUrl: target.wsUrl }).filter(usable), target.winner);
+  const { value, path } = await racePaths(paths, (p, signal) => {
+    if (p.kind === 'signal') return openers.assisted!({ url: p.url!, fingerprint: p.fingerprint!, relay: p.relay === true }, auth!, signal);
+    return isTunnel(p) ? openers.ws(p.url!, WS_TIMEOUT_MS, signal) : openers.rtc({ ip: p.addr, udp_port: p.port, fingerprint: p.fingerprint! }, RTC_TIMEOUT_MS, signal);
+  });
+  value.path = value.via ? { ...path, label: VIA_LABELS[value.via] } : path;
   return value;
 }

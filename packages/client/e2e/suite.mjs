@@ -8,7 +8,7 @@ const suites = {
   // Chromium by nature: `run` (resource gates, WebRTC), `touch` (CDP touch events), `wizard` (Chromium's fake camera flags).
   // `appshell` runs everywhere but skips its held-touch and edge-swipe steps (CDP) outside Chromium.
   server: ['run', 'touch', 'cards', 'decision', 'activity', 'windows', 'two-servers', 'appshell', 'desktop', 'app', 'pane', 'acp', 'acp-views',
-    'hookoffer', 'add-server', 'pair', 'failures', 'wizard', 'search', 'push-link'],
+    'hookoffer', 'add-server', 'pair', 'assisted', 'failures', 'wizard', 'search', 'push-link'],
   // The built client against scripted servers, no binary: the browser matrix runs these per engine (R36).
   desktop: ['desktop'],
   phone: ['appshell', 'cards', 'reorder', 'windows', 'app', 'decision', 'activity', 'failures'],
