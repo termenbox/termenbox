@@ -268,6 +268,8 @@ impl HealthCollector {
                 tick.tick().await;
                 let (next, reading) = sample_blocking(sampler, &data_dir).await;
                 sampler = next;
+                // The run marker's heartbeat: when this run was last alive and how big it was (decision 0142).
+                tokio::task::spawn_blocking(|| crate::crash::update(crate::crash::own_rss_kb()));
                 if let Some(reading) = reading {
                     me.record(reading.point, reading.container);
                 }

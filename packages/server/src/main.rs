@@ -768,7 +768,8 @@ async fn main() -> anyhow::Result<()> {
     // After the log file exists, so the first line of a bad run is already in it: the hook writes the crash file and the
     // marker says whether the last run ended without a clean exit (decision 0142).
     crash::install_panic_hook(&args.config_dir);
-    let _previous_run = crash::start(&args.config_dir);
+    let previous_run = crash::start(&args.config_dir);
+    previous_run.log();
     let _clean_exit = crash::CleanExit;
 
     match auth.owner() {
@@ -926,6 +927,7 @@ async fn main() -> anyhow::Result<()> {
             .with_push(push.clone())
             .with_events(hub.clone())
             .with_health(health)
+            .with_previous_exit(previous_run.message())
             .with_agent_hooks(agent_hooks::Targets {
                 claude: claude_hooks::Target {
                     auto: args.claude_settings.is_none(),

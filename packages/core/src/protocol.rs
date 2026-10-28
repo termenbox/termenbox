@@ -697,6 +697,15 @@ pub enum ServerMessage {
         levels: Vec<HealthLevel>,
         samples: Vec<HealthPoint>,
     },
+    /// Decision 0142: the last run of this server ended without a clean exit (a crash, an out-of-memory kill, a power
+    /// loss). Sent after sign-in while the server has one to report. `at_ms` is the last time the old run was seen alive,
+    /// `streak` how many runs in a row ended this way, `crashed` whether a panic wrote a crash file. Nothing else: no
+    /// path, host name or text. A client shows it once per `at_ms`. An older server never sends it.
+    PreviousExit {
+        at_ms: u64,
+        streak: u32,
+        crashed: bool,
+    },
     /// A message from a newer server; ignored.
     #[serde(other)]
     Unknown,
@@ -1177,6 +1186,21 @@ mod tests {
         assert_eq!(v["type"], "server_health");
         assert_eq!(v["ram_percent"], 93);
         assert!(v.get("cpu_percent").is_none(), "unknown is absent, not 0");
+        let v = serde_json::to_value(ServerMessage::PreviousExit {
+            at_ms: 9,
+            streak: 2,
+            crashed: true,
+        })
+        .unwrap();
+        assert_eq!(v["type"], "previous_exit");
+        assert_eq!(
+            (
+                v["at_ms"].as_u64(),
+                v["streak"].as_u64(),
+                v["crashed"].as_bool()
+            ),
+            (Some(9), Some(2), Some(true))
+        );
         let v = serde_json::to_value(ClientMessage::HistoryDelete).unwrap();
         assert_eq!(v["type"], "history_delete");
         let v = serde_json::to_value(ServerMessage::HistoryDeleted { removed: 3 }).unwrap();

@@ -16,11 +16,11 @@ Context: Decision 0142. The release profile unwinds (workspace `Cargo.toml` comm
 Do: Add `packages/server/src/crash.rs`: `install_panic_hook(config_dir)` writes message, location, thread name and a captured backtrace through `tracing::error!` and to `logs/crash-<unix-ts>.json` (flush before returning, then call the previous hook). `RunMarker::acquire(config_dir)` returns the previous state (`Clean` or `Unclean { since, last_crash_file }`) and writes the marker with timestamp and pid; `Drop`/explicit `release()` removes it. Wire both into `main.rs` after logging init, server path only.
 Done-when: tests show a panic in a spawned thread writes a crash file; acquiring twice without release reports `Unclean`; acquiring after release reports `Clean`.
 
-### 1.3 Report the unclean exit on start and to the client — [ ]
+### 1.3 Report the unclean exit on start and to the client — [x]
 Class: implement · Needs: 1.2 · Check: `scripts/dev.sh cargo test -p termenbox-server unclean`
-Context: Decision 0142 says the server logs `previous run ended uncleanly` with the last marker time, the last health sample (RSS, `event_log_bytes`; see `packages/server/src/health.rs`, history sampler) and the newest crash file. The client needs the same fact to prompt the user (step 4.2); an authenticated message or existing status payload should carry `previous_exit: {unclean, at, crash}` once per boot with no paths, hostnames or text.
+Context: Decision 0142 says the server logs `previous run ended uncleanly` with the last marker time, the last health sample (RSS, `event_log_bytes`; see `packages/server/src/health.rs`, history sampler) and the newest crash file. The client needs the same fact to prompt the user (step 4.2); built as its own `ServerMessage::PreviousExit {at_ms, streak, crashed}` sent after every sign-in while the server has one to report (the client shows it once per `at_ms`), with no paths, hostnames or text.
 Do: At start, if `RunMarker` says `Unclean`, log the warning with those fields and store a `PreviousExit` in app state; expose it through the existing authenticated server-info/status message in `packages/core/src/protocol.rs` (add an optional field, bump nothing else) and update `packages/client` types.
-Done-when: a test starts state with an unclean marker and the status payload carries `previous_exit.unclean == true`, and with a clean marker the field is absent; `cargo test -p termenbox-core` still passes.
+Done-when: a connection test shows a manager given an unclean exit sends `previous_exit` and one without sends none; `cargo test -p termenbox-core` still passes. (Done: `workspaces::propagation_tests::a_sign_in_after_an_unclean_exit_is_told_and_a_clean_one_is_not`.)
 
 ### 2.1 Audit panic paths in ACP session code — [x]‖
 Class: explore · Needs: none · Check: `test -s docs/plans/server-viability-and-logging-audit.md`
@@ -60,9 +60,9 @@ Done-when: a test feeds a log containing realistic secrets, addresses, a home pa
 
 ### 4.2 Client: preview, download, crash prompt, prefilled issue — [ ]
 Class: implement · Needs: 4.1 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test'`
-Context: `packages/client/src/lib/report.ts` builds the problem report, shows it to the user before it leaves and opens GitHub (decision 0086); `.github/ISSUE_TEMPLATE/problem.yml` is the template. Decision 0144: after `previous_exit.unclean` (step 1.3) the app says so once and offers to build the bundle and open a prefilled GitHub issue labelled `incident`. Guardrails `errors-fit-one-screen`, `ui-never-moves-under-the-finger`, `usage-stays-on-device` apply: nothing is sent without a tap.
+Context: `packages/client/src/lib/report.ts` builds the problem report, shows it to the user before it leaves and opens GitHub (decision 0086); `.github/ISSUE_TEMPLATE/problem.yml` is the template. Decision 0144: after a `previous_exit` message (step 1.3; show it once per `at_ms`) the app says so once and offers to build the bundle and open a prefilled GitHub issue labelled `incident`. Guardrails `errors-fit-one-screen`, `ui-never-moves-under-the-finger`, `usage-stays-on-device` apply: nothing is sent without a tap.
 Do: Add an "Server diagnostics" action next to Report a problem that requests the bundle, shows it, and offers Download and Open issue (template `incident.yml`, text trimmed to fit the URL, rest attached by the user). Add the one-time unclean-exit banner. Add tests alongside `report.test.ts`.
-Done-when: tests show the banner appears once for an unclean `previous_exit`, the bundle is shown before any download or issue link, and the issue URL stays within the length limit `report.test.ts` already asserts.
+Done-when: tests show the banner appears once per `at_ms` for a `previous_exit`, the bundle is shown before any download or issue link, and the issue URL stays within the length limit `report.test.ts` already asserts.
 
 ### 4.3 Incident issue template — [ ]‖
 Class: implement · Needs: none · Check: `test -f .github/ISSUE_TEMPLATE/incident.yml`

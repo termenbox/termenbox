@@ -58,7 +58,7 @@ fn marker_path(config_dir: &Path) -> PathBuf {
     config_dir.join(MARKER)
 }
 
-fn write_marker(path: &Path, marker: &MarkerFile) -> std::io::Result<()> {
+fn write_marker(path: &Path, marker: &MarkerFile, sync: bool) -> std::io::Result<()> {
     let tmp = path.with_extension("marker.tmp");
     let mut file = fs::OpenOptions::new()
         .create(true)
@@ -67,7 +67,9 @@ fn write_marker(path: &Path, marker: &MarkerFile) -> std::io::Result<()> {
         .mode(0o600)
         .open(&tmp)?;
     file.write_all(serde_json::to_string(marker)?.as_bytes())?;
-    file.sync_all()?;
+    if sync {
+        file.sync_all()?;
+    }
     fs::rename(tmp, path)
 }
 
@@ -126,15 +128,15 @@ pub fn start(config_dir: &Path) -> Previous {
         rss_kb: None,
         unclean_streak: streak,
     };
-    if let Err(e) = write_marker(&path, &marker) {
+    if let Err(e) = write_marker(&path, &marker, true) {
         tracing::warn!("cannot write the run marker {}: {e}", path.display());
     }
     let _ = MARKER_PATH.set(path);
     previous.unwrap_or(Previous::Clean)
 }
 
-/// Records that the server is alive and how much memory it holds. Cheap; the health sampler calls it (step 1.3).
-#[allow(dead_code)]
+/// Records that the server is alive and how much memory it holds. The health sampler calls it every tick, on a
+/// blocking thread; it does not sync, since a lost beat only makes the report a few seconds old.
 pub fn update(rss_kb: Option<u64>) {
     let Some(path) = MARKER_PATH.get() else {
         return;
@@ -147,7 +149,49 @@ pub fn update(rss_kb: Option<u64>) {
     };
     marker.beat_ms = crate::events::now_ms();
     marker.rss_kb = rss_kb.or(marker.rss_kb);
-    let _ = write_marker(path, &marker);
+    let _ = write_marker(path, &marker, false);
+}
+
+/// Resident memory of this process in KiB, or nothing where `/proc` has no answer.
+pub fn own_rss_kb() -> Option<u64> {
+    let statm = fs::read_to_string("/proc/self/statm").ok()?;
+    let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    // SAFETY: sysconf has no preconditions.
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    (page > 0).then(|| pages * page as u64 / 1024)
+}
+
+impl Previous {
+    /// What the owner's app is told: only the last time seen alive, the streak and whether a panic left a file.
+    pub fn message(&self) -> Option<termenbox_core::protocol::ServerMessage> {
+        let Previous::Unclean(u) = self else {
+            return None;
+        };
+        Some(termenbox_core::protocol::ServerMessage::PreviousExit {
+            at_ms: if u.beat_ms > 0 {
+                u.beat_ms
+            } else {
+                u.started_ms
+            },
+            streak: u.streak,
+            crashed: u.crash_file.is_some(),
+        })
+    }
+
+    /// The line the log gets at start. Times and sizes only.
+    pub fn log(&self) {
+        if let Previous::Unclean(u) = self {
+            tracing::warn!(
+                target: "crash",
+                started_ms = u.started_ms,
+                last_seen_ms = u.beat_ms,
+                rss_kb = u.rss_kb,
+                streak = u.streak,
+                crash_file = u.crash_file.as_deref(),
+                "previous run ended uncleanly"
+            );
+        }
+    }
 }
 
 /// The run ended on purpose: removes the marker.
@@ -282,6 +326,40 @@ mod tests {
     }
 
     #[test]
+    fn the_message_names_the_last_beat_and_whether_a_panic_left_a_file() {
+        let unclean = |beat_ms, crash_file: Option<&str>| {
+            Previous::Unclean(Unclean {
+                started_ms: 10,
+                beat_ms,
+                rss_kb: None,
+                streak: 3,
+                crash_file: crash_file.map(Into::into),
+            })
+        };
+        assert_eq!(Previous::Clean.message(), None);
+        let termenbox_core::protocol::ServerMessage::PreviousExit {
+            at_ms,
+            streak,
+            crashed,
+        } = unclean(50, Some("crash-60.json")).message().unwrap()
+        else {
+            panic!("wrong message")
+        };
+        assert_eq!((at_ms, streak, crashed), (50, 3, true));
+        let termenbox_core::protocol::ServerMessage::PreviousExit { at_ms, crashed, .. } =
+            unclean(0, None).message().unwrap()
+        else {
+            panic!("wrong message")
+        };
+        assert_eq!((at_ms, crashed), (10, false));
+    }
+
+    #[test]
+    fn the_process_reports_its_own_memory() {
+        assert!(own_rss_kb().is_some_and(|kb| kb > 0));
+    }
+
+    #[test]
     fn an_unreadable_marker_still_counts_as_unclean() {
         let dir = temp_dir();
         fs::write(marker_path(&dir), "not json").unwrap();
@@ -301,7 +379,7 @@ mod tests {
             rss_kb: Some(9000),
             unclean_streak: 0,
         };
-        write_marker(&marker_path(&dir), &marker).unwrap();
+        write_marker(&marker_path(&dir), &marker, true).unwrap();
         fs::write(logs.join("crash-4000.json"), "{}").unwrap();
         fs::write(logs.join("crash-7000.json"), "{}").unwrap();
         let Previous::Unclean(u) = start(&dir) else {
