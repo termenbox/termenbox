@@ -17,6 +17,60 @@ export const TEMPLATES: { id: string; label: string }[] = [
   { id: 'cursor-agent', label: 'Cursor' },
 ];
 
+/** Template lookup by id. */
+export const TEMPLATE_BY_ID: Record<string, { id: string; label: string }> = Object.fromEntries(TEMPLATES.map(t => [t.id, t]));
+
+/** Filter templates to only those the server supports.
+ * If tmux is available, all templates are supported (tmux can run any agent).
+ * If only acp is available, only acpAgents + shell are supported. */
+export function getSupportedTemplates(server: { backends: string[]; acpAgents: string[] } | undefined): { id: string; label: string }[] {
+  if (!server) return TEMPLATES;
+  const hasTmux = server.backends.includes('tmux');
+  if (hasTmux) return TEMPLATES; // tmux can run any agent
+  // Only acp (no tmux): filter to acpAgents + shell
+  const supported = new Set([...server.acpAgents, 'shell']);
+  return TEMPLATES.filter(t => supported.has(t.id));
+}
+
+const RECENT_AGENTS_KEY = 'termenbox_recent_agents';
+const MAX_RECENT_AGENTS = 5;
+
+/** Get recently used agents for a server (most recent first). */
+export function getRecentAgents(serverId: string): string[] {
+  try {
+    const stored = localStorage.getItem(RECENT_AGENTS_KEY);
+    if (!stored) return [];
+    const all = JSON.parse(stored) as Record<string, string[]>;
+    return all[serverId] ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** Save an agent as recently used for a server (LRU, max 5). */
+export function saveRecentAgent(serverId: string, templateId: string): void {
+  try {
+    const stored = localStorage.getItem(RECENT_AGENTS_KEY);
+    const all: Record<string, string[]> = stored ? JSON.parse(stored) : {};
+    const list = all[serverId] ?? [];
+    // Remove if exists, then prepend
+    const filtered = list.filter(id => id !== templateId);
+    filtered.unshift(templateId);
+    all[serverId] = filtered.slice(0, MAX_RECENT_AGENTS);
+    localStorage.setItem(RECENT_AGENTS_KEY, JSON.stringify(all));
+  } catch {
+    // Private mode or quota exceeded - ignore
+  }
+}
+
+/** Order templates: recent first, then remaining supported. */
+export function orderTemplatesByRecent(supported: { id: string; label: string }[], recent: string[]): { id: string; label: string }[] {
+  const recentTemplates = recent.map(id => TEMPLATE_BY_ID[id]).filter(Boolean) as { id: string; label: string }[];
+  const recentIds = new Set(recentTemplates.map(t => t.id));
+  const remaining = supported.filter(t => !recentIds.has(t.id));
+  return [...recentTemplates, ...remaining];
+}
+
 /** Directories already in use on the server, most used first: the pick list for "where". */
 export function recentDirs(windows: WindowMap, serverPrefix: string, limit = 6): string[] {
   const count = new Map<string, number>();

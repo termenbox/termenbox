@@ -14,6 +14,7 @@ const SHAPES = {
   spark: '<path d="M12 2.5C12.9 8.2 15.8 11.1 21.5 12 15.8 12.9 12.9 15.8 12 21.5 11.1 15.8 8.2 12.9 2.5 12 8.2 11.1 11.1 8.2 12 2.5Z" fill="#fff"/>',
   triangle: '<path d="M12 4 21 20H3Z" fill="#fff"/>',
   bolt: '<path d="M13.5 2 5 13.5h5.5L9.5 22 19 10h-5.5Z" fill="#fff"/>',
+  folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="#fff"/>',
 } as const;
 
 const AGENT: Record<string, IconSpec> = {
