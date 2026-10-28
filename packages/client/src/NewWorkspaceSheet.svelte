@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { NativeSelect } from './lib/ui/native-select';
   import AgentIcon from './AgentIcon.svelte';
+  import PickerSheet from './lib/ui/sheet/PickerSheet.svelte';
   import {
     backendFor,
     getRecentAgents,
@@ -44,8 +45,9 @@
   let dir = '';
   let name = '';
   let nameTouched = false;
-  let showAllAgents = false;
+  let showAgentPicker = false;
   let showDirPicker = false; // true when "Other..." is selected
+  let showDirChipsPicker = false;
   let dirInput: HTMLInputElement;
   let fileInput: HTMLInputElement;
   onMount(() => dialog.showModal());
@@ -54,7 +56,7 @@
   $: supportedTemplates = server ? getSupportedTemplates(server) : TEMPLATES;
   $: recentAgents = server ? getRecentAgents(serverId) : [];
   $: orderedTemplates = orderTemplatesByRecent(supportedTemplates, recentAgents);
-  $: visibleTemplates = showAllAgents ? orderedTemplates : orderedTemplates.slice(0, 6);
+  $: visibleTemplates = orderedTemplates.slice(0, 6);
   $: hasMoreAgents = orderedTemplates.length > 6;
   // With tmux and acp both on the server the choice is the View, made after the agent. An agent tmux cannot start (one the
   // owner added) is offered too, and is always the agent view.
@@ -86,6 +88,25 @@
   $: canShowDirectoryPicker = typeof window !== 'undefined' && 'showDirectoryPicker' in window;
   $: canUseWebkitDirectory = typeof document !== 'undefined' && 'webkitdirectory' in document.createElement('input');
 
+  // Directory chips
+  const MAX_DIR_CHIPS = 3;
+  $: visibleDirChips = showDirChipsPicker ? dirs : dirs.slice(0, MAX_DIR_CHIPS);
+  $: hasMoreDirChips = dirs.length > MAX_DIR_CHIPS && !showDirChipsPicker;
+
+  // Agent picker options
+  $: agentPickerOptions = orderedTemplates.map(t => ({
+    value: t.id,
+    label: t.label,
+    icon: t.id === 'shell' ? 'bash' : t.id, // agent icon id
+  }));
+
+  // Directory picker options
+  $: dirPickerOptions = dirs.map(d => ({
+    value: d,
+    label: truncatePath(d),
+    description: d,
+  }));
+
   function selectTemplate(id: string) {
     template = id;
     if (server) saveRecentAgent(serverId, id);
@@ -99,12 +120,9 @@
 
   function openNativeDirPicker() {
     if (canShowDirectoryPicker) {
-      // Modern File System Access API (Chrome 86+, Edge 86+)
       (async () => {
         try {
           const handle = await (window as any).showDirectoryPicker({ mode: 'read' });
-          // We can't get the full path from the handle, but we can use the name
-          // For now, fall back to webkitdirectory which gives us the path
           openWebkitDirPicker();
         } catch {
           // User cancelled or error
@@ -123,7 +141,6 @@
     const input = event.target as HTMLInputElement;
     const files = input.files;
     if (files && files.length > 0) {
-      // Get the common parent directory from the first file's webkitRelativePath
       const firstFile = files[0];
       const relativePath = (firstFile as any).webkitRelativePath;
       if (relativePath) {
@@ -133,7 +150,6 @@
         }
       }
     }
-    // Reset the input so the same directory can be picked again
     input.value = '';
   }
 
@@ -141,6 +157,13 @@
     if (!ok || !server) return;
     oncreate({ serverId, backend: server.backends.length > 1 ? backend : undefined, name, ...((tmux || acp) && dir ? { dir } : {}), ...((tmux && template !== 'shell') || acp ? { template } : {}) });
     onclose();
+  }
+
+  function truncatePath(path: string, maxLen = 32): string {
+    if (path.length <= maxLen) return path;
+    const parts = path.split('/').filter(Boolean);
+    if (parts.length <= 2) return '…' + path.slice(-maxLen);
+    return `/${parts[0]}/…/${parts[parts.length - 1]}`;
   }
 </script>
 
@@ -154,36 +177,41 @@
       <label>Manager <NativeSelect bind:value={manager}>{#each managers as b}<option value={b}>{b === 'acp' ? 'Agent workspace (ACP)' : b}</option>{/each}</NativeSelect></label>
     {/if}
     {#if tmux || acp}
-      <div class="templates" role="radiogroup" aria-label="Start with">
-        {#each visibleTemplates as t}
-          <button type="button" role="radio" aria-checked={template === t.id} class:on={template === t.id} on:click={() => selectTemplate(t.id)}>
-            <AgentIcon command={t.id === 'shell' ? 'bash' : t.id} agent={t.id === 'shell' ? undefined : t.id} size={24} /><span>{t.label}</span>
-          </button>
-        {/each}
-        {#if hasMoreAgents}
-          <button type="button" class="show-more" on:click={() => showAllAgents = !showAllAgents}>
-            {showAllAgents ? 'Show less' : `Show all ${orderedTemplates.length} agents`}
-          </button>
-        {/if}
-      </div>
+      <fieldset class="agent-fieldset">
+        <legend>Start with</legend>
+        <div class="templates" role="radiogroup" aria-label="Start with">
+          {#each visibleTemplates as t}
+            <button type="button" role="radio" aria-checked={template === t.id} class:on={template === t.id} on:click={() => selectTemplate(t.id)}>
+              <AgentIcon command={t.id === 'shell' ? 'bash' : t.id} agent={t.id === 'shell' ? undefined : t.id} size={24} /><span>{t.label}</span>
+            </button>
+          {/each}
+          {#if hasMoreAgents}
+            <button type="button" class="show-more" on:click={() => showAgentPicker = true}>
+              Show all {orderedTemplates.length} agents
+            </button>
+          {/if}
+        </div>
+      </fieldset>
+
       {#if control === 'choose' && manager === 'tmux'}
         <div class="view" role="radiogroup" aria-label="View" data-testid="view">
           <button type="button" role="radio" aria-checked={view === 'terminal'} class:on={view === 'terminal'} data-testid="view-terminal" on:click={() => pick('terminal')}>Terminal <small>agent's own TUI</small></button>
           <button type="button" role="radio" aria-checked={view === 'acp'} class:on={view === 'acp'} data-testid="view-acp" on:click={() => pick('acp')}>Agent view <small>ACP</small></button>
         </div>
       {/if}
-      <label class="stack">
-        <span>Directory</span>
-        <div class="dir-field">
+
+      <fieldset class="dir-fieldset">
+        <legend>Directory</legend>
+        <div class="dir-primary">
           {#if showDirPicker}
             <input bind:this={dirInput} bind:value={dir} placeholder={acp ? '/home/you/project' : '/home/you/project (optional)'} autocapitalize="off" autocomplete="off" spellcheck="false" inputmode="url" />
             <button type="button" class="secondary" on:click={() => showDirPicker = false}>← Back</button>
           {:else}
             {#if dirs.length}
-              <NativeSelect bind:value={dir} aria-label="Recent directories">
+              <NativeSelect bind:value={dir} aria-label="Recent directories" class="dir-select">
                 <option value="">— Pick a recent directory —</option>
                 {#each dirs as d}
-                  <option value={d}>{d}</option>
+                  <option value={d} title={d}>{d}</option>
                 {/each}
                 <option value="__other__">Other…</option>
               </NativeSelect>
@@ -199,10 +227,26 @@
             {/if}
           {/if}
         </div>
-      </label>
-      {#if dirs.length && !showDirPicker}
-        <p class="dir-hint">Or pick “Other…” to type a custom path</p>
-      {/if}
+
+        {#if dirs.length > 0 && !showDirPicker}
+          <div class="dir-chips" role="group" aria-label="Recent directories">
+            {#each visibleDirChips as d}
+              <button type="button" class="chip" on:click={() => { dir = d; showDirPicker = false; }}>
+                <span class="chip-text" title={d}>{truncatePath(d)}</span>
+              </button>
+            {/each}
+            {#if hasMoreDirChips}
+              <button type="button" class="chip show-more" on:click={() => showDirChipsPicker = true}>
+                +{dirs.length - MAX_DIR_CHIPS} more
+              </button>
+            {:else if showDirChipsPicker}
+              <button type="button" class="chip show-less" on:click={() => showDirChipsPicker = false}>
+                Show less
+              </button>
+            {/if}
+          </div>
+        {/if}
+      </fieldset>
     {:else}
       <p class="note">{backend} starts workspaces in its own default directory.</p>
     {/if}
@@ -212,30 +256,72 @@
   </form>
 </dialog>
 
+<!-- Agent Picker Sheet -->
+<PickerSheet
+  bind:open={showAgentPicker}
+  title="Choose agent"
+  options={agentPickerOptions}
+  selected={template}
+  onselect={selectTemplate}
+  filterable
+  filterPlaceholder="Filter agents…"
+  emptyMessage="No agents match"
+  side="center"
+/>
+
+<!-- Directory Chips Picker Sheet -->
+<PickerSheet
+  bind:open={showDirChipsPicker}
+  title="Recent directories"
+  options={dirPickerOptions}
+  selected={dir}
+  onselect={selectDir}
+  filterable
+  filterPlaceholder="Filter directories…"
+  emptyMessage="No directories match"
+  side="center"
+/>
+
 <style>
   dialog { margin: auto auto 0; width: min(100%, 460px); max-height: calc(var(--app-height, 100dvh) - 16px); overflow-y: auto; padding: 0; border: 1px solid var(--border); border-radius: 16px 16px 0 0; background: var(--bg-secondary); color: var(--fg); }
   dialog::backdrop { background: #0008; }
   form { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+
+  fieldset { border: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+  fieldset legend { font-size: 0.85rem; font-weight: 500; color: var(--fg-muted); }
+
   .templates { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
   .templates button { display: flex; align-items: center; gap: 8px; min-height: 48px; text-align: left; background: var(--bg); color: var(--fg); border: 1px solid var(--border); }
-  .templates button.on, .view button.on { border-color: var(--accent); }
+  .templates button.on { border-color: var(--accent); }
   .templates .show-more { grid-column: 1 / -1; justify-content: center; background: transparent; border-color: var(--border); color: var(--fg-muted); font-size: 0.85rem; }
   .templates .show-more:hover { color: var(--fg); border-color: var(--fg-muted); }
+
   .view { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   .view button { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; text-align: left; background: var(--bg); color: var(--fg); border: 1px solid var(--border); }
+  .view button.on { border-color: var(--accent); }
   .view small { color: var(--fg-muted); }
+
+  .dir-fieldset { display: flex; flex-direction: column; gap: 8px; }
+
+  .dir-primary { display: flex; gap: 8px; align-items: stretch; }
+  .dir-select { flex: 1; min-width: 0; }
+  .browse-btn { flex: 0 0 auto; white-space: nowrap; }
+
+  .dir-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 999px; background: var(--bg); border: 1px solid var(--border); font-size: 0.8rem; color: var(--fg); cursor: pointer; white-space: nowrap; max-width: 100%; }
+  .chip-text { overflow: hidden; text-overflow: ellipsis; max-width: 180px; display: inline-block; }
+  .chip:hover { border-color: var(--accent); }
+  .chip.show-more { color: var(--fg-muted); background: transparent; }
+  .chip.show-less { color: var(--fg-muted); background: transparent; }
+
+  .dir-manual { display: flex; gap: 8px; }
+  .dir-manual input { flex: 1; }
+
   label { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.85rem; }
   label.stack { flex-direction: column; align-items: stretch; }
   input, button { min-height: 44px; min-width: 44px; }
   input { width: 100%; }
-  .dir-field { display: flex; gap: 8px; align-items: stretch; width: 100%; }
-  .dir-field > * { flex: 1; }
-  .dir-field input { flex: 1 1 auto; }
-  .dir-field button { flex: 0 0 auto; white-space: nowrap; }
-  .browse-btn { flex: 0 0 auto; }
-  .dir-hint { margin: 0; color: var(--fg-muted); font-size: 0.75rem; }
-  .dirs { display: flex; flex-wrap: wrap; gap: 6px; }
-  .dirs button { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
   .actions { display: flex; gap: 8px; justify-content: flex-end; }
   .note { color: var(--fg-muted); font-size: 0.85rem; }
   .problem { color: var(--danger); font-size: 0.8rem; }
@@ -243,7 +329,7 @@
   @media (max-width: 480px) {
     .templates { grid-template-columns: 1fr 1fr; }
     .view { grid-template-columns: 1fr; }
-    .dir-field { flex-direction: column; }
-    .dir-field > * { width: 100%; }
+    .dir-primary { flex-direction: column; }
+    .dir-primary > * { width: 100%; }
   }
 </style>

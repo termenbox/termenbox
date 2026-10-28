@@ -34,6 +34,9 @@ const mockWindows: WindowMap = {
   'server-1/ws-1': { windows: [{ path: '/home/user/project1' }] },
   'server-1/ws-2': { windows: [{ path: '/home/user/project2' }] },
   'server-1/ws-3': { windows: [{ path: '/home/user/other-project' }] },
+  'server-1/ws-4': { windows: [{ path: '/home/user/another-project' }] },
+  'server-1/ws-5': { windows: [{ path: '/home/user/yet-another-project' }] },
+  'server-1/ws-6': { windows: [{ path: '/home/user/more-projects' }] },
 };
 
 const app = mount(NewWorkspaceSheet, {
