@@ -32,6 +32,12 @@ npm install -g @anthropic-ai/claude-code @openai/codex
 
 The installer also sets up a daily update check that runs as root, separately from the server (which can stay an unprivileged user). Before anything is installed, and before every update, the release is checked: its manifest must carry a valid signature by the project's release key, and the binary must match the signed SHA-256 (see `SECURITY.md`). It lists every change it will make, records each one in a journal in `/var/lib/termenbox-root` before making it, and can undo them.
 
+## Logs and diagnostics
+
+The server writes its log as JSON Lines to `logs/termenbox.jsonl` in its state directory (`~/.config/termenbox/logs` for a user install), as well as to the service manager's own log. The file rotates at 10 MB and is pruned after 30 days or 100 MB in total. Secrets are replaced and session text is left out of every line. Set `TERMENBOX_LOG` (for example `TERMENBOX_LOG=debug`) in the service environment to change the level; `RUST_LOG` is used if it is not set, and the default is `info`. A panic also writes `logs/crash-<time>.json`.
+
+If the server died without a clean exit, the app says so once on your next sign-in and offers **Server diagnostics**. The same action is in Settings and the menu, for the owner only. The server builds a bundle on request: the last 2 MB of log, the newest crash file, the unclean-exit report, versions and the health history. Addresses, ports, tokens, certificates, home paths, session names and terminal content are removed. You read the bundle in the app first, then download it or open a prefilled GitHub issue labelled `incident`. Nothing is sent automatically, and nothing leaves your device until you tap.
+
 ## Updating and removing
 
 Remove the server from the machine with one command. Without `--yes` it only shows what it would do:

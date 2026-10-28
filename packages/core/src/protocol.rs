@@ -202,6 +202,8 @@ pub enum ClientMessage {
     /// Owner-only: install the newer release now (decision 0077): the server leaves an `update-now` request for the
     /// root helper and answers `update_requested`. The service restarts when the update is installed.
     UpdateServer {},
+    /// Owner-only (decision 0144): asks for the server's diagnostics bundle, answered with `diagnostics_bundle`.
+    DiagnosticsBundle {},
     /// Owner-only, recently signed in: remove this server (decision 0072). `confirm_name` must equal the
     /// server's name; the flags choose the optional host cleanup (all off by default).
     Uninstall {
@@ -275,7 +277,7 @@ pub enum ClientMessage {
     },
     ListWorkspaces,
     /// Asks for the directories directly inside `path` (the server user's `$HOME` when absent), for the folder
-    /// picker (decision 0140). Owner only, confined to `$HOME`; answered with `dir_listing` or `dir_error`.
+    /// picker (decision 0147). Owner only, confined to `$HOME`; answered with `dir_listing` or `dir_error`.
     ListDir {
         #[serde(default)]
         path: Option<String>,
@@ -475,6 +477,14 @@ pub enum ServerMessage {
         #[serde(default)]
         available: String,
     },
+    /// The answer to `diagnostics_bundle` (decision 0144): scrubbed text for the owner to read, download or attach to an
+    /// issue, in `parts` messages (`part` counts from 0, in order) because the direct transport carries 64 KiB at most.
+    /// Built on request only; the server never sends it anywhere else.
+    DiagnosticsBundle {
+        part: u32,
+        parts: u32,
+        text: String,
+    },
     /// The release the updater has recorded changed while this connection was open (`update-status.json`);
     /// `available` is empty when the server is up to date. Same meaning as `auth_ok.update_available`.
     UpdateStatus {
@@ -534,7 +544,7 @@ pub enum ServerMessage {
     Workspaces {
         workspaces: Vec<WorkspaceInfo>,
     },
-    /// Answer to `list_dir`: the directories inside `path`, never files (decision 0140). `parent` is absent at
+    /// Answer to `list_dir`: the directories inside `path`, never files (decision 0147). `parent` is absent at
     /// `home`; `truncated` says more than `DIR_LISTING_MAX` matched.
     DirListing {
         path: String,
@@ -723,6 +733,15 @@ pub enum ServerMessage {
         confirm: u32,
         levels: Vec<HealthLevel>,
         samples: Vec<HealthPoint>,
+    },
+    /// Decision 0142: the last run of this server ended without a clean exit (a crash, an out-of-memory kill, a power
+    /// loss). Sent after sign-in while the server has one to report. `at_ms` is the last time the old run was seen alive,
+    /// `streak` how many runs in a row ended this way, `crashed` whether a panic wrote a crash file. Nothing else: no
+    /// path, host name or text. A client shows it once per `at_ms`. An older server never sends it.
+    PreviousExit {
+        at_ms: u64,
+        streak: u32,
+        crashed: bool,
     },
     /// A message from a newer server; ignored.
     #[serde(other)]
@@ -1050,10 +1069,47 @@ pub struct WindowInfo {
     pub agent: Option<String>,
 }
 
+/// The name an owner gave a workspace. It is on the wire as a plain string, but `Debug` and `Display` print `[name]`,
+/// so a `{:?}` of a `WorkspaceInfo`, a `format!` or a panic message cannot carry it into a log or a diagnostics bundle.
+/// The text is reached only by `as_str`, which a reader of the diff can see.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct Label(String);
+
+impl Label {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for Label {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for Label {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl std::fmt::Debug for Label {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[name]")
+    }
+}
+
+impl std::fmt::Display for Label {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[name]")
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceInfo {
     pub id: String,
-    pub name: String,
+    pub name: Label,
     pub agent: Option<String>,
     /// The workspace manager it lives in (`tmux`, `command`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1197,6 +1253,8 @@ mod tests {
         assert!(v.get("update_available").is_none());
         let v: ClientMessage = serde_json::from_str(r#"{"type":"update_server"}"#).unwrap();
         assert_eq!(v, ClientMessage::UpdateServer {});
+        let v: ClientMessage = serde_json::from_str(r#"{"type":"diagnostics_bundle"}"#).unwrap();
+        assert_eq!(v, ClientMessage::DiagnosticsBundle {});
         let v = serde_json::to_value(ClientMessage::History { from: 1, to: 2 }).unwrap();
         assert_eq!(v["type"], "history");
         assert_eq!(v["from"], 1);
@@ -1218,6 +1276,21 @@ mod tests {
         assert_eq!(v["type"], "server_health");
         assert_eq!(v["ram_percent"], 93);
         assert!(v.get("cpu_percent").is_none(), "unknown is absent, not 0");
+        let v = serde_json::to_value(ServerMessage::PreviousExit {
+            at_ms: 9,
+            streak: 2,
+            crashed: true,
+        })
+        .unwrap();
+        assert_eq!(v["type"], "previous_exit");
+        assert_eq!(
+            (
+                v["at_ms"].as_u64(),
+                v["streak"].as_u64(),
+                v["crashed"].as_bool()
+            ),
+            (Some(9), Some(2), Some(true))
+        );
         let v = serde_json::to_value(ClientMessage::HistoryDelete).unwrap();
         assert_eq!(v["type"], "history_delete");
         let v = serde_json::to_value(ServerMessage::HistoryDeleted { removed: 3 }).unwrap();
@@ -1648,5 +1721,32 @@ mod tests {
         let text = serde_json::to_string(&reply).unwrap();
         assert!(!text.contains("preview") && !text.contains("error"));
         assert_eq!(serde_json::from_str::<ServerMessage>(&text).unwrap(), reply);
+    }
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+
+    #[test]
+    fn a_label_is_a_plain_string_on_the_wire_and_never_prints() {
+        let w = WorkspaceInfo {
+            id: "ws-1".into(),
+            name: "client-x deploy".into(),
+            agent: None,
+            backend: None,
+        };
+        let json = serde_json::to_string(&w).unwrap();
+        assert!(json.contains(r#""name":"client-x deploy""#), "{json}");
+        let back: WorkspaceInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name.as_str(), "client-x deploy");
+        for printed in [
+            format!("{w:?}"),
+            format!("{:?}", w.name),
+            format!("{}", w.name),
+            format!("{w:#?}"),
+        ] {
+            assert!(!printed.contains("client-x"), "{printed}");
+        }
     }
 }

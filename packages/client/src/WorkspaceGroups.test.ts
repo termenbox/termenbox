@@ -51,6 +51,12 @@ describe('the Workspaces list', () => {
     expect(out).toMatch(/role="status"/);
   });
 
+  it('offers a new workspace even when the list has rows', () => {
+    const out = html([ws('s', 'only')]);
+    expect(out).toContain('data-testid="workspaces-new"');
+    expect(out).toContain('+ New');
+  });
+
   it('says there are none yet, with a way to start one', () => {
     const out = html([]);
     expect(out).toContain('No workspaces yet');

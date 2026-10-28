@@ -7,6 +7,8 @@ export type ClientMessage =
   | { type: 'revoke_device'; device: string }
   /** Owner-only: install the newer release now; the answer is `update_requested`, and the service restarts when it is done. */
   | { type: 'update_server' }
+  /** Owner-only (decision 0144): asks for the scrubbed diagnostics bundle; the answer is `diagnostics_bundle` parts. */
+  | { type: 'diagnostics_bundle' }
   | { type: 'uninstall'; confirm_name: string; delete_user?: boolean; remove_tmux?: boolean; kill_workspaces?: boolean }
   | { type: 'agent_sync'; after: Record<string, number> }
   | { type: 'peek'; workspace: string; hash?: string }
@@ -21,7 +23,7 @@ export type ClientMessage =
   /** Sets the name shown for a workspace; an empty name clears it. The workspace's id does not change. */
   | { type: 'rename_workspace'; workspace: string; name: string }
   | { type: 'list_workspaces' }
-  /** Decision 0140: the directories inside `path` (the server user's home when absent), owner only; answered with `dir_listing` or `dir_error`. */
+  /** Decision 0147: the directories inside `path` (the server user's home when absent), owner only; answered with `dir_listing` or `dir_error`. */
   | { type: 'list_dir'; path?: string; prefix?: string; hidden?: boolean }
   /** U14: the server's in-memory health samples; the answer is `health_history`. Older servers do not answer. */
   | { type: 'health_history' }
@@ -121,7 +123,11 @@ export type ServerMessage =
   /** The answer to a control message that carried a `req` (step 3.3). */
   /** `session/update` frames of an ACP conversation, each stamped with the `seq` extension; `reset` on the first message of a compacted replay (step 3.4). */
   | { type: 'acp_events'; workspace: string; epoch: number; last: number; reset?: boolean; frames: unknown[] }
-  | { type: 'control_ack'; req: number; ok: boolean; error?: string };
+  | { type: 'control_ack'; req: number; ok: boolean; error?: string }
+  /** The server's last run ended without a clean exit (decision 0142). `at_ms` is when it was last seen alive: show it once per value. */
+  | { type: 'previous_exit'; at_ms: number; streak: number; crashed: boolean }
+  /** One part (from 0, in order) of the answer to `diagnostics_bundle`: the direct transport carries 64 KiB a message. */
+  | { type: 'diagnostics_bundle'; part: number; parts: number; text: string };
 
 /** One health sample in whole percents. A metric the server could not read is absent, never 0 (the first CPU sample is always absent). */
 export interface HealthPoint { ts: number; cpu_percent?: number; ram_percent?: number; disk_percent?: number; event_log_bytes?: number }
@@ -353,6 +359,10 @@ export interface Bundle {
   fingerprint: string;
   name: string;
   candidates: Candidate[];
+  /** The owner's signaling Worker (`wss://`), when the server has one (DECISION-0141). */
+  signal?: string;
+  /** The owner has a TURN key: a relay can be asked for over the signaling channel. A flag, never a credential. */
+  relay?: boolean;
 }
 
 export interface ServerListItem {

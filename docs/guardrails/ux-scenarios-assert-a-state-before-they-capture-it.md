@@ -3,7 +3,7 @@ id: ux-scenarios-assert-a-state-before-they-capture-it
 title: A UX scenario asserts the state it claims to show before it records or screenshots it
 status: active
 governed-by: 0135-ux-assessment-and-feature-videos-share-one-ci-scenario-set
-grounded-in: [0135-ux-assessment-and-feature-videos-share-one-ci-scenario-set, 0056, 0141-the-new-workspace-dialog-shows-recents-and-puts-the-rest-in-layers-inside-it]
+grounded-in: [0135-ux-assessment-and-feature-videos-share-one-ci-scenario-set, 0056, 0148-the-new-workspace-dialog-shows-recents-and-puts-the-rest-in-layers-inside-it]
 derivation-note: Capture scripts that skip a step when the target is not visible pass while showing nothing (the New workspace sheet shots at e89424a never showed a picker); a capture is evidence only if its state was asserted first.
 tags: [client, ux, ci, testing, video]
 ---

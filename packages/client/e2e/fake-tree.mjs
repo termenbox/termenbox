@@ -1,4 +1,4 @@
-// A small fake home for the scripted server's `list_dir` (DECISION-0140): the same answers the real server gives, from a
+// A small fake home for the scripted server's `list_dir` (DECISION-0147): the same answers the real server gives, from a
 // tree in memory. Shared by the functional e2e (newworkspace.mjs) and the video recorder (video/), so both see one home.
 export const HOME = '/home/tester';
 

@@ -7,7 +7,7 @@
 #           Google Chrome stable; this is the same engine, pinned by the image rather than by the runner)
 FROM rust:1-slim-bookworm AS rust
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential cmake pkg-config libssl-dev tmux git ca-certificates curl musl-tools \
+    build-essential cmake pkg-config libssl-dev openssl tmux git ca-certificates curl musl-tools \
     && rm -rf /var/lib/apt/lists/* \
     && rustup component add rustfmt clippy \
     && rustup target add x86_64-unknown-linux-musl

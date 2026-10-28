@@ -156,6 +156,8 @@ pub struct Inputs {
     pub mapped4: Option<(Ipv4Addr, u16)>,
     /// A global IPv6 address this server also listens on.
     pub v6: Option<Ipv6Addr>,
+    /// The address free STUN servers saw the transport socket at (`stun.rs`), when it does not depend on the server.
+    pub stun4: Option<(Ipv4Addr, u16)>,
 }
 
 /// The candidate list for `inputs`: cheapest first (LAN, IPv6, IPv4, overlay). A WAN address that is not public
@@ -180,6 +182,12 @@ pub fn candidates(inputs: &Inputs) -> Vec<Candidate> {
     }
     if let Some((ip, port)) = inputs
         .mapped4
+        .filter(|(ip, _)| is_public_unicast(IpAddr::V4(*ip)))
+    {
+        push(CandidateKind::Wan4, IpAddr::V4(ip), port);
+    }
+    if let Some((ip, port)) = inputs
+        .stun4
         .filter(|(ip, _)| is_public_unicast(IpAddr::V4(*ip)))
     {
         push(CandidateKind::Wan4, IpAddr::V4(ip), port);
@@ -263,6 +271,29 @@ pub fn sign(
     published: bool,
     list: Vec<Candidate>,
 ) -> Result<(Bundle, String)> {
+    sign_assisted(key, seq, fingerprint, name, published, list, None)
+}
+
+/// The owner's signaling Worker URL for a bundle (DECISION-0141): present only when `--setup-cloudflare` has run and
+/// the server is not LAN-only. A relay is always on offer with it, since the setup makes the TURN key too.
+pub fn assisted_signal(dir: &Path, enabled: bool) -> Option<String> {
+    if !enabled {
+        return None;
+    }
+    let url = crate::signal::Config::load(dir).ok().flatten()?.signal;
+    (url.len() <= 200).then_some(url)
+}
+
+/// `sign`, with the signaling Worker's URL when the assisted path is set up.
+pub fn sign_assisted(
+    key: &ServerKey,
+    seq: u64,
+    fingerprint: &str,
+    name: &str,
+    published: bool,
+    list: Vec<Candidate>,
+    signal: Option<String>,
+) -> Result<(Bundle, String)> {
     let bundle = Bundle {
         server_id: key.server_id(),
         seq,
@@ -271,6 +302,8 @@ pub fn sign(
         fingerprint: fingerprint.to_string(),
         name: truncate_name(name),
         candidates: list,
+        relay: signal.is_some(),
+        signal,
     };
     let signature = key.sign(&bundle.signed_bytes()?);
     let wire = bundle.encode(&signature)?;
@@ -309,6 +342,9 @@ pub struct PathHub {
     /// This server publishes to the directory (see `directory::publishes`); signed into every bundle.
     published: bool,
     reach: watch::Receiver<Option<Report>>,
+    stun: watch::Receiver<Option<crate::stun::Mapped>>,
+    /// The assisted path may be advertised (not LAN-only); `assisted_signal` then reads the owner's config.
+    assisted: std::sync::atomic::AtomicBool,
     current: Mutex<Option<Current>>,
 }
 
@@ -326,6 +362,36 @@ impl PathHub {
         published: bool,
         reach: watch::Receiver<Option<Report>>,
     ) -> Arc<Self> {
+        Self::new_with_stun(
+            dir,
+            key,
+            fingerprint,
+            name,
+            port,
+            lan_override,
+            public4,
+            v6,
+            published,
+            reach,
+            watch::channel(None).1,
+        )
+    }
+
+    /// `new`, with the STUN discovery's result as one more input to the candidates.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_stun(
+        dir: PathBuf,
+        key: Arc<ServerKey>,
+        fingerprint: String,
+        name: String,
+        port: u16,
+        lan_override: Option<String>,
+        public4: Option<Ipv4Addr>,
+        v6: Option<Ipv6Addr>,
+        published: bool,
+        reach: watch::Receiver<Option<Report>>,
+        stun: watch::Receiver<Option<crate::stun::Mapped>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             dir,
             key,
@@ -337,8 +403,16 @@ impl PathHub {
             v6,
             published,
             reach,
+            stun,
+            assisted: std::sync::atomic::AtomicBool::new(false),
             current: Mutex::new(None),
         })
+    }
+
+    /// Sign the owner's signaling Worker into the bundle once `--setup-cloudflare` has made one.
+    pub fn enable_assisted(&self) {
+        self.assisted
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The wire string of the current bundle.
@@ -368,12 +442,17 @@ impl PathHub {
             .as_ref()
             .and_then(|r| r.mapping.as_ref())
             .and_then(|m| m.external_ip.map(|ip| (ip, m.external_port)));
+        inputs.stun4 = self.stun.borrow().as_ref().and_then(|m| m.candidate());
         inputs
     }
 
     /// Signs a new bundle when the candidates changed or the current one is close to its expiry.
     pub fn refresh(&self) -> Result<bool> {
         let list = candidates(&self.inputs());
+        let signal = assisted_signal(
+            &self.dir,
+            self.assisted.load(std::sync::atomic::Ordering::Relaxed),
+        );
         let mut cur = self
             .current
             .lock()
@@ -382,6 +461,7 @@ impl PathHub {
             // `--print-pairing` runs in another process and takes its own seq: a phone that paired with it keeps that
             // seq, and would reject this bundle as stale, so sign again above it.
             if c.bundle.candidates == list
+                && c.bundle.signal == signal
                 && c.bundle.expires > now_secs() + RESIGN_BEFORE_SECS
                 && read_seq(&self.dir) <= c.bundle.seq
             {
@@ -389,13 +469,14 @@ impl PathHub {
             }
         }
         let seq = next_seq(&self.dir)?;
-        let (bundle, wire) = sign(
+        let (bundle, wire) = sign_assisted(
             &self.key,
             seq,
             &self.fingerprint,
             &self.name,
             self.published,
             list.clone(),
+            signal,
         )?;
         info!(
             "Candidate bundle seq {seq}: {}",
@@ -419,6 +500,8 @@ impl PathHub {
 
     pub async fn run(self: Arc<Self>) {
         let mut reach = self.reach.clone();
+        let mut stun = self.stun.clone();
+        let mut stun_open = true;
         loop {
             if let Err(e) = self.refresh() {
                 warn!("cannot sign a candidate bundle: {e:#}");
@@ -431,6 +514,10 @@ impl PathHub {
                         tokio::time::sleep(RESCAN).await;
                     }
                 }
+                // With no STUN discovery the channel is closed: that branch must then never fire, not spin.
+                open = async {
+                    if stun_open { stun.changed().await.is_ok() } else { std::future::pending().await }
+                } => stun_open = open,
             }
         }
     }
@@ -462,7 +549,8 @@ pub fn pairing_bundle(
     let published =
         !lan_only && std::fs::read_to_string(published_path(dir)).is_ok_and(|s| s.trim() == "1");
     let seq = next_seq(dir).context("cannot remember the bundle sequence number")?;
-    Ok(sign(key, seq, fingerprint, name, published, list)?.1)
+    let signal = assisted_signal(dir, !lan_only);
+    Ok(sign_assisted(key, seq, fingerprint, name, published, list, signal)?.1)
 }
 
 /// The link a phone opens or scans: the signed bundle in the fragment, so no host ever sees it. An unclaimed server
@@ -751,6 +839,104 @@ mod tests {
             pushed.seq,
             paired.seq
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_bundle_carries_the_owners_worker_only_once_it_is_set_up_and_never_when_lan_only() {
+        let dir = std::env::temp_dir().join(format!("termenbox-sig-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = Arc::new(ServerKey::from_seed([3u8; 32]));
+        let fp = format!("sha-256 {}", vec!["0A"; 32].join(":"));
+        let hub = PathHub::new(
+            dir.clone(),
+            key.clone(),
+            fp.clone(),
+            "box".into(),
+            4443,
+            Some("192.168.1.20".into()),
+            None,
+            None,
+            false,
+            crate::reach::Handle::idle().0.rx,
+        );
+        hub.enable_assisted();
+        hub.refresh().unwrap();
+        assert_eq!(hub.current_bundle().unwrap().signal, None);
+
+        let url = "wss://termenbox-relay-abc.owner.workers.dev/s/6kpsYabcdefghijkl";
+        crate::auth::write_private(
+            &dir.join(crate::signal::CONFIG_FILE),
+            format!(r#"{{"signal":"{url}","turn_key_id":"k","turn_key_token":"t"}}"#).as_bytes(),
+        )
+        .unwrap();
+        assert!(
+            hub.refresh().unwrap(),
+            "the new Worker is a change: sign again"
+        );
+        let b = hub.current_bundle().unwrap();
+        assert_eq!((b.signal.as_deref(), b.relay), (Some(url), true));
+
+        let decode = |lan_only| {
+            let wire = pairing_bundle(&dir, &key, &fp, "box", 4443, Some("192.168.1.20"), lan_only)
+                .unwrap();
+            Bundle::decode(&wire).unwrap().0
+        };
+        assert_eq!(decode(false).signal.as_deref(), Some(url));
+        assert_eq!(decode(true).signal, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stun_mapped_address_becomes_a_wan4_candidate_and_changes_the_bundle_seq() {
+        use crate::stun::{Mapped, Mapping};
+        let dir = std::env::temp_dir().join(format!("termenbox-seq-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = Arc::new(ServerKey::from_seed([3u8; 32]));
+        let fp = format!("sha-256 {}", vec!["0A"; 32].join(":"));
+        let (tx, rx) = watch::channel(None);
+        let hub = PathHub::new_with_stun(
+            dir.clone(),
+            key,
+            fp,
+            "box".into(),
+            4443,
+            Some("192.168.1.20".into()),
+            None,
+            None,
+            false,
+            crate::reach::Handle::idle().0.rx,
+            rx,
+        );
+        hub.refresh().unwrap();
+        let first = hub.current_bundle().unwrap();
+        assert!(first
+            .candidates
+            .iter()
+            .all(|c| c.kind != CandidateKind::Wan4));
+        assert!(!hub.refresh().unwrap(), "nothing changed: same seq");
+        let mapped = |mapping, addr: &str| Mapped {
+            addr: addr.parse().unwrap(),
+            mapping,
+            answers: 2,
+        };
+        // A symmetric mapping depends on the destination: not advertised.
+        tx.send(Some(mapped(Mapping::Symmetric, "93.184.216.34:50000")))
+            .unwrap();
+        assert!(!hub.refresh().unwrap());
+        tx.send(Some(mapped(
+            Mapping::EndpointIndependent,
+            "93.184.216.34:50000",
+        )))
+        .unwrap();
+        assert!(hub.refresh().unwrap());
+        let next = hub.current_bundle().unwrap();
+        assert!(next.seq > first.seq);
+        assert!(next
+            .candidates
+            .iter()
+            .any(|c| (c.kind, c.addr.as_str(), c.port)
+                == (CandidateKind::Wan4, "93.184.216.34", 50000)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

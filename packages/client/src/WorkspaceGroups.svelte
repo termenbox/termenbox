@@ -30,35 +30,43 @@
   $effect(() => () => dragger.destroy());
 </script>
 
-<div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4" data-workspace-groups bind:this={scroller}>
-  <div class="sr-only" role="status" aria-live="polite">{announcement}</div>
-  {#each groups as g (g.serverId)}
-    <section class="flex flex-col gap-2" aria-label={g.title} data-server={g.serverId}>
-      {#if groups.length > 1}<h2 class="text-sm font-semibold text-soft">{g.title} · {g.rows.length}</h2>{/if}
-      {#each g.rows as r (r.key)}
-        {@const dragging = drag?.key === r.key}
-        <div data-row={r.key} data-list={g.serverId} class="relative flex items-center gap-1" class:dragging style:transform={dragging ? `translateY(${drag?.dy ?? 0}px)` : undefined}
-          class:drop-before={drag?.target?.key === r.key && drag?.target?.side === 'before'} class:drop-after={drag?.target?.key === r.key && drag?.target?.side === 'after'}>
-          {#if g.rows.length > 1}
-            <button type="button" class="grip" data-testid="workspace-grip" data-grip aria-label={`Reorder ${r.name}. Drag, or use the up and down arrow keys`}
-              onpointerdown={(e) => dragger.down(e, r.key)} onpointermove={(e) => dragger.move(e)} onpointerup={(e) => dragger.up(e)} onpointercancel={(e) => dragger.up(e, true)} onkeydown={(e) => dragger.key(e, r.key)} oncontextmenu={(e) => e.preventDefault()}>
-              <svg viewBox="0 0 12 18" width="12" height="18" aria-hidden="true" fill="currentColor"><circle cx="3" cy="3" r="1.5" /><circle cx="9" cy="3" r="1.5" /><circle cx="3" cy="9" r="1.5" /><circle cx="9" cy="9" r="1.5" /><circle cx="3" cy="15" r="1.5" /><circle cx="9" cy="15" r="1.5" /></svg>
-            </button>
-          {/if}
-          <QueueItem class="min-w-0 flex-1" name={r.name} summary={r.title} meta={meta(r)} state={r.state} agent={r.agent} unhealthy={r.unhealthy} onclick={() => onopen(r.key)} />
-          {#if onactions}
-            <button type="button" class="more" data-testid="workspace-actions" aria-label={`Actions for ${r.name}: rename, move, detach`} onclick={() => onactions(r.key)}>
-              <svg viewBox="0 0 16 4" width="16" height="4" aria-hidden="true" fill="currentColor"><circle cx="2" cy="2" r="1.6" /><circle cx="8" cy="2" r="1.6" /><circle cx="14" cy="2" r="1.6" /></svg>
-            </button>
-          {/if}
-        </div>
-      {/each}
-    </section>
-  {:else}
-    <EmptyState title="No workspaces yet" body="Start one and it shows up here.">
-      <button type="button" onclick={() => onnew()} class="min-h-11 rounded-card bg-accent px-4 text-base font-semibold text-on-accent">Start a workspace</button>
-    </EmptyState>
-  {/each}
+<div class="flex min-h-0 flex-1 flex-col">
+  {#if groups.length}
+    <div class="flex justify-end px-4 pt-3" data-workspaces-toolbar>
+      <button type="button" data-testid="workspaces-new" onclick={() => onnew()}
+        class="h-11 rounded-control bg-transparent px-3 text-base font-semibold text-accent-text">+ New</button>
+    </div>
+  {/if}
+  <div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4" data-workspace-groups bind:this={scroller}>
+    <div class="sr-only" role="status" aria-live="polite">{announcement}</div>
+    {#each groups as g (g.serverId)}
+      <section class="flex flex-col gap-2" aria-label={g.title} data-server={g.serverId}>
+        {#if groups.length > 1}<h2 class="text-sm font-semibold text-soft">{g.title} · {g.rows.length}</h2>{/if}
+        {#each g.rows as r (r.key)}
+          {@const dragging = drag?.key === r.key}
+          <div data-row={r.key} data-list={g.serverId} class="relative flex items-center gap-1" class:dragging style:transform={dragging ? `translateY(${drag?.dy ?? 0}px)` : undefined}
+            class:drop-before={drag?.target?.key === r.key && drag?.target?.side === 'before'} class:drop-after={drag?.target?.key === r.key && drag?.target?.side === 'after'}>
+            {#if g.rows.length > 1}
+              <button type="button" class="grip" data-testid="workspace-grip" data-grip aria-label={`Reorder ${r.name}. Drag, or use the up and down arrow keys`}
+                onpointerdown={(e) => dragger.down(e, r.key)} onpointermove={(e) => dragger.move(e)} onpointerup={(e) => dragger.up(e)} onpointercancel={(e) => dragger.up(e, true)} onkeydown={(e) => dragger.key(e, r.key)} oncontextmenu={(e) => e.preventDefault()}>
+                <svg viewBox="0 0 12 18" width="12" height="18" aria-hidden="true" fill="currentColor"><circle cx="3" cy="3" r="1.5" /><circle cx="9" cy="3" r="1.5" /><circle cx="3" cy="9" r="1.5" /><circle cx="9" cy="9" r="1.5" /><circle cx="3" cy="15" r="1.5" /><circle cx="9" cy="15" r="1.5" /></svg>
+              </button>
+            {/if}
+            <QueueItem class="min-w-0 flex-1" name={r.name} summary={r.title} meta={meta(r)} state={r.state} agent={r.agent} unhealthy={r.unhealthy} onclick={() => onopen(r.key)} />
+            {#if onactions}
+              <button type="button" class="more" data-testid="workspace-actions" aria-label={`Actions for ${r.name}: rename, move, detach`} onclick={() => onactions(r.key)}>
+                <svg viewBox="0 0 16 4" width="16" height="4" aria-hidden="true" fill="currentColor"><circle cx="2" cy="2" r="1.6" /><circle cx="8" cy="2" r="1.6" /><circle cx="14" cy="2" r="1.6" /></svg>
+              </button>
+            {/if}
+          </div>
+        {/each}
+      </section>
+    {:else}
+      <EmptyState title="No workspaces yet" body="Start one and it shows up here.">
+        <button type="button" onclick={() => onnew()} class="min-h-11 rounded-card bg-accent px-4 text-base font-semibold text-on-accent">Start a workspace</button>
+      </EmptyState>
+    {/each}
+  </div>
 </div>
 
 <style>

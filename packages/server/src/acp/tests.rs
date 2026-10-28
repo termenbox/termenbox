@@ -28,6 +28,12 @@ fn fake_prompt(
     log: &dyn Fn(&Value),
 ) -> Value {
     match text {
+        "panic" => {
+            put(json!({"jsonrpc": "2.0", "method": "test/panic"}));
+            // Stay alive and silent: the server must end this child itself.
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            json!({"stopReason": "end_turn"})
+        }
         "updates" => {
             update(
                 json!({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "hmm "}}),
@@ -135,18 +141,51 @@ fn fake_agent() {
         let id = m["id"].clone();
         let reply = |r: Value| put(json!({"jsonrpc": "2.0", "id": id, "result": r}));
         match m["method"].as_str().unwrap_or("") {
-            "initialize" => reply(json!({"protocolVersion": 1, "agentCapabilities": {
-                "loadSession": mode.contains("load"),
-                "sessionCapabilities": if mode.contains("resume") { json!({"resume": {}}) } else { json!({}) }
-            }})),
+            "initialize" => {
+                // Tests that watch whether this process is ended read its pid from beside the log.
+                let _ = std::fs::write(format!("{log_path}.pid"), std::process::id().to_string());
+                if mode.contains("grandchild") {
+                    // Never waited on: the test is about it outliving its parent.
+                    #[allow(clippy::zombie_processes)]
+                    let child = std::process::Command::new("sleep")
+                        .arg("60")
+                        .spawn()
+                        .unwrap();
+                    let _ =
+                        std::fs::write(format!("{log_path}.grandchild"), child.id().to_string());
+                }
+                reply(json!({"protocolVersion": 1, "agentCapabilities": {
+                    "loadSession": mode.contains("load"),
+                    "sessionCapabilities": if mode.contains("resume") { json!({"resume": {}}) } else { json!({}) }
+                }}))
+            }
             "session/new" if mode.contains("authfail") => put(json!({"jsonrpc": "2.0", "id": id,
                 "error": {"code": -32000, "message": "Authentication required"}})),
             "session/new" if mode.contains("modes") => reply(json!({"sessionId": "acp-1",
                 "modes": {"currentModeId": "ask", "availableModes": [
                     {"id": "ask", "name": "Ask", "description": "Ask first"}, {"id": "plan", "name": "Plan"}]}})),
+            "session/new" if mode.contains("slownew") => {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                reply(json!({"sessionId": "acp-1"}))
+            }
+            "session/new" if mode.contains("deaf") => {
+                reply(json!({"sessionId": "acp-1"}));
+                // Stops reading its input and asks for things nobody gave it, so the answers pile up.
+                for n in 1..=20_000u64 {
+                    put(
+                        json!({"jsonrpc": "2.0", "id": 9_000_000 + n, "method": "fs/read_text_file", "params": {}}),
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            }
             "session/new" => reply(json!({"sessionId": "acp-1"})),
             "session/set_mode" => reply(json!({})),
-            "session/resume" => reply(json!({})),
+            "session/resume" => {
+                if mode.contains("slowresume") {
+                    std::thread::sleep(std::time::Duration::from_millis(800));
+                }
+                reply(json!({}))
+            }
             "session/load" => {
                 update(
                     json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "REPLAYED"}}),
@@ -212,7 +251,9 @@ fn rig_with(mode: &str, max: usize, dir: PathBuf, state: bool) -> Rig {
         agents: HashMap::from([("fake".to_string(), profile(mode, &log))]),
     };
     let hub = EventHub::new([7; 32]);
-    let mut backend = AcpBackend::new(config).with_events(hub.clone());
+    let mut backend = AcpBackend::new(config)
+        .with_events(hub.clone())
+        .with_typed_ids();
     if state {
         backend = backend
             .with_state_file(dir.join("workspaces.json"))
@@ -390,7 +431,7 @@ async fn an_adapter_installed_later_shows_up_and_a_missing_one_is_refused() {
             },
         )]),
     };
-    let backend = AcpBackend::new(config);
+    let backend = AcpBackend::new(config).with_typed_ids();
     assert!(backend.acp_agents().is_empty());
     let e = backend
         .create_with("x", None, d.to_str(), Some("late"))
@@ -1147,6 +1188,74 @@ async fn over_the_cap_the_rest_wait_and_survive_a_second_save_and_restore() {
     }
 }
 
+/// What a start finds after `exits` unclean exits, with these workspaces live at each.
+fn after_unclean_exits(live_at: &[&[&str]]) -> crate::crash::Previous {
+    crate::crash::Previous::Unclean(crate::crash::Unclean {
+        started_ms: 1,
+        beat_ms: 2,
+        rss_kb: None,
+        streak: live_at.len() as u32,
+        crash_file: None,
+        live_sets: live_at
+            .iter()
+            .map(|set| set.iter().map(|s| s.to_string()).collect())
+            .collect(),
+    })
+}
+
+#[tokio::test]
+async fn safe_mode_restores_a_workspace_live_at_two_unclean_exits_stopped_with_a_notice() {
+    let dir = tmp();
+    let a = rig_with("resume", 3, dir.clone(), true);
+    a.create("looping").await;
+    a.create("other").await;
+    let mut b = rig_with("resume", 3, dir.clone(), true);
+    let previous = after_unclean_exits(&[&["looping", "other"], &["looping"]]);
+    b.backend = b.backend.with_safe_mode(previous.safe_mode_ids());
+    b.backend.restore().await;
+    // Live at both exits: left stopped, with the reason, and kept for the next restore.
+    assert!(matches!(
+        b.backend.status("looping"),
+        Some(WorkspaceStatus::Failed(_))
+    ));
+    let v = view(&b, "looping").info.unwrap();
+    assert_eq!(v.status, "failed");
+    assert_eq!(
+        v.status_text.unwrap(),
+        "Not resumed: the server stopped unexpectedly twice while this was running. Open it to resume."
+    );
+    // Live at only one: resumed as today.
+    assert_eq!(b.backend.status("other"), Some(WorkspaceStatus::Running));
+    let file = saved_file(&dir);
+    assert_eq!(file.len(), 2, "{file:?}");
+    assert_eq!(file[0]["name"], "looping");
+    assert_eq!(file[0]["retry"], true);
+    // The next restore, after a clean exit, brings it back.
+    let c = rig_with("resume", 3, dir.clone(), true);
+    c.backend.restore().await;
+    assert_eq!(c.backend.status("looping"), Some(WorkspaceStatus::Running));
+    for n in ["looping", "other"] {
+        a.backend.kill(n).await.ok();
+        b.backend.kill(n).await.ok();
+        c.backend.kill(n).await.ok();
+    }
+}
+
+#[tokio::test]
+async fn safe_mode_leaves_everything_resuming_after_one_unclean_exit() {
+    let dir = tmp();
+    let a = rig_with("resume", 2, dir.clone(), true);
+    a.create("s1").await;
+    let mut b = rig_with("resume", 2, dir.clone(), true);
+    let previous = after_unclean_exits(&[&["s1"]]);
+    assert!(previous.safe_mode_ids().is_empty());
+    b.backend = b.backend.with_safe_mode(previous.safe_mode_ids());
+    b.backend.restore().await;
+    assert_eq!(b.backend.status("s1"), Some(WorkspaceStatus::Running));
+    a.backend.kill("s1").await.ok();
+    b.backend.kill("s1").await.unwrap();
+}
+
 #[tokio::test]
 async fn a_failed_start_is_retried_at_the_next_restore_and_reports_an_error() {
     let dir = tmp();
@@ -1574,4 +1683,243 @@ fn replay_the_ring_size_is_a_config_value_with_a_checked_range() {
     );
     assert!(AcpConfig::parse("event_ring_bytes = 100").is_err());
     assert!(AcpConfig::parse("event_ring_bytes = 99999999999").is_err());
+}
+
+/// Holds `lock` on a thread that panics, which poisons it.
+fn poison<T: Send + 'static>(lock: Arc<Mutex<T>>) {
+    let holder = lock.clone();
+    let _ = std::thread::spawn(move || {
+        let _held = holder.lock().unwrap();
+        panic!("a session panicked while holding its lock");
+    })
+    .join();
+    assert!(lock.is_poisoned());
+}
+
+#[tokio::test]
+async fn one_session_that_panics_under_its_lock_does_not_stop_the_others() {
+    let r = rig("");
+    r.create("a").await;
+    r.create("b").await;
+    let live = r
+        .backend
+        .workspaces
+        .lock_or_recover()
+        .get("a")
+        .unwrap()
+        .live
+        .clone()
+        .unwrap();
+    let holder = live.clone();
+    let _ = std::thread::spawn(move || {
+        let _held = holder.inner.lock().unwrap();
+        panic!("a session panicked while holding its lock");
+    })
+    .join();
+    assert!(live.inner.is_poisoned());
+    // Everything the whole server does with the table still works, and the other session still answers.
+    assert!(r.backend.list().await.unwrap().iter().any(|w| w.id == "b"));
+    let _ = r.backend.running();
+    assert!(r.backend.status("a").is_some());
+    r.prompt("b", "hello").await;
+    until("the other session answers", || {
+        r.kinds("b")
+            .iter()
+            .any(|k| matches!(k, EventKind::Message { .. }))
+            || !r.events("b").is_empty()
+    })
+    .await;
+    r.backend.kill("b").await.unwrap();
+    r.backend.kill("a").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_poisoned_workspace_table_is_still_served() {
+    let r = rig("");
+    r.create("a").await;
+    poison(r.backend.workspaces.clone());
+    assert!(r.backend.list().await.unwrap().iter().any(|w| w.id == "a"));
+    r.backend.kill("a").await.unwrap();
+}
+
+#[tokio::test]
+async fn the_state_file_is_written_whole_and_leaves_no_temporary() {
+    let dir = tmp();
+    let r = rig_with("", 2, dir.clone(), true);
+    r.create("a").await;
+    r.backend.save();
+    let text = std::fs::read_to_string(dir.join("workspaces.json")).unwrap();
+    let saved: Vec<Value> = serde_json::from_str(&text).unwrap();
+    assert_eq!(saved.len(), 1);
+    assert!(!dir.join("workspaces.json.tmp").exists());
+    assert!(!dir.join("workspaces.json.json.tmp").exists());
+    r.backend.kill("a").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_panic_in_one_workspaces_reader_fails_that_workspace_and_frees_its_slot() {
+    let r = rig_with("", 2, tmp(), false);
+    r.create("a").await;
+    r.create("b").await;
+    r.prompt("a", "panic").await;
+    until("the failure", || {
+        matches!(r.backend.status("a"), Some(WorkspaceStatus::Failed(_)))
+    })
+    .await;
+    let Some(WorkspaceStatus::Failed(why)) = r.backend.status("a") else {
+        panic!()
+    };
+    assert_eq!(why, INTERNAL_FAILURE);
+    // The slot is free again and the other workspace still works.
+    assert_eq!(r.backend.running(), 1);
+    r.prompt("b", "updates").await;
+    until("the other workspace streams", || !r.events("b").is_empty()).await;
+    assert!(matches!(
+        r.backend.status("b"),
+        Some(WorkspaceStatus::Running)
+    ));
+    r.backend.kill("a").await.unwrap();
+    r.backend.kill("b").await.unwrap();
+}
+
+fn pid_file(r: &Rig, ext: &str) -> Option<i32> {
+    std::fs::read_to_string(format!("{}.{ext}", r.log.display()))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Whether a process still runs (a zombie waiting to be reaped does not).
+fn alive(pid: i32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .map(|s| !s.rsplit(") ").next().unwrap_or("").starts_with('Z'))
+        .unwrap_or(false)
+}
+
+#[tokio::test]
+async fn an_agent_that_stops_reading_ends_its_workspace_instead_of_filling_memory() {
+    let r = rig_with("deaf", 2, tmp(), false);
+    r.create("a").await;
+    until("the overflow", || {
+        matches!(r.backend.status("a"), Some(WorkspaceStatus::Failed(_)))
+    })
+    .await;
+    let Some(WorkspaceStatus::Failed(why)) = r.backend.status("a") else {
+        panic!()
+    };
+    assert!(why.contains("stopped reading"), "{why}");
+    let pid = pid_file(&r, "pid").unwrap();
+    until("the agent to be ended", || !alive(pid)).await;
+    r.backend.kill("a").await.unwrap();
+}
+
+#[tokio::test]
+async fn ending_a_workspace_ends_what_its_agent_started() {
+    let r = rig("grandchild");
+    r.create("a").await;
+    let grandchild = pid_file(&r, "grandchild").unwrap();
+    assert!(alive(grandchild));
+    r.backend.kill("a").await.unwrap();
+    until("the agent's own process to be ended", || !alive(grandchild)).await;
+}
+
+#[tokio::test]
+async fn a_start_that_is_dropped_ends_the_agent_it_began() {
+    let r = rig("slownew");
+    let started = tokio::time::timeout(
+        Duration::from_millis(1500),
+        r.backend
+            .create_with("a", None, r.dir.to_str(), Some("fake")),
+    )
+    .await;
+    assert!(
+        started.is_err(),
+        "the start should still be waiting for the agent"
+    );
+    let pid = pid_file(&r, "pid").unwrap();
+    until("the agent to be ended", || !alive(pid)).await;
+    // Its slot and name are free again.
+    assert_eq!(r.backend.running(), 0);
+    assert!(r.backend.list().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_workspace_closed_while_it_is_being_restored_is_not_brought_back() {
+    let dir = tmp();
+    let a = rig_with("resume slowresume", 2, dir.clone(), true);
+    a.create("s1").await;
+    let b = rig_with("resume slowresume", 2, dir.clone(), true);
+    let backend = Arc::new(b.backend);
+    let restoring = backend.clone();
+    let restore = tokio::spawn(async move { restoring.restore().await });
+    until("the placeholder", || {
+        backend
+            .workspaces
+            .lock_or_recover()
+            .get("s1")
+            .is_some_and(|e| e.restoring)
+    })
+    .await;
+    backend.kill("s1").await.unwrap();
+    restore.await.unwrap();
+    assert!(backend.list().await.unwrap().is_empty());
+    assert_eq!(backend.status("s1"), None);
+    assert_eq!(backend.running(), 0);
+    assert_eq!(*backend.starting.lock_or_recover(), 0);
+    a.backend.kill("s1").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_failed_workspace_can_be_closed_and_started_again() {
+    let r = rig("");
+    r.create("a").await;
+    r.prompt("a", "crash").await;
+    until("the failure", || {
+        matches!(r.backend.status("a"), Some(WorkspaceStatus::Failed(_)))
+    })
+    .await;
+    r.backend.kill("a").await.unwrap();
+    r.create("a").await;
+    assert_eq!(r.backend.status("a"), Some(WorkspaceStatus::Running));
+    r.backend.kill("a").await.unwrap();
+}
+
+#[test]
+fn a_config_cannot_ask_for_more_event_log_than_a_small_server_holds() {
+    let e = AcpConfig::parse("max_sessions = 16\nevent_ring_bytes = 67108864\n").unwrap_err();
+    assert!(e.to_string().contains("at most"), "{e}");
+    assert!(AcpConfig::parse("max_sessions = 6\nevent_ring_bytes = 1048576\n").is_ok());
+}
+
+#[tokio::test]
+async fn a_new_workspace_gets_a_random_id_and_the_typed_name_is_only_a_label_that_survives_a_restart(
+) {
+    let dir = tmp();
+    let mut a = rig_with("resume", 2, dir.clone(), true);
+    a.backend.mint_ids = true;
+    a.create("Release notes").await;
+    let listed = a.backend.list().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    let id = listed[0].id.clone();
+    assert!(crate::backend::is_minted_id(&id), "{id}");
+    assert_eq!(listed[0].name.as_str(), "Release notes");
+    // The agent's events are keyed by the id, never by the label.
+    assert!(a.hub.since("Release notes", 0).is_empty());
+    assert!(a.backend.rename("nope", "x").await.is_err());
+    a.backend.rename(&id, "Q4  plan").await.unwrap();
+    assert_eq!(a.backend.list().await.unwrap()[0].name.as_str(), "Q4  plan");
+    // "Restart": the label comes back with the id.
+    let b = rig_with("resume", 2, dir.clone(), true);
+    b.backend.restore().await;
+    let restored = b.backend.list().await.unwrap();
+    assert_eq!(
+        (restored[0].id.as_str(), restored[0].name.as_str()),
+        (id.as_str(), "Q4  plan")
+    );
+    // Clearing the label shows the id again; two workspaces may share a label.
+    b.backend.rename(&id, "").await.unwrap();
+    assert_eq!(b.backend.list().await.unwrap()[0].name.as_str(), id);
+    let _ = b.backend.kill(&id).await;
+    let _ = a.backend.kill(&id).await;
 }

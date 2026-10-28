@@ -1,4 +1,4 @@
-// The New workspace dialog (DECISION-0141) at five widths, against the built client and a scripted server whose `list_dir`
+// The New workspace dialog (DECISION-0148) at five widths, against the built client and a scripted server whose `list_dir`
 // answers from a fake home (fake-tree.mjs). Every state is asserted visible BEFORE it is checked: a missing element throws and the
 // script exits non-zero, never skips (GUARDRAIL ux-scenarios-assert-a-state-before-they-capture-it). Hard UX rules checked in
 // every state: no horizontal overflow, every tappable at least 44 x 44, no console error.

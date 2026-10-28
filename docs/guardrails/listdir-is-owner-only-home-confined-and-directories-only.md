@@ -2,9 +2,9 @@
 id: listdir-is-owner-only-home-confined-and-directories-only
 title: Directory listing for the folder picker is owner-only, confined to the home directory, and returns directories only
 status: active
-governed-by: 0140-remote-folders-are-browsed-through-an-owner-only-home-confined-listdir
-grounded-in: [0140-remote-folders-are-browsed-through-an-owner-only-home-confined-listdir, 0058, audit-logging-no-secrets]
-derivation-note: A request that shows part of the server's filesystem to a browser (0140) must reveal no more than the picker needs, to no one but the owner, and leave a trace that holds no content.
+governed-by: 0147-remote-folders-are-browsed-through-an-owner-only-home-confined-listdir
+grounded-in: [0147-remote-folders-are-browsed-through-an-owner-only-home-confined-listdir, 0063, audit-logging-no-secrets]
+derivation-note: A request that shows part of the server's filesystem to a browser (0147) must reveal no more than the picker needs, to no one but the owner, and leave a trace that holds no content.
 tags: [security, protocol, server]
 ---
 

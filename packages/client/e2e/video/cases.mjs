@@ -1,4 +1,4 @@
-// The four New workspace dialog walkthroughs (DECISION-0141). Each is a function of `c` (see render.mjs) and ends with an
+// The four New workspace dialog walkthroughs (DECISION-0148). Each is a function of `c` (see render.mjs) and ends with an
 // assertion of its final state, so a walkthrough that did not reach it fails instead of producing a video of something else
 // (GUARDRAIL ux-scenarios-assert-a-state-before-they-capture-it). They run on the scripted server and its fake home.
 import { HOME } from '../fake-tree.mjs';

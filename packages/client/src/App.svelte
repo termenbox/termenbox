@@ -58,6 +58,9 @@
   import { moveWorkspace, placementOf } from './lib/order';
   import { destination, navigate, parseFocusLink, startRouter, type Destination } from './lib/router';
   import ReportDialog from './ReportDialog.svelte';
+  import ServerDiagnosticsDialog from './ServerDiagnosticsDialog.svelte';
+  import ExitBanner from './ExitBanner.svelte';
+  import { BundleReader, SeenExits, exitText, type ExitNotice } from './lib/diagnostics';
   import { buildReport, noteError, recentErrors, scrub } from './lib/report';
   import { runningBundle } from './lib/update';
   import { startUsageMeter } from './lib/usageMeter';
@@ -101,6 +104,23 @@
       server: serverVersion || undefined,
       errors: $recentErrors,
     });
+  }
+
+  // Server diagnostics (decision 0144): asked for by the owner, read before it is downloaded or attached to an issue.
+  const seenExits = new SeenExits((() => { try { return localStorage; } catch { return null; } })());
+  const bundleReader = new BundleReader();
+  let exitNotice: ExitNotice | null = null;
+  let diagnostics: { serverId: string; text: string | null; error: string } | null = null;
+  function openDiagnostics(serverId?: string) {
+    exitNotice = null;
+    const id = serverId ?? activeServerId ?? $hubServers.find(s => s.state === 'connected')?.id;
+    if (!id || $hubServers.find(s => s.id === id)?.state !== 'connected') {
+      diagnostics = { serverId: id ?? '', text: null, error: 'Connect to a server first.' };
+      return;
+    }
+    crumb('server diagnostics opened');
+    diagnostics = { serverId: id, text: null, error: '' };
+    hub.send(id, { type: 'diagnostics_bundle' });
   }
 
   let user: string | null = null;
@@ -179,7 +199,13 @@
         // After a removal the next Enable needs the exact change again.
         if (msg.action === 'remove' && !msg.error) hub.send(_id, { type: 'agent_hooks', agent: msg.agent, action: 'preview' });
       }
-      if (msg.type === 'error') showToast(msg.message, 'error');
+      if (msg.type === 'previous_exit') { if (seenExits.announce(_id, msg.at_ms)) exitNotice = { serverId: _id, atMs: msg.at_ms, streak: msg.streak, crashed: msg.crashed }; }
+      else if (msg.type === 'diagnostics_bundle') {
+        const whole = bundleReader.add(msg.part, msg.parts, msg.text);
+        if (whole !== null && diagnostics?.serverId === _id) diagnostics = { ...diagnostics, text: whole };
+      }
+      else if (msg.type === 'error' && diagnostics && diagnostics.serverId === _id && diagnostics.text === null && !diagnostics.error) diagnostics = { ...diagnostics, error: msg.message };
+      else if (msg.type === 'error') showToast(msg.message, 'error');
       else if (msg.type === 'agent_event') showToast(`Agent ${msg.agent} ${msg.event} in ${msg.workspace_id}`);
     },
   });
@@ -264,6 +290,8 @@
   const overLimit = hub.overLimit;
   $: selected = $hubServers.find(s => s.id === activeServerId);
   $: selectedServer = selected?.server ?? null;
+  /** Whether a server can take a new workspace now: the sidebar, the palette and the strip hide their create action rather than offering a toast that says no. */
+  $: canCreate = workspaceDestinations($hubServers, selected).length > 0;
   $: workspaces = $allWorkspaces.map(s => ({ ...s, id: s.key }));
   $: activeWorkspaceId = $allWorkspaces.find(s => s.key === activeKey)?.id ?? null;
   $: connection = selected ? hub.connection(selected.id) : null;
@@ -282,7 +310,7 @@
   let menuKey: string | null = null;
   let actionConfirm = false;
   let showNew = false;
-  let pendingOpen: { serverId: string; name: string } | null = null;
+  let pendingOpen: { serverId: string; name: string; before: string[] } | null = null;
   let quality = '';
   let keyboardOpen = false;
   let sheetHeld = false;
@@ -665,13 +693,14 @@
   }
 
   function createWorkspace(req: { serverId: string; backend?: string; dir?: string; template?: string; name: string }) {
-    pendingOpen = { serverId: req.serverId, name: req.name };
+    // The server chooses the id; the new workspace is the listed one with this name that was not there before.
+    pendingOpen = { serverId: req.serverId, name: req.name, before: $allWorkspaces.filter(w => w.serverId === req.serverId).map(w => w.id) };
     hub.send(req.serverId, { type: 'new_workspace', name: req.name, backend: req.backend, dir: req.dir, template: req.template });
   }
   /** The workspace the user just created opens by itself once the server lists it. */
   function openPending(serverId: string, list: import('./lib/protocol').WorkspaceInfo[]) {
     if (!pendingOpen || pendingOpen.serverId !== serverId) return;
-    const made = list.find(s => s.name === pendingOpen!.name);
+    const made = list.find(s => s.name === pendingOpen!.name && !pendingOpen!.before.includes(s.id));
     if (!made) return;
     pendingOpen = null;
     void attach(workspaceKey(serverId, made.id));
@@ -958,10 +987,11 @@
     </div>
   {:else}
     <AppFrame current={$destination} onnavigate={go} servers={$hubServers} workspaces={$allWorkspaces} agents={$allAgents} {activeKey} chrome={servers.length > 0} inWorkspace={!!activeKey && !away} {keyboardOpen}
-      canCreate={workspaceDestinations($hubServers, selected).length > 0} bind:wide bind:helpOpen onopen={attach} onserver={openServer} onrename={renameWorkspace} oncloseworkspace={askCloseWorkspace} onaction={runAction} onshortcut={handleShortcut}
+      canCreate={canCreate} bind:wide bind:helpOpen onopen={attach} onserver={openServer} onrename={renameWorkspace} oncloseworkspace={askCloseWorkspace} onaction={runAction} onshortcut={handleShortcut}
       onback={() => { showWorkspaceList(); sheetHeight = 'half'; }}>
     {#if $destination === 'workspaces' || servers.length === 0}
-    <NavigationBar strip={!(servers.length > 0 && wide && $layout.sidebarOpen)} workspaces={tabWorkspaces} agents={$allAgents} servers={$hubServers} windows={$allWindows} {expiring} {link} {activeKey} held={!!actionWorkspace || !!menuWorkspace || cardExpanded || sheetHeld} onopen={attach} onpeek={peek} ontabmenu={openWindowMenu} onactions={(key) => { actionConfirm = false; actionKey = key; }}
+    <NavigationBar workspaces={tabWorkspaces} agents={$allAgents} servers={$hubServers} windows={$allWindows} {expiring} {link} {activeKey} held={!!actionWorkspace || !!menuWorkspace || cardExpanded || sheetHeld} onopen={attach} onpeek={peek} ontabmenu={openWindowMenu} onactions={(key) => { actionConfirm = false; actionKey = key; }}
+      strip={!wide || !$layout.sidebarOpen || (!!activeKey && !listPage)} onnew={wide && canCreate ? () => newWorkspace() : undefined}
       onlink={() => link && showToast(link.text, link.ok ? 'success' : 'error')} onmenu={() => { titleTapped(); menuOpen = true; }} expanded={wide ? $layout.sidebarOpen : sheetHeight !== 'closed'} controls={wide && $layout.sidebarOpen ? 'workspace-sidebar' : undefined} onworkspaces={() => { if (wide) { toggleSidebar(); return; } crumb('workspaces sheet toggled'); showWorkspaceList(); sheetHeight = sheetHeight === 'closed' ? 'half' : 'closed'; }} />
     {/if}
     <NeedsYouBanner {waiting} {now} collapsed={keyboardOpen} onopen={openWaiting} onhome={() => go('home')} ondismiss={(key, id) => sendAttention(key, { type: 'dismiss', attention_id: id })} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} />
@@ -994,7 +1024,7 @@
       {:else if $destination === 'activity'}
         <ActivityView servers={$hubServers} history={historyMap} {now} onask={askHistory} caches={warmCaches} ttlMs={$settings.cacheTtlMs} health={healthMap} onhealth={askHealth} rttOf={(id) => hub.rtt(id)} />
       {:else if $destination === 'settings'}
-        <SettingsView user={user ?? ''} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} push={pushView} onpush={togglePush} onshortcuts={() => (helpOpen = true)} onreport={openReport} onlogout={logout} ondeletedata={deleteData} historyServers={$connectedCount} ondeletehistory={deleteHistory} pushSettings={pushServerId ? pushSettings[pushServerId] : undefined} {pushSaving} onpushsettings={savePushSettings} />
+        <SettingsView user={user ?? ''} hooks={hookSettings} onhook={settingsHook} onservers={leaveServer} push={pushView} onpush={togglePush} onshortcuts={() => (helpOpen = true)} onreport={openReport} ondiagnostics={() => openDiagnostics()} onlogout={logout} ondeletedata={deleteData} historyServers={$connectedCount} ondeletehistory={deleteHistory} pushSettings={pushServerId ? pushSettings[pushServerId] : undefined} {pushSaving} onpushsettings={savePushSettings} />
       {:else}
         <div class="workspace" class:mobile={narrow}>
           <div class="terminal-pane">
@@ -1050,7 +1080,7 @@
     </AppFrame>
   {/if}
 
-  {#if menuOpen && user}<MenuSheet {user} {avatar} onservers={leaveServer} onsettings={() => go('settings')} onreport={openReport} onlogout={logout} onclose={() => menuOpen = false} unread={unreadCount($inbox)} oninbox={() => inboxOpen = true} />{/if}
+  {#if menuOpen && user}<MenuSheet {user} {avatar} onservers={leaveServer} onsettings={() => go('settings')} onreport={openReport} ondiagnostics={() => openDiagnostics()} onlogout={logout} onclose={() => menuOpen = false} unread={unreadCount($inbox)} oninbox={() => inboxOpen = true} />{/if}
   {#if inboxOpen}<InboxSheet items={$inbox} {now} agents={$allAgents} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} onreply={(key, text) => sendWorkspace({ type: 'reply', workspace: key, text })} onopen={openWaiting} onhome={() => go('home')} onread={() => inbox.update(markAllRead)} onclear={() => inbox.set([])} onclose={() => { inboxOpen = false; inbox.update(markAllRead); }} />{/if}
   {#if actionWorkspace}<WorkspaceActions workspace={actionWorkspace} canClose={['tmux', 'acp'].includes(backendOf(actionWorkspace))} confirmFirst={actionConfirm} onrename={(name) => renameWorkspace(actionWorkspace.key, name)} placement={placementOf($allWorkspaces, actionWorkspace.key)} onmove={(to) => moveWorkspace($allWorkspaces, actionWorkspace.key, to)} ondetach={() => detach(actionWorkspace.key)} oncloseworkspace={() => closeWorkspace(actionWorkspace.key)} onclose={() => actionKey = null} />{/if}
   {#if menuWorkspace && menuKey}
@@ -1065,6 +1095,11 @@
     <NewWorkspaceSheet servers={newWorkspaceTargets($hubServers).servers} initialServerId={newTarget.serverId} locked={newTarget.locked} workspaces={$allWorkspaces} windows={$allWindows} oncreate={createWorkspace} {listDir} onclose={() => showNew = false} />
   {/if}
 
+  {#if diagnostics}
+    <ServerDiagnosticsDialog text={diagnostics.text} error={diagnostics.error} onclose={() => (diagnostics = null)} />
+  {:else if exitNotice}
+    <ExitBanner message={exitText(exitNotice, $hubServers.find(s => s.id === exitNotice?.serverId)?.server.server_name ?? '')} onopen={() => openDiagnostics(exitNotice?.serverId)} ondismiss={() => (exitNotice = null)} />
+  {/if}
   {#if reportText !== null}
     <ReportDialog text={reportText} onclose={() => (reportText = null)} />
   {/if}

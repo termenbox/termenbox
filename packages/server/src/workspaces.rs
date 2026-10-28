@@ -110,6 +110,8 @@ pub struct WorkspaceManager {
     hooks: Option<crate::agent_hooks::Targets>,
     /// Samples of the server's CPU, RAM and disk (U14).
     health: Option<Arc<HealthCollector>>,
+    /// Set when the last run of this server ended without a clean exit; every sign-in is told (decision 0142).
+    previous_exit: Option<termenbox_core::protocol::ServerMessage>,
     /// Pinged (with the connection's number) when a connection creates, renames or closes a workspace, so every other
     /// connection sends its client the new list (a device that did not ask must not keep showing the old names). The
     /// connection that asked has its own reply and skips the ping.
@@ -133,6 +135,7 @@ impl WorkspaceManager {
             transcripts: Arc::default(),
             hooks: None,
             health: None,
+            previous_exit: None,
             list_changed: tokio::sync::broadcast::channel(16).0,
         }
     }
@@ -190,6 +193,15 @@ impl WorkspaceManager {
     /// Serves the server's health samples to every connection (U14).
     pub fn with_health(mut self, health: Arc<HealthCollector>) -> Self {
         self.health = Some(health);
+        self
+    }
+
+    /// Tells every signed-in client that the last run ended without a clean exit.
+    pub fn with_previous_exit(
+        mut self,
+        message: Option<termenbox_core::protocol::ServerMessage>,
+    ) -> Self {
+        self.previous_exit = message;
         self
     }
 
@@ -291,6 +303,11 @@ impl WorkspaceManager {
         let mut health_rx = self.health.as_ref().map(|h| h.subscribe());
         if let Some(u) = self.health.as_ref().and_then(|h| h.latest()) {
             if !send(&link.tx, &u.message()).await {
+                return Ok(());
+            }
+        }
+        if let Some(previous) = &self.previous_exit {
+            if !send(&link.tx, previous).await {
                 return Ok(());
             }
         }
@@ -582,6 +599,58 @@ impl WorkspaceManager {
                     },
                 )
                 .await?;
+            }
+            ClientMessage::DiagnosticsBundle {} => {
+                let is_owner = auth
+                    .owner()
+                    .is_some_and(|o| o.provider == identity.provider && o.id == identity.id);
+                if !is_owner {
+                    info!(target: "audit", event = "diagnostics_refused", provider = %identity.provider, account_id = %identity.id);
+                    return Err(anyhow::anyhow!(
+                        "Only the owner can read this server's diagnostics"
+                    ));
+                }
+                info!(target: "audit", event = "diagnostics_requested", provider = %identity.provider, account_id = %identity.id);
+                let config_dir = auth.dir().to_path_buf();
+                let mode = self.mode.label();
+                let previous = self.previous_exit.clone();
+                let health = self.health.as_ref().map(|h| h.history());
+                // Names a user chose are in no field name or token shape: the bundle scrubs the live ones from free text.
+                let names: Vec<String> = self
+                    .backend
+                    .list()
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .flat_map(|w| [w.id, w.name.as_str().to_string()])
+                    // A minted id is random; only an id an older server took from the typed name is text.
+                    .filter(|n| !crate::backend::is_minted_id(n))
+                    .collect();
+                // Reads up to 2 MB of log and scrubs it: off the async threads.
+                let text = tokio::task::spawn_blocking(move || {
+                    crate::bundle::build(&crate::bundle::Inputs {
+                        config_dir: &config_dir,
+                        version: env!("CARGO_PKG_VERSION"),
+                        mode: &mode,
+                        previous_exit: previous.as_ref(),
+                        health,
+                        names: &names,
+                    })
+                })
+                .await?;
+                let parts = crate::bundle::parts(&text);
+                let total = parts.len() as u32;
+                for (part, text) in parts.into_iter().enumerate() {
+                    send_r(
+                        tx,
+                        &ServerMessage::DiagnosticsBundle {
+                            part: part as u32,
+                            parts: total,
+                            text,
+                        },
+                    )
+                    .await?;
+                }
             }
             ClientMessage::RevokeDevice { device } => {
                 auth.revoke_device(&device)?;
@@ -1941,7 +2010,7 @@ mod propagation_tests {
         async fn list(&self) -> Result<Vec<termenbox_core::protocol::WorkspaceInfo>> {
             Ok(vec![termenbox_core::protocol::WorkspaceInfo {
                 id: "s".into(),
-                name: self.0.lock().unwrap().clone(),
+                name: self.0.lock().unwrap().clone().into(),
                 agent: None,
                 backend: None,
             }])
@@ -2015,6 +2084,131 @@ mod propagation_tests {
             "a device that did not ask sees it too"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Everything a fresh connection is sent in its first 400 ms.
+    async fn first_messages(mgr: WorkspaceManager) -> Vec<String> {
+        let dir = std::env::temp_dir().join(format!("tm-prev-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth =
+            Arc::new(AuthState::new(dir.clone(), CertKeys::default(), "srv".into()).unwrap());
+        let id = Identity {
+            provider: "github".into(),
+            id: "1".into(),
+            login: "u".into(),
+            issued_at: None,
+        };
+        let (link, mut end) = crate::link::pair(None, None);
+        tokio::spawn(async move {
+            let _ = mgr.serve(link, id, &auth).await;
+        });
+        let mut seen = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_millis(400), async {
+            while let Some(m) = end.from_workspace.recv().await {
+                seen.push(m);
+            }
+        })
+        .await;
+        let _ = std::fs::remove_dir_all(&dir);
+        seen
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_after_an_unclean_exit_is_told_and_a_clean_one_is_not() {
+        let backend = || Arc::new(Names(Mutex::new("first".into())));
+        let message = termenbox_core::protocol::ServerMessage::PreviousExit {
+            at_ms: 1234,
+            streak: 2,
+            crashed: true,
+        };
+        let told = first_messages(
+            WorkspaceManager::new(backend(), RunMode::Container).with_previous_exit(Some(message)),
+        )
+        .await;
+        let line = told
+            .iter()
+            .find(|m| m.contains("\"type\":\"previous_exit\""))
+            .unwrap_or_else(|| panic!("no previous_exit in {told:?}"));
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(
+            (
+                v["at_ms"].as_u64(),
+                v["streak"].as_u64(),
+                v["crashed"].as_bool()
+            ),
+            (Some(1234), Some(2), Some(true))
+        );
+        let quiet = first_messages(WorkspaceManager::new(backend(), RunMode::Container)).await;
+        assert!(
+            quiet.iter().all(|m| !m.contains("previous_exit")),
+            "{quiet:?}"
+        );
+    }
+
+    /// What a connection signed in as `who` is sent for a `diagnostics_bundle` request, when account 1 is the owner.
+    async fn bundle_replies(who: &str) -> Vec<String> {
+        let dir = std::env::temp_dir().join(format!("tm-bundle-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        std::fs::write(
+            dir.join("logs/termenbox.jsonl"),
+            "{\"fields\":{\"event\":\"start\",\"peer\":\"198.51.100.7:4000\"}}\n",
+        )
+        .unwrap();
+        let auth =
+            Arc::new(AuthState::new(dir.clone(), CertKeys::default(), "srv".into()).unwrap());
+        let owner = |id: &str| Identity {
+            provider: "github".into(),
+            id: id.into(),
+            login: format!("login-{id}"),
+            issued_at: None,
+        };
+        let claim = auth.claim_token().unwrap().unwrap();
+        auth.authorize(&owner("1"), Some(&claim)).unwrap();
+        let mgr = WorkspaceManager::new(
+            Arc::new(Names(Mutex::new("first".into()))),
+            RunMode::Container,
+        );
+        let (link, mut end) = crate::link::pair(None, None);
+        let me = owner(who);
+        let a = auth.clone();
+        tokio::spawn(async move {
+            let _ = mgr.serve(link, me, &a).await;
+        });
+        end.to_workspace
+            .send(Inbound::Json(r#"{"type":"diagnostics_bundle"}"#.into()))
+            .await
+            .unwrap();
+        let mut seen = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_millis(600), async {
+            while let Some(m) = end.from_workspace.recv().await {
+                seen.push(m);
+            }
+        })
+        .await;
+        let _ = std::fs::remove_dir_all(&dir);
+        seen
+    }
+
+    #[tokio::test]
+    async fn the_owner_gets_a_scrubbed_bundle_and_anyone_else_an_error() {
+        let told = bundle_replies("1").await;
+        let parts: Vec<&String> = told
+            .iter()
+            .filter(|m| m.contains("\"type\":\"diagnostics_bundle\""))
+            .collect();
+        assert!(!parts.is_empty(), "no bundle in {told:?}");
+        let all = parts.iter().map(|m| m.as_str()).collect::<String>();
+        assert!(all.contains("termenbox server diagnostics"), "{all}");
+        assert!(!all.contains("198.51.100.7"), "{all}");
+        let other = bundle_replies("2").await;
+        assert!(
+            other.iter().all(|m| !m.contains("diagnostics_bundle")),
+            "{other:?}"
+        );
+        assert!(
+            other.iter().any(|m| m.contains("\"type\":\"error\"")),
+            "{other:?}"
+        );
     }
 }
 

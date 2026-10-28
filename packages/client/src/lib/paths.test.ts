@@ -142,7 +142,11 @@ describe('the stored bundle is a hint that is checked again', () => {
     const old = await key.sign(bundleOf(3, lan, { expires: 1000 }));
     expect((await storedBundle({ bundle: old, server_id: key.serverId }))?.candidates).toEqual(lan);
     expect(await storedBundle({ bundle: old, server_id: 'A'.repeat(43) })).toBeNull();
-    expect(await storedBundle({ bundle: old.slice(0, -2) + 'AA', server_id: key.serverId })).toBeNull();
+    // Change a data character of the signature. The last characters of a random signature are not a safe place: they
+    // can already read 'AA', or differ from it only in padding bits, and the test then passed the bundle unchanged.
+    const at = old.length - 3;
+    const bent = old.slice(0, at) + (old[at] === 'A' ? 'B' : 'A') + old.slice(at + 1);
+    expect(await storedBundle({ bundle: bent, server_id: key.serverId })).toBeNull();
     expect(await storedBundle({ server_id: key.serverId })).toBeNull();
   });
 });

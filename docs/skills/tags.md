@@ -15,9 +15,11 @@ bootstrap-generated: true
 | auth | Authentication, authorization, identity |
 | build | Compilation, packaging, CI/CD |
 | client | Browser-facing code (Svelte, WASM, UI) |
+| cloudflare | Cloudflare services the project or an owner uses (Workers, TURN, STUN, R2, D1) |
 | compatibility | Browser/version support matrix |
 | crypto | Encryption, signatures, key derivation |
 | deployment | VPS, Docker, systemd, networking |
+| desktop | Desktop client, window chrome and desktop wrappers |
 | distribution | App store, PWA, installation |
 | guardrail | Derived normative rule |
 | hooks | Shell integration, agent detection |
@@ -27,9 +29,13 @@ bootstrap-generated: true
 | lan | Local area network addressing, RFC1918, off-grid connectivity |
 | mobile | Touch, gestures, battery, background |
 | monorepo | Repository structure, workspaces |
+| observability | Logs, crash records, diagnostics bundles, incident tracking |
 | network | Transport, protocols, binding |
+| parity | Web/native feature parity |
 | performance | Latency, throughput, memory, CPU |
+| platform | Native or browser platform detection and wrapper targets |
 | privacy | What user data is collected, kept or sent |
+| product | Product scope, positioning and promises |
 | protocol | Wire format, handshake, sync |
 | pwa | Progressive Web App features |
 | rendering | Terminal display, WebGL, xterm.js |
@@ -41,7 +47,22 @@ bootstrap-generated: true
 | tiers | Free, Pro, Team and Enterprise boundaries |
 | billing | Payment, entitlements, invoicing |
 | transport | WebTransport, WebSocket, QUIC |
+| wsl | WSL2 and other NAT'd VM hosts |
 | wasm | WebAssembly, Rust→WASM, wasm-bindgen |
+| api-token | Scoped API tokens and the permissions they need |
+| audit | Security-relevant action records |
+| cellular | Mobile-carrier networks and their NAT behaviour |
+| durable-object | Cloudflare Durable Objects |
+| installer | The install script and what it changes on the host |
+| limits | Quotas and caps set by a service or the plan |
+| logging | The server's log output, files and levels |
+| nat | Network address translation and hole punching |
+| networking | Addressing, ports, firewalls and routes between devices |
+| onboarding | First-run flow for a new user or server |
+| release | Versioned builds, channels and their publication |
+| stun | STUN discovery of public addresses |
+| turn | TURN relays |
+| updater | In-place server updates |
 
 <!-- Umbrella tags (carried by >50% of active decisions): -->
 <!-- None yet — decisions still drafting -->

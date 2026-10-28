@@ -23,6 +23,10 @@ jobs:
   gate:
     name: Gate
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
     outputs:
       run: ${{ steps.g.outputs.run }}
       version: ${{ steps.g.outputs.version }}
@@ -35,6 +39,7 @@ jobs:
           fetch-depth: 0
       - id: g
         env:
+          GH_TOKEN: ${{ github.token }}
           DISPATCH_VERSION: ${{ inputs.version }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = push ]; then
@@ -54,6 +59,9 @@ jobs:
             [ "$version" = "$crate" ] || { echo "tag $tag does not match packages/server/Cargo.toml version $crate"; exit 1; }
             git fetch -q origin master
             git merge-base --is-ancestor "$GITHUB_SHA" origin/master || { echo "$tag is not on master (decision 0129): a stable release comes only from master"; exit 1; }
+            # What is released is what CI built and tested (the nightly asks the same of its commit).
+            green="$(gh run list --workflow ci.yaml --commit "$GITHUB_SHA" --status success --json databaseId -q length)"
+            [ "${green:-0}" -gt 0 ] || { echo "no green CI run for $GITHUB_SHA: a stable release is built from a commit CI has passed (wait for CI, then push the tag again)"; exit 1; }
           fi
           {
             echo "run=true"; echo "publish=$publish"; echo "version=$version"; echo "tag=$tag"

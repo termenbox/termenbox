@@ -1,9 +1,9 @@
 ---
-id: 0058
+id: 0063
 title: A browser cannot pick a folder on the server, and a native modal dialog hides overlays that are not inside it
 status: active
 kind: observation
-governed-by: 0140-remote-folders-are-browsed-through-an-owner-only-home-confined-listdir
+governed-by: 0147-remote-folders-are-browsed-through-an-owner-only-home-confined-listdir
 tags: [client, mobile, ux, browser-support]
 date: 2026-10-28
 last-verified: 2026-10-28

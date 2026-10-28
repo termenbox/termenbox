@@ -305,6 +305,7 @@ port_report() {
     say "  2. In PowerShell:   wsl --shutdown     (then start WSL again)"
     say "  3. In an admin PowerShell, allow it through Windows Firewall:   New-NetFirewallRule -DisplayName Termenbox -Direction Inbound -Protocol UDP -LocalPort $_port -Action Allow"
     say "  If WSL still blocks it:   Set-NetFirewallHyperVVMSetting -Name '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -DefaultInboundAction Allow"
+    say "  Or, without changing Windows: run   termenbox-server --setup-cloudflare   (a free Cloudflare account of yours; see \"Connecting a home or WSL server\" in the README) and the app punches through or uses your relay."
   fi
   say "Add Server tests the connection from your browser and shows what is blocking it."
 }
@@ -803,6 +804,9 @@ install_native() {
     echo "Description=Termenbox terminal server"
     echo "After=network-online.target"
     echo "Wants=network-online.target"
+    echo "# Ten starts in five minutes end in a failed state that systemctl and the journal show."
+    echo "StartLimitIntervalSec=300"
+    echo "StartLimitBurst=10"
     echo ""
     echo "[Service]"
     [ "$RUN_USER" = root ] || echo "User=$RUN_USER"
@@ -816,7 +820,8 @@ install_native() {
     echo "Environment=TERMENBOX_UDP_PORT=$PORT"
     echo "Environment=TERMENBOX_CLIENT_URL=$ORIGIN"
     echo "ExecStart=$BIN"
-    echo "Restart=on-failure"
+    echo "# Always: a clean exit that nobody asked for is also a server that is gone. systemctl stop and disable still stop it."
+    echo "Restart=always"
     echo "RestartSec=2"
     echo "# The tmux sessions the server starts must outlive a restart or an update of the server."
     echo "KillMode=process"
@@ -974,6 +979,9 @@ install_user() {
 [Unit]
 Description=Termenbox terminal server
 After=network-online.target
+# Ten starts in five minutes end in a failed state that systemctl and the journal show.
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 WorkingDirectory=$HOME
@@ -987,7 +995,8 @@ Environment=TERMENBOX_PORT=$HTTP_PORT
 Environment=TERMENBOX_CLIENT_URL=$ORIGIN
 ${UDP_PIN:+Environment=TERMENBOX_UDP_PORT=$UDP_PIN}
 ExecStart=$BIN
-Restart=on-failure
+# Always: a clean exit that nobody asked for is also a server that is gone. systemctl stop and disable still stop it.
+Restart=always
 RestartSec=2
 # The tmux sessions the server starts must outlive a restart or an update of the server.
 KillMode=process

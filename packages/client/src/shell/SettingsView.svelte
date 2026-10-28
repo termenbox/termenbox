@@ -10,8 +10,8 @@
   import { setShortcuts, shortcutsOn, SHORTCUTS, isMac } from '../lib/palette';
   /** The Settings destination: where the account, the servers and the app's own switches live. Preferences that exist
    *  today (theme, skin, cache, renderer) stay in the menu until they move here. */
-  let { user, hooks = [], onhook, onservers, push = null, onpush, onshortcuts, onreport, onlogout, ondeletedata, historyServers, ondeletehistory, pushSettings, pushSaving = false, onpushsettings }: {
-    user: string; hooks?: HookRow[]; onhook?: (choice: 'preview' | 'enable' | 'remove' | 'again', row: HookRow) => void; onservers: () => void; push?: { serverName: string; configured: boolean; on: boolean; denied: boolean } | null; onpush?: (enable: boolean) => void; onshortcuts: () => void; onreport: () => void; onlogout: () => void; ondeletedata: () => Promise<number>;
+  let { user, hooks = [], onhook, onservers, push = null, onpush, onshortcuts, onreport, ondiagnostics, onlogout, ondeletedata, historyServers, ondeletehistory, pushSettings, pushSaving = false, onpushsettings }: {
+    user: string; hooks?: HookRow[]; onhook?: (choice: 'preview' | 'enable' | 'remove' | 'again', row: HookRow) => void; onservers: () => void; push?: { serverName: string; configured: boolean; on: boolean; denied: boolean } | null; onpush?: (enable: boolean) => void; onshortcuts: () => void; onreport: () => void; ondiagnostics?: () => void; onlogout: () => void; ondeletedata: () => Promise<number>;
     historyServers: number; ondeletehistory: () => Promise<HistoryDeletion>;
     /** U11: the server's escalation settings (absent until it answers, or from a server that has none), and a save under way. */
     pushSettings?: PushSettings; pushSaving?: boolean; onpushsettings?: (settings: PushSettings) => void;
@@ -114,6 +114,7 @@
   <button type="button" class={row} onclick={onshortcuts}><span>Show the shortcut list</span><span aria-hidden="true" class="text-soft">›</span></button>
   <button type="button" class={row} onclick={() => (privacy = true)}><span>Privacy and your data</span><span aria-hidden="true" class="text-soft">›</span></button>
   <button type="button" class={row} onclick={onreport}><span>Report a problem</span><span aria-hidden="true" class="text-soft">›</span></button>
+  {#if ondiagnostics}<button type="button" class={row} onclick={ondiagnostics}><span>Server diagnostics</span><span aria-hidden="true" class="text-soft">›</span></button>{/if}
   <button type="button" class={row} onclick={onlogout}><span>Sign out</span></button>
 </div>
 {/if}

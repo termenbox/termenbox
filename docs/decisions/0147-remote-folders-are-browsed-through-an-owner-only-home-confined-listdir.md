@@ -1,5 +1,5 @@
 ---
-id: 0140-remote-folders-are-browsed-through-an-owner-only-home-confined-listdir
+id: 0147-remote-folders-are-browsed-through-an-owner-only-home-confined-listdir
 title: Remote folders are browsed through a new owner-only, directories-only list_dir request confined to the server user's home
 status: active
 date: 2026-10-28
@@ -20,7 +20,7 @@ tags: [protocol, security, client, ux]
 
 ## Why
 
-Choosing a folder on the server is the main job of the New workspace dialog, and the browser cannot do it (fact 0058). Typing `/home/you/project` on a phone keyboard is slow and error-prone. Browsing is the only way to pick a folder never used before. The surface is a view of the server's filesystem, so the scope is the narrowest that still serves the common case: directories under the user's home.
+Choosing a folder on the server is the main job of the New workspace dialog, and the browser cannot do it (fact 0063). Typing `/home/you/project` on a phone keyboard is slow and error-prone. Browsing is the only way to pick a folder never used before. The surface is a view of the server's filesystem, so the scope is the narrowest that still serves the common case: directories under the user's home.
 
 Not chosen: confining to nothing (a wider read surface than creating needs); owner and guests (needs a per-grant scope model that does not exist); path autocomplete only (poor discovery, fiddly on a phone); recents only (cannot reach a new folder).
 

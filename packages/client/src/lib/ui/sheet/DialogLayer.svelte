@@ -13,7 +13,7 @@
     footer,
   }: { open?: boolean; title: string; onclose?: () => void; class?: string; children: Snippet; footer?: Snippet } = $props();
 
-  // A descendant of the native <dialog>: showModal() paints above everything outside it (FACT-0058), so a layer
+  // A descendant of the native <dialog>: showModal() paints above everything outside it (FACT-0063), so a layer
   // has to live inside the dialog's positioned wrapper rather than beside it.
   const uid = $props.id();
   const titleId = `layer-title-${uid}`;

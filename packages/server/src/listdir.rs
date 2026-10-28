@@ -1,4 +1,4 @@
-//! `list_dir`: the directories inside one folder, for the New workspace folder picker (decision 0140).
+//! `list_dir`: the directories inside one folder, for the New workspace folder picker (decision 0147).
 //!
 //! The reach is deliberately small. The path is canonicalised and must be `$HOME` or below it, so `..` and a symlink
 //! that leaves `$HOME` end in a refusal; the reply carries directory names only; the audit line holds a hash of the

@@ -213,6 +213,16 @@ fn channel_beta_writes_the_beta_config_and_units_and_parses_a_prerelease() {
     for unit in ["termenbox-update.service", "termenbox-request.service"] {
         assert!(r.unit(unit).contains(&line), "{unit}:\n{}", r.unit(unit));
     }
+    // The server comes back from any exit, and ten failed starts in five minutes end in a visible failed state.
+    let server = r.unit("termenbox.service");
+    for line in [
+        "Restart=always",
+        "RestartSec=2",
+        "StartLimitIntervalSec=300",
+        "StartLimitBurst=10",
+    ] {
+        assert!(server.lines().any(|l| l == line), "{line}:\n{server}");
+    }
     // downloaded from the manifest's address (assets/), which release_url + name would not find
     assert!(r.installed());
     assert!(!r.release.join("termenbox-server-x86_64-linux").exists());

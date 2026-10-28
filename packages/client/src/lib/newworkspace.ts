@@ -71,7 +71,7 @@ export function orderTemplatesByRecent(supported: { id: string; label: string }[
   return [...recentTemplates, ...remaining];
 }
 
-/** What a cold start offers before the device has any history (decision 0141). */
+/** What a cold start offers before the device has any history (decision 0148). */
 export const COLD_START_AGENTS = ['claude', 'codex', 'shell'];
 
 /** The tiles shown in the dialog: recent agents first, then the cold-start list, then the rest, all supported ones only. */

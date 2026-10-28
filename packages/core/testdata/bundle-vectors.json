@@ -1,4 +1,35 @@
 {
+  "assisted": {
+    "bundle": {
+      "candidates": [
+        {
+          "addr": "192.168.1.20",
+          "kind": "lan",
+          "port": 4443
+        },
+        {
+          "addr": "2001:db8::20",
+          "kind": "wan6",
+          "port": 4443
+        },
+        {
+          "addr": "wss://x.example/ws",
+          "kind": "tunnel",
+          "port": 443
+        }
+      ],
+      "expires": 1900000000,
+      "fingerprint": "sha-256 AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB",
+      "name": "home-box",
+      "published": true,
+      "relay": true,
+      "seq": 41,
+      "server_id": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+      "signal": "wss://termenbox-relay-abc.owner.workers.dev/s/6kpsY"
+    },
+    "signed_hex": "7462786233ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c000000000000002900000000713fb30003abababababababababababababababababababababababababababababababab08686f6d652d626f780301115b0c3139322e3136382e312e323003115b0c323030313a6462383a3a32300501bb127773733a2f2f782e6578616d706c652f7773337773733a2f2f7465726d656e626f782d72656c61792d6162632e6f776e65722e776f726b6572732e6465762f732f366b707359",
+    "wire": "dGJ4YjPqSmxj4pxSCr71UHsTLsX5lUd2rr6-e5JCHuppFEbSLAAAAAAAAAApAAAAAHE_swADq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6sIaG9tZS1ib3gDARFbDDE5Mi4xNjguMS4yMAMRWwwyMDAxOmRiODo6MjAFAbsSd3NzOi8veC5leGFtcGxlL3dzM3dzczovL3Rlcm1lbmJveC1yZWxheS1hYmMub3duZXIud29ya2Vycy5kZXYvcy82a3BzWeH6TOWOxotg18rew3ksnTKScmoQ796g62JcMbszW75WOpbu5EB1b_6Y7ID_3vAQI9UhVtYVUIW4KC5dnE9Vpgo"
+  },
   "bundle": {
     "candidates": [
       {
@@ -21,8 +52,10 @@
     "fingerprint": "sha-256 AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB:AB",
     "name": "home-box",
     "published": true,
+    "relay": false,
     "seq": 41,
-    "server_id": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw"
+    "server_id": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+    "signal": null
   },
   "server_id": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
   "signed_hex": "7462786232ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c000000000000002900000000713fb30001abababababababababababababababababababababababababababababababab08686f6d652d626f780301115b0c3139322e3136382e312e323003115b0c323030313a6462383a3a32300501bb127773733a2f2f782e6578616d706c652f7773",

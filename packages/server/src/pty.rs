@@ -120,8 +120,17 @@ mod tests {
             return;
         }
         let backend = TmuxBackend::default();
-        let name = format!("tt{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
-        backend.create(&name).await.unwrap();
+        let label = format!("tt{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+        backend.create(&label).await.unwrap();
+        // The server minted the id; the name typed is only the label.
+        let name = backend
+            .list()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|w| w.name.as_str() == label)
+            .expect("the label is listed")
+            .id;
 
         let mut a = backend.attach(&name, 80, 24).unwrap();
         a.write(b"echo marker$((20+22))\n").unwrap();

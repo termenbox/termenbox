@@ -5,6 +5,16 @@ name: Release build
 # the work and holds nothing channel-specific except the environment (and so the signing key) it runs in.
 # publish=false does everything but publish, with a throwaway key when the real one is not configured, so the
 # pipeline can be tested.
+#
+# ci.yaml is canonical for how things are built: it runs far more often than a release, so this workflow follows it
+# instead of defining a setup of its own.
+#   - The two cargo variables below equal ci.yaml's. Swatinem/rust-cache puts CARGO*/RUST*/CC* variables into its key,
+#     so a different value here is a different key and CI's cache is not found.
+#   - The cargo cache and the bundled tmux are restored from what CI saved (same keys as the static and tmux jobs of
+#     ci.yaml). A release run only reads: it never writes a cache entry, so releases cannot crowd out the 10 GB budget.
+#   - A miss is not an error. The build then simply runs cold, as it always did.
+# Caches are only visible from the default branch (and the ref itself), so they hit when CI's pushes to the default
+# branch wrote them. Look for "Cache hit" in the log of the two restore steps.
 
 on:
   workflow_call:
@@ -23,10 +33,15 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
 jobs:
   build:
     name: Build (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
     strategy:
       fail-fast: true
       matrix:
@@ -41,11 +56,13 @@ jobs:
       # A dry run may use any version (the default is 0.0.0); the gates of the wrappers hold a published one to the tag.
       - name: The version has the Cargo.toml version as its core
         if: inputs.publish
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
           crate="$(grep -m1 '^version' packages/server/Cargo.toml | cut -d'"' -f2)"
-          case "${{ inputs.version }}" in
+          case "$VERSION" in
             "$crate"|"$crate"-*) ;;
-            *) echo "version ${{ inputs.version }} does not start from packages/server/Cargo.toml version $crate"; exit 1 ;;
+            *) echo "version $VERSION does not start from packages/server/Cargo.toml version $crate"; exit 1 ;;
           esac
 
       - name: Install Rust toolchain
@@ -54,7 +71,14 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install the musl toolchain
-        run: sudo apt-get update && sudo apt-get install -y musl-tools cmake bison
+        run: sudo apt-get update && sudo apt-get install -y musl-tools cmake
+
+      # The same keys as the static job of ci.yaml. Restore only: save-if is false.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: static-${{ matrix.arch }}
+          key: ${{ matrix.target }}
+          save-if: false
 
       - name: Build
         env:
@@ -75,8 +99,20 @@ jobs:
           mkdir -p dist
           cp "$bin" dist/termenbox-server-${{ matrix.arch }}-linux
 
+      # The tmux build depends on the pinned sources only, not on the version: take the one the tmux job of ci.yaml saved
+      # (the same key), and build it here only when it is not there.
+      - name: Restore the bundled tmux built by CI
+        id: tmux
+        uses: actions/cache/restore@v4
+        with:
+          path: tmux-out
+          key: tmux-${{ matrix.arch }}-${{ hashFiles('.github/scripts/build-tmux.sh') }}
+
       - name: Build the bundled tmux (pinned sources, static, terminfo compiled in)
-        run: .github/scripts/build-tmux.sh tmux-out
+        if: steps.tmux.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get install -y bison
+          .github/scripts/build-tmux.sh tmux-out
 
       - name: Gate - tmux is static and runs with an empty PATH and no terminfo on the host
         run: |
@@ -106,11 +142,19 @@ jobs:
     name: Manifest, signature and publish
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # The signing key is the secret RELEASE_SIGNING_KEY of this environment, so a channel's key is only ever
     # available to a run of that channel (the build jobs above never see it).
     environment: ${{ inputs.channel }}
     permissions:
       contents: write
+    # The inputs reach the scripts as variables, never pasted into the script text.
+    env:
+      CHANNEL: ${{ inputs.channel }}
+      KID: ${{ inputs.kid }}
+      VERSION: ${{ inputs.version }}
+      TAG: ${{ inputs.tag }}
+      PUBLISH: ${{ inputs.publish }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -123,7 +167,7 @@ jobs:
           merge-multiple: true
 
       - name: Write the manifest
-        run: python3 .github/scripts/make_manifest.py "${{ inputs.version }}" dist dist/manifest.json --channel "${{ inputs.channel }}" --tag "${{ inputs.tag }}"
+        run: python3 .github/scripts/make_manifest.py "$VERSION" dist dist/manifest.json --channel "$CHANNEL" --tag "$TAG"
 
       - name: The manifest lists tmux for both architectures, with its notices
         run: |
@@ -143,23 +187,23 @@ jobs:
         run: |
           umask 077
           # A dry run never touches the real key, so it also works for a channel whose key is not set up yet.
-          if [ -n "$RELEASE_SIGNING_KEY" ] && [ "${{ inputs.publish }}" = true ]; then
+          if [ -n "$RELEASE_SIGNING_KEY" ] && [ "$PUBLISH" = true ]; then
             printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/release_key"
             cp packages/server/release-keys.txt "$RUNNER_TEMP/release-keys.txt"
-          elif [ "${{ inputs.publish }}" = true ]; then
-            echo "RELEASE_SIGNING_KEY is not set in the ${{ inputs.channel }} environment: refusing to publish an unsigned release"; exit 1
+          elif [ "$PUBLISH" = true ]; then
+            echo "RELEASE_SIGNING_KEY is not set in the $CHANNEL environment: refusing to publish an unsigned release"; exit 1
           else
             echo "::warning::dry run: signing with a throwaway key"
             ssh-keygen -q -t ed25519 -N '' -C throwaway -f "$RUNNER_TEMP/release_key"
-            bound=""; [ "${{ inputs.channel }}" = stable ] || bound=" channel=${{ inputs.channel }}"
-            echo "${{ inputs.kid }} $(cut -d' ' -f1,2 "$RUNNER_TEMP/release_key.pub")$bound" > "$RUNNER_TEMP/release-keys.txt"
+            bound=""; [ "$CHANNEL" = stable ] || bound=" channel=$CHANNEL"
+            echo "$KID $(cut -d' ' -f1,2 "$RUNNER_TEMP/release_key.pub")$bound" > "$RUNNER_TEMP/release-keys.txt"
           fi
           ssh-keygen -Y sign -n termenbox-release -f "$RUNNER_TEMP/release_key" dist/manifest.json
           rm -f "$RUNNER_TEMP/release_key"
           # the same check the installer makes with plain ssh-keygen
           # only the channel's own key counts: a key of another channel (the stable key in a beta environment) is refused here
-          grep -v '^#' "$RUNNER_TEMP/release-keys.txt" | awk -v kid="${{ inputs.kid }}" '$1 == kid && NF >= 3 { print "termenbox-release " $2 " " $3 }' > "$RUNNER_TEMP/allowed_signers"
-          [ -s "$RUNNER_TEMP/allowed_signers" ] || { echo "release-keys.txt has no key ${{ inputs.kid }}: add its public half (owner work, decision 0130)"; exit 1; }
+          grep -v '^#' "$RUNNER_TEMP/release-keys.txt" | awk -v kid="$KID" '$1 == kid && NF >= 3 { print "termenbox-release " $2 " " $3 }' > "$RUNNER_TEMP/allowed_signers"
+          [ -s "$RUNNER_TEMP/allowed_signers" ] || { echo "release-keys.txt has no key $KID: add its public half (owner work, decision 0130)"; exit 1; }
           ssh-keygen -Y verify -f "$RUNNER_TEMP/allowed_signers" -I termenbox-release -n termenbox-release -s dist/manifest.json.sig < dist/manifest.json
           echo "TERMENBOX_RELEASE_KEYS_FILE=$RUNNER_TEMP/release-keys.txt" >> "$GITHUB_ENV"
 
@@ -169,8 +213,8 @@ jobs:
           # this binary was built with the release version, so it follows the channel being released
           TERMENBOX_RELEASE_KEYS="$(cat "$TERMENBOX_RELEASE_KEYS_FILE")" dist/termenbox-server-x86_64-linux \
             --verify-release dist/manifest.json --release-sig dist/manifest.json.sig --release-arch aarch64 | tee "$RUNNER_TEMP/verify.txt"
-          grep -qx "kid=${{ inputs.kid }}" "$RUNNER_TEMP/verify.txt"
-          grep -qx "version=${{ inputs.version }}" "$RUNNER_TEMP/verify.txt"
+          grep -qx "kid=$KID" "$RUNNER_TEMP/verify.txt"
+          grep -qx "version=$VERSION" "$RUNNER_TEMP/verify.txt"
           # and refuses a changed manifest
           cp dist/manifest.json "$RUNNER_TEMP/changed.json" && echo ' ' >> "$RUNNER_TEMP/changed.json"
           if TERMENBOX_RELEASE_KEYS="$(cat "$TERMENBOX_RELEASE_KEYS_FILE")" dist/termenbox-server-x86_64-linux \
@@ -188,7 +232,6 @@ jobs:
         if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
           SHA: ${{ inputs.sha }}
           NOTES: ${{ inputs.notes }}
           PRERELEASE: ${{ inputs.prerelease }}

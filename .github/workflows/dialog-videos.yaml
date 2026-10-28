@@ -1,6 +1,6 @@
 name: Dialog Videos
 
-# DECISION-0141: captioned walkthroughs of the New workspace dialog, rendered on scripted data (packages/client/e2e/video).
+# DECISION-0148: captioned walkthroughs of the New workspace dialog, rendered on scripted data (packages/client/e2e/video).
 # Dispatch only: never on a push, a pull request or a schedule. No secrets and no model call.
 on:
   workflow_dispatch:

@@ -88,7 +88,7 @@
   $: acp = !!server && backend === 'acp';
   function pick(v: View) { wanted = v; saveView(viewStore(), serverId, template, v); }
   $: recentFolders = mergeRecentDirs(getRecentDirs(serverId), windows, `${serverId}/`);
-  $: taken = workspaces.filter(s => s.serverId === serverId).map(s => s.id);
+  $: taken = workspaces.filter(s => s.serverId === serverId).flatMap(s => [s.id, s.name]); // ids are the server's; the name is what is typed
   $: if (!nameTouched) name = suggestName(dir, template, taken);
   // Only tmux can start in a directory or run an agent; the sheet says so for other managers instead of ignoring them.
   $: tmux = !server || server.backends.length === 0 || backend === 'tmux';
@@ -166,7 +166,7 @@
 
 <style>
   /* Below 480 px a full-width bottom sheet, from 480 px a centred modal; one column at every width. The wrap is the
-     positioned parent of the layers (they must be inside the dialog, FACT-0058); only .scroll scrolls. */
+     positioned parent of the layers (they must be inside the dialog, FACT-0063); only .scroll scrolls. */
   dialog { margin: auto 0 0; width: 100%; max-width: none; max-height: var(--app-height, 100dvh); padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 16px 16px 0 0; background: var(--bg-secondary); color: var(--fg); }
   dialog[open] { display: flex; }
   dialog::backdrop { background: #0008; }
