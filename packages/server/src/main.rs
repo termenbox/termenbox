@@ -549,8 +549,7 @@ fn build_backend(
                     .with_legacy_state_file(args.config_dir.join("acp-sessions.json"))
                     .with_event_prefix(prefix),
             );
-            let restoring = backend.clone();
-            tokio::spawn(async move { restoring.restore().await });
+            backend.spawn_restore();
             Ok(backend)
         }
         "command" => {

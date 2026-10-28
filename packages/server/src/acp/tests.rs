@@ -141,18 +141,51 @@ fn fake_agent() {
         let id = m["id"].clone();
         let reply = |r: Value| put(json!({"jsonrpc": "2.0", "id": id, "result": r}));
         match m["method"].as_str().unwrap_or("") {
-            "initialize" => reply(json!({"protocolVersion": 1, "agentCapabilities": {
-                "loadSession": mode.contains("load"),
-                "sessionCapabilities": if mode.contains("resume") { json!({"resume": {}}) } else { json!({}) }
-            }})),
+            "initialize" => {
+                // Tests that watch whether this process is ended read its pid from beside the log.
+                let _ = std::fs::write(format!("{log_path}.pid"), std::process::id().to_string());
+                if mode.contains("grandchild") {
+                    // Never waited on: the test is about it outliving its parent.
+                    #[allow(clippy::zombie_processes)]
+                    let child = std::process::Command::new("sleep")
+                        .arg("60")
+                        .spawn()
+                        .unwrap();
+                    let _ =
+                        std::fs::write(format!("{log_path}.grandchild"), child.id().to_string());
+                }
+                reply(json!({"protocolVersion": 1, "agentCapabilities": {
+                    "loadSession": mode.contains("load"),
+                    "sessionCapabilities": if mode.contains("resume") { json!({"resume": {}}) } else { json!({}) }
+                }}))
+            }
             "session/new" if mode.contains("authfail") => put(json!({"jsonrpc": "2.0", "id": id,
                 "error": {"code": -32000, "message": "Authentication required"}})),
             "session/new" if mode.contains("modes") => reply(json!({"sessionId": "acp-1",
                 "modes": {"currentModeId": "ask", "availableModes": [
                     {"id": "ask", "name": "Ask", "description": "Ask first"}, {"id": "plan", "name": "Plan"}]}})),
+            "session/new" if mode.contains("slownew") => {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                reply(json!({"sessionId": "acp-1"}))
+            }
+            "session/new" if mode.contains("deaf") => {
+                reply(json!({"sessionId": "acp-1"}));
+                // Stops reading its input and asks for things nobody gave it, so the answers pile up.
+                for n in 1..=20_000u64 {
+                    put(
+                        json!({"jsonrpc": "2.0", "id": 9_000_000 + n, "method": "fs/read_text_file", "params": {}}),
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            }
             "session/new" => reply(json!({"sessionId": "acp-1"})),
             "session/set_mode" => reply(json!({})),
-            "session/resume" => reply(json!({})),
+            "session/resume" => {
+                if mode.contains("slowresume") {
+                    std::thread::sleep(std::time::Duration::from_millis(800));
+                }
+                reply(json!({}))
+            }
             "session/load" => {
                 update(
                     json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "REPLAYED"}}),
@@ -1677,4 +1710,114 @@ async fn a_panic_in_one_workspaces_reader_fails_that_workspace_and_frees_its_slo
     ));
     r.backend.kill("a").await.unwrap();
     r.backend.kill("b").await.unwrap();
+}
+
+fn pid_file(r: &Rig, ext: &str) -> Option<i32> {
+    std::fs::read_to_string(format!("{}.{ext}", r.log.display()))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Whether a process still runs (a zombie waiting to be reaped does not).
+fn alive(pid: i32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .map(|s| !s.rsplit(") ").next().unwrap_or("").starts_with('Z'))
+        .unwrap_or(false)
+}
+
+#[tokio::test]
+async fn an_agent_that_stops_reading_ends_its_workspace_instead_of_filling_memory() {
+    let r = rig_with("deaf", 2, tmp(), false);
+    r.create("a").await;
+    until("the overflow", || {
+        matches!(r.backend.status("a"), Some(WorkspaceStatus::Failed(_)))
+    })
+    .await;
+    let Some(WorkspaceStatus::Failed(why)) = r.backend.status("a") else {
+        panic!()
+    };
+    assert!(why.contains("stopped reading"), "{why}");
+    let pid = pid_file(&r, "pid").unwrap();
+    until("the agent to be ended", || !alive(pid)).await;
+    r.backend.kill("a").await.unwrap();
+}
+
+#[tokio::test]
+async fn ending_a_workspace_ends_what_its_agent_started() {
+    let r = rig("grandchild");
+    r.create("a").await;
+    let grandchild = pid_file(&r, "grandchild").unwrap();
+    assert!(alive(grandchild));
+    r.backend.kill("a").await.unwrap();
+    until("the agent's own process to be ended", || !alive(grandchild)).await;
+}
+
+#[tokio::test]
+async fn a_start_that_is_dropped_ends_the_agent_it_began() {
+    let r = rig("slownew");
+    let started = tokio::time::timeout(
+        Duration::from_millis(1500),
+        r.backend
+            .create_with("a", None, r.dir.to_str(), Some("fake")),
+    )
+    .await;
+    assert!(
+        started.is_err(),
+        "the start should still be waiting for the agent"
+    );
+    let pid = pid_file(&r, "pid").unwrap();
+    until("the agent to be ended", || !alive(pid)).await;
+    // Its slot and name are free again.
+    assert_eq!(r.backend.running(), 0);
+    assert!(r.backend.list().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_workspace_closed_while_it_is_being_restored_is_not_brought_back() {
+    let dir = tmp();
+    let a = rig_with("resume slowresume", 2, dir.clone(), true);
+    a.create("s1").await;
+    let b = rig_with("resume slowresume", 2, dir.clone(), true);
+    let backend = Arc::new(b.backend);
+    let restoring = backend.clone();
+    let restore = tokio::spawn(async move { restoring.restore().await });
+    until("the placeholder", || {
+        backend
+            .workspaces
+            .lock_or_recover()
+            .get("s1")
+            .is_some_and(|e| e.restoring)
+    })
+    .await;
+    backend.kill("s1").await.unwrap();
+    restore.await.unwrap();
+    assert!(backend.list().await.unwrap().is_empty());
+    assert_eq!(backend.status("s1"), None);
+    assert_eq!(backend.running(), 0);
+    assert_eq!(*backend.starting.lock_or_recover(), 0);
+    a.backend.kill("s1").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_failed_workspace_can_be_closed_and_started_again() {
+    let r = rig("");
+    r.create("a").await;
+    r.prompt("a", "crash").await;
+    until("the failure", || {
+        matches!(r.backend.status("a"), Some(WorkspaceStatus::Failed(_)))
+    })
+    .await;
+    r.backend.kill("a").await.unwrap();
+    r.create("a").await;
+    assert_eq!(r.backend.status("a"), Some(WorkspaceStatus::Running));
+    r.backend.kill("a").await.unwrap();
+}
+
+#[test]
+fn a_config_cannot_ask_for_more_event_log_than_a_small_server_holds() {
+    let e = AcpConfig::parse("max_sessions = 16\nevent_ring_bytes = 67108864\n").unwrap_err();
+    assert!(e.to_string().contains("at most"), "{e}");
+    assert!(AcpConfig::parse("max_sessions = 6\nevent_ring_bytes = 1048576\n").is_ok());
 }

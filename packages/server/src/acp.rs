@@ -15,10 +15,10 @@
 //! Text from the agent is untrusted (0095): lines are length-capped, chunks are buffered to a fixed size, and
 //! everything that reaches the hub is cleaned by `events::sanitize_kind`, after decoding. Nothing the agent says is
 //! audit-logged.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -58,6 +58,12 @@ impl<T> LockExt<T> for Mutex<T> {
 /// What the owner is told when a workspace's own task panicked. No panic text: that is in the server's log.
 const INTERNAL_FAILURE: &str =
     "An internal error stopped this workspace. Your other workspaces are not affected.";
+/// Lines waiting to be written to an agent's input. An agent that does not read its input would otherwise let this
+/// grow until the server is out of memory; at the limit the workspace ends instead.
+const STDIN_QUEUE: usize = 256;
+/// All the conversation rings together (`max_sessions` x `event_ring_bytes`) must fit this, so a config cannot ask
+/// for more than a small server can hold.
+const MAX_EVENT_RING_TOTAL: usize = 256 * 1024 * 1024;
 /// After the agent closes its output it gets this long to exit by itself, so its exit status is the one reported;
 /// then it is killed (a child that is still running with its output closed can never answer again).
 const EXIT_GRACE: Duration = Duration::from_secs(2);
@@ -210,6 +216,12 @@ impl AcpConfig {
         if !(64 * 1024..=64 * 1024 * 1024).contains(&cfg.event_ring_bytes) {
             return Err(anyhow!("event_ring_bytes must be 65536 to 67108864"));
         }
+        if cfg.max_sessions.saturating_mul(cfg.event_ring_bytes) > MAX_EVENT_RING_TOTAL {
+            return Err(anyhow!(
+                "max_sessions x event_ring_bytes must be at most {} bytes",
+                MAX_EVENT_RING_TOTAL
+            ));
+        }
         for (name, a) in &cfg.agents {
             if !valid_name(name) || a.command.is_empty() {
                 return Err(anyhow!("agent `{name}` needs a plain name and a command"));
@@ -229,6 +241,67 @@ impl AcpConfig {
             Ok(text) => Self::parse(&text),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(anyhow!("cannot read {}: {e}", path.display())),
+        }
+    }
+}
+
+/// Ends an agent and everything it started: the agent is the leader of its own process group.
+fn kill_group(pid: Option<u32>) {
+    if let Some(pid) = pid.and_then(|p| i32::try_from(p).ok()).filter(|p| *p > 1) {
+        // SAFETY: kill has no memory preconditions; a negative pid is the group, and `pid > 1` rules out "everything".
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+}
+
+/// Ends the agent's whole group when the reader task is over, however it ended: a panic, the exit of the agent
+/// (whatever it left running goes too) or the runtime dropping the task.
+struct GroupKill(Option<u32>);
+
+impl Drop for GroupKill {
+    fn drop(&mut self) {
+        kill_group(self.0);
+    }
+}
+
+/// A place counted against `max_sessions` while a workspace starts. Dropped on every way out of a start, a
+/// cancelled one and a panicking one included, so the cap cannot shrink for good.
+struct StartSlot<'a>(&'a Mutex<usize>);
+
+impl<'a> StartSlot<'a> {
+    /// Counts one more starting workspace. The caller has checked the cap under the same lock.
+    fn take(counter: &'a Mutex<usize>, held: &mut usize) -> Self {
+        *held += 1;
+        StartSlot(counter)
+    }
+
+    /// Adopts a slot that was already counted.
+    fn counted(counter: &'a Mutex<usize>) -> Self {
+        StartSlot(counter)
+    }
+}
+
+impl Drop for StartSlot<'_> {
+    fn drop(&mut self) {
+        let mut starting = self.0.lock_or_recover();
+        *starting = starting.saturating_sub(1);
+    }
+}
+
+/// Ends a freshly started agent unless the start finished: a start that is dropped (the connection that asked for it
+/// went away) would otherwise leave an agent nobody can reach.
+struct KillUnlessDone {
+    live: Arc<Live>,
+    done: bool,
+}
+
+impl Drop for KillUnlessDone {
+    fn drop(&mut self) {
+        if !self.done {
+            if let Some(k) = self.live.kill.lock_or_recover().take() {
+                let _ = k.send(());
+            }
         }
     }
 }
@@ -608,7 +681,9 @@ struct Live {
     inner: Mutex<Inner>,
     /// The stream's revision, for the connections that show this workspace.
     changed: watch::Sender<u64>,
-    out: mpsc::UnboundedSender<String>,
+    out: mpsc::Sender<String>,
+    /// Set when the input queue overflowed: the workspace then ends as failed, not as closed.
+    overflowed: AtomicBool,
     kill: Mutex<Option<oneshot::Sender<()>>>,
     /// Writes the state file (set by the backend). A turn opening or closing changes what a restart interrupts, so
     /// it is written then, not only when a workspace is made or closed.
@@ -664,7 +739,15 @@ impl Live {
     }
 
     fn send(&self, v: Value) {
-        let _ = self.out.send(v.to_string());
+        if let Err(mpsc::error::TrySendError::Full(_)) = self.out.try_send(v.to_string()) {
+            // The agent is not reading. Ending it here is the cost of a bounded queue; the first overflow does it.
+            if !self.overflowed.swap(true, Ordering::SeqCst) {
+                tracing::warn!(target: "acp", "an agent stopped reading its input; ending its workspace");
+                if let Some(k) = self.kill.lock_or_recover().take() {
+                    let _ = k.send(());
+                }
+            }
+        }
     }
 
     fn respond(&self, id: &Value, result: Value) {
@@ -891,7 +974,18 @@ fn spawn_agent(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .kill_on_drop(true);
+        .kill_on_drop(true)
+        // Its own group, so ending the agent ends what it started, and so a signal for the server's group misses it.
+        .process_group(0);
+    // SAFETY: only prctl, which is async-signal-safe. The agent dies with the server, so a restart never finds two
+    // agents for one conversation. The signal is tied to the thread that started it, which for this runtime is a
+    // worker that lives as long as the process.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            Ok(())
+        });
+    }
     for k in &profile.env_remove {
         cmd.env_remove(k);
     }
@@ -900,7 +994,8 @@ fn spawn_agent(
         .map_err(|e| anyhow!("cannot start the agent for {name}: {e}"))?;
     let mut stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
     let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
-    let (out, mut out_rx) = mpsc::unbounded_channel::<String>();
+    let pid = child.id();
+    let (out, mut out_rx) = mpsc::channel::<String>(STDIN_QUEUE);
     let (kill_tx, mut kill_rx) = oneshot::channel::<()>();
     let live = Arc::new(Live {
         saver: Mutex::new(None),
@@ -922,6 +1017,7 @@ fn spawn_agent(
             log: crate::event_log::EventLog::new("", crate::events::now_ms(), event_ring_bytes),
         }),
         out,
+        overflowed: AtomicBool::new(false),
         kill: Mutex::new(Some(kill_tx)),
     });
     let l = live.clone();
@@ -945,12 +1041,18 @@ fn spawn_agent(
     });
     let l = live.clone();
     let reader_task = tokio::spawn(async move {
+        let _group = GroupKill(pid);
         let mut reader = BufReader::new(stdout);
         loop {
             tokio::select! {
                 _ = &mut kill_rx => {
+                    kill_group(pid);
                     let _ = child.kill().await;
-                    l.finish(WorkspaceStatus::Ended);
+                    l.finish(if l.overflowed.load(Ordering::SeqCst) {
+                        WorkspaceStatus::Failed("the agent stopped reading its input".into())
+                    } else {
+                        WorkspaceStatus::Ended
+                    });
                     return;
                 }
                 line = read_bounded_line(&mut reader, MAX_LINE) => match line {
@@ -968,6 +1070,7 @@ fn spawn_agent(
         let exited = match tokio::time::timeout(EXIT_GRACE, child.wait()).await {
             Ok(r) => r,
             Err(_) => {
+                kill_group(pid);
                 let _ = child.kill().await;
                 child.wait().await
             }
@@ -1226,6 +1329,8 @@ pub struct AcpBackend {
     workspaces: Arc<Mutex<HashMap<String, Entry>>>,
     /// Workspaces being started, counted against the cap so two creates cannot both pass it.
     starting: Mutex<usize>,
+    /// Names closed while a restore was still starting them: the restore ends what it started instead of keeping it.
+    closed_while_restoring: Mutex<HashSet<String>>,
 }
 
 impl AcpBackend {
@@ -1238,6 +1343,7 @@ impl AcpBackend {
             event_prefix: String::new(),
             workspaces: Arc::new(Mutex::new(HashMap::new())),
             starting: Mutex::new(0),
+            closed_while_restoring: Mutex::new(HashSet::new()),
         }
     }
 
@@ -1339,6 +1445,11 @@ impl AcpBackend {
             format!("{}{name}", self.event_prefix),
             self.config.event_ring_bytes,
         )?;
+        // A start that is dropped before it finishes (its connection went away) ends the agent it began.
+        let mut unfinished = KillUnlessDone {
+            live: live.clone(),
+            done: false,
+        };
         let id = match handshake(&live, dir, resume, profile.elicitation_form).await {
             Ok(id) => id,
             Err(e) => {
@@ -1393,6 +1504,7 @@ impl AcpBackend {
             .map(|e| e.layout.clone())
             .unwrap_or_default();
         workspaces.insert(name.to_string(), Entry::running(agent, dir, live, layout));
+        unfinished.done = true;
         Ok(())
     }
 
@@ -1411,7 +1523,7 @@ impl AcpBackend {
             return;
         };
         let saved: Vec<Saved> = serde_json::from_str(&text).unwrap_or_default();
-        let mut todo: Vec<Saved> = Vec::new();
+        let mut todo: Vec<(Saved, StartSlot<'_>)> = Vec::new();
         {
             // The same order as `create_with`: `starting`, then `workspaces`.
             let mut starting = self.starting.lock_or_recover();
@@ -1444,21 +1556,42 @@ impl AcpBackend {
                     workspaces.insert(s.name.clone(), Entry::stopped(&s, why, true));
                 } else {
                     free -= 1;
+                    // Counted here under the lock; released when this start is over, however it ends.
                     *starting += 1;
+                    let slot = StartSlot::counted(&self.starting);
                     let mut e = Entry::stopped(&s, String::new(), true);
                     e.reason = None;
                     e.restoring = true;
                     workspaces.insert(s.name.clone(), e);
-                    todo.push(s);
+                    todo.push((s, slot));
                 }
             }
         }
-        for s in todo {
+        for (s, slot) in todo {
             // An entry that never started has no conversation to resume: it starts afresh.
             let resume = (!s.acp_id.is_empty()).then_some(s.acp_id.as_str());
             let started = self
                 .start(&s.name, &s.agent, &s.dir, resume, s.turn_open)
                 .await;
+            // Closed by its owner while it was starting: what started is ended, and nothing is put back.
+            if self
+                .closed_while_restoring
+                .lock_or_recover()
+                .remove(&s.name)
+            {
+                if started.is_ok() {
+                    let entry = self.workspaces.lock_or_recover().remove(&s.name);
+                    if let Some(k) = entry
+                        .and_then(|e| e.live)
+                        .and_then(|l| l.kill.lock_or_recover().take())
+                    {
+                        let _ = k.send(());
+                    }
+                }
+                drop(slot);
+                self.save();
+                continue;
+            }
             if let Err(e) = started {
                 let why = format!("Could not restore: {e}");
                 self.workspaces
@@ -1476,13 +1609,30 @@ impl AcpBackend {
                     );
                 }
             }
-            {
-                let mut starting = self.starting.lock_or_recover();
-                *starting = starting.saturating_sub(1);
-            }
+            drop(slot);
             self.save();
         }
         self.save();
+    }
+
+    /// Runs `restore` on its own task. A panic in it must not leave the workspaces it was bringing back "restoring"
+    /// for ever: they are shown as stopped, with the reason, and can be started again.
+    pub fn spawn_restore(self: &Arc<Self>) {
+        let me = self.clone();
+        let task = tokio::spawn(async move { me.restore().await });
+        let me = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = task.await {
+                if e.is_panic() {
+                    tracing::error!(target: "acp", "restoring the workspaces panicked");
+                    let mut workspaces = me.workspaces.lock_or_recover();
+                    for entry in workspaces.values_mut().filter(|e| e.restoring) {
+                        entry.restoring = false;
+                        entry.reason = Some("Could not restore: an internal error".into());
+                    }
+                }
+            }
+        });
     }
 
     /// The owner's tap on a permission prompt. `option_id` must be one the agent offered and that was shown
@@ -1674,6 +1824,7 @@ impl WorkspaceBackend for AcpBackend {
         if self.workspaces.lock_or_recover().contains_key(name) {
             return Err(anyhow!("A workspace with that name exists"));
         }
+        let slot;
         {
             let mut starting = self.starting.lock_or_recover();
             if self.running() + *starting >= self.config.max_sessions {
@@ -1686,13 +1837,10 @@ impl WorkspaceBackend for AcpBackend {
             if self.workspaces.lock_or_recover().contains_key(name) {
                 return Err(anyhow!("A workspace with that name exists"));
             }
-            *starting += 1;
+            slot = Some(StartSlot::take(&self.starting, &mut starting));
         }
         let r = self.start(name, agent, &dir, None, false).await;
-        {
-            let mut starting = self.starting.lock_or_recover();
-            *starting = starting.saturating_sub(1);
-        }
+        drop(slot);
         r?;
         self.save();
         Ok(())
@@ -1869,6 +2017,12 @@ impl WorkspaceBackend for AcpBackend {
             .lock_or_recover()
             .remove(id)
             .ok_or_else(|| anyhow!("Unknown workspace"))?;
+        if entry.restoring {
+            // Its agent is still being started by `restore`, which will find this and end it.
+            self.closed_while_restoring
+                .lock_or_recover()
+                .insert(id.to_string());
+        }
         if let Some(live) = entry.live {
             if let Some(k) = live.kill.lock_or_recover().take() {
                 let _ = k.send(());
