@@ -2,8 +2,9 @@
 id: diagnostics-never-include-secrets
 title: Problem reports never include secrets, session content or addresses
 status: active
+date: 2026-10-13
 governed-by: 0074,0144
-grounded-in: 0074
+grounded-in: [0074]
 derivation-note: A report is posted publicly on GitHub, so it must be safe to read by anyone. The server-built diagnostics bundle (0144) is held to the same rule.
 tags: [security, privacy, client]
 ---

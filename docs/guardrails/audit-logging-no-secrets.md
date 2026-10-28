@@ -2,8 +2,9 @@
 id: audit-logging-no-secrets
 title: Audit Logging Without Secrets
 status: active
+date: 2026-10-09
 governed-by: 0006,0009,0142
-grounded-in: 0008,0011
+grounded-in: [0008, 0011]
 derivation-note: SSH auth + crypto decisions require audit trail; secrets guardrail forbids logging secrets
 tags: [security, audit, logging, observability]
 ---

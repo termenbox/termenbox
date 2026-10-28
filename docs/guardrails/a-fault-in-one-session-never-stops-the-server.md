@@ -2,8 +2,9 @@
 id: a-fault-in-one-session-never-stops-the-server
 title: A fault in one session never stops the server, and a death always leaves a record
 status: active
+date: 2026-10-28
 governed-by: 0142,0143
-grounded-in: 0142,0143
+grounded-in: [0142, 0143]
 derivation-note: The owner wants maximum viability (0143); the 2026-10-28 incident left no evidence (fact 0061, 0142).
 tags: [server, agents, observability]
 ---
