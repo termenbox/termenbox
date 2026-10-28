@@ -31,4 +31,4 @@ The scrubber of fact 0062 can only find a name by its field or its shape, and a 
 
 ## Open
 
-Rename conflict between two devices is last write wins. A `from` field on `rename_workspace` (reject when the label changed meanwhile) was designed and not built.
+Rename conflict between two devices is last write wins, and the owner accepted that. A `from` field on `rename_workspace` (reject when the label changed meanwhile) was considered and rejected by the owner.
