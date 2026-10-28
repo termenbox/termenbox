@@ -1575,3 +1575,74 @@ fn replay_the_ring_size_is_a_config_value_with_a_checked_range() {
     assert!(AcpConfig::parse("event_ring_bytes = 100").is_err());
     assert!(AcpConfig::parse("event_ring_bytes = 99999999999").is_err());
 }
+
+/// Holds `lock` on a thread that panics, which poisons it.
+fn poison<T: Send + 'static>(lock: Arc<Mutex<T>>) {
+    let holder = lock.clone();
+    let _ = std::thread::spawn(move || {
+        let _held = holder.lock().unwrap();
+        panic!("a session panicked while holding its lock");
+    })
+    .join();
+    assert!(lock.is_poisoned());
+}
+
+#[tokio::test]
+async fn one_session_that_panics_under_its_lock_does_not_stop_the_others() {
+    let r = rig("");
+    r.create("a").await;
+    r.create("b").await;
+    let live = r
+        .backend
+        .workspaces
+        .lock_or_recover()
+        .get("a")
+        .unwrap()
+        .live
+        .clone()
+        .unwrap();
+    let holder = live.clone();
+    let _ = std::thread::spawn(move || {
+        let _held = holder.inner.lock().unwrap();
+        panic!("a session panicked while holding its lock");
+    })
+    .join();
+    assert!(live.inner.is_poisoned());
+    // Everything the whole server does with the table still works, and the other session still answers.
+    assert!(r.backend.list().await.unwrap().iter().any(|w| w.id == "b"));
+    let _ = r.backend.running();
+    assert!(r.backend.status("a").is_some());
+    r.prompt("b", "hello").await;
+    until("the other session answers", || {
+        r.kinds("b")
+            .iter()
+            .any(|k| matches!(k, EventKind::Message { .. }))
+            || !r.events("b").is_empty()
+    })
+    .await;
+    r.backend.kill("b").await.unwrap();
+    r.backend.kill("a").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_poisoned_workspace_table_is_still_served() {
+    let r = rig("");
+    r.create("a").await;
+    poison(r.backend.workspaces.clone());
+    assert!(r.backend.list().await.unwrap().iter().any(|w| w.id == "a"));
+    r.backend.kill("a").await.unwrap();
+}
+
+#[tokio::test]
+async fn the_state_file_is_written_whole_and_leaves_no_temporary() {
+    let dir = tmp();
+    let r = rig_with("", 2, dir.clone(), true);
+    r.create("a").await;
+    r.backend.save();
+    let text = std::fs::read_to_string(dir.join("workspaces.json")).unwrap();
+    let saved: Vec<Value> = serde_json::from_str(&text).unwrap();
+    assert_eq!(saved.len(), 1);
+    assert!(!dir.join("workspaces.json.tmp").exists());
+    assert!(!dir.join("workspaces.json.json.tmp").exists());
+    r.backend.kill("a").await.unwrap();
+}

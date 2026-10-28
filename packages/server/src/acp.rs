@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use agent_client_protocol_schema::v1 as acp;
@@ -41,6 +41,19 @@ use crate::backend::{valid_dir, valid_name, WorkspaceBackend};
 use crate::events::EventHub;
 use crate::layout::Layout;
 use crate::pty::Attachment;
+
+/// A lock whose holder panicked still opens. Poisoning would hand that one session's panic to every later caller of
+/// the lock, and the global workspace table is one of them (decision 0143): the session fails on its own, the rest
+/// carry on.
+trait LockExt<T> {
+    fn lock_or_recover(&self) -> MutexGuard<'_, T>;
+}
+
+impl<T> LockExt<T> for Mutex<T> {
+    fn lock_or_recover(&self) -> MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
 
 /// One line from the agent is never longer than this; a longer one is dropped whole.
 const MAX_LINE: usize = 1 << 20;
@@ -578,7 +591,7 @@ struct Live {
 
 impl Live {
     fn persist(&self) {
-        let save = self.saver.lock().unwrap().clone();
+        let save = self.saver.lock_or_recover().clone();
         if let Some(save) = save {
             save();
         }
@@ -593,7 +606,7 @@ impl Live {
     /// Runs `f` on the stream and wakes the connections that show this workspace.
     fn stream<R>(&self, f: impl FnOnce(&mut Stream) -> R) -> R {
         let (r, rev) = {
-            let mut g = self.inner.lock().unwrap();
+            let mut g = self.inner.lock_or_recover();
             let r = f(&mut g.stream);
             (r, g.stream.rev())
         };
@@ -640,7 +653,7 @@ impl Live {
     ) -> Result<Value> {
         let (tx, rx) = oneshot::channel();
         let id = {
-            let mut g = self.inner.lock().unwrap();
+            let mut g = self.inner.lock_or_recover();
             if g.status != WorkspaceStatus::Running {
                 return Err(anyhow!("the agent is not running"));
             }
@@ -651,9 +664,14 @@ impl Live {
         };
         self.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
         let reply = match timeout {
-            Some(t) => tokio::time::timeout(t, rx)
-                .await
-                .map_err(|_| anyhow!("the agent did not answer {method}"))?,
+            Some(t) => match tokio::time::timeout(t, rx).await {
+                Ok(reply) => reply,
+                Err(_) => {
+                    // The reply may still come; with nobody waiting for it the entry would stay for good.
+                    self.inner.lock_or_recover().waiting.remove(&id);
+                    return Err(anyhow!("the agent did not answer {method}"));
+                }
+            },
             None => rx.await,
         };
         match reply {
@@ -674,7 +692,7 @@ impl Live {
         match (method.as_str(), id) {
             ("", Some(id)) => {
                 let Some(n) = id.as_u64() else { return };
-                let tx = self.inner.lock().unwrap().waiting.remove(&n);
+                let tx = self.inner.lock_or_recover().waiting.remove(&n);
                 if let Some(tx) = tx {
                     let _ = tx.send(match v.get("error") {
                         Some(e) => Err(e.clone()),
@@ -695,7 +713,7 @@ impl Live {
 
     fn on_update(&self, update: &Value) {
         let (kinds, rev) = {
-            let mut g = self.inner.lock().unwrap();
+            let mut g = self.inner.lock_or_recover();
             if g.replaying {
                 return;
             }
@@ -712,7 +730,7 @@ impl Live {
     fn on_permission(&self, rpc_id: Value, params: &Value) {
         let options = permission_options(params);
         let prompt_id = {
-            let mut g = self.inner.lock().unwrap();
+            let mut g = self.inner.lock_or_recover();
             if g.perms.len() >= MAX_PENDING {
                 drop(g);
                 return self.respond(&rpc_id, cancelled());
@@ -750,8 +768,7 @@ impl Live {
     fn cancel_pending(&self) {
         let perms: Vec<Perm> = self
             .inner
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .perms
             .drain()
             .map(|(_, p)| p)
@@ -765,7 +782,7 @@ impl Live {
     /// The process is gone (or was told to go): nothing answers any more.
     fn finish(&self, status: WorkspaceStatus) {
         let was = {
-            let mut g = self.inner.lock().unwrap();
+            let mut g = self.inner.lock_or_recover();
             g.waiting.clear();
             g.perms.clear();
             std::mem::replace(&mut g.status, status.clone())
@@ -994,7 +1011,7 @@ async fn handshake(
             Ok(id.to_string())
         }
         Some(id) if caps.load_session => {
-            live.inner.lock().unwrap().replaying = true;
+            live.inner.lock_or_recover().replaying = true;
             let r = live
                 .request(
                     "session/load",
@@ -1003,7 +1020,7 @@ async fn handshake(
                 )
                 .await;
             let r = {
-                let mut g = live.inner.lock().unwrap();
+                let mut g = live.inner.lock_or_recover();
                 g.replaying = false;
                 g.mapper = UpdateMapper::default();
                 r?
@@ -1026,7 +1043,7 @@ fn running_in(workspaces: &HashMap<String, Entry>) -> usize {
         .filter(|e| {
             e.live
                 .as_ref()
-                .map(|l| l.inner.lock().unwrap().status == WorkspaceStatus::Running)
+                .map(|l| l.inner.lock_or_recover().status == WorkspaceStatus::Running)
                 .unwrap_or(false)
         })
         .count()
@@ -1036,13 +1053,12 @@ fn running_in(workspaces: &HashMap<String, Entry>) -> usize {
 /// why they are not running.
 fn write_state(path: &std::path::Path, workspaces: &Mutex<HashMap<String, Entry>>) {
     let mut saved: Vec<Saved> = workspaces
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .iter()
         .filter_map(|(name, e)| {
             let (acp_id, reason, retry, turn_open) = match &e.live {
                 Some(l) => {
-                    let g = l.inner.lock().unwrap();
+                    let g = l.inner.lock_or_recover();
                     // A crashed or ended agent is not kept, as before.
                     if g.status != WorkspaceStatus::Running {
                         return None;
@@ -1071,7 +1087,11 @@ fn write_state(path: &std::path::Path, workspaces: &Mutex<HashMap<String, Entry>
         .collect();
     saved.sort_by(|a, b| a.name.cmp(&b.name));
     if let Ok(text) = serde_json::to_string(&saved) {
-        let _ = std::fs::write(path, text);
+        // Whole or not at all: a crash in the middle of a plain write would leave a file no restore can read.
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, text).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
     }
 }
 
@@ -1194,17 +1214,17 @@ impl AcpBackend {
 
     #[allow(dead_code)] // the wire step that carries a tap or an interrupt from a client calls this
     pub fn status(&self, id: &str) -> Option<WorkspaceStatus> {
-        let g = self.workspaces.lock().unwrap();
+        let g = self.workspaces.lock_or_recover();
         let e = g.get(id)?;
         Some(match &e.live {
-            Some(l) => l.inner.lock().unwrap().status.clone(),
+            Some(l) => l.inner.lock_or_recover().status.clone(),
             None if e.restoring => WorkspaceStatus::Running,
             None => WorkspaceStatus::Failed(e.reason.clone().unwrap_or_default()),
         })
     }
 
     fn live(&self, id: &str) -> Result<Arc<Live>> {
-        let g = self.workspaces.lock().unwrap();
+        let g = self.workspaces.lock_or_recover();
         let e = g.get(id).ok_or_else(|| anyhow!("Unknown workspace"))?;
         match &e.live {
             Some(l) => Ok(l.clone()),
@@ -1215,10 +1235,10 @@ impl AcpBackend {
 
     /// The windows of workspace `id` and its ACP `sessionId`.
     pub fn layout(&self, id: &str) -> Result<(Layout, Option<String>)> {
-        let g = self.workspaces.lock().unwrap();
+        let g = self.workspaces.lock_or_recover();
         let e = g.get(id).ok_or_else(|| anyhow!("Unknown workspace"))?;
         let session = match &e.live {
-            Some(l) => l.inner.lock().unwrap().acp_id.clone(),
+            Some(l) => l.inner.lock_or_recover().acp_id.clone(),
             None => e.acp_id.clone(),
         };
         Ok((e.layout.clone(), Some(session).filter(|s| !s.is_empty())))
@@ -1227,7 +1247,7 @@ impl AcpBackend {
     /// Changes the windows of workspace `id` and writes the state file; an error from `f` leaves them as they were.
     pub fn edit_layout(&self, id: &str, f: impl FnOnce(&mut Layout) -> Result<()>) -> Result<()> {
         {
-            let mut g = self.workspaces.lock().unwrap();
+            let mut g = self.workspaces.lock_or_recover();
             let e = g.get_mut(id).ok_or_else(|| anyhow!("Unknown workspace"))?;
             let mut next = e.layout.clone();
             f(&mut next)?;
@@ -1243,7 +1263,7 @@ impl AcpBackend {
     }
 
     fn running(&self) -> usize {
-        running_in(&self.workspaces.lock().unwrap())
+        running_in(&self.workspaces.lock_or_recover())
     }
 
     async fn start(
@@ -1271,7 +1291,7 @@ impl AcpBackend {
         let id = match handshake(&live, dir, resume, profile.elicitation_form).await {
             Ok(id) => id,
             Err(e) => {
-                if let Some(k) = live.kill.lock().unwrap().take() {
+                if let Some(k) = live.kill.lock_or_recover().take() {
                     let _ = k.send(());
                 }
                 // The agent refused `session/new` (gemini: -32000 when not logged in): say what to do about it.
@@ -1285,13 +1305,13 @@ impl AcpBackend {
             }
         };
         {
-            let mut g = live.inner.lock().unwrap();
+            let mut g = live.inner.lock_or_recover();
             g.log.set_session(&id);
             g.acp_id = id;
         }
         if let Some(path) = self.state_file.clone() {
             let workspaces = self.workspaces.clone();
-            *live.saver.lock().unwrap() = Some(Arc::new(move || write_state(&path, &workspaces)));
+            *live.saver.lock_or_recover() = Some(Arc::new(move || write_state(&path, &workspaces)));
         }
         if resume.is_some() {
             // `session/load` replays are not shown (they would arrive as one burst), so say what is missing.
@@ -1315,7 +1335,7 @@ impl AcpBackend {
         if let Some(hub) = &self.hub {
             hub.set_agent(&format!("{}{name}", self.event_prefix), agent);
         }
-        let mut workspaces = self.workspaces.lock().unwrap();
+        let mut workspaces = self.workspaces.lock_or_recover();
         // A restore started this workspace from a placeholder that holds its saved windows.
         let layout = workspaces
             .get(name)
@@ -1343,8 +1363,8 @@ impl AcpBackend {
         let mut todo: Vec<Saved> = Vec::new();
         {
             // The same order as `create_with`: `starting`, then `workspaces`.
-            let mut starting = self.starting.lock().unwrap();
-            let mut workspaces = self.workspaces.lock().unwrap();
+            let mut starting = self.starting.lock_or_recover();
+            let mut workspaces = self.workspaces.lock_or_recover();
             let mut free = self
                 .config
                 .max_sessions
@@ -1391,8 +1411,7 @@ impl AcpBackend {
             if let Err(e) = started {
                 let why = format!("Could not restore: {e}");
                 self.workspaces
-                    .lock()
-                    .unwrap()
+                    .lock_or_recover()
                     .insert(s.name.clone(), Entry::stopped(&s, why, true));
                 if let Some(hub) = &self.hub {
                     hub.report(
@@ -1406,7 +1425,10 @@ impl AcpBackend {
                     );
                 }
             }
-            *self.starting.lock().unwrap() -= 1;
+            {
+                let mut starting = self.starting.lock_or_recover();
+                *starting = starting.saturating_sub(1);
+            }
             self.save();
         }
         self.save();
@@ -1422,7 +1444,7 @@ impl AcpBackend {
     ) -> Result<()> {
         let live = self.live(id)?;
         {
-            let mut g = live.inner.lock().unwrap();
+            let mut g = live.inner.lock_or_recover();
             let perm = g
                 .perms
                 .get(prompt_id)
@@ -1456,7 +1478,7 @@ impl AcpBackend {
         info_seen: u64,
     ) -> Result<(AcpView, u64)> {
         let (live, agent, dir, restoring, reason) = {
-            let g = self.workspaces.lock().unwrap();
+            let g = self.workspaces.lock_or_recover();
             let e = g.get(id).ok_or_else(|| anyhow!("Unknown workspace"))?;
             (
                 e.live.clone(),
@@ -1468,7 +1490,7 @@ impl AcpBackend {
         };
         match live {
             Some(l) => {
-                let mut g = l.inner.lock().unwrap();
+                let mut g = l.inner.lock_or_recover();
                 Ok(g.stream.view(id, after, epoch, info_seen))
             }
             None => {
@@ -1495,7 +1517,7 @@ impl AcpBackend {
     pub async fn set_mode(&self, id: &str, mode: &str) -> Result<()> {
         let live = self.live(id)?;
         let (via, ids, acp_id) = {
-            let g = live.inner.lock().unwrap();
+            let g = live.inner.lock_or_recover();
             (
                 g.stream.mode_via().clone(),
                 g.stream.mode_ids(),
@@ -1539,7 +1561,7 @@ impl AcpBackend {
     pub async fn interrupt(&self, id: &str) -> Result<()> {
         let live = self.live(id)?;
         live.cancel_pending();
-        let acp_id = live.inner.lock().unwrap().acp_id.clone();
+        let acp_id = live.inner.lock_or_recover().acp_id.clone();
         live.send(json!({
             "jsonrpc": "2.0", "method": "session/cancel",
             "params": wire(&acp::CancelNotification::new(acp_id.clone()))
@@ -1557,8 +1579,7 @@ impl WorkspaceBackend for AcpBackend {
     async fn list(&self) -> Result<Vec<WorkspaceInfo>> {
         let mut v: Vec<WorkspaceInfo> = self
             .workspaces
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .iter()
             .map(|(name, e)| WorkspaceInfo {
                 id: name.clone(),
@@ -1599,11 +1620,11 @@ impl WorkspaceBackend for AcpBackend {
             Some(_) => return Err(anyhow!("The directory must be an absolute path")),
             None => std::env::var("HOME").unwrap_or_else(|_| "/".into()),
         };
-        if self.workspaces.lock().unwrap().contains_key(name) {
+        if self.workspaces.lock_or_recover().contains_key(name) {
             return Err(anyhow!("A workspace with that name exists"));
         }
         {
-            let mut starting = self.starting.lock().unwrap();
+            let mut starting = self.starting.lock_or_recover();
             if self.running() + *starting >= self.config.max_sessions {
                 return Err(anyhow!(
                     "At most {} agent workspaces run at once on this server",
@@ -1611,13 +1632,16 @@ impl WorkspaceBackend for AcpBackend {
                 ));
             }
             // A restore holds this lock while it takes the names it is bringing back.
-            if self.workspaces.lock().unwrap().contains_key(name) {
+            if self.workspaces.lock_or_recover().contains_key(name) {
                 return Err(anyhow!("A workspace with that name exists"));
             }
             *starting += 1;
         }
         let r = self.start(name, agent, &dir, None, false).await;
-        *self.starting.lock().unwrap() -= 1;
+        {
+            let mut starting = self.starting.lock_or_recover();
+            *starting = starting.saturating_sub(1);
+        }
         r?;
         self.save();
         Ok(())
@@ -1635,7 +1659,7 @@ impl WorkspaceBackend for AcpBackend {
             return Err(anyhow!("The message is empty or too long"));
         }
         let acp_id = {
-            let mut g = live.inner.lock().unwrap();
+            let mut g = live.inner.lock_or_recover();
             if g.status != WorkspaceStatus::Running {
                 return Err(anyhow!("The agent is not running"));
             }
@@ -1668,7 +1692,7 @@ impl WorkspaceBackend for AcpBackend {
                 )
                 .await;
             let tail = {
-                let mut g = live.inner.lock().unwrap();
+                let mut g = live.inner.lock_or_recover();
                 g.turn = false;
                 // A turn that ended drops whatever it had open.
                 g.perms.clear();
@@ -1694,7 +1718,7 @@ impl WorkspaceBackend for AcpBackend {
                     );
                 }
             }
-            if live.inner.lock().unwrap().status != WorkspaceStatus::Running {
+            if live.inner.lock_or_recover().status != WorkspaceStatus::Running {
                 return;
             }
             // A result whose stop reason does not decode ends the turn as `Idle`, without a notice.
@@ -1730,7 +1754,7 @@ impl WorkspaceBackend for AcpBackend {
     }
 
     fn acp_watch(&self, id: &str) -> Result<watch::Receiver<u64>> {
-        let g = self.workspaces.lock().unwrap();
+        let g = self.workspaces.lock_or_recover();
         let e = g.get(id).ok_or_else(|| anyhow!("Unknown workspace"))?;
         Ok(match &e.live {
             Some(l) => l.changed.subscribe(),
@@ -1756,7 +1780,7 @@ impl WorkspaceBackend for AcpBackend {
         epoch: Option<u64>,
     ) -> Result<crate::event_log::Replay> {
         let live = self.live(id)?;
-        let g = live.inner.lock().unwrap();
+        let g = live.inner.lock_or_recover();
         Ok(g.log.resume(after, epoch))
     }
 
@@ -1779,12 +1803,11 @@ impl WorkspaceBackend for AcpBackend {
     async fn kill(&self, id: &str) -> Result<()> {
         let entry = self
             .workspaces
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .remove(id)
             .ok_or_else(|| anyhow!("Unknown workspace"))?;
         if let Some(live) = entry.live {
-            if let Some(k) = live.kill.lock().unwrap().take() {
+            if let Some(k) = live.kill.lock_or_recover().take() {
                 let _ = k.send(());
             }
         }

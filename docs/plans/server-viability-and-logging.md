@@ -28,11 +28,12 @@ Context: `packages/server/src/acp.rs`, `acp_stream.rs`, `backend.rs`, `event_log
 Do: List every shared lock and every spawned task in the ACP path with file:line, who can panic while holding it, and a recommended fix (parking_lot, catch_unwind at the task root, bounded channel). Write the result to `docs/plans/server-viability-and-logging-audit.md`. Change no code.
 Done-when: the audit file exists with a table covering each of the four source files above.
 
-### 2.2 Supervise each ACP session — [ ]
+### 2.2 Supervise each ACP session — [~]
 Class: implement · Needs: 1.1, 2.1 · Check: `scripts/dev.sh cargo test -p termenbox-server supervis`
 Context: Decision 0143 and guardrail `a-fault-in-one-session-never-stops-the-server`. Today a failed session surfaces as notices in `acp.rs` (`st.notice("error", ...)`); a workspace not running is kept "with why" (`acp.rs` ~line 1052). The audit (2.1) names the fixes.
 Do: Run each session's tasks under a supervisor that catches panics (`catch_unwind` on the task root / join handle result), marks the workspace `failed` with a reason code (no text), logs it with the session id, kills the agent child, and offers the existing restart path. Apply the audit's lock fixes. Add a test hook to panic inside one session.
 Done-when: a test with two sessions panics one and the other still answers a prompt; the failed one reports `failed` and can be restarted.
+Progress: part A done (audit acp.rs #1, #6, #11 saturating, #12, #15): `lock_or_recover` on every session and table lock, `starting` never underflows, a timed-out request is removed from `waiting`, the state file is written via a temp file and rename; tests `one_session_that_panics_under_its_lock_does_not_stop_the_others`, `a_poisoned_workspace_table_is_still_served`, `the_state_file_is_written_whole_and_leaves_no_temporary`. Part B left: unwind guard on the reader task (#3), turn reset and prompt-task panic (#7), bounded stdin queue (#2), kill after stdout closes (#4), kill-during-restore tombstone (#8), process group (#9), RAII `starting` guard (#11), failed reason on a session panic and restart.
 
 ### 2.3 Safe-mode restore after repeated unclean exits — [ ]
 Class: implement · Needs: 1.3, 2.2 · Check: `scripts/dev.sh cargo test -p termenbox-server safe_mode`
