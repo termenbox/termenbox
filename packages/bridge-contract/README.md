@@ -21,19 +21,29 @@ cargo test        # runs ../vectors/*.json on two storages, plus unit tests
 | `Storage` (trait, `Send + Sync`, `&self`) | `append_batch` (atomic, durable on return), `read_log`, `sessions`, and the client-key registry (`register_key`, `key_material`). `MemStorage` is the reference implementation; the tests also run a file-backed one (`tests/common/mod.rs`: JSON lines, `fsync` per batch). |
 | `Verifier` (trait, `Send + Sync`) | Proof-of-possession check over `(key material, message, signature)`. `HmacVerifier` is the stand-in used by the tests and vectors; a consumer plugs in a real signature scheme and registers public keys as the key material. The signed message is `request_message(sid, nonce, seq, hash)`. |
 | `Clock` (trait, `Send + Sync`) | `SystemClock` for production, `FakeClock` for tests. |
-| `Config` | `T_call <= T_human <= T_detach` is checked by `Config::new`, `Bridge::new` and the profiles `Config::interactive_short()` and `Config::persistent()`. |
+| `Config` | `T_call <= T_human` and `T_detach <= T_total` are checked by `Config::new`, `Bridge::new` and the profiles `Config::interactive_short()` and `Config::persistent()`. |
 | `Bridge` | `Send`. Methods take `&mut self`; share one across threads as `Arc<Mutex<Bridge>>` (the tests do), or one bridge per session. |
 
 The bridge keeps nothing a restart cannot rebuild from the `Storage`, except
 the challenge nonces, which are volatile by design (I11b).
 
+## Configuration beyond the timers
+
+`Config::with_detached_calls(policy, allow)` selects what a call that arrives
+with no escalation pending while no client is attached gets (G1): `Refuse`
+(default), `Queue` (held until answered after re-attach) or `Forward` (an
+allowlisted, in-scope call is forwarded at once). `Bridge::delivered` and
+`Bridge::completed` record the runtime's acknowledgement; a drained call that
+was not delivered is forwarded again by a bridge instance that has not yet
+forwarded it, when the session is back in `(Att, None)`.
+
 ## What it checks
 
-`tests/vectors.rs` consumes the same `../vectors/V01.json` ... `V28.json` that
+`tests/vectors.rs` consumes the same `../vectors/V01.json` ... `V40.json` that
 `../run_vectors.py` runs against the Python bridge, once through `MemStorage`
 and once through the file-backed storage. The vectors compare committed event
 kinds, the final cell, the scope version, the queue, the forwarded calls, the
-client set and the number of revert requests. All 28 pass on both storages.
+client set, the quarantine flag and the number of revert requests. Every vector passes on both storages.
 Further tests check that `Bridge`, the storages, the clocks and the verifier
 are `Send` (and `Sync`), and that a bridge shared behind a mutex serves
 sessions from several threads. As a sanity check, deliberately breaking the

@@ -48,21 +48,40 @@ struct Runner {
 }
 
 fn config_of(v: &Value) -> Result<Config> {
-    let mut c = (Config::default().t_detach, None, None, 900.0, 60.0, 64usize);
+    let mut c = (
+        Config::default().t_detach,
+        None,
+        None,
+        None,
+        900.0,
+        60.0,
+        64usize,
+    );
+    let (mut policy, mut allow) = (DetachedCalls::Refuse, Vec::<String>::new());
     if let Some(m) = v.as_object() {
         for (k, x) in m {
             match k.as_str() {
                 "t_detach" => c.0 = x.as_f64().unwrap(),
                 "t_human" => c.1 = Some(x.as_f64().unwrap()),
                 "t_call" => c.2 = Some(x.as_f64().unwrap()),
-                "t_approve" => c.3 = x.as_f64().unwrap(),
-                "t_nonce" => c.4 = x.as_f64().unwrap(),
-                "q_max" => c.5 = x.as_u64().unwrap() as usize,
+                "t_total" => c.3 = Some(x.as_f64().unwrap()),
+                "t_approve" => c.4 = x.as_f64().unwrap(),
+                "t_nonce" => c.5 = x.as_f64().unwrap(),
+                "q_max" => c.6 = x.as_u64().unwrap() as usize,
+                "detached_calls" => {
+                    policy = match x.as_str().unwrap() {
+                        "refuse" => DetachedCalls::Refuse,
+                        "queue" => DetachedCalls::Queue,
+                        "forward" => DetachedCalls::Forward,
+                        other => panic!("unknown detached_calls {other}"),
+                    }
+                }
+                "detached_allow" => allow = strings(x),
                 other => panic!("unknown config key {other}"),
             }
         }
     }
-    Config::new(c.0, c.1, c.2, c.3, c.4, c.5)
+    Ok(Config::new(c.0, c.1, c.2, c.3, c.4, c.5, c.6)?.with_detached_calls(policy, allow))
 }
 
 fn strings(v: &Value) -> Vec<String> {
@@ -212,6 +231,12 @@ impl Runner {
                     a.get("content"),
                 )
                 .map(|_| ()),
+            "delivered" => self.bridge.delivered(&sid, a["key"].as_str().unwrap()),
+            "completed" => self.bridge.completed(
+                &sid,
+                a["key"].as_str().unwrap(),
+                a["result_hash"].as_str().unwrap_or(""),
+            ),
             "narrow" => self
                 .bridge
                 .narrow_authority_scope(&sid, &strings(&a["scope"])),
@@ -351,6 +376,14 @@ fn run_vector(vec: &Value, storage: Arc<dyn TestStorage>) -> Vec<String> {
             fails.push(format!("clients {got:?} != {c}"));
         }
     }
+    if let Some(q) = expect.get("quarantined") {
+        if r.bridge.is_quarantined(&r.sid) != q.as_bool().unwrap() {
+            fails.push(format!(
+                "quarantined {} != {q}",
+                r.bridge.is_quarantined(&r.sid)
+            ));
+        }
+    }
     if let Some(n) = expect.get("reverts") {
         if r.bridge.revert_requests.len() as u64 != n.as_u64().unwrap() {
             fails.push(format!("reverts {} != {n}", r.bridge.revert_requests.len()));
@@ -485,15 +518,21 @@ fn a_shared_bridge_serves_sessions_from_several_threads() {
 #[test]
 fn default_config_satisfies_the_timer_bounds() {
     let c = Config::default();
-    assert!(c.t_call <= c.t_human && c.t_human <= c.t_detach);
-    assert_eq!((c.t_detach, c.t_human, c.t_call), (1800.0, 1800.0, 1800.0));
+    assert!(c.t_call <= c.t_human && c.t_detach <= c.t_total);
+    assert_eq!(
+        (c.t_detach, c.t_human, c.t_call, c.t_total),
+        (1800.0, 1800.0, 1800.0, 7200.0)
+    );
     let p = Config::persistent();
     assert_eq!(
         (p.t_detach, p.t_human, p.t_call),
         (604_800.0, 604_800.0, 604_800.0)
     );
-    assert!(Config::new(1800.0, Some(3600.0), None, 900.0, 60.0, 64).is_err());
-    assert!(Config::new(1800.0, Some(600.0), Some(900.0), 900.0, 60.0, 64).is_err());
+    assert_eq!(p.t_total, 28.0 * 86_400.0);
+    // T_human may exceed T_detach; T_call may not exceed T_human; T_total >= T_detach.
+    assert!(Config::new(1800.0, Some(3600.0), None, None, 900.0, 60.0, 64).is_ok());
+    assert!(Config::new(1800.0, Some(600.0), Some(900.0), None, 900.0, 60.0, 64).is_err());
+    assert!(Config::new(1800.0, None, None, Some(900.0), 900.0, 60.0, 64).is_err());
 }
 
 #[test]

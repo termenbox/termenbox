@@ -7,19 +7,23 @@ from `session`, applies `actions` in order, then checks `expect`.
 
 ```
 { "id", "title", "covers": [...],
-  "config":  { t_detach, t_human, t_call, t_approve, t_nonce, q_max }   // seconds / count; optional, defaults below
+  "config":  { t_detach, t_human, t_call, t_total, t_approve, t_nonce, q_max,
+               detached_calls, detached_allow }   // seconds / count; optional, defaults below
   "session": { session_id, principal_id, authority_scope, client_key_id },
   "actions": [ {"do": ..., ...} ],
   "expect":  { "events": [kinds], "cell": [...], "scope_version": n,
                "queue": [keys], "forwarded": [keys], "clients": [key ids],
-               "reverts": n, "last_event_payload": {k: v} }   // or {"config_error": true}
+               "quarantined": bool, "reverts": n, "last_event_payload": {k: v} }   // or {"config_error": true}
 }
 ```
 
-Defaults: `t_detach` 1800, `t_human` = `t_detach`, `t_call` = `t_detach`,
-`t_approve` 900, `t_nonce` 60, `q_max` 64. The clock starts at 1000 and moves
+Defaults: `t_detach` 1800, `t_human` = `t_detach`, `t_call` = `t_human`,
+`t_total` = 4 x `t_detach`, `t_approve` 900, `t_nonce` 60, `q_max` 64. The clock starts at 1000 and moves
 only on `advance`. `config_error: true` means constructing the bridge with
-`config` must fail (`T_call <= T_human <= T_detach` is a MUST).
+`config` must fail (`T_call <= T_human` and `T_detach <= T_total` are MUSTs;
+`T_human` may exceed `T_detach`). `quarantined: true` means the session is
+frozen by a chain failure: its cell is the last one it had, and it accepts no
+operation.
 
 `cell` is `["Att"|"Det"|"Res", "None"|"Pend"]`, or `["Terminated"]`.
 `events` is the whole committed log of the session, kinds only, in order.
@@ -51,6 +55,8 @@ or `disconnect` names it; its next request acknowledges that last event.
 | `restart` | `downtime?` | crash the process, let `downtime` seconds pass with no timer evaluated, recover from the durable log |
 | `tamper_log` | `index`, `field: "prev_hash"` | corrupt the stored event at `index` |
 | `terminate` | | end the session |
+| `delivered` | `key` | the runtime acknowledges receipt of a forwarded call |
+| `completed` | `key`, `result_hash?` | the runtime reports that a call finished |
 
 Common optional fields on any action: `error: true` (the action MUST be
 refused; default is that it MUST succeed) and `then_cell` (assert the cell

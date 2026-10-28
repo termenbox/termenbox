@@ -1,0 +1,50 @@
+{
+  "id": "V29",
+  "title": "Chain failure during a re-attach quarantines the session",
+  "covers": [
+    "I5",
+    "quarantine"
+  ],
+  "session": {
+    "session_id": "sess-29",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "tamper_log",
+      "index": 1,
+      "field": "prev_hash"
+    },
+    {
+      "do": "reattach",
+      "error": true
+    },
+    {
+      "do": "advance",
+      "seconds": 100000
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "RESUME_STARTED",
+      "RESUME_FAILED"
+    ],
+    "cell": [
+      "Res",
+      "None"
+    ],
+    "quarantined": true,
+    "scope_version": 0
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "id": "V38",
+  "title": "A drained call is delivered and completed at most once",
+  "covers": [
+    "I12",
+    "I13"
+  ],
+  "session": {
+    "session_id": "sess-38",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "escalate"
+    },
+    {
+      "do": "tool_call",
+      "key": "k1",
+      "tool": "shell:ls",
+      "permission": "exec:shell"
+    },
+    {
+      "do": "resolve"
+    },
+    {
+      "do": "delivered",
+      "key": "k1"
+    },
+    {
+      "do": "completed",
+      "key": "k1"
+    },
+    {
+      "do": "delivered",
+      "key": "k1",
+      "error": true
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "HUMAN_PENDING",
+      "TOOL_CALL_QUEUED",
+      "TOOL_CALL_ANSWERED",
+      "HUMAN_RESOLVED",
+      "TOOL_CALL_DRAINED",
+      "TOOL_CALL_DELIVERED",
+      "TOOL_CALL_COMPLETED"
+    ],
+    "cell": [
+      "Att",
+      "None"
+    ],
+    "scope_version": 0,
+    "queue": [],
+    "forwarded": [
+      "k1"
+    ]
+  }
+}
