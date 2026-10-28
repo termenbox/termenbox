@@ -261,6 +261,25 @@ describe('askMicrophone', () => {
     expect(await askMicrophone({ mediaDevices: devices(getUserMedia) })).toMatch(/blocked/);
   });
 
+  it('names the exception and the permission state when the microphone is blocked, and where to look on an iPhone', async () => {
+    const getUserMedia = async () => {
+      throw Object.assign(new Error('blocked'), { name: 'NotAllowedError' });
+    };
+    const permissions = { query: async () => ({ state: 'denied' }) as PermissionStatus };
+    const msg = await askMicrophone({ mediaDevices: devices(getUserMedia), permissions, ios: true });
+    expect(msg).toContain('[NotAllowedError, permission denied]');
+    expect(msg).toMatch(/Settings > Safari > Microphone/);
+    expect(await askMicrophone({ mediaDevices: devices(getUserMedia), permissions })).not.toMatch(/Safari/);
+  });
+
+  it('still explains a block when the Permissions API cannot be read', async () => {
+    const getUserMedia = async () => {
+      throw Object.assign(new Error('blocked'), { name: 'SecurityError' });
+    };
+    const permissions = { query: async () => { throw new TypeError('no microphone'); } };
+    expect(await askMicrophone({ mediaDevices: devices(getUserMedia), permissions })).toContain('[SecurityError]');
+  });
+
   it('lets the recognizer ask when the browser has no MediaDevices', async () => {
     expect(await askMicrophone({})).toBeNull();
   });
