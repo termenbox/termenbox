@@ -288,15 +288,16 @@ try {
   await menu('web').waitFor();
   await menu('web').getByRole('button', { name: 'Detach', exact: true }).click();
   await tab('web').waitFor({ state: 'detached' });
-  if (!a.tmux('list-sessions', '-F', '#{session_name}').split('\n').includes('web')) fail('Detach ended the workspace');
+  if (!a.tmux('list-sessions', '-F', '#{session_name}').split('\n').includes(idOf(a, 'web'))) fail('Detach ended the workspace');
   await tap(tab('docs'));
   await page.waitForFunction(() => document.querySelector('[role=tab][aria-selected=true]')?.getAttribute('aria-label')?.includes('docs'));
   await tab('docs').click();
   await menu('docs').waitFor();
+  const [docsId, infraId] = [idOf(a, 'docs'), idOf(b, 'infra')];
   await menu('docs').getByRole('button', { name: 'Close workspace', exact: true }).click();
   await page.getByRole('dialog', { name: 'Workspace actions' }).getByRole('button', { name: 'Close workspace', exact: true }).click();
-  await waitFor(() => !a.tmux('list-sessions', '-F', '#{session_name}').split('\n').includes('docs'), 'docs to end');
-  if (!b.tmux('list-sessions', '-F', '#{session_name}').split('\n').includes('infra')) fail('the other server lost its workspace');
+  await waitFor(() => !a.tmux('list-sessions', '-F', '#{session_name}').split('\n').includes(docsId), 'docs to end');
+  if (!b.tmux('list-sessions', '-F', '#{session_name}').split('\n').includes(infraId)) fail('the other server lost its workspace');
   ok('Detach keeps the workspace running; Close workspace asks and ends only that workspace');
 
   if (errors.length) fail(`page errors: ${errors.join(' | ')}`);
