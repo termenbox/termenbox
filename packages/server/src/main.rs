@@ -40,6 +40,7 @@ mod layout;
 mod legacy;
 mod link;
 mod locale;
+mod logging;
 mod netutil;
 mod opencode_hooks;
 mod owner;
@@ -625,12 +626,7 @@ async fn main() -> anyhow::Result<()> {
         return run_tmux_passthrough();
     }
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    logging::init();
 
     let args = Args::parse();
     if let Some(adapter) = &args.hook {
@@ -765,6 +761,9 @@ async fn main() -> anyhow::Result<()> {
     if let Some(secret) = &args.claim_secret {
         auth.provide_claim(secret)?;
     }
+
+    // Only the server run path keeps a log file; a hook or a one-shot command does not.
+    logging::enable_file(&args.config_dir);
 
     match auth.owner() {
         Some(owner) => info!("Server owner: @{}", owner.login),
