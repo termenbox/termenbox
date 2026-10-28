@@ -37,7 +37,7 @@ use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::acp_stream::{ModeVia, Stream};
-use crate::backend::{valid_dir, valid_name, WorkspaceBackend};
+use crate::backend::{clean_label, new_id, valid_dir, valid_name, WorkspaceBackend};
 use crate::events::EventHub;
 use crate::layout::Layout;
 use crate::pty::Attachment;
@@ -1238,6 +1238,7 @@ fn write_state(path: &std::path::Path, workspaces: &Mutex<HashMap<String, Entry>
             };
             Some(Saved {
                 name: name.clone(),
+                label: e.label.clone(),
                 agent: e.agent.clone(),
                 dir: e.dir.clone(),
                 acp_id,
@@ -1260,7 +1261,11 @@ fn write_state(path: &std::path::Path, workspaces: &Mutex<HashMap<String, Entry>
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct Saved {
+    /// The id; for a workspace an older server made, the name its owner typed.
     name: String,
+    /// What clients show. Absent in state an older server wrote: the id is the name.
+    #[serde(default)]
+    label: Option<String>,
     agent: String,
     dir: String,
     /// Empty for an entry that never started (it was over the cap at the restart).
@@ -1280,6 +1285,8 @@ struct Saved {
 }
 
 struct Entry {
+    /// What clients show, when it is not the id.
+    label: Option<String>,
     agent: String,
     dir: String,
     /// `None` for a workspace with no running agent: not restored yet, not restorable, or over the cap.
@@ -1298,8 +1305,15 @@ struct Entry {
 }
 
 impl Entry {
-    fn running(agent: &str, dir: &str, live: Arc<Live>, layout: Layout) -> Self {
+    fn running(
+        label: Option<String>,
+        agent: &str,
+        dir: &str,
+        live: Arc<Live>,
+        layout: Layout,
+    ) -> Self {
         Self {
+            label,
             agent: agent.to_string(),
             dir: dir.to_string(),
             live: Some(live),
@@ -1315,6 +1329,7 @@ impl Entry {
     /// An entry without a running agent. `retry`: the next restore tries to start it again.
     fn stopped(s: &Saved, reason: String, retry: bool) -> Self {
         Self {
+            label: s.label.clone(),
             agent: s.agent.clone(),
             dir: s.dir.clone(),
             live: None,
@@ -1345,6 +1360,9 @@ pub struct AcpBackend {
     closed_while_restoring: Mutex<HashSet<String>>,
     /// Workspaces live at the last two unclean exits: a restore leaves them stopped (decision 0143).
     safe_mode: HashSet<String>,
+    /// New workspaces get a random id and the client's name as a label. Tests that address a workspace by the name
+    /// they typed turn it off.
+    mint_ids: bool,
 }
 
 impl AcpBackend {
@@ -1359,7 +1377,14 @@ impl AcpBackend {
             starting: Mutex::new(0),
             closed_while_restoring: Mutex::new(HashSet::new()),
             safe_mode: HashSet::new(),
+            mint_ids: true,
         }
+    }
+
+    #[cfg(test)]
+    fn with_typed_ids(mut self) -> Self {
+        self.mint_ids = false;
+        self
     }
 
     pub fn with_events(mut self, hub: EventHub) -> Self {
@@ -1447,6 +1472,7 @@ impl AcpBackend {
     async fn start(
         &self,
         name: &str,
+        label: Option<String>,
         agent: &str,
         dir: &str,
         resume: Option<&str>,
@@ -1520,11 +1546,13 @@ impl AcpBackend {
         }
         let mut workspaces = self.workspaces.lock_or_recover();
         // A restore started this workspace from a placeholder that holds its saved windows.
-        let layout = workspaces
-            .get(name)
-            .map(|e| e.layout.clone())
-            .unwrap_or_default();
-        workspaces.insert(name.to_string(), Entry::running(agent, dir, live, layout));
+        let placeholder = workspaces.get(name);
+        let layout = placeholder.map(|e| e.layout.clone()).unwrap_or_default();
+        let label = placeholder.and_then(|e| e.label.clone()).or(label);
+        workspaces.insert(
+            name.to_string(),
+            Entry::running(label, agent, dir, live, layout),
+        );
         unfinished.done = true;
         Ok(())
     }
@@ -1595,7 +1623,7 @@ impl AcpBackend {
             // An entry that never started has no conversation to resume: it starts afresh.
             let resume = (!s.acp_id.is_empty()).then_some(s.acp_id.as_str());
             let started = self
-                .start(&s.name, &s.agent, &s.dir, resume, s.turn_open)
+                .start(&s.name, None, &s.agent, &s.dir, resume, s.turn_open)
                 .await;
             // Closed by its owner while it was starting: what started is ended, and nothing is put back.
             if self
@@ -1828,7 +1856,7 @@ impl WorkspaceBackend for AcpBackend {
             .iter()
             .map(|(name, e)| WorkspaceInfo {
                 id: name.clone(),
-                name: name.clone(),
+                name: e.label.clone().unwrap_or_else(|| name.clone()).into(),
                 agent: Some(e.agent.clone()),
                 backend: None,
             })
@@ -1848,11 +1876,14 @@ impl WorkspaceBackend for AcpBackend {
         dir: Option<&str>,
         template: Option<&str>,
     ) -> Result<()> {
-        if !valid_name(name) {
-            return Err(anyhow!(
-                "Workspace names use letters, digits, - and _ (max 64)"
-            ));
-        }
+        // The id is ours; what the client typed is the label.
+        let label = clean_label(name)?.ok_or_else(|| anyhow!("A workspace needs a name"))?;
+        let id = if self.mint_ids {
+            new_id()
+        } else {
+            name.to_string()
+        };
+        let name = id.as_str();
         // The client names an agent; the command line comes only from the owner's allowlist.
         let agent = template
             .filter(|t| self.config.agents.contains_key(*t))
@@ -1866,7 +1897,7 @@ impl WorkspaceBackend for AcpBackend {
             None => std::env::var("HOME").unwrap_or_else(|_| "/".into()),
         };
         if self.workspaces.lock_or_recover().contains_key(name) {
-            return Err(anyhow!("A workspace with that name exists"));
+            return Err(anyhow!("A workspace with that id exists"));
         }
         let slot;
         {
@@ -1877,13 +1908,15 @@ impl WorkspaceBackend for AcpBackend {
                     self.config.max_sessions
                 ));
             }
-            // A restore holds this lock while it takes the names it is bringing back.
+            // A restore holds this lock while it takes the ids it is bringing back.
             if self.workspaces.lock_or_recover().contains_key(name) {
-                return Err(anyhow!("A workspace with that name exists"));
+                return Err(anyhow!("A workspace with that id exists"));
             }
             slot = Some(StartSlot::take(&self.starting, &mut starting));
         }
-        let r = self.start(name, agent, &dir, None, false).await;
+        let r = self
+            .start(name, Some(label), agent, &dir, None, false)
+            .await;
         drop(slot);
         r?;
         self.save();
@@ -1892,6 +1925,17 @@ impl WorkspaceBackend for AcpBackend {
 
     fn attach(&self, _id: &str, _cols: u16, _rows: u16) -> Result<Attachment> {
         Err(anyhow!("This workspace has no terminal"))
+    }
+
+    async fn rename(&self, id: &str, name: &str) -> Result<()> {
+        let label = clean_label(name)?;
+        self.workspaces
+            .lock_or_recover()
+            .get_mut(id)
+            .ok_or_else(|| anyhow!("Unknown workspace"))?
+            .label = label;
+        self.save();
+        Ok(())
     }
 
     /// The owner's next prompt.

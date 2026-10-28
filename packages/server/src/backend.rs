@@ -147,6 +147,18 @@ pub fn valid_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
+/// A fresh workspace id: random, so nothing the owner typed reaches tmux, an event variable, a log line or a bundle.
+/// The name they chose is only a label (`clean_label`). It passes `valid_name`.
+pub fn new_id() -> String {
+    format!("ws-{}", uuid::Uuid::new_v4().simple())
+}
+
+/// Whether `id` is one `new_id` made, as opposed to a name an older server used as the id.
+pub fn is_minted_id(id: &str) -> bool {
+    id.strip_prefix("ws-")
+        .is_some_and(|h| h.len() == 32 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 /// The display name a client may give a workspace: trimmed, one line, at most 64 characters, no `|` (the list format's
 /// separator). `None` clears it.
 pub fn clean_label(name: &str) -> Result<Option<String>> {
@@ -178,7 +190,7 @@ pub fn parse_list(output: &str) -> Vec<WorkspaceInfo> {
             let name = fields.next().filter(|n| !n.is_empty()).unwrap_or(id);
             Some(WorkspaceInfo {
                 id: id.to_string(),
-                name: name.to_string(),
+                name: name.into(),
                 agent: None,
                 backend: None,
             })
@@ -692,11 +704,10 @@ impl WorkspaceBackend for TmuxBackend {
         dir: Option<&str>,
         template: Option<&str>,
     ) -> Result<()> {
-        if !valid_name(name) {
-            return Err(anyhow!(
-                "Workspace names use letters, digits, - and _ (max 64)"
-            ));
-        }
+        // The id is ours; what the client typed is the label.
+        let label = clean_label(name)?.ok_or_else(|| anyhow!("A workspace needs a name"))?;
+        let id = new_id();
+        let name = id.as_str();
         // Only the agents the scan knows may be started from a client; a plain shell otherwise.
         let template = match template.filter(|t| !t.is_empty() && *t != "shell") {
             Some(t) => Some(
@@ -727,6 +738,10 @@ impl WorkspaceBackend for TmuxBackend {
                 "tmux new-session failed: {}",
                 tmux_stderr(&out.stderr)
             ));
+        }
+        if let Err(e) = self.rename(name, &label).await {
+            let _ = self.kill(name).await;
+            return Err(e);
         }
         if let Some(agent) = template {
             // Typed into the new shell, so quitting the agent leaves the shell (and the workspace) alive.
@@ -1290,6 +1305,17 @@ mod tests {
 
     use super::*;
 
+    /// The id the server gave the workspace its client called `label`.
+    async fn id_of(b: &TmuxBackend, label: &str) -> String {
+        b.list()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|w| w.name.as_str() == label)
+            .expect("the label is listed")
+            .id
+    }
+
     #[test]
     fn parses_workspace_lines() {
         let infos = parse_list("main|Main one\nwork\n\n|x\n");
@@ -1584,8 +1610,9 @@ mod tests {
             return;
         }
         let b = TmuxBackend::default();
-        let name = format!("snd{}", &uuid::Uuid::new_v4().simple().to_string()[..6]);
-        b.create(&name).await.unwrap();
+        let label = format!("snd{}", &uuid::Uuid::new_v4().simple().to_string()[..6]);
+        b.create(&label).await.unwrap();
+        let name = id_of(&b, &label).await;
         b.send_text(&name, "echo typed$((40+2))\r").await.unwrap();
         let mut seen = String::new();
         for _ in 0..20 {
@@ -1613,8 +1640,9 @@ mod tests {
             return;
         }
         let b = TmuxBackend::default();
-        let name = format!("sty{}", &uuid::Uuid::new_v4().simple().to_string()[..6]);
-        b.create(&name).await.unwrap();
+        let label = format!("sty{}", &uuid::Uuid::new_v4().simple().to_string()[..6]);
+        b.create(&label).await.unwrap();
+        let name = id_of(&b, &label).await;
         b.send_text(&name, "printf '\\033[31mredword\\033[0m\\n'\r")
             .await
             .unwrap();
@@ -1673,16 +1701,18 @@ mod tests {
             .await
             .is_err());
         b.create_with("nd", None, Some("/tmp"), None).await.unwrap();
+        let id = id_of(&b, "nd").await;
+        assert!(is_minted_id(&id), "{id}");
         let mut path = String::new();
         for _ in 0..20 {
-            path = b.windows("nd").await.unwrap()[0].info.path.clone();
+            path = b.windows(&id).await.unwrap()[0].info.path.clone();
             if path == "/tmp" {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         assert_eq!(path, "/tmp");
-        b.kill("nd").await.unwrap();
+        b.kill(&id).await.unwrap();
         assert!(b.list().await.map(|l| l.is_empty()).unwrap_or(true));
         let _ = runner.run("tmux", &["kill-server".to_string()]).await;
         let _ = std::fs::remove_dir_all(&dir);
@@ -1708,11 +1738,13 @@ mod tests {
         b.create_with("hist", None, Some("/tmp"), None)
             .await
             .unwrap();
+        let id = id_of(&b, "hist").await;
+        let target = format!("={id}:");
         // Far more lines than any screen holds, so the first ones are only in the scrollback.
         let args = [
             "send-keys",
             "-t",
-            "=hist:",
+            &target,
             "seq 1 500; echo done-marker",
             "Enter",
         ]
@@ -1720,18 +1752,18 @@ mod tests {
         runner.run("tmux", &args).await.unwrap();
         let mut all = String::new();
         for _ in 0..30 {
-            all = b.capture_history("hist").await.unwrap();
+            all = b.capture_history(&id).await.unwrap();
             // Only the output line: the typed command line also contains the marker.
             if has_line(&all, "done-marker") {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        let screen = b.capture("hist").await.unwrap();
+        let screen = b.capture(&id).await.unwrap();
         assert!(has_line(&all, "1"), "the first line is in the history");
         assert!(!has_line(&screen, "1"), "and no longer on the screen");
         assert!(has_line(&all, "500"));
-        let _ = b.kill("hist").await;
+        let _ = b.kill(&id).await;
         let _ = runner.run("tmux", &["kill-server".to_string()]).await;
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1782,15 +1814,27 @@ mod tests {
             Runner::default().with_env(&[("TMUX_TMPDIR", Some(tmpdir.as_str())), ("TMUX", None)]);
         let b = TmuxBackend::new(runner.clone());
         b.create("rn").await.unwrap();
-        b.rename("rn", "Release  notes").await.unwrap();
+        let id = id_of(&b, "rn").await;
+        assert!(is_minted_id(&id), "{id}");
+        b.rename(&id, "Release  notes").await.unwrap();
         let l = b.list().await.unwrap();
         assert_eq!(
             (l[0].id.as_str(), l[0].name.as_str()),
-            ("rn", "Release  notes")
+            (id.as_str(), "Release  notes")
         );
-        b.rename("rn", "").await.unwrap();
+        // Nothing typed is in the tmux session's own name, so a tmux error cannot repeat it.
+        let err = b
+            .capture("ws-00000000000000000000000000000000")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("Release"), "{err}");
+        b.rename(&id, "").await.unwrap();
         let l = b.list().await.unwrap();
-        assert_eq!((l[0].id.as_str(), l[0].name.as_str()), ("rn", "rn"));
+        assert_eq!(
+            (l[0].id.as_str(), l[0].name.as_str()),
+            (id.as_str(), id.as_str())
+        );
         assert!(b.rename("nope", "x").await.is_err());
         let _ = runner.run("tmux", &["kill-server".to_string()]).await;
         let _ = std::fs::remove_dir_all(&dir);

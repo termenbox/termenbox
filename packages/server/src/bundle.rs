@@ -57,6 +57,10 @@ const ADDRESSES: &[&str] = &[
     "candidates",
 ];
 
+/// Fields that hold a workspace id. An id the server minted is kept; any other value (a name an older server used as
+/// the id) is omitted with the rest of `OMITTED_EXTRA`.
+const ID_FIELDS: &[&str] = &["session", "session_id", "workspace", "workspace_id"];
+
 fn is_secret_name(name: &str) -> bool {
     crate::logging::SECRET_NAMES
         .iter()
@@ -80,7 +84,8 @@ pub struct Inputs<'a> {
     pub mode: &'a str,
     pub previous_exit: Option<&'a ServerMessage>,
     pub health: Option<ServerMessage>,
-    /// Ids and names of the live workspaces: names a user chose, which no field name or token shape gives away.
+    /// Names, and ids that are not minted ones (an older server used the typed name as the id), of the live
+    /// workspaces: text a user chose, which no field name or token shape gives away.
     pub names: &'a [String],
 }
 
@@ -185,7 +190,8 @@ fn scrub_named_phrases(text: &str) -> String {
             .find(is_delimiter)
             .map_or(text.len(), |e| start + e);
         out.push_str(&text[at..start]);
-        if end > start && !text[start..end].starts_with('[') {
+        let word = &text[start..end];
+        if end > start && !word.starts_with('[') && !crate::backend::is_minted_id(word) {
             out.push_str("[name]");
         } else {
             out.push_str(&text[start..end]);
@@ -324,6 +330,10 @@ fn scrub_line(line: &str) -> String {
 }
 
 fn clean(value: &mut Value, key: &str) {
+    if ID_FIELDS.contains(&key) && value.as_str().is_some_and(crate::backend::is_minted_id) {
+        // A random id the server made says nothing the owner typed: it lets a crash be matched to its workspace.
+        return;
+    }
     if !key.is_empty() {
         if crate::logging::PAYLOAD_NAMES.contains(&key) || OMITTED_EXTRA.contains(&key) {
             *value = Value::from("[omitted]");
@@ -415,6 +425,10 @@ fn is_home_path(t: &str) -> bool {
 }
 
 fn classify_core(t: &str) -> String {
+    // 35 characters of hex and a dash would pass for a secret; a minted id is random and public by design.
+    if crate::backend::is_minted_id(t) {
+        return t.to_string();
+    }
     if is_home_path(t) {
         return "[path]".into();
     }
@@ -626,6 +640,19 @@ mod tests {
             assert!(text.contains(kept), "{kept:?} is missing:\n{text}");
         }
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_minted_workspace_id_is_kept_so_a_crash_can_be_matched_and_a_typed_id_is_not() {
+        let id = crate::backend::new_id();
+        let line = format!(
+            r#"{{"ts":"t","level":"warn","fields":{{"event":"agent_exit","session":"{id}","workspace_id":"old-typed-name","message":"tmux: can't find session: {id}"}}}}"#
+        );
+        let out = scrub_lines(&line);
+        assert!(out.contains(&format!("\"session\":\"{id}\"")), "{out}");
+        assert!(out.contains(&format!("find session: {id}")), "{out}");
+        assert!(!out.contains("old-typed-name"), "{out}");
+        assert!(out.contains("\"workspace_id\":\"[omitted]\""), "{out}");
     }
 
     #[test]

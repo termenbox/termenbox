@@ -1028,10 +1028,47 @@ pub struct WindowInfo {
     pub agent: Option<String>,
 }
 
+/// The name an owner gave a workspace. It is on the wire as a plain string, but `Debug` and `Display` print `[name]`,
+/// so a `{:?}` of a `WorkspaceInfo`, a `format!` or a panic message cannot carry it into a log or a diagnostics bundle.
+/// The text is reached only by `as_str`, which a reader of the diff can see.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct Label(String);
+
+impl Label {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for Label {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for Label {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl std::fmt::Debug for Label {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[name]")
+    }
+}
+
+impl std::fmt::Display for Label {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[name]")
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceInfo {
     pub id: String,
-    pub name: String,
+    pub name: Label,
     pub agent: Option<String>,
     /// The workspace manager it lives in (`tmux`, `command`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1643,5 +1680,32 @@ mod tests {
         let text = serde_json::to_string(&reply).unwrap();
         assert!(!text.contains("preview") && !text.contains("error"));
         assert_eq!(serde_json::from_str::<ServerMessage>(&text).unwrap(), reply);
+    }
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+
+    #[test]
+    fn a_label_is_a_plain_string_on_the_wire_and_never_prints() {
+        let w = WorkspaceInfo {
+            id: "ws-1".into(),
+            name: "client-x deploy".into(),
+            agent: None,
+            backend: None,
+        };
+        let json = serde_json::to_string(&w).unwrap();
+        assert!(json.contains(r#""name":"client-x deploy""#), "{json}");
+        let back: WorkspaceInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name.as_str(), "client-x deploy");
+        for printed in [
+            format!("{w:?}"),
+            format!("{:?}", w.name),
+            format!("{}", w.name),
+            format!("{w:#?}"),
+        ] {
+            assert!(!printed.contains("client-x"), "{printed}");
+        }
     }
 }

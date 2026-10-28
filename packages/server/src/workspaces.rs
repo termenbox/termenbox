@@ -622,7 +622,9 @@ impl WorkspaceManager {
                     .await
                     .unwrap_or_default()
                     .into_iter()
-                    .flat_map(|w| [w.id, w.name])
+                    .flat_map(|w| [w.id, w.name.as_str().to_string()])
+                    // A minted id is random; only an id an older server took from the typed name is text.
+                    .filter(|n| !crate::backend::is_minted_id(n))
                     .collect();
                 // Reads up to 2 MB of log and scrubs it: off the async threads.
                 let text = tokio::task::spawn_blocking(move || {
@@ -1988,7 +1990,7 @@ mod propagation_tests {
         async fn list(&self) -> Result<Vec<termenbox_core::protocol::WorkspaceInfo>> {
             Ok(vec![termenbox_core::protocol::WorkspaceInfo {
                 id: "s".into(),
-                name: self.0.lock().unwrap().clone(),
+                name: self.0.lock().unwrap().clone().into(),
                 agent: None,
                 backend: None,
             }])

@@ -705,11 +705,33 @@ async fn uninstall_needs_the_name_and_a_recent_login_then_wipes_the_config(kind:
 /// `detach…` workspaces behind on the machine that ran the tests).
 struct KillOnDrop(String);
 
+/// The id the server gave the workspace whose label is `label`, from a `workspaces` message.
+fn id_of(msg: &Value, label: &str) -> String {
+    msg["workspaces"]
+        .as_array()
+        .and_then(|l| l.iter().find(|w| w["name"] == label))
+        .and_then(|w| w["id"].as_str())
+        .unwrap_or_else(|| panic!("a workspace labelled {label} is listed: {msg}"))
+        .to_string()
+}
+
 impl Drop for KillOnDrop {
+    /// Holds the label the test typed: the session is named by the server, so it is found by its label.
     fn drop(&mut self) {
-        let _ = std::process::Command::new("tmux")
-            .args(["kill-session", "-t", &format!("={}", self.0)])
-            .output();
+        let listed = std::process::Command::new("tmux")
+            .args(["list-sessions", "-F", "#{session_name}|#{@termenbox_name}"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        for line in listed.lines() {
+            if let Some((id, label)) = line.split_once('|') {
+                if label == self.0 || id == self.0 {
+                    let _ = std::process::Command::new("tmux")
+                        .args(["kill-session", "-t", &format!("={id}")])
+                        .output();
+                }
+            }
+        }
     }
 }
 
@@ -732,7 +754,9 @@ async fn detach_preserves_the_connection_and_workspace(kind: Kind) {
     c.login(&f, &alice, &f.claim).await;
     c.recv_type("auth_ok").await;
     c.send(json!({"type":"new_workspace","name":name})).await;
-    c.recv_type("workspaces").await;
+    let made = c.recv_type("workspaces").await;
+    let label = name;
+    let name = id_of(&made, &label);
     c.send(json!({"type":"attach","workspace_id":name})).await;
     c.recv_type("workspace_attached").await;
     c.send(json!({"type":"detach"})).await;
@@ -775,6 +799,8 @@ async fn reconnect_resumes_the_tmux_workspace_with_its_screen(kind: Kind) {
     c.recv_type("auth_ok").await;
     c.send(json!({"type":"new_workspace","name":name})).await;
     let workspaces = c.recv_type("workspaces").await;
+    let label = name;
+    let name = id_of(&workspaces, &label);
     assert!(workspaces["workspaces"]
         .as_array()
         .unwrap()
@@ -826,7 +852,9 @@ async fn agent_events_flow_from_a_workspace_tool_to_the_client(kind: Kind) {
     c.login(&f, &alice, &f.claim).await;
     c.recv_type("auth_ok").await;
     c.send(json!({"type":"new_workspace","name":name})).await;
-    c.recv_type("workspaces").await;
+    let made = c.recv_type("workspaces").await;
+    let label = name;
+    let name = id_of(&made, &label);
     c.send(json!({"type":"attach","workspace_id":name})).await;
     c.recv_type("workspace_attached").await;
     c.send(json!({"type":"input","data":B64.encode("echo who:$TERMENBOX_SESSION; test -S \"$TERMENBOX_EVENT_SOCKET\" && echo sock:ok\n")})).await;
@@ -944,7 +972,9 @@ async fn peek_shows_a_workspace_screen_without_attaching(kind: Kind) {
     c.login(&f, &alice, &f.claim).await;
     c.recv_type("auth_ok").await;
     c.send(json!({"type":"new_workspace","name":name})).await;
-    c.recv_type("workspaces").await;
+    let made = c.recv_type("workspaces").await;
+    let label = name;
+    let name = id_of(&made, &label);
     c.send(json!({"type":"reply","workspace":name,"text":"echo peeked$((40+2))"}))
         .await;
     let mut snap = json!(null);
@@ -989,15 +1019,19 @@ async fn windows_close_window_and_close_workspace_go_through_the_handlers(kind: 
     c.recv_type("auth_ok").await;
     // These tests share the machine's default tmux server, which exits when another test closes its last
     // workspace at the wrong moment; creating the workspace is retried when that race loses.
+    let mut made = Value::Null;
     for attempt in 0..3 {
         c.send(json!({"type":"new_workspace","name":name})).await;
         let reply = c.recv_any(&["workspaces", "error"]).await;
         if reply["type"] == "workspaces" {
+            made = reply;
             break;
         }
         assert!(attempt < 2, "tmux would not start a workspace: {reply}");
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
+    let label = name;
+    let name = id_of(&made, &label);
     c.send(json!({"type":"windows","workspace":name})).await;
     let one = c.recv_type("window_list").await;
     assert_eq!(one["windows"].as_array().unwrap().len(), 1);
@@ -1090,7 +1124,9 @@ async fn terminal_bytes_use_their_own_lane_and_status_is_not_held_up_by_output(k
     let ok = c.recv_type("auth_ok").await;
     assert_eq!(ok["channels"], json!(["term"]));
     c.send(json!({"type":"new_workspace","name":name})).await;
-    c.recv_type("workspaces").await;
+    let made = c.recv_type("workspaces").await;
+    let label = name;
+    let name = id_of(&made, &label);
     c.send(json!({"type":"attach","workspace_id":name})).await;
     c.recv_type("workspace_attached").await;
     c.send_term(b"echo lane-$((20+22))\n").await;
@@ -1195,7 +1231,9 @@ async fn a_flood_of_output_on_the_single_pipe_still_reaches_the_client(kind: Kin
     c.login(&f, &alice, &f.claim).await;
     c.recv_type("auth_ok").await;
     c.send(json!({"type":"new_workspace","name":name})).await;
-    c.recv_type("workspaces").await;
+    let made = c.recv_type("workspaces").await;
+    let label = name;
+    let name = id_of(&made, &label);
     c.send(json!({"type":"attach","workspace_id":name})).await;
     c.recv_type("workspace_attached").await;
     c.send(json!({"type":"input","data":B64.encode("timeout 5 yes x; echo end-$((40+2))\n")}))
@@ -1260,7 +1298,9 @@ async fn session_view_reads_the_screen_and_unknown_messages_are_ignored(kind: Ki
     c.login(&f, &alice, &f.claim).await;
     c.recv_type("auth_ok").await;
     c.send(json!({"type":"new_workspace","name":name})).await;
-    c.recv_type("workspaces").await;
+    let made = c.recv_type("workspaces").await;
+    let label = name;
+    let name = id_of(&made, &label);
     c.send(json!({"type":"reply","workspace":name,"text":"echo Deploy$((40+2)) now? '(y/n)'"}))
         .await;
     let mut view = json!(null);
@@ -1404,11 +1444,9 @@ async fn legacy_an_old_client_is_answered_in_the_old_vocabulary(kind: Kind) {
     assert!(list.get("workspaces").is_none());
     c.send(json!({"type":"new_session","name":name})).await;
     let list = c.recv_type("sessions").await;
-    assert!(list["sessions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|s| s["id"] == name.as_str()));
+    // The old vocabulary lists the same workspaces under `sessions`; the server chose the id.
+    let label = name;
+    let name = id_of(&json!({"workspaces": list["sessions"]}), &label);
     c.send(json!({"type":"attach","session_id":name})).await;
     let attached = c.recv_type("session_attached").await;
     assert_eq!(attached["session_id"], name.as_str());
@@ -1490,7 +1528,9 @@ async fn a_cancel_during_an_output_flood_is_acknowledged_within_the_bound(kind: 
     c.login(&f, &alice, &f.claim).await;
     c.recv_type("auth_ok").await;
     c.send(json!({"type":"new_workspace","name":name})).await;
-    c.recv_type("workspaces").await;
+    let made = c.recv_type("workspaces").await;
+    let label = name;
+    let name = id_of(&made, &label);
     c.send(json!({"type":"attach","workspace_id":name})).await;
     c.recv_type("workspace_attached").await;
     c.send(json!({"type":"input","data":B64.encode("timeout 20 yes x\n")}))

@@ -251,7 +251,9 @@ fn rig_with(mode: &str, max: usize, dir: PathBuf, state: bool) -> Rig {
         agents: HashMap::from([("fake".to_string(), profile(mode, &log))]),
     };
     let hub = EventHub::new([7; 32]);
-    let mut backend = AcpBackend::new(config).with_events(hub.clone());
+    let mut backend = AcpBackend::new(config)
+        .with_events(hub.clone())
+        .with_typed_ids();
     if state {
         backend = backend
             .with_state_file(dir.join("workspaces.json"))
@@ -429,7 +431,7 @@ async fn an_adapter_installed_later_shows_up_and_a_missing_one_is_refused() {
             },
         )]),
     };
-    let backend = AcpBackend::new(config);
+    let backend = AcpBackend::new(config).with_typed_ids();
     assert!(backend.acp_agents().is_empty());
     let e = backend
         .create_with("x", None, d.to_str(), Some("late"))
@@ -1888,4 +1890,36 @@ fn a_config_cannot_ask_for_more_event_log_than_a_small_server_holds() {
     let e = AcpConfig::parse("max_sessions = 16\nevent_ring_bytes = 67108864\n").unwrap_err();
     assert!(e.to_string().contains("at most"), "{e}");
     assert!(AcpConfig::parse("max_sessions = 6\nevent_ring_bytes = 1048576\n").is_ok());
+}
+
+#[tokio::test]
+async fn a_new_workspace_gets_a_random_id_and_the_typed_name_is_only_a_label_that_survives_a_restart(
+) {
+    let dir = tmp();
+    let mut a = rig_with("resume", 2, dir.clone(), true);
+    a.backend.mint_ids = true;
+    a.create("Release notes").await;
+    let listed = a.backend.list().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    let id = listed[0].id.clone();
+    assert!(crate::backend::is_minted_id(&id), "{id}");
+    assert_eq!(listed[0].name.as_str(), "Release notes");
+    // The agent's events are keyed by the id, never by the label.
+    assert!(a.hub.since("Release notes", 0).is_empty());
+    assert!(a.backend.rename("nope", "x").await.is_err());
+    a.backend.rename(&id, "Q4  plan").await.unwrap();
+    assert_eq!(a.backend.list().await.unwrap()[0].name.as_str(), "Q4  plan");
+    // "Restart": the label comes back with the id.
+    let b = rig_with("resume", 2, dir.clone(), true);
+    b.backend.restore().await;
+    let restored = b.backend.list().await.unwrap();
+    assert_eq!(
+        (restored[0].id.as_str(), restored[0].name.as_str()),
+        (id.as_str(), "Q4  plan")
+    );
+    // Clearing the label shows the id again; two workspaces may share a label.
+    b.backend.rename(&id, "").await.unwrap();
+    assert_eq!(b.backend.list().await.unwrap()[0].name.as_str(), id);
+    let _ = b.backend.kill(&id).await;
+    let _ = a.backend.kill(&id).await;
 }
