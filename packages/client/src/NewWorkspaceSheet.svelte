@@ -192,13 +192,16 @@
             {/if}
             {#if (canShowDirectoryPicker || canUseWebkitDirectory) && (tmux || acp)}
               <input bind:this={fileInput} type="file" webkitdirectory multiple style="display: none" on:change={handleWebkitDirPick} />
-              <button type="button" class="secondary browse-btn" on:click={openNativeDirPicker}>📁 Browse…</button>
+              <button type="button" class="secondary browse-btn" on:click={openNativeDirPicker}>
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" style="vertical-align: -2px; margin-right: 6px;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="currentColor"/></svg>
+                Browse…
+              </button>
             {/if}
           {/if}
         </div>
       </label>
       {#if dirs.length && !showDirPicker}
-        <p class="dir-hint">Or type a custom path below</p>
+        <p class="dir-hint">Or pick “Other…” to type a custom path</p>
       {/if}
     {:else}
       <p class="note">{backend} starts workspaces in its own default directory.</p>
