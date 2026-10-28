@@ -61,11 +61,29 @@ express it.
 
 - Electron loads the client with `nodeIntegration: false` and
   `contextIsolation: true`, so an XSS in the client cannot reach Node.
+- Electron keeps the window on its own scheme: navigation is matched by URL protocol, not by
+  substring, and external links open in the system browser. The packaged policy mirrors
+  `packages/client/public/_headers` — scripts are strict, inline styles stay allowed (the client sets
+  style attributes in place), and `connect-src` allows `wss:` so the WebSocket fallback and the
+  assisted signaling path are not blocked.
 - Android sets `android:allowBackup="false"`: the device key and token live in
   WebView storage and must not be copied into a cloud backup.
 - iOS declares `NSLocalNetworkUsageDescription` and sets
   `NSAllowsLocalNetworking`, because the client reaches a server on the LAN over
   WebRTC and may fall back to a local WebSocket.
+
+## Not wired into the wrappers yet
+
+The bundled client still resolves the directory and the OAuth exchange from `location.origin`, which
+inside a wrapper is the app's own scheme (`capacitor-electron://-`, `capacitor://localhost`) and serves
+no Pages Functions. Account sign-in therefore opens GitHub in the system browser but cannot redirect
+back into the app, and a server's directory record cannot be looked up from the wrapper. Pairing works
+from a signed link or QR (the bundle carries its own candidates) and from the manual URL + registration
+token path; deep-link sign-in and an explicit API origin are the R76 slice that closes the gap.
+
+Signing and notarization are not configured in this slice: `electron:make` produces unsigned
+installers, and iOS/Android signing plus the store checks still need their hosts and secrets
+(R76 step 5).
 
 ## Stack
 

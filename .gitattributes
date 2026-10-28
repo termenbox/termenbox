@@ -11,3 +11,5 @@ packages/native/electron/package.json linguist-generated=false
 packages/native/electron/electron-builder.config.json linguist-generated=false
 packages/native/electron/tsconfig.json linguist-generated=false
 packages/native/electron/src/setup.ts linguist-generated=false
+packages/native/electron/src/security.ts linguist-generated=false
+packages/native/electron/test/** linguist-generated=false

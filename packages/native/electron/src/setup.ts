@@ -6,11 +6,27 @@ import {
 } from '@capacitor-community/electron';
 import chokidar from 'chokidar';
 import type { MenuItemConstructorOptions } from 'electron';
-import { app, BrowserWindow, Menu, MenuItem, nativeImage, Tray, session } from 'electron';
+import { app, BrowserWindow, Menu, MenuItem, nativeImage, shell, Tray, session } from 'electron';
 import electronIsDev from 'electron-is-dev';
 import electronServe from 'electron-serve';
 import windowStateKeeper from 'electron-window-state';
 import { join } from 'path';
+
+import { contentSecurityPolicy, isOwnUrl } from './security';
+
+/** External links open in the system browser; the window itself never leaves the app. */
+function openExternal(url: string): void {
+  let protocol: string;
+  try {
+    protocol = new URL(url).protocol;
+  } catch {
+    return;
+  }
+  if (protocol !== 'https:' && protocol !== 'http:') return;
+  void shell.openExternal(url).catch(() => {
+    // No browser on this host: keep the app open instead of failing the click.
+  });
+}
 
 // Define components for a watcher to detect when the webapp is changed so we can reload in Dev mode.
 const reloadWatcher = {
@@ -124,8 +140,11 @@ export class ElectronCapacitorApp {
     });
     this.mainWindowState.manage(this.MainWindow);
 
-    if (this.CapacitorFileConfig.backgroundColor) {
-      this.MainWindow.setBackgroundColor(this.CapacitorFileConfig.electron.backgroundColor);
+    // The Capacitor `backgroundColor` is the WebView's own background; the Electron window's lives
+    // under `electron`. Reading the top-level one here either skipped the block or passed undefined.
+    const backgroundColor = this.CapacitorFileConfig.electron?.backgroundColor;
+    if (backgroundColor) {
+      this.MainWindow.setBackgroundColor(backgroundColor);
     }
 
     // If we close the main window with the splashscreen enabled we need to destory the ref.
@@ -181,18 +200,16 @@ export class ElectronCapacitorApp {
       this.loadMainWindow(this);
     }
 
-    // Security
+    // Security: only the app's own scheme stays in the window; links go to the system browser.
     this.MainWindow.webContents.setWindowOpenHandler((details) => {
-      if (!details.url.includes(this.customScheme)) {
-        return { action: 'deny' };
-      } else {
-        return { action: 'allow' };
-      }
+      if (isOwnUrl(details.url, this.customScheme)) return { action: 'allow' };
+      openExternal(details.url);
+      return { action: 'deny' };
     });
-    this.MainWindow.webContents.on('will-navigate', (event, _newURL) => {
-      if (!this.MainWindow.webContents.getURL().includes(this.customScheme)) {
-        event.preventDefault();
-      }
+    this.MainWindow.webContents.on('will-navigate', (event, newURL) => {
+      if (isOwnUrl(newURL, this.customScheme)) return;
+      event.preventDefault();
+      openExternal(newURL);
     });
 
     // Link electron plugins into the system.
@@ -222,11 +239,7 @@ export function setupContentSecurityPolicy(customScheme: string): void {
     callback({
       responseHeaders: {
         ...details.responseHeaders,
-        'Content-Security-Policy': [
-          electronIsDev
-            ? `default-src ${customScheme}://* 'unsafe-inline' devtools://* 'unsafe-eval' data:`
-            : `default-src ${customScheme}://* 'unsafe-inline' data:`,
-        ],
+        'Content-Security-Policy': [contentSecurityPolicy(customScheme, electronIsDev)],
       },
     });
   });

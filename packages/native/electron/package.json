@@ -13,6 +13,7 @@
   "main": "build/src/index.js",
   "scripts": {
     "build": "tsc",
+    "test": "npm run build && node --test \"test/*.test.mjs\"",
     "electron:start-live": "node ./live-runner.js",
     "electron:start": "npm run build && electron ./",
     "electron:pack": "npm run build && electron-builder build --dir -c ./electron-builder.config.json",
