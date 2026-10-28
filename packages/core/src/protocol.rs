@@ -202,6 +202,8 @@ pub enum ClientMessage {
     /// Owner-only: install the newer release now (decision 0077): the server leaves an `update-now` request for the
     /// root helper and answers `update_requested`. The service restarts when the update is installed.
     UpdateServer {},
+    /// Owner-only (decision 0144): asks for the server's diagnostics bundle, answered with `diagnostics_bundle`.
+    DiagnosticsBundle {},
     /// Owner-only, recently signed in: remove this server (decision 0072). `confirm_name` must equal the
     /// server's name; the flags choose the optional host cleanup (all off by default).
     Uninstall {
@@ -462,6 +464,14 @@ pub enum ServerMessage {
     UpdateRequested {
         #[serde(default)]
         available: String,
+    },
+    /// The answer to `diagnostics_bundle` (decision 0144): scrubbed text for the owner to read, download or attach to an
+    /// issue, in `parts` messages (`part` counts from 0, in order) because the direct transport carries 64 KiB at most.
+    /// Built on request only; the server never sends it anywhere else.
+    DiagnosticsBundle {
+        part: u32,
+        parts: u32,
+        text: String,
     },
     /// The release the updater has recorded changed while this connection was open (`update-status.json`);
     /// `available` is empty when the server is up to date. Same meaning as `auth_ok.update_available`.
@@ -1165,6 +1175,8 @@ mod tests {
         assert!(v.get("update_available").is_none());
         let v: ClientMessage = serde_json::from_str(r#"{"type":"update_server"}"#).unwrap();
         assert_eq!(v, ClientMessage::UpdateServer {});
+        let v: ClientMessage = serde_json::from_str(r#"{"type":"diagnostics_bundle"}"#).unwrap();
+        assert_eq!(v, ClientMessage::DiagnosticsBundle {});
         let v = serde_json::to_value(ClientMessage::History { from: 1, to: 2 }).unwrap();
         assert_eq!(v["type"], "history");
         assert_eq!(v["from"], 1);

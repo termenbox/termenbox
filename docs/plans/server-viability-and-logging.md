@@ -53,7 +53,7 @@ Context: `packages/server/src/main.rs` ~line 1157 serves `/health` as a constant
 Do: Have the ACP supervisor and the health sampler update a heartbeat timestamp; `/health` returns 503 if either is older than 30 s, 200 `OK` otherwise. Keep the body free of details.
 Done-when: a test with a stalled heartbeat gets 503 and a fresh one gets 200. (Done: `health::tests::health_is_503_for_a_stalled_heartbeat_and_200_for_a_fresh_one`. The ACP beat comes from a 5 s probe of the workspace table on a blocking thread, and only exists when an ACP backend runs; a loop that never started is not waited for. The updater's post-update health wait uses the same route, so a stalled new server is rolled back.)
 
-### 4.1 Server-side diagnostics bundle — [ ]
+### 4.1 Server-side diagnostics bundle — [x]
 Class: implement · Needs: 1.1, 1.3 · Check: `scripts/dev.sh cargo test -p termenbox-server bundle_scrub`
 Context: Decision 0144 and guardrail `diagnostics-never-include-secrets` (scrub certificates, claim secrets, tokens, IPs, ports; never terminal output, keystrokes, session names). The client already has a scrubber: `packages/client/src/lib/report.ts` with `report.test.ts`. Server version/channel is already known to the server (`release.rs`); health history is in `health.rs`.
 Do: Add an authenticated owner-only request that returns a bundle: last 2 MB of `termenbox.jsonl`, newest crash file, previous-exit report, versions/channel, health history. Scrub server-side (IPv4/IPv6, ports, tokens, home paths, anything the log layer would drop) in a new `bundle.rs`. Return text; never write it elsewhere.

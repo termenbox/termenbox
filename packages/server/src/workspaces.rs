@@ -600,6 +600,46 @@ impl WorkspaceManager {
                 )
                 .await?;
             }
+            ClientMessage::DiagnosticsBundle {} => {
+                let is_owner = auth
+                    .owner()
+                    .is_some_and(|o| o.provider == identity.provider && o.id == identity.id);
+                if !is_owner {
+                    info!(target: "audit", event = "diagnostics_refused", provider = %identity.provider, account_id = %identity.id);
+                    return Err(anyhow::anyhow!(
+                        "Only the owner can read this server's diagnostics"
+                    ));
+                }
+                info!(target: "audit", event = "diagnostics_requested", provider = %identity.provider, account_id = %identity.id);
+                let config_dir = auth.dir().to_path_buf();
+                let mode = self.mode.label();
+                let previous = self.previous_exit.clone();
+                let health = self.health.as_ref().map(|h| h.history());
+                // Reads up to 2 MB of log and scrubs it: off the async threads.
+                let text = tokio::task::spawn_blocking(move || {
+                    crate::bundle::build(&crate::bundle::Inputs {
+                        config_dir: &config_dir,
+                        version: env!("CARGO_PKG_VERSION"),
+                        mode: &mode,
+                        previous_exit: previous.as_ref(),
+                        health,
+                    })
+                })
+                .await?;
+                let parts = crate::bundle::parts(&text);
+                let total = parts.len() as u32;
+                for (part, text) in parts.into_iter().enumerate() {
+                    send_r(
+                        tx,
+                        &ServerMessage::DiagnosticsBundle {
+                            part: part as u32,
+                            parts: total,
+                            text,
+                        },
+                    )
+                    .await?;
+                }
+            }
             ClientMessage::RevokeDevice { device } => {
                 auth.revoke_device(&device)?;
                 send_r(tx, &ServerMessage::DeviceRevoked { device }).await?;
@@ -2070,6 +2110,72 @@ mod propagation_tests {
         assert!(
             quiet.iter().all(|m| !m.contains("previous_exit")),
             "{quiet:?}"
+        );
+    }
+
+    /// What a connection signed in as `who` is sent for a `diagnostics_bundle` request, when account 1 is the owner.
+    async fn bundle_replies(who: &str) -> Vec<String> {
+        let dir = std::env::temp_dir().join(format!("tm-bundle-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        std::fs::write(
+            dir.join("logs/termenbox.jsonl"),
+            "{\"fields\":{\"event\":\"start\",\"peer\":\"198.51.100.7:4000\"}}\n",
+        )
+        .unwrap();
+        let auth =
+            Arc::new(AuthState::new(dir.clone(), CertKeys::default(), "srv".into()).unwrap());
+        let owner = |id: &str| Identity {
+            provider: "github".into(),
+            id: id.into(),
+            login: format!("login-{id}"),
+            issued_at: None,
+        };
+        let claim = auth.claim_token().unwrap().unwrap();
+        auth.authorize(&owner("1"), Some(&claim)).unwrap();
+        let mgr = WorkspaceManager::new(
+            Arc::new(Names(Mutex::new("first".into()))),
+            RunMode::Container,
+        );
+        let (link, mut end) = crate::link::pair(None, None);
+        let me = owner(who);
+        let a = auth.clone();
+        tokio::spawn(async move {
+            let _ = mgr.serve(link, me, &a).await;
+        });
+        end.to_workspace
+            .send(Inbound::Json(r#"{"type":"diagnostics_bundle"}"#.into()))
+            .await
+            .unwrap();
+        let mut seen = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_millis(600), async {
+            while let Some(m) = end.from_workspace.recv().await {
+                seen.push(m);
+            }
+        })
+        .await;
+        let _ = std::fs::remove_dir_all(&dir);
+        seen
+    }
+
+    #[tokio::test]
+    async fn the_owner_gets_a_scrubbed_bundle_and_anyone_else_an_error() {
+        let told = bundle_replies("1").await;
+        let parts: Vec<&String> = told
+            .iter()
+            .filter(|m| m.contains("\"type\":\"diagnostics_bundle\""))
+            .collect();
+        assert!(!parts.is_empty(), "no bundle in {told:?}");
+        let all = parts.iter().map(|m| m.as_str()).collect::<String>();
+        assert!(all.contains("termenbox server diagnostics"), "{all}");
+        assert!(!all.contains("198.51.100.7"), "{all}");
+        let other = bundle_replies("2").await;
+        assert!(
+            other.iter().all(|m| !m.contains("diagnostics_bundle")),
+            "{other:?}"
+        );
+        assert!(
+            other.iter().any(|m| m.contains("\"type\":\"error\"")),
+            "{other:?}"
         );
     }
 }

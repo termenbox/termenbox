@@ -21,6 +21,7 @@ mod agent_hooks;
 mod agentwatch;
 mod auth;
 mod backend;
+mod bundle;
 mod candidates;
 mod cert;
 mod claude_hooks;
