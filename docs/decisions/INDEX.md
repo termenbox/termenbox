@@ -149,3 +149,4 @@
 | 0142-the-server-keeps-its-own-jsonl-logs-and-a-crash-record | The server keeps its own JSONL logs and a crash record | process | active | Sergey Strebulaev | - |
 | 0143-a-fault-in-one-acp-session-never-stops-the-server | A fault in one ACP session never stops the server, and a crashing server restarts with backoff and a safe mode | product | active | Sergey Strebulaev | - |
 | 0144-diagnostics-bundles-are-user-triggered-and-incidents-are-tracked-in-github-and-postmortems | Diagnostics bundles are user-triggered, and incidents are tracked in GitHub issues and postmortems | process | active | Sergey Strebulaev | - |
+| 0145-logging-never-waits-for-the-disk | Logging never waits for the disk | process | draft | - | - |

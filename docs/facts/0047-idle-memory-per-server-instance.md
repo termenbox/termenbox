@@ -6,7 +6,7 @@ tags: [deployment, server, performance]
 date: 2026-10-19
 kind: environmental
 governed-by: 0115
-last-verified: 2026-10-19
+last-verified: 2026-10-28
 ---
 
 # Idle memory per server instance
@@ -44,3 +44,7 @@ Each was built and measured on its own against the table above (same method, 3 r
 | Hard caps on scrollback and output buffers | not built | | | rejected: nothing to cap. The server keeps no scrollback (tmux does), and its channels are already bounded (the PTY channel holds 64 chunks, a WebRTC message is at most 64 KiB, agent events at most 30 entries per session). A client attached to a pane printing `seq 1 3000000` raised peak RSS from 8.9 to 9.2 MiB |
 
 The jemalloc and mimalloc builds used the unprofiled build, so they are compared with the baseline row, not the profile row. Allocator, thread cap and the profile were not combined; the profile is the only change that moved the number.
+
+## Since decision 0142 (2026-10-28)
+
+With the JSONL log, run marker and diagnostics code, one idle instance reads 9.7 MiB against 8.7 MiB at the merge-base, with the glibc release build of the dev host (3 runs each, 8 s after `/health`, 11 threads; the writer thread was not yet in the first run). That is a comparison between two builds on one host, not a replacement for the musl table above. See fact 0062.

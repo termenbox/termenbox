@@ -1,7 +1,7 @@
 ---
 id: 0061
 title: The server logs to stderr only and leaves no record of its own death
-status: active
+status: deprecated
 tags: [server, observability, deployment]
 date: 2026-10-28
 kind: environmental
@@ -10,6 +10,8 @@ last-verified: 2026-10-28
 ---
 
 # The server logs to stderr only and leaves no record of its own death
+
+Deprecated: this was true before plan `server-viability-and-logging`. See fact 0062 for the state now.
 
 Read from the code on 2026-10-28 (`packages/server/src/main.rs`, `Cargo.toml`, `docker/`, `packages/client/installer/install.sh`).
 
