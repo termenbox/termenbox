@@ -90,6 +90,8 @@ export const IOS_KEYBOARD_HINT = "Dictation from this key isn't available on thi
 /** The browser pieces the permission check reads; a browser without them is handled below. */
 export interface MicScope {
   mediaDevices?: Pick<MediaDevices, 'getUserMedia'>;
+  permissions?: Pick<Permissions, 'query'>;
+  ios?: boolean;
 }
 
 /**
@@ -98,7 +100,7 @@ export interface MicScope {
  * without a prompt; the device is released at once because the recognizer opens it itself.
  */
 export async function askMicrophone(
-  scope: MicScope = { mediaDevices: (globalThis as { navigator?: Navigator }).navigator?.mediaDevices },
+  scope: MicScope = micScope(),
 ): Promise<string | null> {
   const devices = scope.mediaDevices;
   if (!devices?.getUserMedia) return null; // no MediaDevices (an old browser): let the recognizer ask its own way
@@ -107,8 +109,24 @@ export async function askMicrophone(
     stream.getTracks().forEach((t) => t.stop());
     return null;
   } catch (e) {
-    return errorMessage(micErrorCode(e));
+    const code = micErrorCode(e);
+    const base = errorMessage(code) ?? '';
+    if (code !== 'not-allowed') return base;
+    // Which refusal this is decides the fix, and the browser's words for it are all we have on a phone: the
+    // exception's name and what the site's permission reads as (denied, or never asked).
+    const name = (e as { name?: string } | null)?.name || 'unknown';
+    let state = '';
+    try {
+      state = (await scope.permissions?.query({ name: 'microphone' as PermissionName }))?.state ?? '';
+    } catch { /* the Permissions API may not know the microphone */ }
+    const detail = ` [${name}${state ? `, permission ${state}` : ''}]`;
+    return base + detail + (scope.ios ? ' On iPhone: Settings > Safari > Microphone, or use the mic on the keyboard.' : '');
   }
+}
+
+function micScope(): MicScope {
+  const nav = (globalThis as { navigator?: Navigator }).navigator;
+  return { mediaDevices: nav?.mediaDevices, permissions: nav?.permissions, ios: isIOS() };
 }
 
 /** Maps a getUserMedia rejection to the wording `errorMessage` already has. */
