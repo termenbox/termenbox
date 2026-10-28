@@ -218,6 +218,14 @@ try {
   await waitFor(() => e2e(alice, () => window.__e2e.received.some((m) => m.includes('"type":"history_deleted"') && m.includes('"removed":0'))), 'history deleted');
   console.log('ok  the history range query and delete are answered over the real transport');
 
+  // list_dir (DECISION-0140): the owner reads home, and a path outside home is refused with a reason and no entries.
+  await e2e(alice, () => window.__e2e.send({ type: 'list_dir', hidden: false }));
+  await waitFor(() => e2e(alice, () => window.__e2e.received.some((m) => m.includes('"type":"dir_listing"'))), 'a dir_listing for home');
+  await e2e(alice, () => { window.__e2e.received.length = 0; window.__e2e.send({ type: 'list_dir', path: '/etc', hidden: false }); });
+  await waitFor(() => e2e(alice, () => window.__e2e.received.some((m) => m.includes('"type":"dir_error"'))), 'a dir_error for /etc');
+  if (await e2e(alice, () => window.__e2e.received.some((m) => m.includes('"type":"dir_listing"')))) fail('list_dir of /etc was answered with a listing');
+  console.log('ok  list_dir is answered for home and refused outside it over the real transport');
+
   // 5. Gate: server RSS with 10 workspaces open.
   for (let i = 2; i <= 10; i++) {
     await e2e(alice, (n) => window.__e2e.send({ type: 'new_workspace', name: `s${n}` }), i);

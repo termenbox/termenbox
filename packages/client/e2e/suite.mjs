@@ -7,7 +7,7 @@ const suites = {
   // Real server binary (TERMENBOX_BIN) and tmux. Chromium only: WebRTC flags and the resource gates are measured once.
   // Chromium by nature: `run` (resource gates, WebRTC), `touch` (CDP touch events), `wizard` (Chromium's fake camera flags).
   // `appshell` runs everywhere but skips its held-touch and edge-swipe steps (CDP) outside Chromium.
-  server: ['run', 'touch', 'cards', 'decision', 'activity', 'windows', 'two-servers', 'appshell', 'desktop', 'app', 'pane', 'acp', 'acp-views',
+  server: ['run', 'touch', 'cards', 'decision', 'activity', 'windows', 'two-servers', 'appshell', 'desktop', 'newworkspace-real', 'app', 'pane', 'acp', 'acp-views',
     'hookoffer', 'add-server', 'pair', 'failures', 'wizard', 'search', 'push-link'],
   // The built client against scripted servers, no binary: the browser matrix runs these per engine (R36).
   desktop: ['desktop', 'newworkspace'],
