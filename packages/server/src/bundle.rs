@@ -80,6 +80,8 @@ pub struct Inputs<'a> {
     pub mode: &'a str,
     pub previous_exit: Option<&'a ServerMessage>,
     pub health: Option<ServerMessage>,
+    /// Ids and names of the live workspaces: names a user chose, which no field name or token shape gives away.
+    pub names: &'a [String],
 }
 
 /// The bundle as scrubbed text.
@@ -112,7 +114,86 @@ pub fn build(inputs: &Inputs<'_>) -> String {
     out.push_str(&log_tail(&logs));
     out.push('\n');
     let known = known_paths(inputs.config_dir);
-    scrub_known(&scrub_lines(&out), &known)
+    // Before the line scrub, which takes a name apart at its quotes; after it, for what that scrub wrote.
+    let scrubbed = scrub_known(&scrub_lines(&scrub_names(&out, inputs.names)), &known);
+    scrub_names(&scrubbed, inputs.names)
+}
+
+/// Names shorter than this are not searched for: `a` or `ls` would hit every word. A short name is still caught after
+/// `session:` or `workspace=` by `scrub_named_phrases`.
+const MIN_NAME_LEN: usize = 3;
+
+fn is_name_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '-'
+}
+
+/// Replaces each live workspace name (and id) with `[name]` wherever it stands as a whole token, so `test` is taken
+/// out of `no session test` but not out of `latest`. Case matters: a tmux session name does.
+fn scrub_names(text: &str, names: &[String]) -> String {
+    let mut forms: Vec<String> = Vec::new();
+    for n in names.iter().filter(|n| n.chars().count() >= MIN_NAME_LEN) {
+        forms.push(n.clone());
+        // Inside a JSON string a quote, a backslash or a control character is escaped.
+        if let Ok(j) = serde_json::to_string(n) {
+            let inner = j[1..j.len() - 1].to_string();
+            if inner != *n {
+                forms.push(inner);
+            }
+        }
+    }
+    // Longest first, so `deploy` does not leave the `client-x-` of `client-x-deploy` behind.
+    forms.sort_by_key(|f| std::cmp::Reverse(f.len()));
+    forms.dedup();
+    let mut text = text.to_string();
+    for form in &forms {
+        let mut out = String::with_capacity(text.len());
+        let mut last = 0;
+        for (i, _) in text.match_indices(form.as_str()) {
+            let end = i + form.len();
+            let before = text[..i].chars().next_back();
+            let after = text[end..].chars().next();
+            if i < last || before.is_some_and(is_name_char) || after.is_some_and(is_name_char) {
+                continue;
+            }
+            out.push_str(&text[last..i]);
+            out.push_str("[name]");
+            last = end;
+        }
+        out.push_str(&text[last..]);
+        text = out;
+    }
+    text
+}
+
+/// The word after `session:`, `workspace:` and `session=` is a name even when it is not live any more (tmux says
+/// `can't find session: x` about a session that is gone, so the live list cannot know it).
+fn scrub_named_phrases(text: &str) -> String {
+    const MARKERS: &[&str] = &["session:", "workspace:", "session=", "workspace="];
+    let lower = text.to_ascii_lowercase();
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    while at < text.len() {
+        let next = MARKERS
+            .iter()
+            .filter_map(|m| lower[at..].find(m).map(|i| (at + i, m.len())))
+            .min();
+        let Some((i, len)) = next else { break };
+        let mut start = i + len;
+        let spaces = text[start..].len() - text[start..].trim_start_matches(' ').len();
+        start += spaces;
+        let end = text[start..]
+            .find(is_delimiter)
+            .map_or(text.len(), |e| start + e);
+        out.push_str(&text[at..start]);
+        if end > start && !text[start..end].starts_with('[') {
+            out.push_str("[name]");
+        } else {
+            out.push_str(&text[start..end]);
+        }
+        at = end;
+    }
+    out.push_str(&text[at..]);
+    out
 }
 
 fn json_line(m: &ServerMessage) -> String {
@@ -275,6 +356,7 @@ pub fn scrub(text: &str) -> String {
         .chars()
         .map(|c| if c.is_control() && c != '\t' { '?' } else { c })
         .collect();
+    let text = scrub_named_phrases(&text);
     let mut out = String::with_capacity(text.len());
     let mut token = String::new();
     // The token before a delimiter named a secret or was `Bearer`: the next one is its value.
@@ -452,6 +534,7 @@ mod tests {
             mode: "systemd",
             previous_exit: Some(&previous),
             health: None,
+            names: &[],
         });
         for secret in [
             CERT,
@@ -490,6 +573,55 @@ mod tests {
             "acp.rs:12",
             "sign_in",
             "\"streak\":2",
+        ] {
+            assert!(text.contains(kept), "{kept:?} is missing:\n{text}");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bundle_scrub_removes_a_workspace_name_from_a_tmux_error_and_a_panic() {
+        let dir = temp_dir();
+        let logs = dir.join("logs");
+        let lines = [
+            r#"{"ts":"t","level":"warn","fields":{"event":"attach_failed","message":"tmux: can't find session: client-x-deploy"}}"#,
+            r#"{"ts":"t","level":"warn","fields":{"message":"tmux new-session -s \"Q4 \"plan\"\" failed: duplicate session: Q4 \"plan\""}}"#,
+            "warn: capture of client-x-deploy:0.1 failed, then test, a and latest went on",
+            "warn: can't find session: already-deleted",
+        ];
+        fs::write(logs.join("termenbox.jsonl"), lines.join("\n") + "\n").unwrap();
+        fs::write(
+            logs.join("crash-1000.json"),
+            "{\n  \"message\": \"called `Result::unwrap()` on an `Err` value: no such workspace client-x-deploy (id ws-7f3a9c)\",\n  \"location\": \"packages/server/src/workspaces.rs:88\"\n}",
+        )
+        .unwrap();
+        let names: Vec<String> = ["client-x-deploy", "ws-7f3a9c", "Q4 \"plan\"", "test", "a"]
+            .map(String::from)
+            .into();
+        let text = build(&Inputs {
+            config_dir: &dir,
+            version: "0.9.0",
+            mode: "systemd",
+            previous_exit: None,
+            health: None,
+            names: &names,
+        });
+        for name in [
+            "client-x-deploy",
+            "ws-7f3a9c",
+            "Q4",
+            "plan",
+            "already-deleted",
+        ] {
+            assert!(!text.contains(name), "{name:?} is in the bundle:\n{text}");
+        }
+        for kept in [
+            "can't find session: [name]",
+            "latest",
+            "workspaces.rs:88",
+            "attach_failed",
+            "[name]:0.1",
+            "[name], a and latest",
         ] {
             assert!(text.contains(kept), "{kept:?} is missing:\n{text}");
         }
