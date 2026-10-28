@@ -71,7 +71,7 @@ Context: `.github/ISSUE_TEMPLATE/` has `config.yml` and `problem.yml` only. Deci
 Do: Add `incident.yml` (label `incident`) asking what the user was doing, install type (systemd/Docker/other), version, whether the server restarted, and for the diagnostics bundle (attached after previewing; no terminal content). Match `problem.yml` style.
 Done-when: the file exists and its fields mirror `problem.yml` structure.
 
-### 5.1 User guide and docs — [ ]
+### 5.1 User guide and docs — [x]
 Class: implement · Needs: 1.1, 4.2 · Check: `grep -n "termenbox.jsonl" docs/guide/*.md`
 Context: `docs/guide/install.md` explains the host install and state in `~/.config/termenbox`. Users need to know where logs live, how to change the level, and how to share a bundle.
 Do: Add a "Logs and diagnostics" section: file location, retention, `TERMENBOX_LOG`, the crash prompt, the bundle and what it excludes, and that nothing is sent automatically.
