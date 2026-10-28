@@ -65,7 +65,7 @@ Context: `packages/client/src/lib/report.ts` builds the problem report, shows it
 Do: Add an "Server diagnostics" action next to Report a problem that requests the bundle, shows it, and offers Download and Open issue (template `incident.yml`, text trimmed to fit the URL, rest attached by the user). Add the one-time unclean-exit banner. Add tests alongside `report.test.ts`.
 Done-when: tests show the banner appears once per `at_ms` for a `previous_exit`, the bundle is shown before any download or issue link, and the issue URL stays within the length limit `report.test.ts` already asserts.
 
-### 4.3 Incident issue template — [ ]‖
+### 4.3 Incident issue template — [x]‖
 Class: implement · Needs: none · Check: `test -f .github/ISSUE_TEMPLATE/incident.yml`
 Context: `.github/ISSUE_TEMPLATE/` has `config.yml` and `problem.yml` only. Decision 0144.
 Do: Add `incident.yml` (label `incident`) asking what the user was doing, install type (systemd/Docker/other), version, whether the server restarted, and for the diagnostics bundle (attached after previewing; no terminal content). Match `problem.yml` style.
