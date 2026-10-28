@@ -248,10 +248,24 @@ impl Registry {
         let kinds = backend.kinds();
         let chosen = backend_kind
             .map(str::to_string)
-            .or_else(|| kinds.first().cloned())
+            .or_else(|| {
+                // New workspaces are tmux whenever the server runs tmux (decision 0147), whatever the order the
+                // owner configured the managers in.
+                kinds
+                    .iter()
+                    .find(|k| *k == "tmux")
+                    .cloned()
+                    .or_else(|| kinds.first().cloned())
+            })
             .unwrap_or_else(|| backend.name().to_string());
         let made: CreatedWorkspace = backend
-            .create_workspace(&label, backend_kind, Some(&root), Some(kind), &first)
+            .create_workspace(
+                &label,
+                Some(chosen.as_str()),
+                Some(&root),
+                Some(kind),
+                &first,
+            )
             .await?;
         if chosen != "tmux" {
             return Ok(made.id);
