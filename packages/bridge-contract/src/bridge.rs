@@ -85,6 +85,8 @@ pub struct Bridge {
     clock: Arc<dyn Clock>,
     verifier: Arc<dyn Verifier>,
     cfg: Config,
+    /// Latest committed timestamp (A6).
+    floor: f64,
     sessions: BTreeMap<String, Session>,
     /// Volatile: void after a restart.
     nonces: BTreeMap<String, VecDeque<NonceRec>>,
@@ -121,6 +123,7 @@ impl Bridge {
             clock,
             verifier,
             cfg,
+            floor: 0.0,
             sessions: BTreeMap::new(),
             nonces: BTreeMap::new(),
             forwarded: vec![],
@@ -129,10 +132,17 @@ impl Bridge {
         })
     }
 
+    /// The host clock, never earlier than the last committed timestamp: a
+    /// clock that went backwards across a restart counts as no time
+    /// elapsed (A6).
+    fn now(&self) -> f64 {
+        self.clock.now().max(self.floor)
+    }
+
     // ---- commit / apply: the only way a cell changes ---------------------
 
     fn commit(&mut self, sid: &str, items: Vec<Item>) -> Result<Vec<Event>> {
-        let ts = self.clock.now();
+        let ts = self.now();
         let log = self.storage.read_log(sid)?;
         let mut prev = log.last().map(Event::hash).unwrap_or_default();
         let mut seq = log.len() as u64;
@@ -158,6 +168,7 @@ impl Bridge {
     }
 
     fn apply(&mut self, ev: &Event) {
+        self.floor = self.floor.max(ev.timestamp);
         let p = &ev.payload;
         if ev.kind == Kind::ATTACHED {
             let key = p["client_key_id"].as_str().unwrap_or("").to_string();
@@ -394,7 +405,7 @@ impl Bridge {
             }
             let default = json!({"tool": tool, "permission": permission});
             let shown_hash = content_hash(content.unwrap_or(&default));
-            let expires_at = self.clock.now() + self.cfg.t_call;
+            let expires_at = self.now() + self.cfg.t_call;
             self.commit(
                 sid,
                 vec![(
@@ -458,7 +469,7 @@ impl Bridge {
         }
         let default = json!({"tool": tool, "permission": permission});
         let shown_hash = content_hash(content.unwrap_or(&default));
-        let expires_at = self.clock.now() + self.cfg.t_call;
+        let expires_at = self.now() + self.cfg.t_call;
         let queued = (
             Kind::TOOL_CALL_QUEUED,
             json!({"key": key, "tool": tool, "permission": permission, "shown_hash": shown_hash,
@@ -586,7 +597,7 @@ impl Bridge {
         {
             return Ok(());
         }
-        let now = self.clock.now();
+        let now = self.now();
         let ah = authority_hash(&s.principal, &s.scope, &s.lineage);
         let items: Vec<Item> = s
             .queue
@@ -725,7 +736,7 @@ impl Bridge {
             sid,
             vec![(
                 Kind::HUMAN_RESOLVED,
-                json!({"valid_until": self.clock.now() + self.cfg.t_approve}),
+                json!({"valid_until": self.now() + self.cfg.t_approve}),
             )],
         )?;
         self.drain(sid)
@@ -749,7 +760,7 @@ impl Bridge {
         if s.cell.life == Life::Terminated || s.quarantined {
             return Ok(());
         }
-        let now = self.clock.now();
+        let now = self.now();
         let detach = s.cell.att == Attachment::Det && s.detach_deadline.is_some_and(|d| now >= d);
         let total = s.cell.att == Attachment::Det
             && s.det_since
@@ -814,10 +825,11 @@ impl Bridge {
         getrandom::getrandom(&mut raw)
             .map_err(|e| BridgeError::new(format!("no randomness: {e}")))?;
         let nonce = hex::encode(raw);
+        let issued = self.now();
         let book = self.nonces.entry(sid.to_string()).or_default();
         book.push_back(NonceRec {
             nonce: nonce.clone(),
-            issued: self.clock.now(),
+            issued,
             used: false,
         });
         while book.len() > NONCE_RECORDS {
@@ -903,7 +915,7 @@ impl Bridge {
         if !ok {
             return Ok(Some("bad_signature")); // I11c
         }
-        let now = self.clock.now();
+        let now = self.now();
         let t_nonce = self.cfg.t_nonce;
         let Some(rec) = self
             .nonces

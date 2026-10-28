@@ -1,6 +1,6 @@
 # Vendored: bridge-contract 0.5.0
 
-Source: `paper/supplementary/rust-bridge/` of the Bridge Contract paper repository (commit `7647df3` on the branch `feat/normative-decisions-r-a`, paper PR 12: quarantine on a chain failure, cumulative detachment cap, `T_human` above `T_detach` allowed, detached-call policies, delivery acknowledgement; vectors V01-V40),
+Source: `paper/supplementary/rust-bridge/` of the Bridge Contract paper repository (commit `6f80224` on the branch `feat/normative-decisions-r-a`, paper PR 12: quarantine on a chain failure, cumulative detachment cap, `T_human` above `T_detach` allowed, detached-call policies, delivery acknowledgement, a clock that never reads earlier than the last committed timestamp; vectors V01-V43),
 with the language-neutral vectors from `paper/supplementary/vectors/` copied to `vectors/`.
 
 Local changes (keep this list complete; re-vendor by copying upstream and re-applying it):
