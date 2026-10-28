@@ -281,6 +281,7 @@ pub struct CleanExit;
 
 impl Drop for CleanExit {
     fn drop(&mut self) {
+        crate::logging::flush();
         if !std::thread::panicking() {
             mark_clean();
         }
@@ -331,6 +332,8 @@ pub fn install_panic_hook(config_dir: &Path) {
         if WRITTEN.fetch_add(1, Ordering::SeqCst) < MAX_CRASH_FILES_PER_RUN {
             let _ = write_crash_file(&logs, &report);
         }
+        // The process may be about to end: what is queued must reach the file first.
+        crate::logging::flush();
         previous(info);
     }));
 }

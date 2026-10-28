@@ -19,17 +19,8 @@ const LOG_TAIL_BYTES: u64 = 2 * 1024 * 1024;
 /// `scrub` also replaces control characters, so that cannot happen.
 const PART_BYTES: usize = 8 * 1024;
 
-/// Field names whose value is left out whole: session text, and names a user gave to things.
-const OMITTED: &[&str] = &[
-    "text",
-    "payload",
-    "body",
-    "content",
-    "output",
-    "prompt",
-    "stdin",
-    "keystrokes",
-    "data",
+/// Field names whose value is left out whole, besides the log layer's own `PAYLOAD_NAMES`: names a user gave to things.
+const OMITTED_EXTRA: &[&str] = &[
     "session",
     "session_id",
     "workspace",
@@ -49,23 +40,8 @@ const OMITTED: &[&str] = &[
     "account_id",
     "server_name",
 ];
-/// Field names whose value is replaced: secret material.
-const SECRETS: &[&str] = &[
-    "secret",
-    "token",
-    "password",
-    "passwd",
-    "signature",
-    "nonce",
-    "private",
-    "challenge",
-    "authorization",
-    "cookie",
-    "session_key",
-    "cert",
-    "fingerprint",
-    "key",
-];
+/// Names replaced besides the log layer's own `SECRET_NAMES`. The log keeps a key fingerprint; a bundle is public.
+const SECRETS_EXTRA: &[&str] = &["cert", "fingerprint", "key"];
 /// Field names that hold an address.
 const ADDRESSES: &[&str] = &[
     "port",
@@ -80,6 +56,13 @@ const ADDRESSES: &[&str] = &[
     "candidate",
     "candidates",
 ];
+
+fn is_secret_name(name: &str) -> bool {
+    crate::logging::SECRET_NAMES
+        .iter()
+        .chain(SECRETS_EXTRA)
+        .any(|s| name.contains(s))
+}
 
 fn is_address_name(name: &str) -> bool {
     ADDRESSES.contains(&name)
@@ -261,11 +244,11 @@ fn scrub_line(line: &str) -> String {
 
 fn clean(value: &mut Value, key: &str) {
     if !key.is_empty() {
-        if OMITTED.contains(&key) {
+        if crate::logging::PAYLOAD_NAMES.contains(&key) || OMITTED_EXTRA.contains(&key) {
             *value = Value::from("[omitted]");
             return;
         }
-        if SECRETS.iter().any(|s| key.contains(s)) {
+        if is_secret_name(key) {
             *value = Value::from("[redacted]");
             return;
         }
@@ -314,7 +297,7 @@ fn flush(out: &mut String, token: &mut String, redact_next: &mut bool, before_eq
     }
     let t = std::mem::take(token);
     let lower = t.to_lowercase();
-    let names_secret = SECRETS.iter().any(|s| lower.contains(s));
+    let names_secret = is_secret_name(&lower);
     if *redact_next {
         // `Authorization: Bearer x`: the scheme is not the secret.
         if lower == "bearer" {

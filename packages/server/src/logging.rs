@@ -1,12 +1,18 @@
 //! The server's logs: stderr as before, plus JSON Lines in `<config-dir>/logs/termenbox.jsonl` that outlive the
 //! service manager's own retention (decision 0142). Rotated by size, pruned by age and total size. A field that can
 //! hold a secret is replaced and one that can hold session text is left out (guardrail `audit-logging-no-secrets`).
+//!
+//! Logging never waits for the disk: a line is queued for a writer thread that owns the file, rotation and pruning. A
+//! full queue drops the line and counts it; the writer then logs how many were lost. `flush` waits (briefly) for the
+//! queue to reach the file, for the places a process is about to die.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{Map, Value};
@@ -23,9 +29,12 @@ const MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
 const PRUNE_EVERY: Duration = Duration::from_secs(3600);
 /// A longer string is cut: one runaway value must not fill the budget.
 const MAX_VALUE_CHARS: usize = 2048;
+/// Lines waiting for the writer. A line is a few hundred bytes, so a full queue is about a megabyte.
+const QUEUE_LINES: usize = 2048;
+const FLUSH_WAIT: Duration = Duration::from_secs(1);
 
 /// Names that hold secret material: logged as present, never with their value.
-const SECRET_NAMES: &[&str] = &[
+pub const SECRET_NAMES: &[&str] = &[
     "secret",
     "token",
     "password",
@@ -39,7 +48,7 @@ const SECRET_NAMES: &[&str] = &[
     "session_key",
 ];
 /// Names that hold session text: left out whole.
-const PAYLOAD_NAMES: &[&str] = &[
+pub const PAYLOAD_NAMES: &[&str] = &[
     "text",
     "payload",
     "body",
@@ -173,14 +182,92 @@ impl Rotating {
     }
 }
 
-/// Where the layer's file goes once the server run path has chosen a config directory. Empty before that, so a
+enum Msg {
+    Line(Vec<u8>),
+    /// Answered once every line queued before it is in the file.
+    Flush(SyncSender<()>),
+}
+
+struct Sink {
+    tx: SyncSender<Msg>,
+    dropped: Arc<AtomicU64>,
+}
+
+/// Where the layer's lines go once the server run path has chosen a config directory. Empty before that, so a
 /// one-shot command (a hook, `--print-pairing`) writes no file.
 #[derive(Clone, Default)]
-pub struct Handle(Arc<OnceLock<Mutex<Rotating>>>);
+pub struct Handle(Arc<OnceLock<Sink>>);
 
 impl Handle {
     pub fn enable(&self, rotating: Rotating) -> bool {
-        self.0.set(Mutex::new(rotating)).is_ok()
+        self.enable_with(rotating, QUEUE_LINES)
+    }
+
+    fn enable_with(&self, rotating: Rotating, capacity: usize) -> bool {
+        let (tx, rx) = sync_channel(capacity);
+        let dropped = Arc::new(AtomicU64::new(0));
+        let lost = dropped.clone();
+        if std::thread::Builder::new()
+            .name("log-writer".into())
+            .spawn(move || write_loop(rotating, rx, lost))
+            .is_err()
+        {
+            return false;
+        }
+        self.0.set(Sink { tx, dropped }).is_ok()
+    }
+
+    /// Waits up to a second for what is queued to reach the file.
+    pub fn flush(&self) {
+        let Some(sink) = self.0.get() else { return };
+        let (ack, done) = sync_channel(1);
+        let mut msg = Msg::Flush(ack);
+        let start = Instant::now();
+        loop {
+            match sink.tx.try_send(msg) {
+                Ok(()) => break,
+                Err(TrySendError::Full(m)) if start.elapsed() < FLUSH_WAIT => {
+                    msg = m;
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => return,
+            }
+        }
+        let _ = done.recv_timeout(FLUSH_WAIT.saturating_sub(start.elapsed()));
+    }
+}
+
+fn write_loop(mut rotating: Rotating, rx: Receiver<Msg>, dropped: Arc<AtomicU64>) {
+    let report = |rotating: &mut Rotating| {
+        let lost = dropped.swap(0, Ordering::Relaxed);
+        if lost > 0 {
+            let line = serde_json::json!({
+                "ts": rfc3339(crate::events::now_ms()),
+                "level": "warn",
+                "target": "logging",
+                "fields": {"event": "log_lines_dropped", "count": lost},
+            });
+            rotating.write_line(format!("{line}\n").as_bytes());
+        }
+    };
+    while let Ok(msg) = rx.recv() {
+        match msg {
+            Msg::Line(bytes) => {
+                rotating.write_line(&bytes);
+                report(&mut rotating);
+            }
+            Msg::Flush(ack) => {
+                report(&mut rotating);
+                let _ = ack.send(());
+            }
+        }
+    }
+}
+
+/// Waits for the queued lines to reach the file: for a panic hook and a clean exit, before the process goes.
+pub fn flush() {
+    if let Some(handle) = HANDLE.get() {
+        handle.flush();
     }
 }
 
@@ -241,10 +328,10 @@ impl<S: Subscriber> Layer<S> for JsonlLayer {
         });
         let mut bytes = line.to_string().into_bytes();
         bytes.push(b'\n');
-        // A panic elsewhere while a line was being written must not silence every later one.
-        sink.lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .write_line(&bytes);
+        // Never waits: a full queue costs this line, counted and reported by the writer.
+        if sink.tx.try_send(Msg::Line(bytes)).is_err() {
+            sink.dropped.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -327,7 +414,7 @@ mod tests {
         let dir = temp_dir();
         let handle = Handle::default();
         handle.enable(Rotating::open(&dir).unwrap());
-        let subscriber = tracing_subscriber::registry().with(JsonlLayer(handle));
+        let subscriber = tracing_subscriber::registry().with(JsonlLayer(handle.clone()));
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!(
                 claim_secret = "hunter2-secret-value",
@@ -338,6 +425,7 @@ mod tests {
                 "an event"
             );
         });
+        handle.flush();
         let written = fs::read_to_string(dir.join(CURRENT)).unwrap();
         for leaked in [
             "hunter2-secret-value",
@@ -370,11 +458,39 @@ mod tests {
         let dir = temp_dir();
         let handle = Handle::default();
         handle.enable(Rotating::open(&dir).unwrap());
-        let subscriber = tracing_subscriber::registry().with(JsonlLayer(handle));
+        let subscriber = tracing_subscriber::registry().with(JsonlLayer(handle.clone()));
         let long = "x".repeat(MAX_VALUE_CHARS * 3);
         tracing::subscriber::with_default(subscriber, || tracing::info!(detail = %long));
+        handle.flush();
         let written = fs::read_to_string(dir.join(CURRENT)).unwrap();
         assert!(written.len() < MAX_VALUE_CHARS * 2, "{}", written.len());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_full_queue_drops_and_counts_lines_without_waiting_and_flush_reaches_the_file() {
+        let dir = temp_dir();
+        let handle = Handle::default();
+        assert!(handle.enable_with(Rotating::open(&dir).unwrap(), 1));
+        let subscriber = tracing_subscriber::registry().with(JsonlLayer(handle.clone()));
+        let start = Instant::now();
+        tracing::subscriber::with_default(subscriber, || {
+            for i in 0..500 {
+                tracing::info!(n = i, "burst");
+            }
+        });
+        assert!(start.elapsed() < Duration::from_secs(1), "logging waited");
+        handle.flush();
+        let written = fs::read_to_string(dir.join(CURRENT)).unwrap();
+        let kept = written.lines().filter(|l| l.contains("\"burst\"")).count() as u64;
+        let lost: u64 = written
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|v| v["fields"]["event"] == "log_lines_dropped")
+            .map(|v| v["fields"]["count"].as_u64().unwrap())
+            .sum();
+        assert!(kept >= 1);
+        assert_eq!(kept + lost, 500, "{kept} kept, {lost} reported lost");
         fs::remove_dir_all(&dir).unwrap();
     }
 
