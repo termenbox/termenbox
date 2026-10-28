@@ -551,6 +551,7 @@ fn build_backend(
                     .with_event_prefix(prefix),
             );
             backend.spawn_restore();
+            backend.spawn_heartbeat();
             Ok(backend)
         }
         "command" => {
@@ -1285,7 +1286,7 @@ fn print_pairing(args: &Args, auth: &AuthState) -> anyhow::Result<()> {
 /// No credentials cross origins here: the WebSocket authenticates in its first message.
 fn router(state: AppState, dev_info: bool) -> Router {
     let mut app = Router::new()
-        .route("/health", get(|| async { "OK" }))
+        .route("/health", get(|| health::HEARTBEATS.respond()))
         .route("/ws", get(ws_handler));
     if dev_info {
         app = app.route("/rtc-info", get(rtc_info));

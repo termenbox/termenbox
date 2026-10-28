@@ -47,11 +47,11 @@ Context: `packages/client/installer/install.sh` writes systemd units in two plac
 Do: Change both unit writers to `Restart=always` with `StartLimitIntervalSec=300` and `StartLimitBurst=10` in `[Unit]`/`[Service]` as systemd requires; confirm `systemctl stop` still stops it. Update any installer test that matches the old text.
 Done-when: the grep prints 2; installer tests/shellcheck in CI config pass (`scripts/dev.sh sh -c 'ls packages/client/installer'` lists the test, run it). (Done: grep prints 2; shellcheck -S warning is clean; `packages/server/tests/install_channels.rs` now asserts the user unit's four lines and passes with `install_script` and `uninstall_script`. Uninstall and the updater use `disable --now` and `restart`, which `Restart=always` does not fight. The system-unit writer is covered by `.github/scripts/test-native-install.sh` in CI only.)
 
-### 3.2 A health check that sees hangs — [ ]
+### 3.2 A health check that sees hangs — [x]
 Class: implement · Needs: 2.2 · Check: `scripts/dev.sh cargo test -p termenbox-server health`
 Context: `packages/server/src/main.rs` ~line 1157 serves `/health` as a constant `"OK"`; the Docker `HEALTHCHECK` (`docker/Dockerfile`) curls it every 60 s. `health.rs` already has a sampler loop that is replaced when it panics.
 Do: Have the ACP supervisor and the health sampler update a heartbeat timestamp; `/health` returns 503 if either is older than 30 s, 200 `OK` otherwise. Keep the body free of details.
-Done-when: a test with a stalled heartbeat gets 503 and a fresh one gets 200.
+Done-when: a test with a stalled heartbeat gets 503 and a fresh one gets 200. (Done: `health::tests::health_is_503_for_a_stalled_heartbeat_and_200_for_a_fresh_one`. The ACP beat comes from a 5 s probe of the workspace table on a blocking thread, and only exists when an ACP backend runs; a loop that never started is not waited for. The updater's post-update health wait uses the same route, so a stalled new server is rolled back.)
 
 ### 4.1 Server-side diagnostics bundle — [ ]
 Class: implement · Needs: 1.1, 1.3 · Check: `scripts/dev.sh cargo test -p termenbox-server bundle_scrub`

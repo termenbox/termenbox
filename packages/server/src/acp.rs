@@ -1328,6 +1328,9 @@ impl Entry {
     }
 }
 
+/// How often the ACP supervisor beats.
+const HEARTBEAT_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct AcpBackend {
     config: AcpConfig,
     hub: Option<EventHub>,
@@ -1652,6 +1655,26 @@ impl AcpBackend {
                         entry.reason = Some("Could not restore: an internal error".into());
                     }
                 }
+            }
+        });
+    }
+
+    /// Beats `/health` every few seconds, through a probe of the workspace table on a blocking thread. A lock that
+    /// is never released, or a runtime with no free worker, stops the beat, and `/health` turns 503 (decision 0143).
+    /// One probe at a time: a stuck one is not joined by more.
+    pub fn spawn_heartbeat(self: &Arc<Self>) {
+        let me = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(HEARTBEAT_EVERY);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                let probe = me.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    drop(probe.workspaces.lock_or_recover());
+                })
+                .await;
+                crate::health::HEARTBEATS.beat_acp();
             }
         });
     }
