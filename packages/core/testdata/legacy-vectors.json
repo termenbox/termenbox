@@ -1,0 +1,28 @@
+{
+  "note": "Pairs of (old wire message, current wire message) for the legacy shim of step 3.2. packages/server/src/legacy.rs and packages/client/src/lib/legacy.ts must map each old one to the new one and back. Delete with the shim in step 8.1.",
+  "client_to_server": [
+    { "old": { "type": "list_sessions" }, "new": { "type": "list_workspaces" } },
+    { "old": { "type": "new_session", "name": "n", "template": "claude" }, "new": { "type": "new_workspace", "name": "n", "template": "claude" } },
+    { "old": { "type": "close_session", "session": "s" }, "new": { "type": "close_workspace", "workspace": "s" } },
+    { "old": { "type": "rename_session", "session": "s", "name": "session" }, "new": { "type": "rename_workspace", "workspace": "s", "name": "session" } },
+    { "old": { "type": "attach", "session_id": "s" }, "new": { "type": "attach", "workspace_id": "s" } },
+    { "old": { "type": "session_view", "session": "s", "hash": "h" }, "new": { "type": "workspace_view", "workspace": "s", "hash": "h" } },
+    { "old": { "type": "session_answer", "session": "s", "prompt_id": "p", "option": 0 }, "new": { "type": "workspace_answer", "workspace": "s", "prompt_id": "p", "option": 0 } },
+    { "old": { "type": "acp_open", "session": "s", "after": 3, "epoch": 1 }, "new": { "type": "acp_open", "workspace": "s", "after": 3, "epoch": 1 } },
+    { "old": { "type": "windows", "session": "s" }, "new": { "type": "windows", "workspace": "s" } },
+    { "old": { "type": "uninstall", "confirm_name": "n", "kill_sessions": true }, "new": { "type": "uninstall", "confirm_name": "n", "kill_workspaces": true } },
+    { "old": { "type": "agent_sync", "after": { "session": 4, "sessions": 1 } }, "new": { "type": "agent_sync", "after": { "session": 4, "sessions": 1 } } },
+    { "old": { "type": "ping" }, "new": { "type": "ping" } }
+  ],
+  "server_to_client": [
+    { "old": { "type": "sessions", "sessions": [{ "id": "s", "name": "session", "agent": null }] }, "new": { "type": "workspaces", "workspaces": [{ "id": "s", "name": "session", "agent": null }] } },
+    { "old": { "type": "session_attached", "session_id": "s" }, "new": { "type": "workspace_attached", "workspace_id": "s" } },
+    { "old": { "type": "snapshot", "session": "s", "text": "session", "hash": "h" }, "new": { "type": "snapshot", "workspace": "s", "text": "session", "hash": "h" } },
+    { "old": { "type": "window_list", "session": "s", "windows": [] }, "new": { "type": "window_list", "workspace": "s", "windows": [] } },
+    { "old": { "type": "session_view", "session": "s", "tier": "t3", "tail": [], "hash": "h" }, "new": { "type": "workspace_view", "workspace": "s", "tier": "t3", "tail": [], "hash": "h" } },
+    { "old": { "type": "activity", "sessions": [{ "session": "s", "activity": "idle", "ts": 1 }] }, "new": { "type": "activity", "workspaces": [{ "workspace": "s", "activity": "idle", "ts": 1 }] } },
+    { "old": { "type": "attention", "items": [{ "id": "a", "session": "s", "kind": "question", "raised_at": 1 }] }, "new": { "type": "attention", "items": [{ "id": "a", "workspace": "s", "kind": "question", "raised_at": 1 }] } },
+    { "old": { "type": "acp_view", "session": "s", "epoch": 1, "rev": 2, "reset": true, "first": 1, "entries": [] }, "new": { "type": "acp_view", "workspace": "s", "epoch": 1, "rev": 2, "reset": true, "first": 1, "entries": [] } },
+    { "old": { "type": "pong" }, "new": { "type": "pong" } }
+  ]
+}

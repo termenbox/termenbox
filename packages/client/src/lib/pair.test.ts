@@ -17,6 +17,15 @@ describe('the pairing link', () => {
     expect(parsePairLink('')).toBeNull();
   });
 
+  it('previews the signal URL and the relay flag a signed link carries, and nothing else about them', async () => {
+    const key = await newServerKey();
+    const lan = [{ kind: 'lan' as const, addr: '192.168.1.5', port: 4443 }];
+    const r = await previewPair({ payload: await key.sign(bundleOf(1, lan, { signal: 'wss://r.example.workers.dev/s/k', relay: true })) }, NOW);
+    expect(r).toMatchObject({ ok: true, preview: { signal: 'wss://r.example.workers.dev/s/k', relay: true } });
+    const plain = await previewPair({ payload: await key.sign(bundleOf(2, lan)) }, NOW);
+    expect(plain).toMatchObject({ ok: true, preview: { signal: undefined, relay: undefined } });
+  });
+
   it('previews the name, the fingerprint and how the server can be reached, from the signed link alone', async () => {
     const key = await newServerKey();
     const payload = await key.sign(bundleOf(1, [{ kind: 'lan', addr: '192.168.1.20', port: 4443 }, { kind: 'wan6', addr: '2001:db8::1', port: 4443 }], { name: 'home-box' }));

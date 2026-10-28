@@ -305,7 +305,7 @@ impl Bridge {
         if self.sessions.contains_key(sid) || !self.storage.read_log(sid)?.is_empty() {
             return Err(BridgeError::new("session already exists (I6)"));
         }
-        self.storage.register_key(&key.key_id, &key.secret)?;
+        self.storage.register_key(&key.key_id, &key.public_key())?;
         self.commit(
             sid,
             vec![(

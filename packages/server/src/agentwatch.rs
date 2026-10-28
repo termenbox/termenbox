@@ -422,4 +422,31 @@ mod tests {
         assert_eq!(read("claude-working"), Some(AgentState::Working));
         assert_eq!(read("claude-idle"), Some(AgentState::Idle));
     }
+
+    /// A status line under the input box is the user's own text. Token counts and a model's "(thinking)" there read
+    /// as the spinner and made an idle agent `working` on every scan.
+    #[test]
+    fn a_status_line_under_the_input_box_is_not_the_agent_working() {
+        let (p, _) = Profiles::builtin().for_agent(Some("claude"));
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/screens");
+        let idle = std::fs::read_to_string(path.join("claude-idle.txt")).unwrap();
+        let working = std::fs::read_to_string(path.join("claude-working.txt")).unwrap();
+        for status in [
+            "  Opus 4.1 (thinking) | 4% ctx",
+            "  Opus | 120k tokens · $1.20",
+            "  Opus | (1.2M tokens)",
+        ] {
+            let with = |screen: &str| {
+                let mut lines: Vec<&str> = screen.lines().collect();
+                let at = lines.len() - 2;
+                lines[at] = status;
+                lines.join("\n")
+            };
+            let v = p.read(&with(&idle));
+            assert_eq!(screen_state(&v), Some(AgentState::Idle), "{status}");
+            // The real spinner above the box still counts.
+            let v = p.read(&with(&working));
+            assert_eq!(screen_state(&v), Some(AgentState::Working), "{status}");
+        }
+    }
 }

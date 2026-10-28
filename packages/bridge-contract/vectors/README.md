@@ -73,13 +73,14 @@ registered signs with a key of its own.
 ## Test-harness convention for proof of possession
 
 Not part of the contract (the paper only requires a signature under a
-registered client key). The vectors use a symmetric stand-in so a runner needs
-only HMAC-SHA256:
+registered client key). The reference runners use Ed25519, so the bridge
+registry holds public keys only:
 
-* client secret: any 32 bytes registered at attach (or by `add_client`) under
-  the client's key id;
+* client key: an Ed25519 key pair; the raw 32-byte public key is registered at
+  attach (or by `add_client`) under the client's key id, the seed stays with
+  the client;
 * the signed message is the canonical JSON (sorted keys, no spaces) of the
   array `[session_id, nonce, seq, hash]`;
-* valid signature: `hex(HMAC-SHA256(client_secret, message))`.
+* valid signature: `hex(Ed25519-sign(client_seed, message))`.
 
 An `invalid` proof is any other string.

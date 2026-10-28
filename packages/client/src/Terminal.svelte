@@ -19,7 +19,7 @@
   import { handleClipboardWrites } from './lib/terminal/osc52';
   import { dropColorReplies, setEnterKeyHint, silenceColorQueries } from './lib/terminal/inputGuards';
   import { WordTracker } from './lib/terminal/wordTracker';
-  import { nextVoiceLang, parseVoiceLang, pickLanguage, recognizerFactory, Voice, type VoiceLang } from './lib/terminal/voice';
+  import { IOS_KEYBOARD_HINT, nextVoiceLang, parseVoiceLang, pickLanguage, recognizerFactory, Voice, type VoiceLang } from './lib/terminal/voice';
   import { linkAt } from './lib/terminal/links';
   import { cellAt } from './lib/selection';
   import { PinchZoom } from './lib/terminal/pinch';
@@ -269,6 +269,11 @@
           clearTimeout(voiceErrorTimer);
           voiceErrorTimer = setTimeout(() => (voiceError = ''), 5000);
         },
+        onFallback: () => {
+          voiceError = IOS_KEYBOARD_HINT;
+          clearTimeout(voiceErrorTimer);
+          voiceErrorTimer = setTimeout(() => (voiceError = ''), 8000);
+        },
       })
     : null;
   function toggleVoice() {
@@ -328,7 +333,7 @@
     selectText = '';
     historyLoading = !!activeWorkspaceId;
     if (!activeWorkspaceId) { historyLoading = false; selectText = localText(); return; }
-    connection.send({ type: 'scrollback', session: activeWorkspaceId });
+    connection.send({ type: 'scrollback', workspace: activeWorkspaceId });
     clearTimeout(historyTimer);
     historyTimer = setTimeout(() => { if (historyLoading) { historyLoading = false; selectText = localText(); } }, 4000);
   }
@@ -679,13 +684,13 @@
     cleanups.push(
       connection.subscribe((msg) => {
         if (msg.type === 'scrollback') {
-          const whole = msg.session === activeWorkspaceId ? historyParts.add(msg.part, msg.last, msg.text) : null;
+          const whole = msg.workspace === activeWorkspaceId ? historyParts.add(msg.part, msg.last, msg.text) : null;
           if (whole !== null && selectAllView) { clearTimeout(historyTimer); historyLoading = false; selectText = whole; }
         } else if (msg.type === 'output') {
           receive(b64ToBytes(msg.data));
         } else if (msg.type === 'term') {
           receive(msg.bytes);
-        } else if (msg.type === 'session_attached') {
+        } else if (msg.type === 'workspace_attached') {
           // tmux repaints the screen on attach; start clean so a re-attach never doubles the content.
           // If we just painted a preview, it already reset the terminal; skip the second reset to avoid a flash.
           const wasPreviewing = previewing;

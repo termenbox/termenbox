@@ -18,15 +18,20 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Docker tag (e.g. staging, latest, v1.0.0)'
+        description: 'Docker tag (e.g. staging, v1.0.0); `latest` is refused here, a stable tag pushes it'
         required: true
         type: string
-        default: 'latest'
+        default: 'staging'
 
+# Each job asks for what it needs; the workflow itself only reads.
 permissions:
   contents: read
-  packages: write
-  id-token: write
+
+# A new push to a pull request cancels the image build of the stale one. Tag, nightly and manual runs are never
+# cancelled (their group is the run itself).
+concurrency:
+  group: docker-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   REGISTRY: ghcr.io
@@ -38,6 +43,7 @@ jobs:
   plan:
     name: Plan the image tags
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       run: ${{ steps.p.outputs.run }}
       tags: ${{ steps.p.outputs.tags }}
@@ -64,6 +70,10 @@ jobs:
             fi
             tags="$(jq -r '.docker_tags | join(" ")' <<<"$plan")"; version="$(jq -r .version <<<"$plan")"
           elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            # `latest` moves only for a stable tag (decision 0130); a manual run may push any other tag.
+            case " $DISPATCH_TAG " in
+              *" latest "*) echo "::error::latest is pushed by a stable tag only, not by a manual run"; exit 1 ;;
+            esac
             tags="$DISPATCH_TAG"
           fi
           {
@@ -73,19 +83,19 @@ jobs:
 
   # One native runner per architecture: no QEMU, so the Rust build runs at full speed. Build cache lives in GHCR
   # (the Actions cache has a 10 GB per-repository cap that two architectures' layers were filling).
+  # A pull request builds amd64 only: it pushes nothing, and the arm64 build would only repeat the same compile.
   build:
     name: Build ${{ matrix.arch }}
     needs: plan
     if: needs.plan.outputs.run == 'true'
     strategy:
       fail-fast: true
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-latest
-          - arch: arm64
-            runner: ubuntu-24.04-arm
+      matrix: ${{ fromJSON(github.event_name == 'pull_request' && '{"include":[{"arch":"amd64","runner":"ubuntu-latest"}]}' || '{"include":[{"arch":"amd64","runner":"ubuntu-latest"},{"arch":"arm64","runner":"ubuntu-24.04-arm"}]}') }}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -144,6 +154,10 @@ jobs:
     if: github.event_name != 'pull_request' && needs.plan.outputs.run == 'true'
     needs: [plan, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/download-artifact@v8
         with:

@@ -6,6 +6,7 @@
 node_modules/
 .pnpm-store/
 dist/
+!infra/owner-relay/dist/
 build/
 *.log
 

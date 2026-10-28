@@ -1,7 +1,7 @@
 // Workspace cards (plan v8): what a card shows and how the list is ordered. Pure functions, so the rules (a state is
 // never colour alone, the order holds still under a finger) are tested without a browser. Text from agents is
 // plain text: nothing here builds markup.
-import { isStale, type AgentMap, type WorkspaceAgent } from './agents';
+import { isStale, type WorkspaceAgent } from './agents';
 import type { AgentState } from './protocol';
 
 export interface Chip {
@@ -11,9 +11,10 @@ export interface Chip {
   tone: 'need' | 'work' | 'done' | 'error' | 'idle';
 }
 
+/** Marks stay text on every platform: no emoji (iOS draws ❗ and a bare ⚙ as colour emoji, which ignore the tone's colour). */
 const CHIPS: Record<AgentState, Chip> = {
-  needs_input: { label: 'Needs you', icon: '❗', tone: 'need' },
-  working: { label: 'Working', icon: '⚙', tone: 'work' },
+  needs_input: { label: 'Needs you', icon: '!', tone: 'need' },
+  working: { label: 'Working', icon: '⚙\uFE0E', tone: 'work' },
   done: { label: 'Done', icon: '✓', tone: 'done' },
   error: { label: 'Error', icon: '✕', tone: 'error' },
   idle: { label: 'Idle', icon: '·', tone: 'idle' },
@@ -53,17 +54,10 @@ export function staleText(a: WorkspaceAgent, nowMs: number): string {
   return `no update for ${Math.max(1, Math.floor((nowMs - a.ts) / 60_000))} min`;
 }
 
-const RANK: Record<AgentState, number> = { needs_input: 0, error: 1, working: 2, done: 3, idle: 4, unknown: 5 };
-
-/** Needs-you first, then by state; ties keep the server's order. */
-export function sortIds(ids: string[], agents: AgentMap): string[] {
-  const rank = (id: string) => (agents[id] ? RANK[agents[id].state] ?? 5 : 6);
-  return ids.map((id, i) => ({ id, i })).sort((a, b) => rank(a.id) - rank(b.id) || a.i - b.i).map((x) => x.id);
-}
-
 /**
- * The order cards are shown in. It is recomputed only when nothing could move under a finger: no touch is down, no
- * card is expanded and the list has not been scrolled for `holdMs`. Inserts and removals also wait for release.
+ * The order cards are shown in: the order the caller gives (the user's own, lib/order.ts), never a state's. It follows the
+ * caller only when nothing could move under a finger: no touch is down, no card is expanded and the list has not been
+ * scrolled for `holdMs`. Inserts and removals also wait for release.
  */
 export class FrozenOrder {
   private shown: string[] = [];
@@ -94,9 +88,9 @@ export class FrozenOrder {
     return this.touches > 0 || this.pointers.size > 0 || this.sheets > 0 || nowMs - this.lastScroll < this.holdMs;
   }
 
-  order(ids: string[], agents: AgentMap, nowMs: number): string[] {
+  order(ids: string[], nowMs: number): string[] {
     if (!this.frozen(nowMs) || this.shown.length === 0) {
-      this.shown = sortIds(ids, agents);
+      this.shown = [...ids];
     }
     return this.shown;
   }

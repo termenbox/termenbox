@@ -92,8 +92,9 @@ fn strings(v: &Value) -> Vec<String> {
         .collect()
 }
 
-fn secret_of(key_id: &str) -> Vec<u8> {
-    format!("client-secret-{key_id}-0123456789abcdef").into_bytes()
+fn secret_of(key_id: &str) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(format!("client-seed-{key_id}")).into()
 }
 
 impl Runner {
@@ -106,7 +107,7 @@ impl Runner {
         let mut bridge = Bridge::new(
             storage.clone(),
             clock.clone(),
-            Arc::new(HmacVerifier),
+            Arc::new(Ed25519Verifier),
             cfg.clone(),
         )?;
         let sid = s["session_id"].as_str().unwrap().to_string();
@@ -258,7 +259,8 @@ impl Runner {
                     .cloned()
                     .unwrap_or_else(|| self.first.clone());
                 let key = ClientKey::new(&c, &secret_of(&c));
-                self.bridge.add_client_key(&sid, &via, &c, &key.secret)?;
+                self.bridge
+                    .add_client_key(&sid, &via, &c, &key.public_key())?;
                 self.keys.insert(c.clone(), key);
                 self.sync(&c);
                 Ok(())
@@ -293,7 +295,7 @@ impl Runner {
                 self.bridge = Bridge::recover(
                     self.storage.clone(),
                     self.clock.clone(),
-                    Arc::new(HmacVerifier),
+                    Arc::new(Ed25519Verifier),
                     self.cfg.clone(),
                 )?;
                 Ok(())
@@ -467,7 +469,7 @@ fn bridge_and_collaborators_are_send_and_sync() {
     send_sync::<common::FileStorage>();
     send_sync::<FakeClock>();
     send_sync::<SystemClock>();
-    send_sync::<HmacVerifier>();
+    send_sync::<Ed25519Verifier>();
     send_sync::<Config>();
 }
 
@@ -479,7 +481,7 @@ fn a_shared_bridge_serves_sessions_from_several_threads() {
         Bridge::new(
             storage.clone(),
             FakeClock::new(0.0),
-            Arc::new(HmacVerifier),
+            Arc::new(Ed25519Verifier),
             Config::default(),
         )
         .unwrap(),
@@ -489,7 +491,7 @@ fn a_shared_bridge_serves_sessions_from_several_threads() {
             let bridge = bridge.clone();
             std::thread::spawn(move || {
                 let sid = format!("s{i}");
-                let key = ClientKey::new("ck", format!("secret-{i}").as_bytes());
+                let key = ClientKey::new("ck", &[i as u8; 32]);
                 let id = SessionIdentity {
                     session_id: sid.clone(),
                     principal_id: "p".into(),
@@ -539,11 +541,11 @@ fn default_config_satisfies_the_timer_bounds() {
 fn failed_append_changes_nothing() {
     let clock = FakeClock::new(0.0);
     let storage = MemStorage::new();
-    let key = ClientKey::new("ck", b"s");
+    let key = ClientKey::new("ck", &[7u8; 32]);
     let mut b = Bridge::new(
         storage.clone(),
         clock,
-        Arc::new(HmacVerifier),
+        Arc::new(Ed25519Verifier),
         Config::default(),
     )
     .unwrap();
@@ -559,4 +561,28 @@ fn failed_append_changes_nothing() {
     assert!(b.client_disconnect("s", None, "x").is_err());
     assert_eq!(b.cell_of("s"), cell);
     assert_eq!(b.events("s").len(), 1);
+}
+
+#[test]
+fn registry_holds_public_keys_only() {
+    let seed = [9u8; 32];
+    let key = ClientKey::new("ck", &seed);
+    let storage = MemStorage::new();
+    let mut b = Bridge::new(
+        storage.clone(),
+        FakeClock::new(0.0),
+        Arc::new(Ed25519Verifier),
+        Config::default(),
+    )
+    .unwrap();
+    let id = SessionIdentity {
+        session_id: "s".into(),
+        principal_id: "p".into(),
+        authority_scope: vec!["a".into()],
+        task_lineage: vec![],
+    };
+    b.attach(&id, &key).unwrap();
+    let stored = storage.key_material("ck").unwrap().unwrap();
+    assert_eq!(stored, key.public_key());
+    assert_ne!(stored, seed.to_vec());
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { askMicrophone, errorMessage, mapResults, nextVoiceLang, parseVoiceLang, pickLanguage, recognizerFactory, Voice, type Recognizer, type RecognizerEvent } from './voice';
+import { askMicrophone, errorMessage, isIOS, mapResults, nextVoiceLang, parseVoiceLang, pickLanguage, recognizerFactory, Voice, type Recognizer, type RecognizerEvent } from './voice';
 
 const ev = (resultIndex: number, ...rs: [string, boolean][]): RecognizerEvent => ({
   resultIndex,
@@ -192,6 +192,50 @@ describe('Voice', () => {
   });
 });
 
+describe('iOS fallback', () => {
+  const setup = (ios: boolean, withFallback = true) => {
+    const rec = fake();
+    const on = { onText: vi.fn(), onInterim: vi.fn(), onState: vi.fn(), onError: vi.fn(), ...(withFallback ? { onFallback: vi.fn() } : {}) };
+    const voice = new Voice(() => rec, () => 'en-US', on, async () => null, ios);
+    return { rec, on, voice };
+  };
+
+  it.each(['not-allowed', 'service-not-allowed'])('points an iPhone at the keyboard mic on %s instead of "blocked"', async (code) => {
+    const { rec, on, voice } = setup(true);
+    await voice.toggle();
+    rec.onerror?.({ error: code });
+    expect((on as { onFallback: unknown }).onFallback).toHaveBeenCalledWith(code);
+    expect(on.onError).not.toHaveBeenCalled();
+    expect(on.onState).toHaveBeenLastCalledWith(false);
+  });
+
+  it('keeps the error elsewhere, with the code in it, and for other iOS errors', async () => {
+    const other = setup(false);
+    await other.voice.toggle();
+    other.rec.onerror?.({ error: 'service-not-allowed' });
+    expect(other.on.onError).toHaveBeenCalledWith(expect.stringContaining('(service-not-allowed)'));
+    const ios = setup(true);
+    await ios.voice.toggle();
+    ios.rec.onerror?.({ error: 'audio-capture' });
+    expect(ios.on.onError).toHaveBeenCalledWith('No microphone found.');
+  });
+
+  it('still shows the error when nothing handles the fallback', async () => {
+    const { rec, on, voice } = setup(true, false);
+    await voice.toggle();
+    rec.onerror?.({ error: 'not-allowed' });
+    expect(on.onError).toHaveBeenCalled();
+  });
+
+  it('reads an iPhone, an iPad and a desktop-mode iPad, and nothing else', () => {
+    expect(isIOS({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)' })).toBe(true);
+    expect(isIOS({ userAgent: 'Mozilla/5.0 (Macintosh)', platform: 'MacIntel', maxTouchPoints: 5 })).toBe(true);
+    expect(isIOS({ userAgent: 'Mozilla/5.0 (Macintosh)', platform: 'MacIntel', maxTouchPoints: 0 })).toBe(false);
+    expect(isIOS({ userAgent: 'Mozilla/5.0 (Linux; Android 14)' })).toBe(false);
+    expect(isIOS(undefined)).toBe(false);
+  });
+});
+
 describe('askMicrophone', () => {
   const devices = (getUserMedia: () => Promise<MediaStream>) => ({ getUserMedia } as unknown as MediaDevices);
 
@@ -215,6 +259,32 @@ describe('askMicrophone', () => {
       throw Object.assign(new Error('blocked'), { name: 'NotAllowedError' });
     };
     expect(await askMicrophone({ mediaDevices: devices(getUserMedia) })).toMatch(/blocked/);
+  });
+
+  it('names the exception and the permission state when the microphone is blocked, and where to look on an iPhone', async () => {
+    const getUserMedia = async () => {
+      throw Object.assign(new Error('blocked'), { name: 'NotAllowedError' });
+    };
+    const permissions = { query: async () => ({ state: 'denied' }) as PermissionStatus };
+    const msg = await askMicrophone({ mediaDevices: devices(getUserMedia), permissions, ios: true });
+    expect(msg).toContain('[NotAllowedError, permission denied]');
+    expect(msg).toMatch(/Settings > Safari > Microphone/);
+    expect(await askMicrophone({ mediaDevices: devices(getUserMedia), permissions })).not.toMatch(/Safari/);
+  });
+
+  it('still explains a block when the Permissions API cannot be read', async () => {
+    const getUserMedia = async () => {
+      throw Object.assign(new Error('blocked'), { name: 'SecurityError' });
+    };
+    const permissions = { query: async () => { throw new TypeError('no microphone'); } };
+    expect(await askMicrophone({ mediaDevices: devices(getUserMedia), permissions })).toContain('[SecurityError]');
+  });
+
+  it('does not block dictation on a failure that is not a denial (iOS InvalidStateError)', async () => {
+    const getUserMedia = async () => {
+      throw Object.assign(new Error('invalid'), { name: 'InvalidStateError' });
+    };
+    expect(await askMicrophone({ mediaDevices: devices(getUserMedia) })).toBeNull();
   });
 
   it('lets the recognizer ask when the browser has no MediaDevices', async () => {

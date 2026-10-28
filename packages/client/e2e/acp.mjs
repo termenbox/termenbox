@@ -91,13 +91,16 @@ try {
   await hp.evaluate((o) => window.__e2e.start(o), { record, cert, serverId, claim });
   await waitFor(() => hp.evaluate(() => window.__e2e.state === 'connected'), 'harness connected');
   const send = (m) => hp.evaluate((msg) => window.__e2e.send(msg), m);
-  const workspaces = async () => { await send({ type: 'list_sessions' }); await sleep(150); return hp.evaluate(() => window.__e2e.workspaces); };
+  const workspaces = async () => { await send({ type: 'list_workspaces' }); await sleep(150); return hp.evaluate(() => window.__e2e.workspaces); };
+  // The server mints each id; the name typed is the label. `ids` maps a label to the id the server gave it.
+  const ids = {};
+  const findId = async (label, backend) => (await workspaces()).find((s) => s.name === label && s.id.startsWith(`${backend}:`))?.id;
   const createAcp = async (name) => {
-    await send({ type: 'new_session', name, backend: 'acp', dir: work, template: 'claude' });
-    await waitFor(async () => (await workspaces()).some((s) => s.id === `acp:${name}`), `workspace ${name}`);
+    await send({ type: 'new_workspace', name, backend: 'acp', dir: work, template: 'claude' });
+    await waitFor(async () => (ids[name] = await findId(name, 'acp')), `workspace ${name}`);
   };
   await createAcp('work');
-  const listed = (await workspaces()).find((s) => s.id === 'acp:work');
+  const listed = (await workspaces()).find((s) => s.id === ids.work);
   check(listed.backend === 'acp' && listed.agent === 'claude', `the listing does not say it is an ACP claude session: ${JSON.stringify(listed)}`);
 
   // ---- The owner's phone, on Home.
@@ -150,7 +153,7 @@ try {
   // From Home or the list a workspace opens by its row; from another open workspace by its tab, else from the Workspaces sheet
   // (after Refresh: a workspace made on another device is listed when asked for).
   const openWorkspace = async (p, name) => {
-    const tab = p.locator(`[role=tab][data-key$="/acp:${name}"]`);
+    const tab = p.locator(`[role=tab][data-key$="/${ids[name]}"]`);
     const inWorkspace = (await p.locator('.xterm, [data-testid=acp-view]').count()) > 0;
     if (inWorkspace) await tab.waitFor({ timeout: 8000 }).catch(() => {});
     if (await tab.count()) await tab.click();
@@ -163,7 +166,7 @@ try {
       await p.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click();
       await p.locator('[data-workspace-groups] button').filter({ has: p.locator('b', { hasText: new RegExp(`^${name}$`) }) }).first().click({ timeout: 20000 });
     }
-    await p.locator(`[data-testid=acp-view][data-workspace$="/acp:${name}"]`).waitFor({ timeout: 20000 });
+    await p.locator(`[data-testid=acp-view][data-workspace$="/${ids[name]}"]`).waitFor({ timeout: 20000 });
   };
   const prompt = (p) => p.locator('textarea[aria-label=Prompt]');
   const say = async (p, text) => {
@@ -175,8 +178,8 @@ try {
   const streamText = (p) => p.locator('[data-testid=stream]').innerText();
 
   // 1. Home: a permission from the agent, answered with one tap, no other screen opened.
-  await send({ type: 'acp_open', session: 'acp:work' });
-  await send({ type: 'acp_prompt', session: 'acp:work', text: 'edit a.txt' });
+  await send({ type: 'acp_open', workspace: ids.work });
+  await send({ type: 'acp_prompt', workspace: ids.work, text: 'edit a.txt' });
   const card = page.getByRole('region', { name: 'Decision' });
   await card.waitFor({ timeout: 20000 });
   await waitFor(async () => (await card.innerText()).includes('Write a.txt'), 'the Home card shows the tool'); // the card mounts before its text
@@ -347,7 +350,7 @@ try {
 
   // 7b. A burst of 5000 chunks reaches the phone in a handful of updates, and the reply stays within its bound.
   const views = () => hp.evaluate(() => window.__e2e.received.filter((m) => m.startsWith('{"type":"acp_view"')).length);
-  await send({ type: 'acp_open', session: 'acp:work' });
+  await send({ type: 'acp_open', workspace: ids.work });
   await sleep(300);
   const v0 = await views();
   const t0 = Date.now();
@@ -403,8 +406,8 @@ try {
   check((await shellBtn.boundingBox()).height >= 43.5, 'the Shell key is under 44 pt');
   await tap(shellBtn);
   await page.locator('.xterm').waitFor({ timeout: 20000 });
-  await waitFor(async () => (await workspaces()).some((s) => s.id === 'tmux:work-shell'), 'the companion tmux workspace');
-  await send({ type: 'attach', session_id: 'tmux:work-shell' });
+  await waitFor(async () => (await workspaces()).some((s) => s.name === 'work-shell' && s.id.startsWith('tmux:')), 'the companion tmux workspace');
+  await send({ type: 'attach', workspace_id: await findId('work-shell', 'tmux') });
   await sleep(500);
   await hp.evaluate(() => { window.__e2e.clear(); window.__e2e.type('pwd\r'); });
   await waitFor(() => hp.evaluate((d) => window.__e2e.output.includes(d), work), `the shell starts in ${work}`);
@@ -412,12 +415,12 @@ try {
   await openWorkspace(page, 'work');
   await tap(page.getByTestId('shell'));
   await page.locator('.xterm').waitFor();
-  check((await workspaces()).filter((s) => s.id === 'tmux:work-shell').length === 1, 'a second tap made a second shell');
+  check((await workspaces()).filter((s) => s.name === 'work-shell' && s.id.startsWith('tmux:')).length === 1, 'a second tap made a second shell');
   ok('companion shell: one tap opens a plain tmux workspace in the ACP workspace\'s directory; the next tap opens the same one');
 
   // 10b. Leaving a terminal for an ACP workspace lets the terminal go: its output stops reaching the phone. (Control first:
   // while the phone shows the shell, what the harness types into it does reach the phone.)
-  await send({ type: 'attach', session_id: 'tmux:work-shell' });
+  await send({ type: 'attach', workspace_id: await findId('work-shell', 'tmux') });
   await sleep(500);
   const termBytes = () => page.evaluate(() => window.__termBytes);
   const t1 = await termBytes();
@@ -442,7 +445,7 @@ try {
   await sleep(700);
   const keep = await streamBox.evaluate((e) => Math.round(e.scrollTop));
   await openWorkspace(page, 'other');
-  check((await page.locator('[data-testid=acp-view]').getAttribute('data-workspace')).endsWith('/acp:other'), 'did not switch to the other workspace');
+  check((await page.locator('[data-testid=acp-view]').getAttribute('data-workspace')).endsWith(`/${ids.other}`), 'did not switch to the other workspace');
   await openWorkspace(page, 'work');
   await page.locator('[data-kind=user]').first().waitFor();
   await waitFor(async () => Math.abs((await streamBox.evaluate((e) => Math.round(e.scrollTop))) - keep) <= 4, `the place after switching back (was ${keep}, now ${await streamBox.evaluate((e) => Math.round(e.scrollTop))}, saved ${await page.evaluate(() => localStorage.getItem('termenbox_acp_view'))})`);
@@ -454,7 +457,7 @@ try {
   await page.getByTestId('subtitle').filter({ hasText: 'Reconnecting' }).waitFor({ timeout: 15000 });
   check(/^Reconnecting/.test(await prompt(page).getAttribute('placeholder')), 'the prompt line does not say it is waiting for the connection');
   check((await streamText(page)).includes('You said: note 3'), 'the stream was cleared by the drop');
-  await send({ type: 'acp_prompt', session: 'acp:work', text: 'said while away' });
+  await send({ type: 'acp_prompt', workspace: ids.work, text: 'said while away' });
   await page.locator('[data-kind=message]').filter({ hasText: 'You said: said while away' }).waitFor({ timeout: 40000 });
   check((await page.locator('[data-kind=user]').filter({ hasText: 'said while away' }).count()) === 1, 'the catch-up repeated an entry');
   check((await page.locator('[data-kind=user]').filter({ hasText: 'note 3' }).count()) === 1, 'the catch-up repeated older entries');
@@ -471,7 +474,7 @@ try {
 
   // 13. The agent dies: the view says so and the prompt line cannot be sent.
   await createAcp('doomed');
-  await send({ type: 'acp_prompt', session: 'acp:doomed', text: 'crash' });
+  await send({ type: 'acp_prompt', workspace: ids.doomed, text: 'crash' });
   await openWorkspace(page, 'doomed');
   await page.locator('[data-kind=notice][data-level=error]').waitFor({ timeout: 20000 });
   await waitFor(async () => (await page.getByTestId('subtitle').innerText()).startsWith('Stopped'), 'the header says the agent stopped');
@@ -526,7 +529,7 @@ try {
   // 15. Desktop: the same view with a mouse and keyboard; no key row, Esc interrupts.
   const desk = await app({ width: 1280, height: 800 }, { isMobile: false, hasTouch: false });
   const dp = desk.page;
-  const row = dp.locator('[data-shell=sidebar] [data-key$="acp:work"]');
+  const row = dp.locator(`[data-shell=sidebar] [data-key$="${ids.work}"]`);
   await row.waitFor({ timeout: 20000 });
   await row.click();
   await dp.locator('[data-testid=acp-view]').waitFor();

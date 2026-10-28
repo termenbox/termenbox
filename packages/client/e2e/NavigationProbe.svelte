@@ -9,6 +9,7 @@
   import WindowMenu from '../src/WindowMenu.svelte';
   import NeedsYouBanner from '../src/NeedsYouBanner.svelte';
   import { openTabs } from '../src/lib/tabs';
+  import { moveWorkspace, placementOf } from '../src/lib/order';
   import { waitingList } from '../src/lib/notify';
   import type { WindowInfo } from '../src/lib/protocol';
   import type { SheetHeight } from '../src/lib/sheet';
@@ -26,9 +27,9 @@
     constructor(opts: ConnectionOptions) { this.opts = opts; }
     start() {
       this.opts.onState('connected'); this.opts.onReady({ type: 'auth_ok', user: 'test', server_name: this.opts.serverId! }, false);
-      this.emit({ type: 'sessions', sessions: this.list });
-      this.emit({ type: 'agent_snapshot', states: this.list.map((s, i) => ({ session: s.id, state: i === 1 ? 'needs_input' : i === 0 ? 'idle' : 'working', seq: 1, ts: Date.now(), stale: false, agent: 'claude', last_response_at: Date.now() - (i + 1) * 60000 })) });
-      this.emit({ type: 'agent_events', events: [{ session: 'workspace-1', seq: 2, ts: Date.now(), source: 'hook', confidence: 'high', kind: 'prompt', id: `prompt-${this.opts.serverId}`, prompt_kind: 'choice', choices: ['Yes', 'No'] }] });
+      this.emit({ type: 'workspaces', workspaces: this.list });
+      this.emit({ type: 'agent_snapshot', states: this.list.map((s, i) => ({ workspace: s.id, state: i === 1 ? 'needs_input' : i === 0 ? 'idle' : 'working', seq: 1, ts: Date.now(), stale: false, agent: 'claude', last_response_at: Date.now() - (i + 1) * 60000 })) });
+      this.emit({ type: 'agent_events', events: [{ workspace: 'workspace-1', seq: 2, ts: Date.now(), source: 'hook', confidence: 'high', kind: 'prompt', id: `prompt-${this.opts.serverId}`, prompt_kind: 'choice', choices: ['Yes', 'No'] }] });
     }
     close() { this.opts.onState('closed'); }
     send(message: ClientMessage) { messages.push({ server: this.opts.serverId!, message }); }
@@ -61,33 +62,33 @@
   Object.assign(window, { __navigation: {
     active: () => activeKey,
     sent: () => messages,
-    changePrompt: () => peers.get('alpha')!.emit({ type: 'agent_events', events: [{ session: 'workspace-1', seq: 3, ts: Date.now(), source: 'hook', confidence: 'high', kind: 'prompt', id: 'changed-alpha', prompt_kind: 'choice', choices: ['Different'] }] }),
+    changePrompt: () => peers.get('alpha')!.emit({ type: 'agent_events', events: [{ workspace: 'workspace-1', seq: 3, ts: Date.now(), source: 'hook', confidence: 'high', kind: 'prompt', id: 'changed-alpha', prompt_kind: 'choice', choices: ['Different'] }] }),
     select: (key: string) => activeKey = key,
-    windows: (server: string, session: string, windows: WindowInfo[], representative: number | null) => peers.get(server)!.emit({ type: 'window_list', session, windows, representative }),
+    windows: (server: string, workspace: string, windows: WindowInfo[], representative: number | null) => peers.get(server)!.emit({ type: 'window_list', workspace, windows, representative }),
     hidden: () => [...hidden],
     change: () => {
       const peer = peers.get('alpha')!;
       peer.list = [...peer.list.filter(s => s.id !== 'workspace-0'), { id: 'new', name: 'new', agent: null }];
-      peer.emit({ type: 'sessions', sessions: peer.list });
+      peer.emit({ type: 'workspaces', workspaces: peer.list });
     },
     degrade: () => peers.get('beta')!.opts.onState('unreachable', 'Test server offline'),
   } });
 </script>
 <AppShell pinned>
-  <NavigationBar workspaces={tabs} agents={$agents} servers={$servers} windows={$wins} ontabmenu={key => { menuKey = key; hub.sendToWorkspace(key, { type: 'windows', session: key }); }} {activeKey} held={!!actions || expanded || sheetHeld} onopen={key => { activeKey = key; height = 'closed'; }} onactions={key => actions = key} onmenu={() => menu = true} onworkspaces={() => { settings = false; height = height === 'closed' ? 'half' : 'closed'; }} />
-  <NeedsYouBanner {waiting} now={Date.now()} onopen={key => { activeKey = key; }} onanswer={(key, choice, prompt) => hub.sendToWorkspace(key, { type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })} />
+  <NavigationBar workspaces={tabs} agents={$agents} servers={$servers} windows={$wins} ontabmenu={key => { menuKey = key; hub.sendToWorkspace(key, { type: 'windows', workspace: key }); }} {activeKey} held={!!actions || expanded || sheetHeld} onopen={key => { activeKey = key; height = 'closed'; }} onactions={key => actions = key} onmenu={() => menu = true} onworkspaces={() => { settings = false; height = height === 'closed' ? 'half' : 'closed'; }} />
+  <NeedsYouBanner {waiting} now={Date.now()} onopen={key => { activeKey = key; }} onanswer={(key, choice, prompt) => hub.sendToWorkspace(key, { type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} />
   <main class:mobile>
     <div class="terminal"><p>{activeKey}</p><div class="screen"><textarea class="xterm-helper-textarea" aria-label="Terminal input"></textarea></div><KeyRow bind:mods onkey={() => {}} onpaste={() => {}} oncopy={() => {}} /></div>
     {#if settings}<div class="settings"><SettingsView user="test" onservers={() => {}} onshortcuts={() => {}} onreport={() => {}} onlogout={() => {}} ondeletedata={async () => 0} historyServers={0} ondeletehistory={async () => ({ servers: 0, removed: 0, failedNames: [] })} /></div>{/if}
-    <WorkspaceSheet workspaces={$workspaces} agents={$agents} servers={$servers} {activeKey} {mobile} bind:height held={!!actions} onexpanded={value => expanded = value} onheld={value => sheetHeld = value} onopen={key => { activeKey = key; height = 'closed'; }} onnew={() => {}} onrefresh={() => {}} onretry={id => hub.retry(id)} send={m => { if ('session' in m) hub.sendToWorkspace(m.session, m); }} />
+    <WorkspaceSheet workspaces={$workspaces} agents={$agents} servers={$servers} {activeKey} {mobile} bind:height held={!!actions} onactions={key => actions = key} onexpanded={value => expanded = value} onheld={value => sheetHeld = value} onopen={key => { activeKey = key; height = 'closed'; }} onnew={() => {}} onrefresh={() => {}} onretry={id => hub.retry(id)} send={m => { if ('workspace' in m) hub.sendToWorkspace(m.workspace, m); }} />
   </main>
   {#if menu}<MenuSheet user="test" onservers={() => {}} onsettings={() => settings = true} onreport={() => {}} onlogout={() => {}} onclose={() => menu = false} />{/if}
-  {#if actionWorkspace}<WorkspaceActions workspace={actionWorkspace} confirmFirst={confirmClose} ondetach={() => { hidden = new Set(hidden).add(actionWorkspace.key); }} oncloseworkspace={() => hub.sendToWorkspace(actionWorkspace.key, { type: 'close_session', session: actionWorkspace.key })} onclose={() => actions = null} />{/if}
+  {#if actionWorkspace}<WorkspaceActions workspace={actionWorkspace} confirmFirst={confirmClose} onrename={name => hub.rename(actionWorkspace.key, name)} placement={placementOf($workspaces, actionWorkspace.key)} onmove={to => moveWorkspace($workspaces, actionWorkspace.key, to)} ondetach={() => { hidden = new Set(hidden).add(actionWorkspace.key); }} oncloseworkspace={() => hub.sendToWorkspace(actionWorkspace.key, { type: 'close_workspace', workspace: actionWorkspace.key })} onclose={() => actions = null} />{/if}
   {#if menuWorkspace && menuKey}
     <WindowMenu workspace={menuWorkspace} data={$wins[menuWorkspace.key]}
-      onselect={index => hub.sendToWorkspace(menuWorkspace.key, { type: 'select_window', session: menuWorkspace.key, index })}
-      onnewwindow={() => hub.sendToWorkspace(menuWorkspace.key, { type: 'new_window', session: menuWorkspace.key })}
-      onclosewindow={index => hub.sendToWorkspace(menuWorkspace.key, { type: 'close_window', session: menuWorkspace.key, index })}
+      onselect={index => hub.sendToWorkspace(menuWorkspace.key, { type: 'select_window', workspace: menuWorkspace.key, index })}
+      onnewwindow={() => hub.sendToWorkspace(menuWorkspace.key, { type: 'new_window', workspace: menuWorkspace.key })}
+      onclosewindow={index => hub.sendToWorkspace(menuWorkspace.key, { type: 'close_window', workspace: menuWorkspace.key, index })}
       ondetach={() => { hidden = new Set(hidden).add(menuWorkspace.key); }} oncloseworkspace={() => { confirmClose = true; actions = menuWorkspace.key; }} onclose={() => menuKey = null} />
   {/if}
 </AppShell>

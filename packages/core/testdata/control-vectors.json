@@ -1,0 +1,109 @@
+{
+  "note": "One sample of every client message that travels on the control channel, and some that do not. ClientMessage::is_control (packages/core/src/protocol.rs) and CONTROL_TYPES (packages/client/src/lib/protocol.ts) must agree with it.",
+  "control": [
+    {
+      "type": "acp_interrupt",
+      "workspace": "s"
+    },
+    {
+      "type": "acp_answer",
+      "workspace": "s",
+      "prompt_id": "p",
+      "option_id": "o"
+    },
+    {
+      "type": "acp_prompt",
+      "workspace": "s",
+      "text": "go"
+    },
+    {
+      "type": "acp_mode",
+      "workspace": "s",
+      "mode": "plan"
+    },
+    {
+      "type": "answer",
+      "workspace": "s",
+      "prompt_id": "p",
+      "seq": 1,
+      "choice": 0
+    },
+    {
+      "type": "workspace_answer",
+      "workspace": "s",
+      "prompt_id": "p",
+      "option": 0
+    },
+    {
+      "type": "detach"
+    },
+    {
+      "type": "close_workspace",
+      "workspace": "s"
+    },
+    {
+      "type": "rename_workspace",
+      "workspace": "s",
+      "name": "n"
+    },
+    {
+      "type": "new_workspace",
+      "name": "n"
+    },
+    {
+      "type": "new_window",
+      "workspace": "s"
+    },
+    {
+      "type": "close_window",
+      "workspace": "s",
+      "index": 1
+    },
+    {
+      "type": "select_window",
+      "workspace": "s",
+      "index": 0
+    },
+    {
+      "type": "resize",
+      "cols": 80,
+      "rows": 24
+    },
+    {
+      "type": "foreground",
+      "workspace": null
+    }
+  ],
+  "bulk_or_other": [
+    {
+      "type": "list_workspaces"
+    },
+    {
+      "type": "input",
+      "data": "aGk="
+    },
+    {
+      "type": "attach",
+      "workspace_id": "s"
+    },
+    {
+      "type": "peek",
+      "workspace": "s"
+    },
+    {
+      "type": "ping"
+    },
+    {
+      "type": "acp_open",
+      "workspace": "s"
+    },
+    {
+      "type": "agent_sync"
+    },
+    {
+      "type": "reply",
+      "workspace": "s",
+      "text": "hi"
+    }
+  ]
+}

@@ -15,7 +15,7 @@
   });
   const att = (kind: AttentionKind, ageMin: number, i: number): WorkspaceAgent => ({
     state: 'unknown', seq: 1, stale: false, ts: now0, serverStatus: true, agent: 'claude',
-    attention: { id: `a${i}`, session: `s${i}`, kind, raised_at: now0 - ageMin * 60_000, task: { title: `Refactor part ${i}`, started_at: now0 - 3_600_000, source: 'hook' }, prompt: kind === 'needs_input' ? `Run migration ${i}?` : undefined },
+    attention: { id: `a${i}`, workspace: `s${i}`, kind, raised_at: now0 - ageMin * 60_000, task: { title: `Refactor part ${i}`, started_at: now0 - 3_600_000, source: 'hook' }, prompt: kind === 'needs_input' ? `Run migration ${i}?` : undefined },
     ...(kind === 'needs_input' ? { prompt: { id: `p${i}`, kind: 'choice', choices: ['Yes', 'Yes, always', 'No'], seq: 7 + i, confidence: 'high' }, tool: { name: 'Bash', summary: `pnpm test --filter client # ${i}`, phase: 'started' } } : {}),
   });
   const base = (activity: 'working' | 'idle'): WorkspaceAgent => ({ state: activity === 'working' ? 'working' : 'idle', seq: 1, stale: false, ts: now0, serverStatus: true, activity, agent: 'codex' });
@@ -39,6 +39,6 @@
 
 <div style="display:flex;flex-direction:column;height:100dvh">
   <Home {workspaces} {agents} {servers} {now} lastKey={'alpha/s0'} onopen={(k) => opened.push(k)} onservers={() => {}} onnew={() => {}}
-    onreply={(key, text) => replies.push({ type: 'reply', session: key, text })}
-    onanswer={(key, choice, prompt) => answers.push({ type: 'answer', session: key, prompt_id: prompt.id, seq: prompt.seq, choice })} />
+    onreply={(key, text) => replies.push({ type: 'reply', workspace: key, text })}
+    onanswer={(key, choice, prompt) => answers.push({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} />
 </div>

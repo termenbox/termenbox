@@ -10,20 +10,21 @@ const workspaces = [workspace('a', 'one'), workspace('b', 'two'), workspace('b',
 const agents: AgentMap = { 'a/one': state('idle'), 'b/two': state('working'), 'b/three': state('needs_input') };
 
 describe('tabs', () => {
-  it('puts needs-you tabs first while preserving the order of everything else', () => {
-    expect(tabIds(workspaces, agents)).toEqual(['b/three', 'a/one', 'b/two']);
+  it('keeps the order it is given: a needs-you tab does not jump to the front, but is still counted', () => {
+    expect(tabIds(workspaces)).toEqual(['a/one', 'b/two', 'b/three']);
+    expect(tabIds([workspaces[2], workspaces[0], workspaces[1]])).toEqual(['b/three', 'a/one', 'b/two']);
     expect(needsYouCount({ ...agents, 'c/error': state('error') })).toBe(2);
   });
-  it('freezes state changes, inserts and removals during touch and for two seconds after scroll', () => {
+  it('freezes inserts and removals during touch and for two seconds after scroll', () => {
     const frozen = new FrozenOrder();
-    const first = tabIds(workspaces, agents);
-    expect(frozen.order(first, {}, 0)).toEqual(first);
+    const first = tabIds(workspaces);
+    expect(frozen.order(first, 0)).toEqual(first);
     frozen.touchDown();
-    const next = tabIds([workspaces[1], workspace('c', 'new')], { 'c/new': state('needs_input') });
-    expect(frozen.order(next, {}, 1)).toEqual(first);
+    const next = tabIds([workspaces[1], workspace('c', 'new')]);
+    expect(frozen.order(next, 1)).toEqual(first);
     frozen.touchUp(); frozen.scrolled(100);
-    expect(frozen.order(next, {}, 2099)).toEqual(first);
-    expect(frozen.order(next, {}, 2100)).toEqual(next);
+    expect(frozen.order(next, 2099)).toEqual(first);
+    expect(frozen.order(next, 2100)).toEqual(next);
   });
   it('names the server only for multiple saved servers and always includes an accessible state word', () => {
     expect(tabLabel(workspaces[0], agents['a/one'], 1, 0)).toBe('one · Idle');

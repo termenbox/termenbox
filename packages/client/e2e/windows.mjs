@@ -25,25 +25,28 @@ try {
   const win = (index, command, path, extra = {}) => ({ index, name: `w${index}`, command, path, active: false, ...extra });
   const feed = (server, workspace, windows, rep) => page.evaluate(([s, ses, w, r]) => window.__navigation.windows(s, ses, w, r), [server, workspace, windows, rep]);
 
-  // Two workspaces in one repo, one elsewhere: the repo's tabs are told apart by workspace name.
+  // A tab is titled with its workspace's name; the directory of its representative window is the tooltip.
   await feed('alpha', 'workspace-0', [win(0, 'bash', '/home/u/app', { active: true }), win(1, 'claude', '/home/u/app/api', { agent: 'claude' })], 1);
   await feed('alpha', 'workspace-2', [win(0, 'lazygit', '/home/u/app', { active: true })], 0);
   await feed('alpha', 'workspace-3', [win(0, 'bash', '/srv/other', { active: true })], 0);
   await page.waitForTimeout(2300); // labels follow the shell once no finger is down
   const tab = (key) => page.locator(`[role=tab][data-key="${key}"]`);
   const text = async (key) => (await tab(key).innerText()).replace(/\s+/g, ' ');
-  if (!(await text('alpha/workspace-0')).includes('…/app/api') && !(await text('alpha/workspace-0')).includes('~/app/api')) fail(`tab 0 does not show its agent window path: ${await text('alpha/workspace-0')}`);
-  if (!(await text('alpha/workspace-3')).includes('/srv/other')) fail(`tab 3 does not show its path: ${await text('alpha/workspace-3')}`);
+  const title = (key) => tab(key).getAttribute('title');
+  if (!(await text('alpha/workspace-0')).includes('workspace-0') || (await text('alpha/workspace-0')).includes('app/api')) fail(`tab 0 is not titled with its workspace name: ${await text('alpha/workspace-0')}`);
+  if (!(await text('alpha/workspace-3')).includes('workspace-3') || (await text('alpha/workspace-3')).includes('/srv/other')) fail(`tab 3 is not titled with its workspace name: ${await text('alpha/workspace-3')}`);
+  if ((await title('alpha/workspace-0')) !== '/home/u/app/api') fail(`tab 0 tooltip is not its agent window path: ${await title('alpha/workspace-0')}`);
+  if ((await title('alpha/workspace-3')) !== '/srv/other') fail(`tab 3 tooltip is not its path: ${await title('alpha/workspace-3')}`);
   if ((await tab('alpha/workspace-0').locator('[role=img]').getAttribute('aria-label')) !== 'Claude Code') fail('tab 0 has no agent icon from its representative window');
   if ((await tab('alpha/workspace-2').locator('[role=img]').getAttribute('aria-label')) !== 'lazygit') fail('tab 2 has no program icon');
-  console.log('ok  a tab shows the path and the icon of its representative window');
+  console.log('ok  a tab shows the workspace name, the icon of its representative window and its path as the tooltip');
 
-  // Same path twice: the workspace name is added.
+  // Two workspaces in one directory keep their own names.
   await feed('alpha', 'workspace-2', [win(0, 'bash', '/home/u/app/api', { active: true })], 0);
   await page.waitForTimeout(2300);
   const t0 = await text('alpha/workspace-0'), t2 = await text('alpha/workspace-2');
-  if (!t0.includes('workspace-0') || !t2.includes('workspace-2')) fail(`equal paths were not told apart: ${t0} | ${t2}`);
-  console.log('ok  tabs that would read the same are told apart by workspace name');
+  if (!t0.includes('workspace-0') || !t2.includes('workspace-2') || t0.includes('workspace-2') || t2.includes('workspace-0')) fail(`tabs do not read their own names: ${t0} | ${t2}`);
+  console.log('ok  tabs of one directory read their own workspace names');
 
   // Tapping the open tab lists its windows; ✕ asks before closing a running window and closes only that window.
   await page.evaluate(() => window.__navigation.select('alpha/workspace-0'));
@@ -51,14 +54,14 @@ try {
   const menu = page.getByRole('dialog', { name: 'Windows of workspace-0' });
   await menu.waitFor();
   const sent = () => page.evaluate(() => window.__navigation.sent().map((m) => m.message));
-  if (!(await sent()).some((m) => m.type === 'windows' && m.session === 'workspace-0')) fail('opening the menu did not ask for the windows');
+  if (!(await sent()).some((m) => m.type === 'windows' && m.workspace === 'workspace-0')) fail('opening the menu did not ask for the windows');
   await menu.getByText('claude', { exact: true }).waitFor();
   await menu.getByRole('button', { name: 'Close window 1' }).click();
   await menu.getByRole('button', { name: 'Confirm closing window 1' }).waitFor(); // an agent is running: it asks first
   if ((await sent()).some((m) => m.type === 'close_window')) fail('a running window closed without asking');
   await menu.getByRole('button', { name: 'Confirm closing window 1' }).click();
   const closed = (await sent()).filter((m) => m.type === 'close_window');
-  if (closed.length !== 1 || closed[0].index !== 1 || closed[0].session !== 'workspace-0') fail(`wrong close_window: ${JSON.stringify(closed)}`);
+  if (closed.length !== 1 || closed[0].index !== 1 || closed[0].workspace !== 'workspace-0') fail(`wrong close_window: ${JSON.stringify(closed)}`);
   await page.keyboard.press('Escape'); // the menu stays open after a window closes, so several can be closed in a row
   await menu.waitFor({ state: 'hidden' });
   console.log('ok  the windows dropdown lists windows; closing a running one asks first and closes only that window');
@@ -82,7 +85,7 @@ try {
   await menu.getByRole('button', { name: '+ New window' }).click();
   await menu.waitFor({ state: 'hidden' });
   const opened = (await sent()).filter((m) => m.type === 'new_window');
-  if (opened.length !== 1 || opened[0].session !== 'workspace-0') fail(`wrong new_window: ${JSON.stringify(opened)}`);
+  if (opened.length !== 1 || opened[0].workspace !== 'workspace-0') fail(`wrong new_window: ${JSON.stringify(opened)}`);
   console.log('ok  + New window in the dropdown asks the server for a window of this workspace');
 
   // Detach closes the tab and keeps the workspace; Close workspace asks, then kills.
@@ -90,15 +93,15 @@ try {
   await menu.waitFor();
   await menu.getByRole('button', { name: 'Detach', exact: true }).click();
   await tab('alpha/workspace-0').waitFor({ state: 'detached' });
-  if ((await sent()).some((m) => m.type === 'close_session')) fail('detach closed the workspace');
+  if ((await sent()).some((m) => m.type === 'close_workspace')) fail('detach closed the workspace');
   await tab('alpha/workspace-2').dispatchEvent('pointerdown', { pointerId: 5, pointerType: 'touch', clientX: 150, clientY: 20 });
   const actions = page.getByRole('dialog', { name: 'Workspace actions' });
   await actions.waitFor();
   await tab('alpha/workspace-2').dispatchEvent('pointerup', { pointerId: 5, pointerType: 'touch' });
   await actions.getByRole('button', { name: 'Close workspace…' }).click();
   await actions.getByRole('button', { name: 'Close workspace', exact: true }).click();
-  const killed = (await sent()).filter((m) => m.type === 'close_session');
-  if (killed.length !== 1 || killed[0].session !== 'workspace-2') fail(`wrong close_workspace: ${JSON.stringify(killed)}`);
+  const killed = (await sent()).filter((m) => m.type === 'close_workspace');
+  if (killed.length !== 1 || killed[0].workspace !== 'workspace-2') fail(`wrong close_workspace: ${JSON.stringify(killed)}`);
   console.log('ok  Detach closes the tab and keeps the workspace; Close workspace confirms, then closes it');
 
   // The banner shows who needs you, never changes the open workspace, and offers confirmed answers.

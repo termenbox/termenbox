@@ -1,0 +1,46 @@
+name: Server incident
+description: The server stopped, restarted or went quiet (opened from the app's Server diagnostics button)
+labels: [incident]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What were you doing?
+      description: What you were doing with the server when it stopped, and what you saw. Do not paste terminal content.
+      value: |
+        What I was doing:
+
+        What happened:
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How is the server installed?
+      options:
+        - systemd
+        - Docker
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Server version
+      description: Shown in the app under Settings, and at the top of the diagnostics below.
+    validations:
+      required: true
+  - type: dropdown
+    id: restarted
+    attributes:
+      label: Did the server restart by itself?
+      options:
+        - Yes
+        - No
+        - I don't know
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Server diagnostics
+      description: Filled in by the app, or attached as a file if it was too long. It contains the last log lines, the newest crash file, the unclean-exit report, versions and the health history, with certificates, secrets, tokens, addresses and ports removed, and no terminal content. Please read it before submitting.
+      render: text

@@ -1,9 +1,12 @@
-import type { ClientMessage, ServerMessage } from './protocol';
+import { CONTROL_TYPES, type ClientMessage, type ServerMessage } from './protocol';
 import { openRtc } from './rtc';
+import { openAssisted, type AssistedAuth } from './assisted';
 import { openTransport, Unreachable, type Openers, type Target, type Transport } from './transport';
 import { openWs } from './ws';
 import type { Credentials } from './device';
 import type { PathFailure } from './paths';
+import { PROTOCOL_VERSION } from './extensions';
+import { fromLegacy, toLegacy } from './legacy';
 
 /** `checking`: still connected on paper, but the server has not answered for a few seconds (input may be lost). */
 export type ConnState = 'connecting' | 'connected' | 'checking' | 'reconnecting' | 'unreachable' | 'closed';
@@ -20,6 +23,9 @@ const STALE_AFTER_MS = 2500;
 const PONG_WITHIN_MS = 12000;
 /** After the network changed (Wi-Fi to cellular and back), a link that does not answer within this is re-raced (decision 0123). */
 const NETWORK_PONG_WITHIN_MS = 2000;
+
+/** The result of a control message (`Connection.request`). */
+export interface Ack { ok: boolean; acknowledged: boolean; error?: string }
 
 /** 1s, 2s, 4s, 8s, 16s, then 30s; +0..25% jitter so many tabs do not reconnect in lockstep. */
 export function backoffDelay(attempt: number, random = Math.random): number {
@@ -76,7 +82,7 @@ export interface ConnectionOptions {
   onFatal: (message: string) => void;
 }
 
-const DEFAULT_OPENERS: Openers = { rtc: openRtc, ws: openWs };
+const DEFAULT_OPENERS: Openers = { rtc: openRtc, ws: openWs, assisted: (target, auth, signal) => openAssisted(target, auth, signal) };
 
 /** One authenticated connection to a server that heals itself: transport choice, backoff, heartbeat, wake-up on foreground. */
 export class Connection {
@@ -91,6 +97,12 @@ export class Connection {
   private retryAt = 0;
   private listeners = new Set<(msg: ServerMessage) => void>();
   private authed = false;
+  /** The server predates protocol versions: messages are translated to and from the old vocabulary (legacy.ts). */
+  private legacy = false;
+  /** The server acknowledges control messages and, over WebRTC, has the `ctl` channel for them (step 3.3). */
+  private control = false;
+  private nextReq = 1;
+  private waiting = new Map<number, { resolve: (r: Ack) => void; timer: ReturnType<typeof setTimeout> }>();
   /** The server put terminal bytes on their own lane for this connection (`auth_ok.channels`). */
   private lanes = false;
   private everReady = false;
@@ -154,11 +166,44 @@ export class Connection {
     if (!this.transport || !this.authed) return;
     // Keystrokes go as raw bytes on the lane when there is one, and as JSON otherwise.
     if (msg.type === 'input' && this.lanes && this.transport.sendTerm?.(b64ToBytes(msg.data))) return;
-    this.transport.send(JSON.stringify(msg));
+    const text = JSON.stringify(this.legacy ? toLegacy(msg) : msg);
+    // Control messages use the control channel when there is one: they never queue behind terminal bytes or events.
+    if (this.control && CONTROL_TYPES.has(msg.type) && this.transport.sendControl?.(text)) return;
+    this.transport.send(text);
+  }
+
+  /** Sends a control message and resolves with the server's result. A server that does not acknowledge (an older one)
+   *  resolves at once as `{ ok: true, acknowledged: false }`; a lost connection or no answer within `timeoutMs`
+   *  resolves `{ ok: false }` with the reason. */
+  request(msg: ClientMessage, timeoutMs = 8000): Promise<Ack> {
+    if (!this.transport || !this.authed) return Promise.resolve({ ok: false, acknowledged: false, error: 'Not connected' });
+    if (!this.control) {
+      this.send(msg);
+      return Promise.resolve({ ok: true, acknowledged: false });
+    }
+    const req = this.nextReq++;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.waiting.delete(req);
+        resolve({ ok: false, acknowledged: false, error: 'No answer from the server' });
+      }, timeoutMs);
+      this.waiting.set(req, { resolve, timer });
+      this.send({ ...msg, req } as unknown as ClientMessage);
+    });
+  }
+
+  /** Ends every request that waits for an answer: the connection it was sent on is gone. */
+  private failWaiting(error: string) {
+    for (const { resolve, timer } of this.waiting.values()) {
+      clearTimeout(timer);
+      resolve({ ok: false, acknowledged: false, error });
+    }
+    this.waiting.clear();
   }
 
   close() {
     this.stopped = true;
+    this.failWaiting('The connection was closed');
     this.clearTimers();
     document.removeEventListener('visibilitychange', this.wake);
     window.removeEventListener('online', this.wake);
@@ -220,12 +265,15 @@ export class Connection {
     this.clearTimers();
     this.retryAt = 0; // an attempt is running now
     this.authed = false;
+    this.legacy = false;
+    this.control = false;
     this.lanes = false;
     this.opts.onState(this.everReady ? 'reconnecting' : 'connecting');
 
     let transport: Transport;
     try {
-      transport = await openTransport(await this.opts.target(), this.opts.openers ?? DEFAULT_OPENERS);
+      const target = await this.opts.target();
+      transport = await openTransport(target, this.opts.openers ?? DEFAULT_OPENERS, await this.assistedAuth(target));
     } catch (e) {
       this.opening = false;
       if (this.stopped) return;
@@ -266,12 +314,14 @@ export class Connection {
         this.reconnectNow();
       } else this.scheduleRetry();
     };
-    transport.send(JSON.stringify({ type: 'hello' }));
+    transport.send(JSON.stringify({ type: 'hello', protocol: PROTOCOL_VERSION }));
   }
 
   private onText(transport: Transport, text: string) {
     if (this.transport !== transport) return;
-    const msg: ServerMessage = JSON.parse(text);
+    const raw: ServerMessage = JSON.parse(text);
+    // A server whose `auth_ok` names no protocol version speaks the old wire vocabulary (legacy.ts, step 3.2).
+    const msg: ServerMessage = this.legacy ? fromLegacy(raw) : raw;
     if (msg.type === 'pong') {
       this.pingsOut = Math.max(0, this.pingsOut - 1);
       if (this.pingsOut === 0 && this.proving) {
@@ -287,6 +337,8 @@ export class Connection {
     if (msg.type === 'auth_ok') {
       const isReconnect = this.everReady;
       this.authed = true;
+      this.legacy = !(msg.protocol && msg.protocol >= 1);
+      this.control = !!msg.control_channel;
       this.pingsOut = 0;
       this.proving = false;
       this.fastReconnect = false;
@@ -310,8 +362,26 @@ export class Connection {
     }
     if (msg.type === 'pong') {
       if (this.pingSentAt) this.rtt = Math.round(performance.now() - this.pingSentAt);
+    } else if (msg.type === 'control_ack') {
+      const w = this.waiting.get(msg.req);
+      if (w) {
+        clearTimeout(w.timer);
+        this.waiting.delete(msg.req);
+        w.resolve({ ok: msg.ok, acknowledged: true, error: msg.error });
+      }
     } else {
       this.listeners.forEach((fn) => fn(msg));
+    }
+  }
+
+  /** What the assisted path signs its messages with; none when the bundle has no signaling Worker or the device is not signed in. */
+  private async assistedAuth(target: Target): Promise<AssistedAuth | undefined> {
+    const serverId = this.opts.serverId ?? target.bundle?.server_id;
+    if (!target.bundle?.signal || !serverId) return undefined;
+    try {
+      return { ...(await this.opts.credentials()), serverId, claim: this.opts.claim };
+    } catch {
+      return undefined;
     }
   }
 
@@ -384,6 +454,7 @@ export class Connection {
   private dropped(reason: string) {
     if (!this.authed) return; // a failed attempt is reported as `unreachable`, not as a drop
     this.authed = false; // one loss is reported once, whichever path notices it first
+    this.failWaiting('The connection dropped');
     this.drops++;
     this.opts.onDrop?.(reason, Math.round(performance.now() - this.readyAt));
   }

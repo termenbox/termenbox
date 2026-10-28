@@ -18,6 +18,8 @@ use crate::pty::Attachment;
 /// Clients ping every 5 s, so a minute of silence means the peer is gone.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// A streaming reply changes many times a second; a client that shows it gets one update per this long at most.
+/// How often a connection looks at `update-status.json` to tell its client when the recorded release changed.
+const UPDATE_POLL: Duration = Duration::from_secs(20);
 const ACP_BATCH: Duration = Duration::from_millis(120);
 /// The longest prompt a client may send (the backend caps it again).
 const ACP_PROMPT_BYTES: usize = 16 * 1024;
@@ -34,6 +36,55 @@ struct AcpSub {
     dead: bool,
 }
 
+/// The conversation log one connection follows (step 3.4): where it is in the log, and whether news is waiting.
+struct EventSub {
+    workspace: String,
+    rx: tokio::sync::watch::Receiver<u64>,
+    after: u64,
+    epoch: u64,
+    due: bool,
+    dead: bool,
+}
+
+/// Frames of one `acp_events` message stay under this many bytes of JSON (the direct transport carries 64 KiB).
+const EVENTS_MESSAGE_BYTES: usize = 40 * 1024;
+
+/// A replay as messages of bounded size; `reset` is set on the first only. A replay with no frames still makes one
+/// message when it is a reset or `always` (the client learns `last`).
+fn events_messages(
+    workspace: &str,
+    r: crate::event_log::Replay,
+    always: bool,
+) -> Vec<ServerMessage> {
+    let mut groups: Vec<Vec<serde_json::Value>> = vec![Vec::new()];
+    let mut size = 0;
+    for f in r.frames {
+        let n = f.to_string().len();
+        if size + n > EVENTS_MESSAGE_BYTES && !groups.last().is_some_and(Vec::is_empty) {
+            groups.push(Vec::new());
+            size = 0;
+        }
+        size += n;
+        if let Some(g) = groups.last_mut() {
+            g.push(f);
+        }
+    }
+    if groups.iter().all(Vec::is_empty) && !r.reset && !always {
+        return Vec::new();
+    }
+    groups
+        .into_iter()
+        .enumerate()
+        .map(|(i, frames)| ServerMessage::AcpEvents {
+            workspace: workspace.to_string(),
+            epoch: r.epoch,
+            last: r.last,
+            reset: r.reset && i == 0,
+            frames,
+        })
+        .collect()
+}
+
 /// Serves one authenticated WebSocket: lists/creates tmux workspaces and bridges one attached workspace.
 /// Persistence lives in the workspace backend (tmux by default); a dropped connection only detaches (see pty.rs).
 #[derive(Clone)]
@@ -43,6 +94,9 @@ pub struct WorkspaceManager {
     server_name: String,
     /// Called after an uninstall has wiped the configuration and told the client; stops the process.
     on_uninstalled: Arc<dyn Fn() + Send + Sync>,
+    /// Where requests for the root helper go and where the updater's status sits beside them (decision 0077); None
+    /// in tests and builds without an updater.
+    requests_dir: Option<std::path::PathBuf>,
     events: Option<EventHub>,
     push: Option<Arc<crate::push::Push>>,
     windows: Option<WindowHub>,
@@ -56,6 +110,8 @@ pub struct WorkspaceManager {
     hooks: Option<crate::agent_hooks::Targets>,
     /// Samples of the server's CPU, RAM and disk (U14).
     health: Option<Arc<HealthCollector>>,
+    /// Set when the last run of this server ended without a clean exit; every sign-in is told (decision 0142).
+    previous_exit: Option<termenbox_core::protocol::ServerMessage>,
     /// Pinged (with the connection's number) when a connection creates, renames or closes a workspace, so every other
     /// connection sends its client the new list (a device that did not ask must not keep showing the old names). The
     /// connection that asked has its own reply and skips the ping.
@@ -69,6 +125,7 @@ impl WorkspaceManager {
             mode,
             server_name: String::new(),
             on_uninstalled: Arc::new(|| {}),
+            requests_dir: None,
             events: None,
             push: None,
             windows: None,
@@ -78,6 +135,7 @@ impl WorkspaceManager {
             transcripts: Arc::default(),
             hooks: None,
             health: None,
+            previous_exit: None,
             list_changed: tokio::sync::broadcast::channel(16).0,
         }
     }
@@ -112,6 +170,20 @@ impl WorkspaceManager {
         self.backend.acp_agents()
     }
 
+    /// Lets the owner update the server from the app: `dir` is the requests directory the root helper watches.
+    pub fn with_requests(mut self, dir: std::path::PathBuf) -> Self {
+        self.requests_dir = Some(dir);
+        self
+    }
+
+    /// The newer release the updater recorded, empty when there is none (reported in `auth_ok`).
+    pub fn update_available(&self) -> String {
+        self.requests_dir
+            .as_deref()
+            .and_then(crate::requests::available_update)
+            .unwrap_or_default()
+    }
+
     /// Serves the agent event stream (plan v6) to every connection.
     pub fn with_events(mut self, hub: EventHub) -> Self {
         self.events = Some(hub);
@@ -121,6 +193,15 @@ impl WorkspaceManager {
     /// Serves the server's health samples to every connection (U14).
     pub fn with_health(mut self, health: Arc<HealthCollector>) -> Self {
         self.health = Some(health);
+        self
+    }
+
+    /// Tells every signed-in client that the last run ended without a clean exit.
+    pub fn with_previous_exit(
+        mut self,
+        message: Option<termenbox_core::protocol::ServerMessage>,
+    ) -> Self {
+        self.previous_exit = message;
         self
     }
 
@@ -210,8 +291,14 @@ impl WorkspaceManager {
         let mut status_rx = self.events.as_ref().map(|h| h.subscribe_status());
         let mut list_rx = self.list_changed.subscribe();
         let mut acp: Option<AcpSub> = None;
+        let mut events: Option<EventSub> = None;
         let mut acp_tick = tokio::time::interval(ACP_BATCH);
         acp_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut event_tick = tokio::time::interval(ACP_BATCH);
+        event_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut update_tick = tokio::time::interval(UPDATE_POLL);
+        update_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut update_sent = self.update_available();
         // None once the collector is gone: the arm below then waits for ever instead of spinning on a closed channel.
         let mut health_rx = self.health.as_ref().map(|h| h.subscribe());
         if let Some(u) = self.health.as_ref().and_then(|h| h.latest()) {
@@ -219,11 +306,16 @@ impl WorkspaceManager {
                 return Ok(());
             }
         }
+        if let Some(previous) = &self.previous_exit {
+            if !send(&link.tx, previous).await {
+                return Ok(());
+            }
+        }
 
         loop {
             tokio::select! {
                 msg = link.rx.recv() => {
-                    let Some(msg) = msg else { break };
+                    let Some(msg) = msg.map(|m| link.tx.inbound(m)) else { break };
                     idle.as_mut().reset(tokio::time::Instant::now() + IDLE_TIMEOUT);
                     let text = match msg {
                         Inbound::Json(text) => text,
@@ -236,13 +328,28 @@ impl WorkspaceManager {
                             continue;
                         }
                     };
-                    let Ok(client_msg) = serde_json::from_str::<ClientMessage>(&text) else { continue };
+                    // A control message may carry `req`: the answer is a `control_ack` on the control channel.
+                    let req = serde_json::from_str::<ReqId>(&text).ok().and_then(|r| r.req);
+                    let parsed = serde_json::from_str::<ClientMessage>(&text).ok().filter(|m| *m != ClientMessage::Unknown);
+                    let Some(client_msg) = parsed else {
+                        if let Some(req) = req {
+                            if !send_ack(&link.tx, req, Err("Unknown message".into())).await { break; }
+                        }
+                        continue;
+                    };
                     if let (true, ClientMessage::Attach { workspace_id }) = (self.mode.is_host(), &client_msg) {
                         // Who got a shell on the host and as whom; never what they typed.
                         info!(target: "audit", event = "host_session", provider = %identity.provider, account_id = %identity.id, login = %identity.login, run_as = %self.mode.label(), session = %workspace_id);
                     }
-                    if let Err(e) = self.handle(conn, client_msg, auth, &identity, &mut attachment, &mut cols, &mut rows, &mut acp, &link.tx).await {
-                        if !send(&link.tx, &ServerMessage::Error { message: e.to_string() }).await { break; }
+                    let result = self.handle(conn, client_msg, auth, &identity, &mut attachment, &mut cols, &mut rows, &mut acp, &mut events, &link.tx).await;
+                    match (req, result) {
+                        (Some(req), result) => {
+                            if !send_ack(&link.tx, req, result.map_err(|e| e.to_string())).await { break; }
+                        }
+                        (None, Err(e)) => {
+                            if !send(&link.tx, &ServerMessage::Error { message: e.to_string() }).await { break; }
+                        }
+                        (None, Ok(())) => {}
                     }
                 }
                 // Room first, then the bytes: a client that reads slowly stops the terminal, not the status messages.
@@ -302,6 +409,18 @@ impl WorkspaceManager {
                     };
                     if !send(&link.tx, &msg).await { break; }
                 }
+                woke = next_event_change(&mut events) => {
+                    if let Some(sub) = events.as_mut() {
+                        if woke { sub.due = true } else { sub.dead = true }
+                    }
+                }
+                _ = event_tick.tick(), if events.as_ref().is_some_and(|e| e.due) => {
+                    let mut gone = false;
+                    for msg in self.event_update(&mut events) {
+                        if !send(&link.tx, &msg).await { gone = true; break; }
+                    }
+                    if gone { break; }
+                }
                 woke = next_acp_change(&mut acp) => {
                     if let Some(sub) = acp.as_mut() {
                         if woke { sub.due = true } else { sub.dead = true }
@@ -327,6 +446,11 @@ impl WorkspaceManager {
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => health_rx = None,
                     }
                 }
+                _ = update_tick.tick() => {
+                    if let Some(msg) = update_change(&mut update_sent, self.update_available()) {
+                        if !send(&link.tx, &msg).await { break; }
+                    }
+                }
                 _ = &mut idle => {
                     info!("Closing idle connection of {}", identity.login);
                     break;
@@ -336,6 +460,30 @@ impl WorkspaceManager {
 
         info!("Connection closed for {}", identity.login);
         Ok(())
+    }
+
+    /// The `acp_events` messages the connection owes its client: the frames since the last it sent, or a compacted
+    /// replay if the log no longer holds them.
+    fn event_update(&self, events: &mut Option<EventSub>) -> Vec<ServerMessage> {
+        let Some(sub) = events.as_mut() else {
+            return Vec::new();
+        };
+        sub.due = false;
+        match self
+            .backend
+            .acp_events(&sub.workspace, Some(sub.after), Some(sub.epoch))
+        {
+            Ok(replay) => {
+                sub.after = replay.last;
+                sub.epoch = replay.epoch;
+                events_messages(&sub.workspace, replay, false)
+            }
+            // The workspace was closed: the client learns it from the workspace list.
+            Err(_) => {
+                *events = None;
+                Vec::new()
+            }
+        }
     }
 
     /// The `acp_view` messages the connection owes its client, if anything changed since the last update. A view is cut
@@ -399,11 +547,12 @@ impl WorkspaceManager {
         cols: &mut u16,
         rows: &mut u16,
         acp: &mut Option<AcpSub>,
+        events: &mut Option<EventSub>,
         tx: &LinkTx,
     ) -> Result<()> {
         match msg {
             // The handshake happens once, before this loop (connection.rs).
-            ClientMessage::Hello
+            ClientMessage::Hello { .. }
             | ClientMessage::Auth { .. }
             | ClientMessage::ClaimPreview { .. } => {}
             ClientMessage::Uninstall { confirm_name, .. } => {
@@ -433,11 +582,81 @@ impl WorkspaceManager {
                 .await?;
                 (self.on_uninstalled)();
             }
+            ClientMessage::UpdateServer {} => {
+                let is_owner = auth
+                    .owner()
+                    .is_some_and(|o| o.provider == identity.provider && o.id == identity.id);
+                let Some(dir) = self.requests_dir.as_deref().filter(|_| is_owner) else {
+                    info!(target: "audit", event = "update_refused", provider = %identity.provider, account_id = %identity.id);
+                    return Err(anyhow::anyhow!("Only the owner can update this server"));
+                };
+                crate::requests::leave_update_now(dir)?;
+                info!(target: "audit", event = "update_requested", provider = %identity.provider, account_id = %identity.id, login = %identity.login);
+                send_r(
+                    tx,
+                    &ServerMessage::UpdateRequested {
+                        available: self.update_available(),
+                    },
+                )
+                .await?;
+            }
+            ClientMessage::DiagnosticsBundle {} => {
+                let is_owner = auth
+                    .owner()
+                    .is_some_and(|o| o.provider == identity.provider && o.id == identity.id);
+                if !is_owner {
+                    info!(target: "audit", event = "diagnostics_refused", provider = %identity.provider, account_id = %identity.id);
+                    return Err(anyhow::anyhow!(
+                        "Only the owner can read this server's diagnostics"
+                    ));
+                }
+                info!(target: "audit", event = "diagnostics_requested", provider = %identity.provider, account_id = %identity.id);
+                let config_dir = auth.dir().to_path_buf();
+                let mode = self.mode.label();
+                let previous = self.previous_exit.clone();
+                let health = self.health.as_ref().map(|h| h.history());
+                // Names a user chose are in no field name or token shape: the bundle scrubs the live ones from free text.
+                let names: Vec<String> = self
+                    .backend
+                    .list()
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .flat_map(|w| [w.id, w.name.as_str().to_string()])
+                    // A minted id is random; only an id an older server took from the typed name is text.
+                    .filter(|n| !crate::backend::is_minted_id(n))
+                    .collect();
+                // Reads up to 2 MB of log and scrubs it: off the async threads.
+                let text = tokio::task::spawn_blocking(move || {
+                    crate::bundle::build(&crate::bundle::Inputs {
+                        config_dir: &config_dir,
+                        version: env!("CARGO_PKG_VERSION"),
+                        mode: &mode,
+                        previous_exit: previous.as_ref(),
+                        health,
+                        names: &names,
+                    })
+                })
+                .await?;
+                let parts = crate::bundle::parts(&text);
+                let total = parts.len() as u32;
+                for (part, text) in parts.into_iter().enumerate() {
+                    send_r(
+                        tx,
+                        &ServerMessage::DiagnosticsBundle {
+                            part: part as u32,
+                            parts: total,
+                            text,
+                        },
+                    )
+                    .await?;
+                }
+            }
             ClientMessage::RevokeDevice { device } => {
                 auth.revoke_device(&device)?;
                 send_r(tx, &ServerMessage::DeviceRevoked { device }).await?;
             }
-            ClientMessage::Ping => send_r(tx, &ServerMessage::Pong).await?,
+            ClientMessage::Ping => send_control_r(tx, &ServerMessage::Pong).await?,
             ClientMessage::PushInfo => {
                 let (configured, public_key, devices) = match &self.push {
                     Some(p) => (
@@ -632,7 +851,7 @@ impl WorkspaceManager {
                 let _ = self.list_changed.send(conn);
             }
             ClientMessage::RenameWorkspace { workspace, name } => {
-                info!(target: "audit", event = "rename_session", provider = %identity.provider, account_id = %identity.id, session = %workspace);
+                info!(target: "audit", event = "rename_workspace", provider = %identity.provider, account_id = %identity.id, session = %workspace);
                 self.backend.rename(&workspace, &name).await?;
                 let workspaces = self.backend.list().await?;
                 send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
@@ -747,7 +966,33 @@ impl WorkspaceManager {
                     dead: false,
                 });
             }
-            ClientMessage::AcpClose => *acp = None,
+            ClientMessage::AcpClose => {
+                *acp = None;
+                *events = None;
+            }
+            ClientMessage::AcpEvents {
+                workspace,
+                after,
+                epoch,
+            } => {
+                // Who followed which conversation, never what it held.
+                audit_acp_open(&identity.provider, &identity.id, &workspace);
+                // Subscribe first: a change between the two calls then still wakes the connection.
+                let rx = self.backend.acp_watch(&workspace)?;
+                let replay = self.backend.acp_events(&workspace, after, epoch)?;
+                let (last, epoch) = (replay.last, replay.epoch);
+                for m in events_messages(&workspace, replay, true) {
+                    send_r(tx, &m).await?;
+                }
+                *events = Some(EventSub {
+                    workspace,
+                    rx,
+                    after: last,
+                    epoch,
+                    due: false,
+                    dead: false,
+                });
+            }
             ClientMessage::AcpPrompt { workspace, text } => {
                 // Lines and indentation stay; every other control character (an escape sequence) goes.
                 let text: String = text
@@ -889,6 +1134,39 @@ async fn send(tx: &LinkTx, msg: &ServerMessage) -> bool {
     tx.send(serde_json::to_string(msg).unwrap()).await
 }
 
+/// The `req` id a client put on a control message, if any.
+#[derive(serde::Deserialize)]
+struct ReqId {
+    #[serde(default)]
+    req: Option<u64>,
+}
+
+/// Answers a control message on the control channel: success, or the error that stopped it. False when the
+/// connection is gone.
+async fn send_ack(tx: &LinkTx, req: u64, result: std::result::Result<(), String>) -> bool {
+    let msg = match result {
+        Ok(()) => ServerMessage::ControlAck {
+            req,
+            ok: true,
+            error: None,
+        },
+        Err(error) => ServerMessage::ControlAck {
+            req,
+            ok: false,
+            error: Some(error),
+        },
+    };
+    tx.send_control(serde_json::to_string(&msg).unwrap()).await
+}
+
+async fn send_control_r(tx: &LinkTx, msg: &ServerMessage) -> Result<()> {
+    if tx.send_control(serde_json::to_string(msg).unwrap()).await {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("connection closed"))
+    }
+}
+
 async fn send_r(tx: &LinkTx, msg: &ServerMessage) -> Result<()> {
     if send(tx, msg).await {
         Ok(())
@@ -907,6 +1185,13 @@ async fn next_output(attachment: &mut Option<Attachment>) -> Option<Vec<u8>> {
 
 /// Wakes when the ACP workspace this connection shows has a new revision. `false` means the stream is gone for
 /// good; it then pends, as do connections that show no ACP workspace or already owe an update.
+async fn next_event_change(events: &mut Option<EventSub>) -> bool {
+    match events {
+        Some(sub) if !sub.dead && !sub.due => sub.rx.changed().await.is_ok(),
+        _ => std::future::pending().await,
+    }
+}
+
 async fn next_acp_change(acp: &mut Option<AcpSub>) -> bool {
     match acp {
         Some(sub) if !sub.dead && !sub.due => sub.rx.changed().await.is_ok(),
@@ -961,6 +1246,15 @@ async fn next_status(
         Err(RecvError::Lagged(_)) => None,
         Err(RecvError::Closed) => std::future::pending().await,
     }
+}
+
+/// The `update_status` message owed to a client when the recorded release differs from the one it was last told.
+fn update_change(sent: &mut String, now: String) -> Option<ServerMessage> {
+    if *sent == now {
+        return None;
+    }
+    sent.clone_from(&now);
+    Some(ServerMessage::UpdateStatus { available: now })
 }
 
 fn status_message(c: crate::events::StatusChange) -> ServerMessage {
@@ -1696,7 +1990,7 @@ mod propagation_tests {
         async fn list(&self) -> Result<Vec<termenbox_core::protocol::WorkspaceInfo>> {
             Ok(vec![termenbox_core::protocol::WorkspaceInfo {
                 id: "s".into(),
-                name: self.0.lock().unwrap().clone(),
+                name: self.0.lock().unwrap().clone().into(),
                 agent: None,
                 backend: None,
             }])
@@ -1718,7 +2012,7 @@ mod propagation_tests {
         let wanted = format!("\"name\":\"{name}\"");
         let read = async {
             while let Some(m) = end.from_workspace.recv().await {
-                if m.contains("\"type\":\"sessions\"") && m.contains(&wanted) {
+                if m.contains("\"type\":\"workspaces\"") && m.contains(&wanted) {
                     return true;
                 }
             }
@@ -1757,7 +2051,7 @@ mod propagation_tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
         ea.to_workspace
             .send(Inbound::Json(
-                r#"{"type":"rename_session","session":"s","name":"second"}"#.into(),
+                r#"{"type":"rename_workspace","workspace":"s","name":"second"}"#.into(),
             ))
             .await
             .unwrap();
@@ -1770,6 +2064,131 @@ mod propagation_tests {
             "a device that did not ask sees it too"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Everything a fresh connection is sent in its first 400 ms.
+    async fn first_messages(mgr: WorkspaceManager) -> Vec<String> {
+        let dir = std::env::temp_dir().join(format!("tm-prev-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth =
+            Arc::new(AuthState::new(dir.clone(), CertKeys::default(), "srv".into()).unwrap());
+        let id = Identity {
+            provider: "github".into(),
+            id: "1".into(),
+            login: "u".into(),
+            issued_at: None,
+        };
+        let (link, mut end) = crate::link::pair(None, None);
+        tokio::spawn(async move {
+            let _ = mgr.serve(link, id, &auth).await;
+        });
+        let mut seen = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_millis(400), async {
+            while let Some(m) = end.from_workspace.recv().await {
+                seen.push(m);
+            }
+        })
+        .await;
+        let _ = std::fs::remove_dir_all(&dir);
+        seen
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_after_an_unclean_exit_is_told_and_a_clean_one_is_not() {
+        let backend = || Arc::new(Names(Mutex::new("first".into())));
+        let message = termenbox_core::protocol::ServerMessage::PreviousExit {
+            at_ms: 1234,
+            streak: 2,
+            crashed: true,
+        };
+        let told = first_messages(
+            WorkspaceManager::new(backend(), RunMode::Container).with_previous_exit(Some(message)),
+        )
+        .await;
+        let line = told
+            .iter()
+            .find(|m| m.contains("\"type\":\"previous_exit\""))
+            .unwrap_or_else(|| panic!("no previous_exit in {told:?}"));
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(
+            (
+                v["at_ms"].as_u64(),
+                v["streak"].as_u64(),
+                v["crashed"].as_bool()
+            ),
+            (Some(1234), Some(2), Some(true))
+        );
+        let quiet = first_messages(WorkspaceManager::new(backend(), RunMode::Container)).await;
+        assert!(
+            quiet.iter().all(|m| !m.contains("previous_exit")),
+            "{quiet:?}"
+        );
+    }
+
+    /// What a connection signed in as `who` is sent for a `diagnostics_bundle` request, when account 1 is the owner.
+    async fn bundle_replies(who: &str) -> Vec<String> {
+        let dir = std::env::temp_dir().join(format!("tm-bundle-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        std::fs::write(
+            dir.join("logs/termenbox.jsonl"),
+            "{\"fields\":{\"event\":\"start\",\"peer\":\"198.51.100.7:4000\"}}\n",
+        )
+        .unwrap();
+        let auth =
+            Arc::new(AuthState::new(dir.clone(), CertKeys::default(), "srv".into()).unwrap());
+        let owner = |id: &str| Identity {
+            provider: "github".into(),
+            id: id.into(),
+            login: format!("login-{id}"),
+            issued_at: None,
+        };
+        let claim = auth.claim_token().unwrap().unwrap();
+        auth.authorize(&owner("1"), Some(&claim)).unwrap();
+        let mgr = WorkspaceManager::new(
+            Arc::new(Names(Mutex::new("first".into()))),
+            RunMode::Container,
+        );
+        let (link, mut end) = crate::link::pair(None, None);
+        let me = owner(who);
+        let a = auth.clone();
+        tokio::spawn(async move {
+            let _ = mgr.serve(link, me, &a).await;
+        });
+        end.to_workspace
+            .send(Inbound::Json(r#"{"type":"diagnostics_bundle"}"#.into()))
+            .await
+            .unwrap();
+        let mut seen = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_millis(600), async {
+            while let Some(m) = end.from_workspace.recv().await {
+                seen.push(m);
+            }
+        })
+        .await;
+        let _ = std::fs::remove_dir_all(&dir);
+        seen
+    }
+
+    #[tokio::test]
+    async fn the_owner_gets_a_scrubbed_bundle_and_anyone_else_an_error() {
+        let told = bundle_replies("1").await;
+        let parts: Vec<&String> = told
+            .iter()
+            .filter(|m| m.contains("\"type\":\"diagnostics_bundle\""))
+            .collect();
+        assert!(!parts.is_empty(), "no bundle in {told:?}");
+        let all = parts.iter().map(|m| m.as_str()).collect::<String>();
+        assert!(all.contains("termenbox server diagnostics"), "{all}");
+        assert!(!all.contains("198.51.100.7"), "{all}");
+        let other = bundle_replies("2").await;
+        assert!(
+            other.iter().all(|m| !m.contains("diagnostics_bundle")),
+            "{other:?}"
+        );
+        assert!(
+            other.iter().any(|m| m.contains("\"type\":\"error\"")),
+            "{other:?}"
+        );
     }
 }
 
@@ -1829,5 +2248,85 @@ mod scrollback_tests {
         let text = "x".repeat(SCROLLBACK_PART);
         let msg = &scrollback_parts("workspace-with-a-long-name", &text)[0];
         assert!(serde_json::to_string(msg).unwrap().len() < 64 * 1024);
+    }
+}
+
+#[cfg(test)]
+mod update_change_tests {
+    use super::*;
+
+    #[test]
+    fn a_connection_is_told_once_when_the_recorded_release_changes_or_clears() {
+        let mut sent = String::new();
+        assert_eq!(update_change(&mut sent, String::new()), None);
+        assert_eq!(
+            update_change(&mut sent, "0.1.54".into()),
+            Some(ServerMessage::UpdateStatus {
+                available: "0.1.54".into()
+            })
+        );
+        assert_eq!(update_change(&mut sent, "0.1.54".into()), None);
+        assert_eq!(
+            update_change(&mut sent, String::new()),
+            Some(ServerMessage::UpdateStatus {
+                available: String::new()
+            })
+        );
+    }
+}
+
+#[cfg(test)]
+mod replay_message_tests {
+    use super::*;
+    use crate::event_log::Replay;
+    use serde_json::json;
+
+    fn replay(frames: Vec<serde_json::Value>, reset: bool) -> Replay {
+        Replay {
+            epoch: 5,
+            last: 99,
+            reset,
+            frames,
+        }
+    }
+
+    fn frame(n: usize) -> serde_json::Value {
+        json!({"sessionId": "a", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "x".repeat(n)}}})
+    }
+
+    #[test]
+    fn replay_a_big_replay_is_cut_into_messages_the_direct_transport_carries_and_only_the_first_resets(
+    ) {
+        let frames: Vec<_> = (0..30).map(|_| frame(5_000)).collect();
+        let msgs = events_messages("w", replay(frames, true), false);
+        assert!(msgs.len() >= 4, "{} messages", msgs.len());
+        let mut total = 0;
+        for (i, m) in msgs.iter().enumerate() {
+            let ServerMessage::AcpEvents {
+                reset,
+                frames,
+                last,
+                epoch,
+                ..
+            } = m
+            else {
+                panic!()
+            };
+            assert_eq!(*reset, i == 0);
+            assert_eq!((*last, *epoch), (99, 5));
+            assert!(serde_json::to_string(m).unwrap().len() < 48 * 1024);
+            total += frames.len();
+        }
+        assert_eq!(total, 30);
+    }
+
+    #[test]
+    fn replay_nothing_to_say_is_silent_for_a_live_tail_and_one_message_for_an_open_or_a_reset() {
+        assert!(events_messages("w", replay(vec![], false), false).is_empty());
+        assert_eq!(events_messages("w", replay(vec![], false), true).len(), 1);
+        let reset = events_messages("w", replay(vec![], true), false);
+        assert!(
+            matches!(&reset[..], [ServerMessage::AcpEvents { reset: true, frames, .. }] if frames.is_empty())
+        );
     }
 }

@@ -17,26 +17,37 @@ const agents: AgentMap = {
 const keys = (view: ReturnType<typeof presetView>, map = agents) => applyView(workspaces, map, view, 10000).flatMap(g => g.workspaces.map(s => s.key));
 
 describe('workspace view presets', () => {
-  it('Needs me includes errors and orders by longest wait across servers', () => {
-    expect(keys(presetView('needs'))).toEqual(['b/oldest', 'a/error', 'a/newer']);
+  it('Needs me includes errors and keeps the order the workspaces are given in, whatever waited longest', () => {
+    expect(keys(presetView('needs'))).toEqual(['a/newer', 'b/oldest', 'a/error']);
   });
-  it('keeps the longest wait first through activity and a refreshed snapshot', () => {
+  it('does not move a workspace when it starts or stops waiting, or on activity and a refreshed snapshot', () => {
     let map = applyEvents({}, [
-      { session: 'b/oldest', seq: 1, ts: 1000, source: 'hook', confidence: 'high', kind: 'state', state: 'needs_input' },
-      { session: 'a/newer', seq: 1, ts: 2000, source: 'hook', confidence: 'high', kind: 'state', state: 'needs_input' },
-      { session: 'b/oldest', seq: 2, ts: 3000, source: 'hook', confidence: 'high', kind: 'message', summary: 'still waiting' },
+      { workspace: 'b/oldest', seq: 1, ts: 1000, source: 'hook', confidence: 'high', kind: 'state', state: 'needs_input' },
+      { workspace: 'a/newer', seq: 1, ts: 2000, source: 'hook', confidence: 'high', kind: 'state', state: 'needs_input' },
+      { workspace: 'b/oldest', seq: 2, ts: 3000, source: 'hook', confidence: 'high', kind: 'message', summary: 'still waiting' },
     ]).map;
-    expect(keys(presetView('needs'), map)).toEqual(['b/oldest', 'a/newer']);
+    expect(keys(presetView('needs'), map)).toEqual(['a/newer', 'b/oldest']);
     map = applySnapshot(map, [
-      { session: 'b/oldest', seq: 2, ts: 4000, state: 'needs_input', stale: false },
-      { session: 'a/newer', seq: 1, ts: 2000, state: 'needs_input', stale: false },
+      { workspace: 'b/oldest', seq: 2, ts: 4000, state: 'needs_input', stale: false },
+      { workspace: 'a/newer', seq: 1, ts: 2000, state: 'needs_input', stale: false },
     ]);
-    expect(keys(presetView('needs'), map)).toEqual(['b/oldest', 'a/newer']);
+    expect(keys(presetView('needs'), map)).toEqual(['a/newer', 'b/oldest']);
     const cold = applySnapshot({}, [
-      { session: 'b/oldest', seq: 2, ts: 4000, state: 'needs_input', stale: false, waiting_since: 1000 },
-      { session: 'a/newer', seq: 1, ts: 2000, state: 'needs_input', stale: false, waiting_since: 2000 },
+      { workspace: 'b/oldest', seq: 2, ts: 4000, state: 'needs_input', stale: false, waiting_since: 1000 },
+      { workspace: 'a/newer', seq: 1, ts: 2000, state: 'needs_input', stale: false, waiting_since: 2000 },
     ]);
-    expect(keys(presetView('needs'), cold)).toEqual(['b/oldest', 'a/newer']);
+    expect(keys(presetView('needs'), cold)).toEqual(['a/newer', 'b/oldest']);
+  });
+  it('My order is the order given, and a sort the user picks still tie-breaks by name', () => {
+    const view = { ...presetView('server'), group: 'none' as const };
+    expect(presetView('server').sort).toBe('manual');
+    const reversed = [...workspaces].reverse();
+    expect(applyView(reversed, agents, view, 10000).flatMap(g => g.workspaces.map(s => s.key))).toEqual(reversed.map(s => s.key));
+    expect(applyView(reversed, agents, { ...view, sort: 'name' }, 10000).flatMap(g => g.workspaces.map(s => s.key))).toEqual(['a/error', 'a/idle', 'a/newer', 'b/oldest', 'b/shell', 'b/working']);
+  });
+  it('a saved view that sorted by "Needs you first" loads as My order', () => {
+    const stored = JSON.stringify({ group: 'server', sort: 'human', filter: { statuses: [], agents: [], servers: [], query: '' } });
+    expect(loadView({ getItem: () => stored })?.sort).toBe('manual');
   });
   it('Working includes only working workspaces', () => {
     expect(keys(presetView('working'))).toEqual(['b/working']);
@@ -57,14 +68,14 @@ describe('workspace view presets', () => {
   });
   it('By server groups every workspace with a stable server id and readable name', () => {
     const groups = applyView(workspaces, agents, presetView('server'), 10000);
-    expect(groups.map(g => [g.key, g.label, g.serverId])).toEqual([['server:b', 'Host b', 'b'], ['server:a', 'Host a', 'a']]);
+    expect(groups.map(g => [g.key, g.label, g.serverId])).toEqual([['server:a', 'Host a', 'a'], ['server:b', 'Host b', 'b']]);
     expect(groups.flatMap(g => g.workspaces)).toHaveLength(6);
   });
   it('a server group header carries that server’s state and reason for Retry', () => {
     const groups = applyView(workspaces, agents, presetView('server'), 10000);
     const status = { id: 'b', server: { server_id: 'b', server_name: 'Host b', server_url: '', registered_at: 0 }, state: 'unreachable' as const, reason: 'No route', version: '', backends: [], acpAgents: [], controlMode: false, tmuxVersion: '', prefix: '' };
-    expect(withServerStatus(groups, [status])[0].server).toEqual(status);
-    expect(withServerStatus(groups, [status])[1].server).toBeUndefined();
+    expect(withServerStatus(groups, [status])[1].server).toEqual(status);
+    expect(withServerStatus(groups, [status])[0].server).toBeUndefined();
   });
 });
 

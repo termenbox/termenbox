@@ -28,7 +28,7 @@
 
   let shown: WorkspaceInfo[] = [];
   $: {
-    order = frozen.order(workspaces.map(s => s.id), states, now);
+    order = frozen.order(workspaces.map(s => s.id), now);
     const cache = new Map([...shown, ...workspaces].map(s => [s.id, s]));
     shown = order.map(id => cache.get(id)).filter((s): s is WorkspaceInfo => !!s);
   }
@@ -56,13 +56,13 @@
   }
 
   function answer(id: string, choice: number, p: NonNullable<import('./lib/agents').WorkspaceAgent['prompt']>) {
-    send({ type: 'answer', session: id, prompt_id: p.id, seq: p.seq, choice });
+    send({ type: 'answer', workspace: id, prompt_id: p.id, seq: p.seq, choice });
   }
 
   function sendReply(text: string) {
     const t = snippets.clean(text);
     if (!t || !replyTo) return;
-    send({ type: 'reply', session: replyTo, text: t });
+    send({ type: 'reply', workspace: replyTo, text: t });
     draft = '';
   }
   function saveDraft() {

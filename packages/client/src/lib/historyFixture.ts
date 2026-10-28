@@ -9,18 +9,18 @@ export const NOW = at(14, 18, 0);
 const min = 60_000;
 
 export const RUNS: HistoryRun[] = [
-  { session: 'api', agent: 'claude', task: 'Fix the flaky login test', started_at: at(14, 9, 10), ended_at: at(14, 9, 42), outcome: 'finished', blocked_ms: 4 * min,
+  { workspace: 'api', agent: 'claude', task: 'Fix the flaky login test', started_at: at(14, 9, 10), ended_at: at(14, 9, 42), outcome: 'finished', blocked_ms: 4 * min,
     project: 'api', usage: { input_tokens: 12000, output_tokens: 3400, cache_read_tokens: 90000, cache_write_tokens: 20000 } },
-  { session: 'web', agent: 'codex', task: 'Migrate the schema', started_at: at(14, 11, 0), ended_at: at(14, 11, 20), outcome: 'failed', blocked_ms: 0, project: 'web' },
-  { session: 'api', agent: 'claude', task: 'Write release notes', started_at: at(14, 14, 5), ended_at: at(14, 14, 30), outcome: 'finished', blocked_ms: 8 * min,
+  { workspace: 'web', agent: 'codex', task: 'Migrate the schema', started_at: at(14, 11, 0), ended_at: at(14, 11, 20), outcome: 'failed', blocked_ms: 0, project: 'web' },
+  { workspace: 'api', agent: 'claude', task: 'Write release notes', started_at: at(14, 14, 5), ended_at: at(14, 14, 30), outcome: 'finished', blocked_ms: 8 * min,
     project: 'api', usage: { input_tokens: 800, output_tokens: 1500, cache_read_tokens: 60000, cache_write_tokens: 5000 } },
-  { session: 'docs', started_at: at(14, 15, 0), ended_at: at(14, 15, 5), outcome: 'stopped', blocked_ms: 0 },
-  { session: 'api', agent: 'claude', task: 'Review the deploy script', started_at: at(14, 17, 30), blocked_ms: 2 * min,
+  { workspace: 'docs', started_at: at(14, 15, 0), ended_at: at(14, 15, 5), outcome: 'stopped', blocked_ms: 0 },
+  { workspace: 'api', agent: 'claude', task: 'Review the deploy script', started_at: at(14, 17, 30), blocked_ms: 2 * min,
     project: 'api', usage: { input_tokens: 300, output_tokens: 200, rate_limited: 1 } },
 ];
 /** The day before, for the week view. */
 export const EARLIER: HistoryRun[] = [
-  { session: 'api', agent: 'claude', task: 'Bump dependencies', started_at: at(13, 10, 0), ended_at: at(13, 10, 40), outcome: 'finished', blocked_ms: 0,
+  { workspace: 'api', agent: 'claude', task: 'Bump dependencies', started_at: at(13, 10, 0), ended_at: at(13, 10, 40), outcome: 'finished', blocked_ms: 0,
     project: 'api', usage: { input_tokens: 2000, output_tokens: 600 } },
 ];
 
@@ -31,6 +31,6 @@ export function answer(runs: HistoryRun[], mode: 'day' | 'week' = 'day', extra: 
 
 /** An ACP agent that reported its own cost and tokens (no recorded agent does yet: this is the shape the protocol allows). */
 export const REPORTED: HistoryRun = {
-  session: 'acp', agent: 'kilo', task: 'Sort the imports', started_at: at(14, 12, 0), ended_at: at(14, 12, 10), outcome: 'finished', blocked_ms: 0,
+  workspace: 'acp', agent: 'kilo', task: 'Sort the imports', started_at: at(14, 12, 0), ended_at: at(14, 12, 10), outcome: 'finished', blocked_ms: 0,
   project: 'web', usage: { input_tokens: 1472, output_tokens: 35, cache_read_tokens: 13008, cost_micros: 250_000, cost_currency: 'USD' },
 };

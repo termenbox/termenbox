@@ -365,3 +365,154 @@ describe('after a network change (decision 0123)', () => {
     c.close();
   });
 });
+
+describe('version negotiation and the legacy shim (step 3.2)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** A connection to a server whose `auth_ok` is `authOk`. */
+  async function against(authOk: object) {
+    vi.useFakeTimers();
+    vi.stubGlobal('document', Object.assign(new EventTarget(), { visibilityState: 'visible' }));
+    vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
+    const sent: string[] = [];
+    const t: Transport = { kind: 'ws', onmessage: null, onclose: null, send: (x) => void sent.push(x), close: () => {} };
+    const c = new Connection({
+      target: async () => ({ wsUrl: 'ws://x' }),
+      openers: { rtc: async () => t, ws: async () => t },
+      credentials: async () => ({ cert: 'c', sign: async () => 's' }),
+      onState: () => {},
+      onReady: () => {},
+      onFatal: () => {},
+      onDrop: () => {},
+    });
+    const heard: unknown[] = [];
+    c.subscribe((m) => heard.push(m));
+    c.start();
+    await vi.advanceTimersByTimeAsync(10);
+    t.onmessage!(JSON.stringify({ type: 'challenge', nonce: 'n', server_id: 's' }));
+    await vi.advanceTimersByTimeAsync(10);
+    t.onmessage!(JSON.stringify(authOk));
+    return { c, t, sent, heard };
+  }
+
+  it('announces the protocol version in its hello', async () => {
+    const { c, sent } = await against({ type: 'auth_ok', protocol: 1, user: 'u', server_name: 's' });
+    expect(JSON.parse(sent[0])).toEqual({ type: 'hello', protocol: 1 });
+    c.close();
+  });
+
+  it('a current server is spoken to in the workspace vocabulary, unchanged', async () => {
+    const { c, t, sent, heard } = await against({ type: 'auth_ok', protocol: 1, user: 'u', server_name: 's' });
+    c.send({ type: 'list_workspaces' });
+    expect(JSON.parse(sent.at(-1)!)).toEqual({ type: 'list_workspaces' });
+    t.onmessage!(JSON.stringify({ type: 'workspaces', workspaces: [{ id: 'a', name: 'a', agent: null }] }));
+    expect(heard.at(-1)).toEqual({ type: 'workspaces', workspaces: [{ id: 'a', name: 'a', agent: null }] });
+    c.close();
+  });
+
+  // LEGACY SHIM test: deleted with the shim in step 8.1. The hello is the recorded one of a server before step 3.2.
+  it('an old server (its auth_ok names no protocol) is translated both ways', async () => {
+    const recorded = { type: 'auth_ok', user: 'alice', channels: ['term'], server_name: 'vps', mode: 'container', version: '0.1.52+abc', backends: ['tmux'], control_mode: true, tmux_version: '3.4', prefix: 'C-b' };
+    const { c, t, sent, heard } = await against(recorded);
+    c.send({ type: 'list_workspaces' });
+    c.send({ type: 'close_workspace', workspace: 'a' });
+    c.send({ type: 'attach', workspace_id: 'a' });
+    expect(sent.slice(-3).map((s) => JSON.parse(s))).toEqual([
+      { type: 'list_sessions' },
+      { type: 'close_session', session: 'a' },
+      { type: 'attach', session_id: 'a' },
+    ]);
+    t.onmessage!(JSON.stringify({ type: 'sessions', sessions: [{ id: 'a', name: 'a', agent: null }] }));
+    t.onmessage!(JSON.stringify({ type: 'session_attached', session_id: 'a' }));
+    t.onmessage!(JSON.stringify({ type: 'snapshot', session: 'a', text: 'session', hash: 'h' }));
+    expect(heard.slice(-3)).toEqual([
+      { type: 'workspaces', workspaces: [{ id: 'a', name: 'a', agent: null }] },
+      { type: 'workspace_attached', workspace_id: 'a' },
+      { type: 'snapshot', workspace: 'a', text: 'session', hash: 'h' },
+    ]);
+    c.close();
+  });
+});
+
+describe('the control channel (step 3.3)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  async function against(authOk: object, withControl: boolean) {
+    vi.useFakeTimers();
+    vi.stubGlobal('document', Object.assign(new EventTarget(), { visibilityState: 'visible' }));
+    vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
+    const sent: string[] = [];
+    const control: string[] = [];
+    const t: Transport = {
+      kind: 'rtc', onmessage: null, onclose: null, send: (x) => void sent.push(x), close: () => {},
+      ...(withControl ? { sendControl: (x: string) => { control.push(x); return true; } } : {}),
+    };
+    const c = new Connection({
+      target: async () => ({ wsUrl: 'ws://x' }),
+      openers: { rtc: async () => t, ws: async () => t },
+      credentials: async () => ({ cert: 'c', sign: async () => 's' }),
+      onState: () => {}, onReady: () => {}, onFatal: () => {}, onDrop: () => {},
+    });
+    c.start();
+    await vi.advanceTimersByTimeAsync(10);
+    t.onmessage!(JSON.stringify({ type: 'challenge', nonce: 'n', server_id: 's' }));
+    await vi.advanceTimersByTimeAsync(10);
+    t.onmessage!(JSON.stringify(authOk));
+    return { c, t, sent, control };
+  }
+  const ok = { type: 'auth_ok', protocol: 1, control_channel: true, user: 'u', server_name: 's' };
+
+  it('control messages use the control channel, everything else the first one', async () => {
+    const { c, sent, control } = await against(ok, true);
+    c.send({ type: 'acp_interrupt', workspace: 'w' });
+    c.send({ type: 'list_workspaces' });
+    expect(control.map((x) => JSON.parse(x).type)).toEqual(['acp_interrupt']);
+    expect(sent.map((x) => JSON.parse(x).type)).toEqual(['hello', 'auth', 'list_workspaces']);
+    c.close();
+  });
+
+  it('without a control channel (or on a server that does not offer it) they use the first channel', async () => {
+    const a = await against(ok, false);
+    a.c.send({ type: 'acp_interrupt', workspace: 'w' });
+    expect(a.sent.map((x) => JSON.parse(x).type)).toContain('acp_interrupt');
+    a.c.close();
+    const b = await against({ type: 'auth_ok', protocol: 1, user: 'u', server_name: 's' }, true);
+    b.c.send({ type: 'acp_interrupt', workspace: 'w' });
+    expect(b.control).toEqual([]);
+    expect(b.sent.map((x) => JSON.parse(x).type)).toContain('acp_interrupt');
+    b.c.close();
+  });
+
+  it('a request resolves with the ack, carries a req id, and times out without one', async () => {
+    const { c, t, control } = await against(ok, true);
+    const done = c.request({ type: 'acp_interrupt', workspace: 'w' });
+    const req = JSON.parse(control[0]).req;
+    expect(typeof req).toBe('number');
+    t.onmessage!(JSON.stringify({ type: 'control_ack', req, ok: true }));
+    expect(await done).toEqual({ ok: true, acknowledged: true, error: undefined });
+    const failed = c.request({ type: 'close_workspace', workspace: 'w' });
+    t.onmessage!(JSON.stringify({ type: 'control_ack', req: JSON.parse(control[1]).req, ok: false, error: 'Unknown workspace' }));
+    expect(await failed).toMatchObject({ ok: false, acknowledged: true, error: 'Unknown workspace' });
+    const silent = c.request({ type: 'detach' }, 1000);
+    await vi.advanceTimersByTimeAsync(1001);
+    expect(await silent).toMatchObject({ ok: false, acknowledged: false });
+    c.close();
+  });
+
+  it('a request on a server that does not acknowledge resolves at once, and a closed connection ends waiting ones', async () => {
+    const old = await against({ type: 'auth_ok', user: 'u', server_name: 's' }, false);
+    expect(await old.c.request({ type: 'detach' })).toEqual({ ok: true, acknowledged: false });
+    expect(old.sent.map((x) => JSON.parse(x).type)).toContain('detach');
+    old.c.close();
+    const { c } = await against(ok, true);
+    const pending = c.request({ type: 'detach' });
+    c.close();
+    expect(await pending).toMatchObject({ ok: false, acknowledged: false });
+  });
+});

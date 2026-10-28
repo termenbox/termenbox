@@ -186,4 +186,14 @@ describe('createPress', () => {
     expect(n).toBe(2);
     expect(prevented).toBe(1);
   });
+  it('fires a release key on the lift, once, and not at all when the press is cancelled', () => {
+    let n = 0, t = 0;
+    const p = createPress(() => n++, () => t, () => true);
+    p.pointerdown(ev);
+    expect(n).toBe(0);
+    t = 30; p.pointerup(); t = 40; p.click();
+    expect(n).toBe(1);
+    p.pointerdown(ev); p.pointercancel(); p.pointerup();
+    expect(n).toBe(1);
+  });
 });

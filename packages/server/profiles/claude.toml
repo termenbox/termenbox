@@ -17,3 +17,6 @@ idle = ["← for agents", "? for shortcuts", "worked for"]
 # Every dialog that waits for the human ends its footer with "Esc to cancel" (permission, AskUserQuestion, plan
 # approval, trust); AskUserQuestion's also reads "Enter to select". Working and idle screens have neither.
 blocked = ["esc to cancel", "enter to select"]
+# The input box is closed by a rule; under it are the footer and the user's own status line ("120k tokens · $1.20",
+# "Opus (thinking)"), which must not read as the spinner.
+input_rule = "─"

@@ -1025,9 +1025,9 @@ mod tests {
                 "blocked_ms",
                 "ended_at",
                 "outcome",
-                "session",
                 "started_at",
-                "task"
+                "task",
+                "workspace"
             ]
         );
     }
@@ -1073,9 +1073,9 @@ mod tests {
                 "ended_at",
                 "outcome",
                 "project",
-                "session",
                 "started_at",
-                "usage"
+                "usage",
+                "workspace"
             ]
         );
         assert_eq!(v["project"], "termenbox");

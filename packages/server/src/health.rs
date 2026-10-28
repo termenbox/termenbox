@@ -25,6 +25,7 @@ use std::collections::VecDeque;
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -161,6 +162,62 @@ impl Inner {
     }
 }
 
+/// A loop that has not beaten for this long is stuck, and `/health` says so (decision 0143).
+pub const STALL_MS: u64 = 30_000;
+
+/// When the loops that must keep running last did: the health sampler and the ACP supervisor. A loop that has never
+/// beaten is not running in this server (no ACP backend, say) and is not waited for. Plain atomics: a stuck lock
+/// elsewhere cannot hold up a read.
+pub struct Heartbeats {
+    sampler_ms: AtomicU64,
+    acp_ms: AtomicU64,
+}
+
+/// The server's own, read by `/health`.
+pub static HEARTBEATS: Heartbeats = Heartbeats::new();
+
+impl Heartbeats {
+    pub const fn new() -> Self {
+        Self {
+            sampler_ms: AtomicU64::new(0),
+            acp_ms: AtomicU64::new(0),
+        }
+    }
+
+    pub fn beat_sampler(&self) {
+        self.sampler_ms
+            .store(crate::events::now_ms(), Ordering::Relaxed);
+    }
+
+    pub fn beat_acp(&self) {
+        self.acp_ms
+            .store(crate::events::now_ms(), Ordering::Relaxed);
+    }
+
+    /// Whether every loop that has started beat within [`STALL_MS`] of `now_ms`.
+    pub fn alive_at(&self, now_ms: u64) -> bool {
+        [&self.sampler_ms, &self.acp_ms].iter().all(|beat| {
+            let last = beat.load(Ordering::Relaxed);
+            last == 0 || now_ms.saturating_sub(last) <= STALL_MS
+        })
+    }
+
+    /// The answer to `/health`: 200 `OK`, or 503 with no detail.
+    pub async fn respond(&'static self) -> (axum::http::StatusCode, &'static str) {
+        if self.alive_at(crate::events::now_ms()) {
+            (axum::http::StatusCode::OK, "OK")
+        } else {
+            (axum::http::StatusCode::SERVICE_UNAVAILABLE, "stalled")
+        }
+    }
+}
+
+impl Default for Heartbeats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Keeps the ring and the verdict and tells the connections about each sample.
 pub struct HealthCollector {
     inner: Mutex<Inner>,
@@ -266,8 +323,11 @@ impl HealthCollector {
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tick.tick().await;
+                HEARTBEATS.beat_sampler();
                 let (next, reading) = sample_blocking(sampler, &data_dir).await;
                 sampler = next;
+                // The run marker's heartbeat: when this run was last alive and how big it was (decision 0142).
+                tokio::task::spawn_blocking(|| crate::crash::update(crate::crash::own_rss_kb()));
                 if let Some(reading) = reading {
                     me.record(reading.point, reading.container);
                 }
@@ -330,6 +390,7 @@ pub fn downsample_from(
                 cpu_percent: hi(acc.cpu_percent, p.cpu_percent),
                 ram_percent: hi(acc.ram_percent, p.ram_percent),
                 disk_percent: hi(acc.disk_percent, p.disk_percent),
+                event_log_bytes: acc.event_log_bytes.max(p.event_log_bytes),
             },
         )
     };
@@ -424,6 +485,7 @@ impl Sampler {
                 cpu_percent: cpu,
                 ram_percent: ram,
                 disk_percent: disk_percent(&self.data_dir),
+                event_log_bytes: Some(crate::event_log::total_bytes()),
             },
             container,
         }
@@ -620,6 +682,7 @@ mod tests {
             cpu_percent: cpu,
             ram_percent: ram,
             disk_percent: disk,
+            event_log_bytes: None,
         }
     }
 
@@ -984,5 +1047,43 @@ mod tests {
             ),
             (None, None, None)
         );
+    }
+
+    async fn health_status(hb: &'static Heartbeats) -> axum::http::StatusCode {
+        use tower::ServiceExt;
+        let app = axum::Router::new().route("/health", axum::routing::get(move || hb.respond()));
+        let req = axum::http::Request::get("/health")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        app.oneshot(req).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn health_is_503_for_a_stalled_heartbeat_and_200_for_a_fresh_one() {
+        let hb: &'static Heartbeats = Box::leak(Box::default());
+        // Nothing has started: nothing to wait for.
+        assert_eq!(health_status(hb).await, 200);
+        hb.beat_sampler();
+        hb.beat_acp();
+        assert_eq!(health_status(hb).await, 200);
+        // The ACP supervisor stopped beating 31 s ago while the sampler goes on.
+        hb.acp_ms.store(
+            crate::events::now_ms() - STALL_MS - 1_000,
+            Ordering::Relaxed,
+        );
+        assert_eq!(health_status(hb).await, 503);
+        hb.beat_acp();
+        assert_eq!(health_status(hb).await, 200);
+        // Either loop alone is enough to fail it.
+        hb.sampler_ms.store(1, Ordering::Relaxed);
+        assert_eq!(health_status(hb).await, 503);
+    }
+
+    #[test]
+    fn a_beat_is_stale_only_after_thirty_seconds() {
+        let hb = Heartbeats::new();
+        hb.sampler_ms.store(100_000, Ordering::Relaxed);
+        assert!(hb.alive_at(100_000 + STALL_MS));
+        assert!(!hb.alive_at(100_000 + STALL_MS + 1));
     }
 }

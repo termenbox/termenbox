@@ -2,7 +2,7 @@
 
 <p align="center">
   <b>Run Claude Code and Codex on your own server, from your phone.</b><br>
-  A self-hosted web terminal for AI coding agents. Workspaces live in tmux and survive dropped connections. No app to install, no subscription.
+  A self-hosted web terminal for AI coding agents. Workspaces live in tmux and survive dropped connections. No app required, no subscription.
 </p>
 
 <p align="center">
@@ -41,6 +41,25 @@ Then open **[app.termenbox.dev](https://app.termenbox.dev)** on your phone or la
 > [!NOTE]
 > **Windows:** run it inside WSL2 with `networkingMode=mirrored`, otherwise other devices cannot reach it ([details](docs/guide/networking.md#servers-inside-a-virtual-machine)).
 
+## Connecting a home or WSL server
+
+A server behind a router you cannot change, or inside WSL2's own NAT, cannot take an inbound UDP connection. Termenbox can still connect an *assisted* way, through a free Cloudflare account that you own. Nothing runs on the project's account, and nothing is shared with it.
+
+On the server, once:
+
+```bash
+termenbox-server --setup-cloudflare      # reads a Cloudflare API token from stdin, uses it once, never stores it
+```
+
+The token needs **Workers Scripts: Edit**, **Account Settings: Read** and **Cloudflare Calls** (create it at dash.cloudflare.com, *My Profile, API Tokens*). The command deploys a small signaling Worker (`termenbox-relay-<hash>`) and a TURN key in your account, keeps only the TURN key's id and its credential-minting token in `relay.json` (mode 0600, next to the server's other state), and prints the Worker's address, the free allowance and the cap.
+
+- **What the connection does.** The phone and the server first try to punch a hole through both NATs with free public STUN (no account needed). If that does not connect within a few seconds, the session goes through your Cloudflare TURN relay. The session header says which: *Punched* or *Relay*.
+- **What it costs.** Nothing on the free plan. Cloudflare's Realtime TURN includes 1,000 GB a month, shared with its other Realtime products, and charges $0.05 per GB beyond it. The server counts every relay credential it hands out as 128 MiB, and stops handing them out at a monthly cap of 500 GB (`TERMENBOX_RELAY_CAP_GB` changes it), so a runaway cannot bill you.
+- **What it exposes.** Only a client with a device certificate for you gets credentials, and each lasts 15 minutes. The Worker is a switchboard that holds no secret and checks nothing; the server verifies every message.
+- **Taking it away.** `termenbox-server --teardown` (token on stdin again) deletes the Worker, its Durable Object and the TURN key, and removes `relay.json`.
+
+Not a LAN-only server: with `TERMENBOX_LAN_ONLY` the server never contacts STUN or the Worker. On WSL2 you can instead set `networkingMode=mirrored` (the installer prints the steps); `--setup-cloudflare` is the alternative when you cannot or would rather not.
+
 ## Why Termenbox
 
 - **Built for the phone.** Tabs per workspace, a key row for Esc, Ctrl and arrows, and a banner when an agent is waiting for you.
@@ -78,7 +97,7 @@ On the same network as your phone, no: scan the QR and it connects over the LAN.
 
 <details><summary><b>What does it cost?</b></summary>
 
-Nothing beyond the machine you run it on. There is no subscription and no native app.
+Nothing beyond the machine you run it on. There is no subscription, and using Termenbox never requires installing an app — the browser is the product.
 </details>
 
 <details><summary><b>Who can open a workspace?</b></summary>

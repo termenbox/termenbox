@@ -134,6 +134,8 @@ impl ServerClient {
             ServerMessage::Challenge { .. }
             | ServerMessage::DeviceRevoked { .. }
             | ServerMessage::UninstallDone { .. }
+            | ServerMessage::UpdateRequested { .. }
+            | ServerMessage::UpdateStatus { .. }
             | ServerMessage::Candidates { .. } => {}
             ServerMessage::Workspaces { workspaces } => {
                 info!("Received {} workspaces", workspaces.len());
@@ -178,12 +180,16 @@ impl ServerClient {
             | ServerMessage::HistoryDeleted { .. }
             | ServerMessage::ServerHealth { .. }
             | ServerMessage::HealthHistory { .. }
+            | ServerMessage::PreviousExit { .. }
+            | ServerMessage::DiagnosticsBundle { .. }
             | ServerMessage::ClaimPreview { .. }
             | ServerMessage::Unknown => {}
             ServerMessage::Error { message } => {
                 info!("Server error: {}", message);
             }
-            ServerMessage::Pong => {}
+            ServerMessage::Pong
+            | ServerMessage::ControlAck { .. }
+            | ServerMessage::AcpEvents { .. } => {}
         }
         Ok(())
     }

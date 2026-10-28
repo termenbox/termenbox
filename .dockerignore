@@ -9,6 +9,7 @@ target
 **/.svelte-kit
 docs
 infra
+!infra/owner-relay/dist
 scripts
 skills-lock.json
 *.md

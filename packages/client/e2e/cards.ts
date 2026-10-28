@@ -13,8 +13,8 @@ const workspaces = [
   { id: 'scratch', name: 'scratch', agent: null },
 ];
 const now = Date.now();
-const ev = (session: string, seq: number, rest: object, ago = 0, confidence = 'high'): AgentEvent =>
-  ({ session, seq, ts: now - ago, source: 'hook', confidence, ...rest }) as AgentEvent;
+const ev = (workspace: string, seq: number, rest: object, ago = 0, confidence = 'high'): AgentEvent =>
+  ({ workspace, seq, ts: now - ago, source: 'hook', confidence, ...rest }) as AgentEvent;
 const stream: AgentEvent[] = [
   ev('build', 1, { kind: 'state', state: 'working' }, 4000),
   ev('build', 2, { kind: 'tool', name: 'Edit', summary: 'packages/client/src/lib/terminal/touchScroll.ts and a very long path to prove it is cut off', phase: 'started' }, 3000),
@@ -27,7 +27,7 @@ const stream: AgentEvent[] = [
   ev('deploy', 2, { kind: 'tool', name: 'Bash', summary: 'cargo build --release', phase: 'started' }, 4 * 60000),
 ];
 // `build` also has server status (decision 0095): a task that started 95 s ago on the server's clock.
-agents.set(applyActivity(applyEvents({}, stream).map, [{ session: 'build', activity: 'working', ts: now, task: { title: 'Wire the touch controller in', started_at: now - 95_000, source: 'hook' } }], now));
+agents.set(applyActivity(applyEvents({}, stream).map, [{ workspace: 'build', activity: 'working', ts: now, task: { title: 'Wire the touch controller in', started_at: now - 95_000, source: 'hook' } }], now));
 const sent: unknown[] = [];
 (window as unknown as { __sent: unknown[]; __agents: typeof agents }).__sent = sent;
 mount(WorkspaceList, { target: document.body, props: { workspaces, activeWorkspaceId: 'build', onopen: (id: string) => sent.push({ open: id }), send: (m: unknown) => sent.push(m) } });

@@ -43,7 +43,7 @@
   $: if (held !== wasHeld) { frozen.sheet(held); wasHeld = held; revision++; }
   $: {
     revision;
-    const order = frozen.order(tabIds(workspaces, agents), {}, now);
+    const order = frozen.order(tabIds(workspaces), now);
     // A tab opened during a hold still gets a tab; a removed one stays in place (disabled) until the hold ends.
     if (activeKey && !order.includes(activeKey) && workspaces.some(s => s.key === activeKey)) order.push(activeKey);
     live = new Set(workspaces.map(s => s.key));

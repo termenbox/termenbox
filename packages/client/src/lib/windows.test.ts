@@ -6,8 +6,8 @@ const w = (index: number, path: string, extra: Partial<WindowInfo> = {}): Window
 
 describe('window state', () => {
   it('stores a window list per workspace and forgets the workspaces that are gone', () => {
-    let map = applyWindowList({}, { type: 'window_list', session: 'a', windows: [w(0, '/x')], representative: 0 });
-    map = applyWindowList(map, { type: 'window_list', session: 'b', windows: [w(0, '/y')] });
+    let map = applyWindowList({}, { type: 'window_list', workspace: 'a', windows: [w(0, '/x')], representative: 0 });
+    map = applyWindowList(map, { type: 'window_list', workspace: 'b', windows: [w(0, '/y')] });
     expect(map.b.representative).toBeNull();
     expect(Object.keys(forgetWindows(map, ['b']))).toEqual(['b']);
   });
@@ -38,13 +38,14 @@ describe('tab text', () => {
     's/b': { windows: [w(0, '/srv/app')], representative: 0 },
     's/c': { windows: [w(0, '/srv/other')], representative: 0 },
   };
-  it('tells tabs that read the same apart by workspace name, and falls back to the name without a path', () => {
+  it('reads the workspace name, and keeps the directory as the hint', () => {
     const t = tabTexts(workspaces, windows);
-    expect(t['s/a'].label).toBe('/srv/app · a');
-    expect(t['s/b'].label).toBe('/srv/app · b');
-    expect(t['s/c'].label).toBe('/srv/other');
+    expect(t['s/a'].label).toBe('a');
+    expect(t['s/b'].label).toBe('b');
+    expect(t['s/a'].hint).toBe('/srv/app');
+    expect(t['s/c'].label).toBe('c');
     expect(t['s/c'].hint).toBe('/srv/other');
-    expect(t['s/d'].label).toBe('d');
+    expect(t['s/d']).toEqual({ label: 'd', hint: 'd' });
   });
 });
 

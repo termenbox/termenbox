@@ -1,4 +1,4 @@
-//! Bridge Contract governance for one workspace (draft-05, vendored `bridge-contract`).
+//! Bridge Contract governance for one workspace (vendored `bridge-contract`).
 //!
 //! A thin seam: the workspace's attach, detach and human-wait moments drive the bridge's product state machine
 //! (`Attachment x Human x Lifecycle`), and the bridge's committed events project onto the existing `Block`
@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use bridge_contract::{
-    Attachment, Bridge, BridgeError, ClientKey, Clock, Config, Event, HmacVerifier, Human, Kind,
+    Attachment, Bridge, BridgeError, ClientKey, Clock, Config, Ed25519Verifier, Event, Human, Kind,
     MemStorage, SessionIdentity, SystemClock,
 };
 
@@ -33,7 +33,7 @@ pub struct Governor {
 
 impl Governor {
     /// Attaches `workspace` for `principal` with `scope`; the key registered here proves possession at
-    /// re-attach (I11). `HmacVerifier` is the crate's stand-in until a real signature scheme is plugged in.
+    /// re-attach (I11); the bridge's registry stores only its public key and verifies Ed25519 signatures.
     pub fn attach(
         workspace: &str,
         principal: &str,
@@ -58,7 +58,7 @@ impl Governor {
         clock: Arc<dyn Clock>,
         cfg: Config,
     ) -> Result<Governor, BridgeError> {
-        let mut bridge = Bridge::new(MemStorage::new(), clock, Arc::new(HmacVerifier), cfg)?;
+        let mut bridge = Bridge::new(MemStorage::new(), clock, Arc::new(Ed25519Verifier), cfg)?;
         let id = SessionIdentity {
             session_id: workspace.to_string(),
             principal_id: principal.to_string(),
@@ -136,7 +136,7 @@ mod tests {
     use bridge_contract::FakeClock;
 
     fn governor(clock: Arc<FakeClock>) -> Governor {
-        let key = ClientKey::new("k1", b"client-secret");
+        let key = ClientKey::new("k1", &[7u8; 32]);
         Governor::attach_with(
             "ws1",
             "owner",

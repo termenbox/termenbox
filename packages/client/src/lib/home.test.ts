@@ -6,7 +6,7 @@ import type { AttentionKind } from './protocol';
 
 const sess = (name: string, serverId = 's1'): HubWorkspace => ({ id: name, name, agent: null, serverId, key: `${serverId}/${name}`, serverName: serverId.toUpperCase() });
 const withAtt = (kind: AttentionKind, at: number, extra: Partial<WorkspaceAgent> = {}): WorkspaceAgent =>
-  ({ state: 'unknown', seq: 1, stale: false, ts: at, serverStatus: true, attention: { id: `a${at}`, session: 'x', kind, raised_at: at, task: { title: `task ${at}`, started_at: 0, source: 'hook' } }, ...extra });
+  ({ state: 'unknown', seq: 1, stale: false, ts: at, serverStatus: true, attention: { id: `a${at}`, workspace: 'x', kind, raised_at: at, task: { title: `task ${at}`, started_at: 0, source: 'hook' } }, ...extra });
 const quiet = (activity: WorkspaceAgent['activity'] = 'idle'): WorkspaceAgent => ({ state: activity === 'working' ? 'working' : 'idle', seq: 1, stale: false, ts: 1, serverStatus: true, activity });
 
 describe('queue order', () => {
@@ -79,12 +79,14 @@ describe('hero options', () => {
 });
 
 describe('the Workspaces groups', () => {
-  it('groups every workspace by state in a fixed order and drops empty groups', () => {
-    const ss = ['i', 'w', 'n2', 'n1', 'f'].map((n) => sess(n));
-    const agents: AgentMap = { 's1/i': quiet(), 's1/w': quiet('working'), 's1/n2': withAtt('needs_input', 9), 's1/n1': withAtt('needs_input', 2), 's1/f': withAtt('failed', 3) };
+  it('lists every workspace by server in the order given: a state or a wait does not move a row', () => {
+    const ss = [sess('i'), sess('n2'), sess('x', 's2'), sess('n1'), sess('f')];
+    const agents: AgentMap = { 's1/i': quiet(), 's1/n2': withAtt('needs_input', 9), 's1/n1': withAtt('needs_input', 2), 's1/f': withAtt('failed', 3) };
     const g = workspaceGroups(ss, agents);
-    expect(g.map((x) => x.title)).toEqual(['Needs you', 'Failed', 'Working', 'Idle']);
-    expect(g[0].rows.map((r) => r.name)).toEqual(['n1', 'n2']);
+    expect(g.map((x) => [x.serverId, x.title])).toEqual([['s1', 'S1'], ['s2', 'S2']]);
+    expect(g[0].rows.map((r) => r.name)).toEqual(['i', 'n2', 'n1', 'f']);
+    expect(g[0].rows.map((r) => r.state)).toEqual(['idle', 'needs-you', 'needs-you', 'failed']); // still told by the row
+    expect(workspaceGroups([], {})).toEqual([]);
   });
 });
 

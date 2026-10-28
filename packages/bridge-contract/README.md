@@ -1,6 +1,6 @@
 # bridge-contract (Rust)
 
-A second implementation of the Bridge Contract, revision -05: the product
+A second implementation of the Bridge Contract: the product
 state machine `Attachment x Human x Lifecycle` derived from a client set
 (I15), challenge-response resume pinned to the acknowledged prefix of the
 chain (I4, I9, I11), narrow-only authority with enforced and observed
@@ -19,7 +19,7 @@ cargo test        # runs ../vectors/*.json on two storages, plus unit tests
 | Piece | What it is |
 |---|---|
 | `Storage` (trait, `Send + Sync`, `&self`) | `append_batch` (atomic, durable on return), `read_log`, `sessions`, and the client-key registry (`register_key`, `key_material`). `MemStorage` is the reference implementation; the tests also run a file-backed one (`tests/common/mod.rs`: JSON lines, `fsync` per batch). |
-| `Verifier` (trait, `Send + Sync`) | Proof-of-possession check over `(key material, message, signature)`. `HmacVerifier` is the stand-in used by the tests and vectors; a consumer plugs in a real signature scheme and registers public keys as the key material. The signed message is `request_message(sid, nonce, seq, hash)`. |
+| `Verifier` (trait, `Send + Sync`) | Proof-of-possession check over `(key material, message, signature)`. `Ed25519Verifier` is the default used by the tests and vectors; the registry holds raw public keys as the key material and never a signing seed. A consumer may plug in another scheme. The signed message is `request_message(sid, nonce, seq, hash)`. |
 | `Clock` (trait, `Send + Sync`) | `SystemClock` for production, `FakeClock` for tests. |
 | `Config` | `T_call <= T_human` and `T_detach <= T_total` are checked by `Config::new`, `Bridge::new` and the profiles `Config::interactive_short()` and `Config::persistent()`. |
 | `Bridge` | `Send`. Methods take `&mut self`; share one across threads as `Arc<Mutex<Bridge>>` (the tests do), or one bridge per session. |
@@ -56,8 +56,8 @@ prefix check or the answer-hash comparison makes the vectors fail (V02, V25).
   paper's Sections 4 and 5 and the vector schema, not by translating
   `conformance_suite.py`, but the author's reading of the specification is
   shared. Agreement between the two shows consistency of one reading, not
-  independent confirmation of the specification. This holds for the changes of
-  revision -05 that came from the Termenbox integration as much as for the
+  independent confirmation of the specification. This holds for the
+  changes that came from the Termenbox integration as much as for the
   rest: the same author wrote the product plan and the specification change.
 * The architecture is the same: the cell is a fold of the committed log and a
   transition is an atomic append followed by an in-memory apply. That is a
@@ -67,10 +67,9 @@ prefix check or the answer-hash comparison makes the vectors fail (V02, V25).
   signature, nonce, prefix), the `RESUME_REJECTED` reasons, and the event
   order inside a batch. A third implementation could differ on these and
   still be conformant; if so, the vectors, not this crate, are the arbiter.
-* Proof of possession uses an HMAC stand-in for a signature (see
-  `../vectors/README.md`); no asymmetric cryptography is exercised. The
-  `Verifier` trait is the seam for it, and it has been exercised only with the
-  stand-in.
+* Proof of possession uses Ed25519 (`ed25519-dalek`); the registry holds
+  public keys only. The `Verifier` trait is the seam for other schemes, and
+  only Ed25519 has been exercised. Unforgeability is assumed, not proved.
 * The file-backed storage is a test fixture: no cross-process locking, no
   compaction, and `read_log` reads the whole file. A production `Storage`
   needs its own answer to those.

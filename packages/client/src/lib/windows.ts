@@ -10,7 +10,7 @@ export interface WorkspaceWindows {
 export type WindowMap = Record<string, WorkspaceWindows>;
 
 export function applyWindowList(map: WindowMap, msg: Extract<ServerMessage, { type: 'window_list' }>): WindowMap {
-  return { ...map, [msg.session]: { windows: msg.windows, representative: msg.representative ?? null } };
+  return { ...map, [msg.workspace]: { windows: msg.windows, representative: msg.representative ?? null } };
 }
 
 /** Keeps only workspaces that still exist. */
@@ -46,20 +46,11 @@ export function shortPath(path: string, maxSegments = 2): string {
 export interface TabText { label: string; hint: string }
 
 /**
- * What each tab reads. A tab is the path of its representative window; when two tabs would read the same, the
- * workspace name is added as a second line so three agents in one repository stay apart. Without a path (an old
- * server, no control mode) the label is the workspace name.
+ * What each tab reads: the workspace's name, the same one the lists show and the user can rename. The path of its
+ * representative window is the hint (the tooltip), so a directory still tells two tabs apart without replacing the name.
  */
 export function tabTexts(workspaces: { key: string; name: string }[], windows: WindowMap): Record<string, TabText> {
-  const base = (s: { key: string; name: string }) => shortPath(representativeWindow(windows[s.key])?.path ?? '');
-  const counts = new Map<string, number>();
-  for (const s of workspaces) { const b = base(s); if (b) counts.set(b, (counts.get(b) ?? 0) + 1); }
   const out: Record<string, TabText> = {};
-  for (const s of workspaces) {
-    const b = base(s);
-    const full = representativeWindow(windows[s.key])?.path ?? '';
-    out[s.key] = !b ? { label: s.name, hint: s.name }
-      : { label: (counts.get(b) ?? 0) > 1 ? `${b} · ${s.name}` : b, hint: full };
-  }
+  for (const s of workspaces) out[s.key] = { label: s.name, hint: representativeWindow(windows[s.key])?.path || s.name };
   return out;
 }

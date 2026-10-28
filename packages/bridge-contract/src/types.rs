@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hmac::{Hmac, Mac};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier as _, VerifyingKey};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
@@ -184,33 +184,39 @@ pub fn request_message(sid: &str, nonce: &str, seq: i64, hash: &str) -> Vec<u8> 
     serde_json::to_vec(&json!([sid, nonce, seq, hash])).expect("json serialises")
 }
 
-type HmacSha256 = Hmac<Sha256>;
-
-pub(crate) fn hmac_hex(key: &[u8], msg: &[u8]) -> String {
-    let mut m = HmacSha256::new_from_slice(key).expect("any key length");
-    m.update(msg);
-    hex::encode(m.finalize().into_bytes())
-}
-
-/// Client key (I11). HMAC stands in for a signature scheme so the crate
-/// needs no asymmetric primitives; see `../vectors/README.md`. A consumer
-/// supplies its own [`Verifier`] for real signatures.
-#[derive(Debug, Clone)]
+/// Client key (I11): an Ed25519 signing key held by the client. The
+/// bridge's registry receives only [`ClientKey::public_key`].
+#[derive(Clone)]
 pub struct ClientKey {
     pub key_id: String,
-    pub secret: Vec<u8>,
+    signing: SigningKey,
+}
+
+impl fmt::Debug for ClientKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ClientKey({})", self.key_id)
+    }
 }
 
 impl ClientKey {
-    pub fn new(key_id: &str, secret: &[u8]) -> Self {
+    pub fn new(key_id: &str, seed: &[u8; 32]) -> Self {
         ClientKey {
             key_id: key_id.to_string(),
-            secret: secret.to_vec(),
+            signing: SigningKey::from_bytes(seed),
         }
     }
 
+    /// The raw 32-byte verification key to register; no signing material.
+    pub fn public_key(&self) -> Vec<u8> {
+        self.signing.verifying_key().to_bytes().to_vec()
+    }
+
     pub fn sign(&self, sid: &str, nonce: &str, seq: i64, hash: &str) -> String {
-        hmac_hex(&self.secret, &request_message(sid, nonce, seq, hash))
+        hex::encode(
+            self.signing
+                .sign(&request_message(sid, nonce, seq, hash))
+                .to_bytes(),
+        )
     }
 
     pub fn request(&self, sid: &str, nonce: &str, seq: i64, hash: &str) -> ResumeRequest {
@@ -225,27 +231,31 @@ impl ClientKey {
 }
 
 /// Proof-of-possession check (I11c). `key_material` is what the registry
-/// stored for the key at registration: the HMAC secret for the stand-in,
-/// a public key for a real scheme.
+/// stored for the key at registration: its public key.
 pub trait Verifier: Send + Sync {
     fn verify(&self, key_material: &[u8], message: &[u8], signature: &str) -> bool;
 }
 
-/// The test default: `signature == hex(HMAC-SHA256(key_material, message))`.
+/// Ed25519 verification of a hex-encoded signature; malformed key material
+/// or signatures are simply invalid.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct HmacVerifier;
+pub struct Ed25519Verifier;
 
-impl Verifier for HmacVerifier {
+impl Verifier for Ed25519Verifier {
     fn verify(&self, key_material: &[u8], message: &[u8], signature: &str) -> bool {
-        let want = hmac_hex(key_material, message);
-        // constant-time comparison is not needed for a test stand-in, but
-        // keep the length check explicit
-        want.len() == signature.len()
-            && want
-                .bytes()
-                .zip(signature.bytes())
-                .fold(0u8, |a, (x, y)| a | (x ^ y))
-                == 0
+        let Ok(pk) = <[u8; 32]>::try_from(key_material) else {
+            return false;
+        };
+        let Ok(vk) = VerifyingKey::from_bytes(&pk) else {
+            return false;
+        };
+        let Ok(raw) = hex::decode(signature) else {
+            return false;
+        };
+        let Ok(sig) = Signature::from_slice(&raw) else {
+            return false;
+        };
+        vk.verify(message, &sig).is_ok()
     }
 }
 

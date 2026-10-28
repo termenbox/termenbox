@@ -1,4 +1,5 @@
-//! WebRTC-direct transport (DECISION-0057): one UDP port, ICE-lite, no signaling, no STUN/TURN.
+//! WebRTC-direct transport (DECISION-0057): one UDP port, ICE-lite, no signaling, no STUN/TURN. An assisted session
+//! (DECISION-0141) shares the port but is a full ICE agent that starts its own checks, so it can punch a NAT.
 //!
 //! The browser builds the remote workspace description itself from the server's IP, port and DTLS
 //! fingerprint (from the signed directory record) and rewrites its own ICE ufrag/pwd to one random
@@ -13,6 +14,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
+use rand::distributions::Alphanumeric;
+use rand::Rng;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use str0m::channel::{ChannelConfig, ChannelId};
@@ -21,7 +24,7 @@ use str0m::ice::IceCreds;
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc};
 use tokio::net::UdpSocket;
-use tokio::sync::Notify;
+use tokio::sync::{mpsc, oneshot, Notify};
 use tracing::{debug, warn};
 
 use crate::link::{self, Inbound, LinkEnd};
@@ -34,6 +37,10 @@ pub const SERVER_PWD: &str = "termenbox-direct-v1-0123456789";
 pub const CHANNEL_ID: u16 = 0;
 /// The second negotiated channel, for terminal bytes (decision 0096); unused by a client that did not ask.
 pub const TERM_CHANNEL_ID: u16 = 1;
+/// The third negotiated channel, for control messages (decision 0139): ordered and reliable like the first, but with
+/// its own queue and SCTP stream, so a cancel never waits behind agent events or terminal bytes. A client that does
+/// not open it keeps control on the first channel.
+pub const CONTROL_CHANNEL_ID: u16 = 2;
 /// Queued terminal chunks are joined into messages of about this size (the SCTP limit is 64 KiB).
 const TERM_MESSAGE: usize = 16 * 1024;
 /// A single message above this closes the connection; clients send small JSON.
@@ -56,6 +63,10 @@ pub struct Limits {
     /// No datagram at all for this long means the peer is gone.
     pub silence_ttl: Duration,
     pub new_peers_per_sec: u32,
+    /// Assisted sessions (punched, started from an authenticated signal) alive at once.
+    pub max_assisted: usize,
+    /// A punch that has not opened the data channel by then is dropped (a direct peer gets `half_open_ttl`).
+    pub assisted_ttl: Duration,
 }
 
 impl Default for Limits {
@@ -67,6 +78,8 @@ impl Default for Limits {
             half_open_ttl: Duration::from_secs(10),
             silence_ttl: Duration::from_secs(30),
             new_peers_per_sec: 50,
+            max_assisted: 8,
+            assisted_ttl: Duration::from_secs(30),
         }
     }
 }
@@ -76,6 +89,86 @@ pub struct RtcInfo {
     pub ip: IpAddr,
     pub port: u16,
     pub fingerprint: String,
+}
+
+/// What the signal channel (step 2.5) hands over for a punched session: the client's ICE credentials and the addresses
+/// it can be reached at, plus the server's own candidates beyond the transport socket's address (the STUN-mapped
+/// address, a relay address).
+pub struct AssistedOffer {
+    pub ufrag: String,
+    pub pwd: String,
+    pub candidates: Vec<SocketAddr>,
+    pub local: Vec<Candidate>,
+    /// An allocation on the owner's TURN key (`turn::allocate_or_none`), offered as a relay candidate. The session
+    /// owns it and releases it when it ends.
+    pub relay: Option<crate::turn::Relay>,
+}
+
+/// The server's ICE credentials for the answer. `ufrag` also names the session in `candidate` and `cancel`.
+#[derive(Clone, Debug)]
+pub struct AssistedAnswer {
+    pub ufrag: String,
+    pub pwd: String,
+}
+
+#[allow(dead_code)] // cancel and active are used by the tests; a session that ends early will cancel (step 2.8)
+enum Command {
+    Start(AssistedOffer, oneshot::Sender<Result<AssistedAnswer>>),
+    Candidate(String, SocketAddr),
+    Cancel(String),
+    Count(oneshot::Sender<usize>),
+}
+
+/// Starts and steers assisted sessions on the transport's socket. Unlike a direct peer (ICE-lite, created by an
+/// unknown source's first check), an assisted session is a full ICE agent that starts its own checks toward the
+/// client's candidates, which is what a NAT punch needs.
+#[derive(Clone, Debug)]
+pub struct Assisted {
+    tx: mpsc::UnboundedSender<Command>,
+    relay_inbox: mpsc::UnboundedSender<crate::turn::Packet>,
+}
+
+impl Assisted {
+    /// A handle with no transport behind it: `start` fails, everything else is ignored.
+    #[cfg(test)]
+    pub fn detached() -> Assisted {
+        let (tx, _) = mpsc::unbounded_channel();
+        let (relay_inbox, _) = mpsc::unbounded_channel();
+        Assisted { tx, relay_inbox }
+    }
+
+    /// Where a relay allocation delivers what peers send to it: pass this to `turn::allocate`.
+    pub fn relay_inbox(&self) -> mpsc::UnboundedSender<crate::turn::Packet> {
+        self.relay_inbox.clone()
+    }
+
+    pub async fn start(&self, offer: AssistedOffer) -> Result<AssistedAnswer> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(Command::Start(offer, reply))
+            .map_err(|_| anyhow!("the transport is stopped"))?;
+        rx.await.map_err(|_| anyhow!("the transport is stopped"))?
+    }
+
+    /// A candidate the client found after its offer.
+    pub fn candidate(&self, session: &str, addr: SocketAddr) {
+        let _ = self.tx.send(Command::Candidate(session.into(), addr));
+    }
+
+    /// Ends a session; unknown names are ignored.
+    #[allow(dead_code)] // cancel and active are used by the tests; a session that ends early will cancel (step 2.8)
+    pub fn cancel(&self, session: &str) {
+        let _ = self.tx.send(Command::Cancel(session.into()));
+    }
+
+    #[allow(dead_code)] // cancel and active are used by the tests; a session that ends early will cancel (step 2.8)
+    pub async fn active(&self) -> usize {
+        let (reply, rx) = oneshot::channel();
+        if self.tx.send(Command::Count(reply)).is_err() {
+            return 0;
+        }
+        rx.await.unwrap_or(0)
+    }
 }
 
 /// Loads the DTLS certificate from `dir`, creating it on first start. The fingerprint must stay the
@@ -172,7 +265,36 @@ pub async fn start_with_socket(
     limits: Limits,
     state: AppState,
 ) -> Result<RtcInfo> {
+    start_shared(Arc::new(socket), public_ip, cert, limits, state, None).await
+}
+
+/// `start_with_socket` on a socket something else also uses: with a `stun` inbox, STUN Binding responses received on
+/// it go to the STUN discovery (`stun.rs`) instead of the ICE agents.
+pub async fn start_shared(
+    socket: Arc<UdpSocket>,
+    public_ip: IpAddr,
+    cert: DtlsCert,
+    limits: Limits,
+    state: AppState,
+    stun: Option<crate::stun::Inbox>,
+) -> Result<RtcInfo> {
+    Ok(start_assisted(socket, public_ip, cert, limits, state, stun)
+        .await?
+        .0)
+}
+
+/// `start_shared` that also returns the handle for assisted sessions.
+pub async fn start_assisted(
+    socket: Arc<UdpSocket>,
+    public_ip: IpAddr,
+    cert: DtlsCert,
+    limits: Limits,
+    state: AppState,
+    stun: Option<crate::stun::Inbox>,
+) -> Result<(RtcInfo, Assisted)> {
     let port = socket.local_addr()?.port();
+    let (tx, cmds) = mpsc::unbounded_channel();
+    let (relay_inbox, relay_rx) = mpsc::unbounded_channel();
     let info = RtcInfo {
         ip: public_ip,
         port,
@@ -185,18 +307,24 @@ pub async fn start_with_socket(
         limits,
         state,
         wake: Arc::new(Notify::new()),
+        stun,
+        cmds,
+        relay_rx,
     };
     tokio::spawn(server.run());
-    Ok(info)
+    Ok((info, Assisted { tx, relay_inbox }))
 }
 
 struct Server {
-    socket: UdpSocket,
+    socket: Arc<UdpSocket>,
     public_addr: SocketAddr,
     cert: DtlsCert,
     limits: Limits,
     state: AppState,
     wake: Arc<Notify>,
+    stun: Option<crate::stun::Inbox>,
+    cmds: mpsc::UnboundedReceiver<Command>,
+    relay_rx: mpsc::UnboundedReceiver<crate::turn::Packet>,
 }
 
 struct Peer {
@@ -205,13 +333,24 @@ struct Peer {
     end: Option<LinkEnd>,
     cid: Option<ChannelId>,
     term_cid: Option<ChannelId>,
+    ctl_cid: Option<ChannelId>,
+    /// Control replies taken from the workspace that the channel had no room for yet.
+    control_queue: VecDeque<String>,
     /// Terminal bytes taken from the workspace that the channel had no room for yet.
     term_pending: Option<Vec<u8>>,
     created: Instant,
+    /// How long the data channel may stay unopened.
+    open_ttl: Duration,
+    /// A full ICE agent starts its own checks, so it needs the clock advanced; an ICE-lite one only answers.
+    full_ice: bool,
+    /// The TURN allocation of an assisted session, if it has one; its packets are sent through it.
+    relay: Option<crate::turn::Relay>,
     last_rx: Instant,
     queue: VecDeque<String>,
     /// Inbound messages the workspace had no room for yet.
     backlog: VecDeque<Inbound>,
+    /// Inbound control messages (the control channel) the workspace had no room for yet; handed over first.
+    control_backlog: VecDeque<Inbound>,
     backlog_bytes: usize,
     closing: bool,
     dirty: bool,
@@ -272,8 +411,12 @@ fn valid_client_ufrag(u: &str) -> bool {
 }
 
 impl Server {
-    async fn run(self) {
+    async fn run(mut self) {
         let mut peers: HashMap<SocketAddr, Peer> = HashMap::new();
+        // Assisted sessions by the server's ICE ufrag; `routes` learns which source address belongs to which.
+        let mut assisted: HashMap<String, Peer> = HashMap::new();
+        let mut routes: HashMap<SocketAddr, String> = HashMap::new();
+        let mut commands_open = true;
         let mut bucket = Bucket::new(self.limits.new_peers_per_sec);
         let mut buf = vec![0u8; 2000];
         loop {
@@ -290,39 +433,166 @@ impl Server {
                 next = next.min(p.timeout);
                 true
             });
+            assisted.retain(|name, p| {
+                if p.dirty || now >= p.timeout {
+                    p.dirty = false;
+                    if !p.step(&self.socket, now, &self.limits, &self.state, &self.wake) {
+                        debug!("assisted session {name} gone");
+                        return false;
+                    }
+                }
+                next = next.min(p.timeout);
+                true
+            });
+            routes.retain(|_, name| assisted.contains_key(name));
 
             tokio::select! {
                 r = self.socket.recv_from(&mut buf) => {
                     let Ok((n, src)) = r else { continue };
                     let now = Instant::now();
                     let data = &buf[..n];
+                    // A STUN server's answer to our own Binding request is not an ICE check.
+                    if self.stun.as_ref().is_some_and(|s| s.offer(data)) {
+                        continue;
+                    }
                     if !peers.contains_key(&src) {
+                        // A source an assisted session has already heard from, or whose first check names one.
+                        let session = routes.get(&src).cloned().or_else(|| {
+                            let local = stun_username(data)?.split_once(':')?.0;
+                            assisted.contains_key(local).then(|| local.to_string())
+                        });
+                        if let Some(name) = session {
+                            routes.insert(src, name.clone());
+                            if let Some(p) = assisted.get_mut(&name) {
+                                p.receive(now, src, self.public_addr, data);
+                            }
+                            continue;
+                        }
                         if let Some(p) = self.admit(&peers, &mut bucket, src, data, now) {
                             peers.insert(src, p);
                         }
                     }
                     if let Some(p) = peers.get_mut(&src) {
-                        p.last_rx = now;
-                        p.dirty = true;
-                        if let Ok(contents) = data.try_into() {
-                            let input = Input::Receive(now, Receive {
-                                proto: Protocol::Udp,
-                                source: src,
-                                destination: self.public_addr,
-                                contents,
-                            });
-                            if p.rtc.handle_input(input).is_err() {
-                                p.rtc.disconnect();
-                            }
-                        }
+                        p.receive(now, src, self.public_addr, data);
                     }
                 }
+                Some(pkt) = self.relay_rx.recv() => {
+                    let now = Instant::now();
+                    if let Some(p) = assisted.values_mut().find(|p| p.relay.as_ref().is_some_and(|r| r.addr() == pkt.relay)) {
+                        p.receive(now, pkt.peer, pkt.relay, &pkt.data);
+                    }
+                }
+                c = self.cmds.recv(), if commands_open => match c {
+                    Some(c) => self.command(c, &mut assisted),
+                    None => commands_open = false,
+                },
                 _ = self.wake.notified() => {
                     for p in peers.values_mut() { p.dirty = true; }
+                    for p in assisted.values_mut() { p.dirty = true; }
                 }
                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(next)) => {}
             }
         }
+    }
+
+    fn command(&self, c: Command, assisted: &mut HashMap<String, Peer>) {
+        match c {
+            Command::Start(offer, reply) => {
+                let _ = reply.send(self.start_assisted(offer, assisted));
+            }
+            Command::Candidate(name, addr) => {
+                if let Some(p) = assisted.get_mut(&name) {
+                    if let Ok(c) = Candidate::host(addr, "udp") {
+                        p.rtc.add_remote_candidate(c);
+                        p.dirty = true;
+                    }
+                }
+            }
+            Command::Cancel(name) => {
+                if let Some(mut p) = assisted.remove(&name) {
+                    p.rtc.disconnect();
+                }
+            }
+            Command::Count(reply) => {
+                let _ = reply.send(assisted.len());
+            }
+        }
+    }
+
+    /// A full ICE agent for one punched session. It sends its own checks to the client's candidates as soon as it is
+    /// polled; the half-open limits do not apply because only an authenticated signal reaches here.
+    fn start_assisted(
+        &self,
+        offer: AssistedOffer,
+        assisted: &mut HashMap<String, Peer>,
+    ) -> Result<AssistedAnswer> {
+        if !valid_client_ufrag(&offer.ufrag) || offer.pwd.len() < 22 || offer.pwd.len() > 256 {
+            return Err(anyhow!("the offer's ICE credentials are not valid"));
+        }
+        if assisted.len() >= self.limits.max_assisted {
+            return Err(anyhow!("too many assisted sessions"));
+        }
+        let word = |n: usize| -> String {
+            rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(n)
+                .map(char::from)
+                .collect()
+        };
+        let answer = AssistedAnswer {
+            ufrag: word(24),
+            pwd: word(32),
+        };
+        let now = Instant::now();
+        let mut rtc = Rtc::builder()
+            .set_fingerprint_verification(false)
+            .set_dtls_cert(self.cert.clone())
+            .set_local_ice_credentials(IceCreds {
+                ufrag: answer.ufrag.clone(),
+                pass: answer.pwd.clone(),
+            })
+            .build(now);
+        rtc.add_local_candidate(Candidate::host(self.public_addr, "udp")?);
+        for c in offer.local {
+            rtc.add_local_candidate(c);
+        }
+        if let Some(r) = &offer.relay {
+            rtc.add_local_candidate(Candidate::relayed(r.addr(), r.local(), "udp")?);
+        }
+        for addr in offer.candidates {
+            rtc.add_remote_candidate(Candidate::host(addr, "udp")?);
+        }
+        {
+            let mut d = rtc.direct_api();
+            d.set_remote_ice_credentials(IceCreds {
+                ufrag: offer.ufrag,
+                pass: offer.pwd,
+            });
+            d.set_ice_controlling(false);
+            d.set_remote_fingerprint(Fingerprint {
+                hash_func: "sha-256".into(),
+                bytes: vec![0; 32],
+            });
+            d.start_dtls(false)?;
+            d.start_sctp(false);
+            for (label, id) in [
+                ("t", CHANNEL_ID),
+                ("term", TERM_CHANNEL_ID),
+                ("ctl", CONTROL_CHANNEL_ID),
+            ] {
+                d.create_data_channel(ChannelConfig {
+                    label: label.into(),
+                    negotiated: Some(id),
+                    ..Default::default()
+                });
+            }
+        }
+        debug!("new assisted session {}", answer.ufrag);
+        let mut peer = Peer::new(rtc, now, self.limits.assisted_ttl);
+        peer.full_ice = true;
+        peer.relay = offer.relay;
+        assisted.insert(answer.ufrag.clone(), peer);
+        Ok(answer)
     }
 
     /// Creates a peer for a first STUN request, or refuses.
@@ -384,23 +654,14 @@ impl Server {
                 negotiated: Some(TERM_CHANNEL_ID),
                 ..Default::default()
             });
+            d.create_data_channel(ChannelConfig {
+                label: "ctl".into(),
+                negotiated: Some(CONTROL_CHANNEL_ID),
+                ..Default::default()
+            });
         }
         debug!("new peer {src}");
-        Some(Peer {
-            rtc,
-            end: None,
-            cid: None,
-            term_cid: None,
-            term_pending: None,
-            created: now,
-            last_rx: now,
-            queue: VecDeque::new(),
-            backlog: VecDeque::new(),
-            backlog_bytes: 0,
-            closing: false,
-            dirty: true,
-            timeout: now,
-        })
+        Some(Peer::new(rtc, now, self.limits.half_open_ttl))
     }
 }
 
@@ -412,6 +673,50 @@ fn inbound_len(m: &Inbound) -> usize {
 }
 
 impl Peer {
+    fn new(rtc: Rtc, now: Instant, open_ttl: Duration) -> Self {
+        Peer {
+            rtc,
+            end: None,
+            cid: None,
+            term_cid: None,
+            ctl_cid: None,
+            control_queue: VecDeque::new(),
+            term_pending: None,
+            created: now,
+            open_ttl,
+            full_ice: false,
+            relay: None,
+            last_rx: now,
+            queue: VecDeque::new(),
+            backlog: VecDeque::new(),
+            control_backlog: VecDeque::new(),
+            backlog_bytes: 0,
+            closing: false,
+            dirty: true,
+            timeout: now,
+        }
+    }
+
+    /// Hands a datagram to the ICE agent.
+    fn receive(&mut self, now: Instant, src: SocketAddr, destination: SocketAddr, data: &[u8]) {
+        self.last_rx = now;
+        self.dirty = true;
+        if let Ok(contents) = data.try_into() {
+            let input = Input::Receive(
+                now,
+                Receive {
+                    proto: Protocol::Udp,
+                    source: src,
+                    destination,
+                    contents,
+                },
+            );
+            if self.rtc.handle_input(input).is_err() {
+                self.rtc.disconnect();
+            }
+        }
+    }
+
     /// Moves data both ways and polls the connection. False when the peer is finished.
     fn step(
         &mut self,
@@ -424,7 +729,7 @@ impl Peer {
         if !self.rtc.is_alive() {
             return false;
         }
-        if self.end.is_none() && now.duration_since(self.created) > limits.half_open_ttl {
+        if self.end.is_none() && now.duration_since(self.created) > self.open_ttl {
             self.rtc.disconnect();
             return false;
         }
@@ -434,6 +739,36 @@ impl Peer {
         }
 
         self.hand_over();
+
+        // Control replies first, on their own channel; a client without that channel gets them on the first one,
+        // ahead of everything queued there.
+        if let Some(end) = self.end.as_mut() {
+            while self.control_queue.len() < 32 {
+                match end.control_from_workspace.try_recv() {
+                    Ok(text) => self.control_queue.push_back(text),
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        self.closing = true;
+                        break;
+                    }
+                }
+            }
+            let via = self.ctl_cid.or(self.cid);
+            if let Some(mut ch) = via.and_then(|c| self.rtc.channel(c)) {
+                while let Some(front) = self.control_queue.front() {
+                    match ch.write(false, front.as_bytes()) {
+                        Ok(true) => {
+                            self.control_queue.pop_front();
+                        }
+                        Ok(false) => break,
+                        Err(_) => {
+                            self.rtc.disconnect();
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
 
         // Workspace -> client, with backpressure: a full SCTP buffer leaves messages queued.
         if let (Some(cid), Some(end)) = (self.cid, self.end.as_mut()) {
@@ -506,12 +841,20 @@ impl Peer {
             }
         }
 
+        if self.full_ice && now >= self.timeout {
+            let _ = self.rtc.handle_input(Input::Timeout(now));
+        }
         let mut transmits = 0;
         loop {
             match self.rtc.poll_output() {
                 Ok(Output::Transmit(t)) => {
                     transmits += 1;
-                    let _ = socket.try_send_to(&t.contents, t.destination);
+                    match &self.relay {
+                        Some(r) if t.source == r.addr() => r.send(t.destination, &t.contents),
+                        _ => {
+                            let _ = socket.try_send_to(&t.contents, t.destination);
+                        }
+                    }
                 }
                 Ok(Output::Timeout(t)) => {
                     self.timeout = t;
@@ -531,13 +874,17 @@ impl Peer {
             }
         }
         let _ = transmits;
-        if !self.backlog.is_empty() {
+        if !self.backlog.is_empty() || !self.control_backlog.is_empty() {
             // Look again soon: the workspace is reading, and these are waiting for it.
             self.timeout = self.timeout.min(now + Duration::from_millis(5));
         }
 
         // The workspace finished (for example after an auth error): let the last messages out first.
-        if self.closing && self.queue.is_empty() && self.term_pending.is_none() {
+        if self.closing
+            && self.queue.is_empty()
+            && self.control_queue.is_empty()
+            && self.term_pending.is_none()
+        {
             let drained = match self.cid.and_then(|c| self.rtc.channel(c)) {
                 Some(mut ch) => ch.buffered_amount() == 0,
                 None => true,
@@ -555,6 +902,29 @@ impl Peer {
     /// Gives the workspace as many waiting client messages as it has room for.
     fn hand_over(&mut self) {
         let Some(end) = &self.end else { return };
+        while let Some(front) = self.control_backlog.pop_front() {
+            match end.to_workspace.try_send(front) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(text)) => {
+                    self.control_backlog.push_front(text);
+                    break;
+                }
+                Err(_) => {
+                    self.control_backlog.clear();
+                    break;
+                }
+            }
+        }
+        if !self.control_backlog.is_empty() {
+            // Nothing else goes ahead of a waiting control message.
+            self.backlog_bytes = self
+                .backlog
+                .iter()
+                .chain(&self.control_backlog)
+                .map(inbound_len)
+                .sum();
+            return;
+        }
         while let Some(front) = self.backlog.pop_front() {
             match end.to_workspace.try_send(front) {
                 Ok(()) => {}
@@ -570,7 +940,12 @@ impl Peer {
                 }
             }
         }
-        self.backlog_bytes = self.backlog.iter().map(inbound_len).sum();
+        self.backlog_bytes = self
+            .backlog
+            .iter()
+            .chain(&self.control_backlog)
+            .map(inbound_len)
+            .sum();
     }
 
     /// False means drop this peer.
@@ -579,6 +954,12 @@ impl Peer {
             Event::IceConnectionStateChange(IceConnectionState::Disconnected) => return false,
             Event::ChannelOpen(cid, label) if label == "term" => {
                 self.term_cid = Some(cid);
+                if let Some(mut ch) = self.rtc.channel(cid) {
+                    ch.set_buffered_amount_low_threshold(32 * 1024);
+                }
+            }
+            Event::ChannelOpen(cid, label) if label == "ctl" => {
+                self.ctl_cid = Some(cid);
                 if let Some(mut ch) = self.rtc.channel(cid) {
                     ch.set_buffered_amount_low_threshold(32 * 1024);
                 }
@@ -612,9 +993,15 @@ impl Peer {
                     Inbound::Json(text)
                 };
                 self.backlog_bytes += inbound_len(&msg);
-                self.backlog.push_back(msg);
+                if Some(d.id) == self.ctl_cid {
+                    self.control_backlog.push_back(msg);
+                } else {
+                    self.backlog.push_back(msg);
+                }
                 // More than this waiting means the client floods faster than the workspace reads.
-                if self.backlog_bytes > BACKLOG_BYTES || self.backlog.len() > BACKLOG_MESSAGES {
+                if self.backlog_bytes > BACKLOG_BYTES
+                    || self.backlog.len() + self.control_backlog.len() > BACKLOG_MESSAGES
+                {
                     return false;
                 }
                 self.hand_over();

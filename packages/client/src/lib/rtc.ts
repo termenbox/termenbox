@@ -10,6 +10,8 @@ export const SERVER_PWD = 'termenbox-direct-v1-0123456789';
 export const CHANNEL_ID = 0;
 /** The channel for terminal bytes; an older server never creates it, and nothing is sent on it unless `auth_ok` lists it. */
 export const TERM_CHANNEL_ID = 1;
+/** The channel for control messages (cancel, answers, window and workspace changes); used only when `auth_ok` says `control_channel`. */
+export const CONTROL_CHANNEL_ID = 2;
 /** How long an ICE 'disconnected' may last before the connection counts as dropped. */
 export const DISCONNECT_GRACE_MS = 3000;
 
@@ -48,7 +50,7 @@ export function buildAnswer(r: RtcTarget, mid: string): string {
   ].join('\r\n');
 }
 
-class RtcTransport implements Transport {
+export class RtcTransport implements Transport {
   readonly kind = 'rtc' as const;
   onmessage: ((text: string) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -57,8 +59,9 @@ class RtcTransport implements Transport {
   private closed = false;
   private dropTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private pc: RTCPeerConnection, private dc: RTCDataChannel, private term?: RTCDataChannel) {
+  constructor(private pc: RTCPeerConnection, private dc: RTCDataChannel, private term?: RTCDataChannel, private ctl?: RTCDataChannel) {
     dc.onmessage = (e) => typeof e.data === 'string' && this.onmessage?.(e.data);
+    if (ctl) ctl.onmessage = (e) => typeof e.data === 'string' && this.onmessage?.(e.data);
     if (term) {
       term.binaryType = 'arraybuffer';
       term.onmessage = (e) => e.data instanceof ArrayBuffer && this.onterm?.(new Uint8Array(e.data));
@@ -76,6 +79,12 @@ class RtcTransport implements Transport {
 
   send(text: string) {
     if (this.dc.readyState === 'open') this.dc.send(text);
+  }
+
+  sendControl(text: string): boolean {
+    if (this.ctl?.readyState !== 'open') return false;
+    this.ctl.send(text);
+    return true;
   }
 
   sendTerm(bytes: Uint8Array): boolean {
@@ -106,6 +115,7 @@ export async function openRtc(record: RtcTarget, timeoutMs: number, signal?: Abo
   const pc = new RTCPeerConnection({ iceServers: [] });
   const dc = pc.createDataChannel('t', { negotiated: true, id: CHANNEL_ID });
   const term = pc.createDataChannel('term', { negotiated: true, id: TERM_CHANNEL_ID });
+  const ctl = pc.createDataChannel('ctl', { negotiated: true, id: CONTROL_CHANNEL_ID });
   try {
     const offer = await pc.createOffer();
     const sdp = setIceCredentials(offer.sdp!, randomUfrag());
@@ -126,7 +136,7 @@ export async function openRtc(record: RtcTarget, timeoutMs: number, signal?: Abo
         }
       };
     });
-    return new RtcTransport(pc, dc, term);
+    return new RtcTransport(pc, dc, term, ctl);
   } catch (e) {
     pc.close();
     throw e;

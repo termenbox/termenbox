@@ -100,22 +100,16 @@ export function heroChoices(row: Row, a: WorkspaceAgent | undefined, now: number
   return a && row.prompt ? bannerChoices(a, now) : [];
 }
 
-const GROUPS: { state: FleetState; title: string }[] = [
-  { state: 'needs-you', title: 'Needs you' },
-  { state: 'failed', title: 'Failed' },
-  { state: 'working', title: 'Working' },
-  { state: 'finished', title: 'Finished' },
-  { state: 'idle', title: 'Idle' },
-];
-
-/** The Workspaces destination: every workspace, grouped by state, oldest wait first in the groups that wait. Empty groups are left out. */
-export function workspaceGroups(workspaces: HubWorkspace[], agents: AgentMap, unhealthy: ReadonlySet<string> = new Set()): { state: FleetState; title: string; rows: Row[] }[] {
-  const rows = workspaces.map((s) => rowOf(s, agents[s.key], unhealthy.has(s.serverId)));
-  return GROUPS.map((g) => ({
-    ...g,
-    rows: rows.map((r, i) => ({ r, i })).filter((x) => x.r.state === g.state)
-      .sort((a, b) => (a.r.since ?? 0) - (b.r.since ?? 0) || a.i - b.i).map((x) => x.r),
-  })).filter((g) => g.rows.length > 0);
+/**
+ * The Workspaces destination: every workspace, by server, in the user's own order (lib/order.ts). A state never moves a row;
+ * it shows on the row. Servers without workspaces are left out.
+ */
+export function workspaceGroups(workspaces: HubWorkspace[], agents: AgentMap, unhealthy: ReadonlySet<string> = new Set()): { serverId: string; title: string; rows: Row[] }[] {
+  const servers = [...new Set(workspaces.map((s) => s.serverId))];
+  return servers.map((id) => {
+    const mine = workspaces.filter((s) => s.serverId === id);
+    return { serverId: id, title: mine[0].serverName, rows: mine.map((s) => rowOf(s, agents[s.key], unhealthy.has(s.serverId))) };
+  });
 }
 
 /** The Continue card: the workspace last used, offered only when nothing needs a decision and its server is connected. */

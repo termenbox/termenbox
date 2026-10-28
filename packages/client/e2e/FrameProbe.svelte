@@ -30,11 +30,11 @@
       this.list = Array.from({ length: 10 }, (_, i) => { const name = opts.serverId === 'beta' ? (i === 7 ? 'needle' : `job-${i}`) : `svc-${i}`; return { id: name, name, agent: null }; });
     }
     snapshot() {
-      return { type: 'agent_snapshot', states: this.list.map((s) => ({ session: s.id, state: stateOf(this.opts.serverId!, s.id), seq: 1, ts: Date.now(), stale: false, agent: 'claude', last_response_at: Date.now() - 60000 })) } as ServerMessage;
+      return { type: 'agent_snapshot', states: this.list.map((s) => ({ workspace: s.id, state: stateOf(this.opts.serverId!, s.id), seq: 1, ts: Date.now(), stale: false, agent: 'claude', last_response_at: Date.now() - 60000 })) } as ServerMessage;
     }
     start() {
       this.opts.onState('connected'); this.opts.onReady({ type: 'auth_ok', user: 'test', server_name: this.opts.serverId! }, false);
-      this.emit({ type: 'sessions', sessions: this.list });
+      this.emit({ type: 'workspaces', workspaces: this.list });
       this.emit(this.snapshot());
     }
     close() { this.opts.onState('closed'); }
@@ -73,10 +73,10 @@
     keys: () => log,
     actions: () => actions,
     sent: () => messages,
-    paused: () => messages.filter((m) => m.message.type !== 'list_sessions'),
+    paused: () => messages.filter((m) => m.message.type !== 'list_workspaces'),
     keyboard: (v: boolean) => { keyboardOpen = v; },
     setState: (server: string, id: string, state: string) => { states[`${server}/${id}`] = state; const p = peers.get(server)!; p.emit(p.snapshot()); },
-    remove: (server: string, id: string) => { const p = peers.get(server)!; p.list = p.list.filter((s) => s.id !== id); p.emit({ type: 'sessions', sessions: p.list }); },
+    remove: (server: string, id: string) => { const p = peers.get(server)!; p.list = p.list.filter((s) => s.id !== id); p.emit({ type: 'workspaces', workspaces: p.list }); },
     opened: () => stripOpened,
     sheet: (h: SheetHeight) => { height = h; },
     clearKeys: () => { log.length = 0; },

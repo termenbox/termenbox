@@ -1,6 +1,6 @@
 {
-  "type": "session_view",
-  "session": "s",
+  "type": "workspace_view",
+  "workspace": "s",
   "tier": "t1",
   "agent": "claude",
   "tail": [
