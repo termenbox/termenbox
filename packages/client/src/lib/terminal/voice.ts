@@ -110,6 +110,7 @@ export async function askMicrophone(
     return null;
   } catch (e) {
     const code = micErrorCode(e);
+    if (!code) return null; // not a denial: let the recognizer ask for the microphone itself
     const base = errorMessage(code) ?? '';
     if (code !== 'not-allowed') return base;
     // Which refusal this is decides the fix, and the browser's words for it are all we have on a phone: the
@@ -129,8 +130,12 @@ function micScope(): MicScope {
   return { mediaDevices: nav?.mediaDevices, permissions: nav?.permissions, ios: isIOS() };
 }
 
-/** Maps a getUserMedia rejection to the wording `errorMessage` already has. */
-function micErrorCode(e: unknown): string {
+/**
+ * Maps a getUserMedia rejection to the wording `errorMessage` already has; null for any other failure. iOS throws
+ * InvalidStateError here although nothing was denied, so an unknown failure must not block dictation: the recognizer
+ * reports a real denial itself.
+ */
+function micErrorCode(e: unknown): string | null {
   switch ((e as { name?: string } | null)?.name) {
     case 'NotAllowedError':
     case 'SecurityError':
@@ -142,7 +147,7 @@ function micErrorCode(e: unknown): string {
     case 'TrackStartError':
       return 'not-readable';
     default:
-      return 'not-allowed';
+      return null;
   }
 }
 
