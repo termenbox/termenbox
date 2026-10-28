@@ -3,12 +3,13 @@
 //! removed on a clean exit; finding it at the next start means the last run ended without one (a panic on the main
 //! task, an OOM kill, a SIGKILL), which nothing else can report afterwards.
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -17,9 +18,16 @@ const MARKER: &str = "run.marker";
 const KEEP_CRASH_FILES: usize = 20;
 const MAX_CRASH_FILES_PER_RUN: usize = 10;
 const MAX_MESSAGE_CHARS: usize = 2000;
+/// A run this old has proved itself: the unclean exits before it stop counting.
+const STABLE_MS: u64 = 10 * 60 * 1000;
+/// Unclean exits whose live workspaces are remembered; a workspace live at all of them is not resumed (decision 0143).
+const SAFE_MODE_RUNS: usize = 2;
 
 static MARKER_PATH: OnceLock<PathBuf> = OnceLock::new();
 static WRITTEN: AtomicUsize = AtomicUsize::new(0);
+static SAFE_MODE: OnceLock<HashSet<String>> = OnceLock::new();
+/// Marker updates read and rewrite the file from several threads (the health beat, the workspace list).
+static MARKER_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 struct MarkerFile {
@@ -33,6 +41,22 @@ struct MarkerFile {
     /// Runs in a row that ended unclean, this one not counted.
     #[serde(default)]
     unclean_streak: u32,
+    /// Workspace ids live in this run, as of the last `set_live`.
+    #[serde(default)]
+    live: Vec<String>,
+    /// The live ids of the last unclean runs before this one, oldest first.
+    #[serde(default)]
+    prior_live: Vec<Vec<String>>,
+}
+
+impl MarkerFile {
+    /// Up for `STABLE_MS`, the run was not part of a crash loop: the unclean exits before it stop counting.
+    fn forget_if_stable(&mut self) {
+        if self.beat_ms.saturating_sub(self.started_ms) >= STABLE_MS {
+            self.unclean_streak = 0;
+            self.prior_live.clear();
+        }
+    }
 }
 
 /// How the run before this one ended.
@@ -52,6 +76,8 @@ pub struct Unclean {
     pub streak: u32,
     /// The newest crash file written since that run started, by name.
     pub crash_file: Option<String>,
+    /// The workspace ids live at each of the last unclean exits, this one last (at most `SAFE_MODE_RUNS`).
+    pub live_sets: Vec<Vec<String>>,
 }
 
 fn marker_path(config_dir: &Path) -> PathBuf {
@@ -102,6 +128,11 @@ pub fn start(config_dir: &Path) -> Previous {
             // A marker that cannot be read is still a run that did not finish.
             let old = serde_json::from_str::<MarkerFile>(&text).ok();
             let started_ms = old.as_ref().map_or(0, |m| m.started_ms);
+            let live_sets = old.as_ref().map_or_else(Vec::new, |m| {
+                let mut sets = m.prior_live.clone();
+                sets.push(m.live.clone());
+                sets.split_off(sets.len().saturating_sub(SAFE_MODE_RUNS))
+            });
             let crash_file = crash_files(&config_dir.join("logs"))
                 .into_iter()
                 .rfind(|(ms, _)| *ms >= started_ms)
@@ -112,6 +143,7 @@ pub fn start(config_dir: &Path) -> Previous {
                 rss_kb: old.as_ref().and_then(|m| m.rss_kb),
                 streak: old.as_ref().map_or(0, |m| m.unclean_streak) + 1,
                 crash_file,
+                live_sets,
             }))
         }
         Err(_) => None,
@@ -120,6 +152,10 @@ pub fn start(config_dir: &Path) -> Previous {
         Some(Previous::Unclean(u)) => u.streak,
         _ => 0,
     };
+    let live_sets = match &previous {
+        Some(Previous::Unclean(u)) => u.live_sets.clone(),
+        _ => Vec::new(),
+    };
     let now = crate::events::now_ms();
     let marker = MarkerFile {
         pid: std::process::id(),
@@ -127,29 +163,52 @@ pub fn start(config_dir: &Path) -> Previous {
         beat_ms: now,
         rss_kb: None,
         unclean_streak: streak,
+        live: Vec::new(),
+        prior_live: live_sets,
     };
+    let _guard = MARKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if let Err(e) = write_marker(&path, &marker, true) {
         tracing::warn!("cannot write the run marker {}: {e}", path.display());
     }
     let _ = MARKER_PATH.set(path);
-    previous.unwrap_or(Previous::Clean)
+    let previous = previous.unwrap_or(Previous::Clean);
+    let _ = SAFE_MODE.set(previous.safe_mode_ids());
+    previous
 }
 
-/// Records that the server is alive and how much memory it holds. The health sampler calls it every tick, on a
-/// blocking thread; it does not sync, since a lost beat only makes the report a few seconds old.
-pub fn update(rss_kb: Option<u64>) {
+/// Records which workspaces are live now, so that the next start knows who was running when this run died.
+pub fn set_live(ids: Vec<String>) {
+    rewrite_marker(false, |m| m.live = ids);
+}
+
+/// The workspace ids this start must not resume: live at each of the last two unclean exits.
+pub fn safe_mode_ids() -> HashSet<String> {
+    SAFE_MODE.get().cloned().unwrap_or_default()
+}
+
+fn rewrite_marker(sync: bool, f: impl FnOnce(&mut MarkerFile)) {
     let Some(path) = MARKER_PATH.get() else {
         return;
     };
+    let _guard = MARKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Ok(text) = fs::read_to_string(path) else {
         return;
     };
     let Ok(mut marker) = serde_json::from_str::<MarkerFile>(&text) else {
         return;
     };
-    marker.beat_ms = crate::events::now_ms();
-    marker.rss_kb = rss_kb.or(marker.rss_kb);
-    let _ = write_marker(path, &marker, false);
+    f(&mut marker);
+    let _ = write_marker(path, &marker, sync);
+}
+
+/// Records that the server is alive and how much memory it holds. The health sampler calls it every tick, on a
+/// blocking thread; it does not sync, since a lost beat only makes the report a few seconds old.
+pub fn update(rss_kb: Option<u64>) {
+    rewrite_marker(false, |marker| {
+        marker.beat_ms = crate::events::now_ms();
+        marker.rss_kb = rss_kb.or(marker.rss_kb);
+        marker.forget_if_stable();
+    });
 }
 
 /// Resident memory of this process in KiB, or nothing where `/proc` has no answer.
@@ -162,6 +221,22 @@ pub fn own_rss_kb() -> Option<u64> {
 }
 
 impl Previous {
+    /// Ids live at both of the last two unclean exits. One unclean exit resumes everything, as before.
+    pub fn safe_mode_ids(&self) -> HashSet<String> {
+        let Previous::Unclean(u) = self else {
+            return HashSet::new();
+        };
+        if u.live_sets.len() < SAFE_MODE_RUNS {
+            return HashSet::new();
+        }
+        let (first, rest) = u.live_sets.split_first().expect("two sets");
+        first
+            .iter()
+            .filter(|id| rest.iter().all(|set| set.contains(*id)))
+            .cloned()
+            .collect()
+    }
+
     /// What the owner's app is told: only the last time seen alive, the streak and whether a panic left a file.
     pub fn message(&self) -> Option<termenbox_core::protocol::ServerMessage> {
         let Previous::Unclean(u) = self else {
@@ -334,6 +409,7 @@ mod tests {
                 rss_kb: None,
                 streak: 3,
                 crash_file: crash_file.map(Into::into),
+                live_sets: Vec::new(),
             })
         };
         assert_eq!(Previous::Clean.message(), None);
@@ -378,6 +454,8 @@ mod tests {
             beat_ms: 6000,
             rss_kb: Some(9000),
             unclean_streak: 0,
+            live: Vec::new(),
+            prior_live: Vec::new(),
         };
         write_marker(&marker_path(&dir), &marker, true).unwrap();
         fs::write(logs.join("crash-4000.json"), "{}").unwrap();
@@ -390,6 +468,56 @@ mod tests {
             (u.started_ms, u.beat_ms, u.rss_kb),
             (5000, 6000, Some(9000))
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A run that died with these workspaces live: the marker `start` wrote, with `live` filled in as `set_live` would.
+    fn die_with(dir: &Path, live: &[&str]) {
+        let mut marker: MarkerFile =
+            serde_json::from_str(&fs::read_to_string(marker_path(dir)).unwrap()).unwrap();
+        marker.live = live.iter().map(|s| s.to_string()).collect();
+        write_marker(&marker_path(dir), &marker, true).unwrap();
+    }
+
+    fn ids(set: &[&str]) -> HashSet<String> {
+        set.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn safe_mode_names_the_workspaces_live_at_both_of_the_last_two_unclean_exits() {
+        let dir = temp_dir();
+        assert_eq!(start(&dir), Previous::Clean);
+        die_with(&dir, &["a", "b"]);
+        // One unclean exit: everything resumes.
+        let one = start(&dir);
+        assert_eq!(one.safe_mode_ids(), ids(&[]));
+        die_with(&dir, &["a", "c"]);
+        // Two: only what was live at both.
+        let two = start(&dir);
+        assert_eq!(two.safe_mode_ids(), ids(&["a"]));
+        die_with(&dir, &["c"]);
+        // The window moves on: the last two are [a, c] and [c].
+        assert_eq!(start(&dir).safe_mode_ids(), ids(&["c"]));
+        release(&dir);
+        // A clean exit forgets them.
+        assert_eq!(start(&dir).safe_mode_ids(), ids(&[]));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn safe_mode_forgets_the_exits_after_a_stable_run() {
+        let dir = temp_dir();
+        assert_eq!(start(&dir), Previous::Clean);
+        die_with(&dir, &["a"]);
+        start(&dir);
+        // The marker as `update` finds it after ten minutes up.
+        let mut marker: MarkerFile =
+            serde_json::from_str(&fs::read_to_string(marker_path(&dir)).unwrap()).unwrap();
+        marker.beat_ms = marker.started_ms + STABLE_MS;
+        marker.forget_if_stable();
+        marker.live = vec!["a".into()];
+        write_marker(&marker_path(&dir), &marker, true).unwrap();
+        assert_eq!(start(&dir).safe_mode_ids(), ids(&[]));
         fs::remove_dir_all(&dir).unwrap();
     }
 

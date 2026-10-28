@@ -1186,6 +1186,74 @@ async fn over_the_cap_the_rest_wait_and_survive_a_second_save_and_restore() {
     }
 }
 
+/// What a start finds after `exits` unclean exits, with these workspaces live at each.
+fn after_unclean_exits(live_at: &[&[&str]]) -> crate::crash::Previous {
+    crate::crash::Previous::Unclean(crate::crash::Unclean {
+        started_ms: 1,
+        beat_ms: 2,
+        rss_kb: None,
+        streak: live_at.len() as u32,
+        crash_file: None,
+        live_sets: live_at
+            .iter()
+            .map(|set| set.iter().map(|s| s.to_string()).collect())
+            .collect(),
+    })
+}
+
+#[tokio::test]
+async fn safe_mode_restores_a_workspace_live_at_two_unclean_exits_stopped_with_a_notice() {
+    let dir = tmp();
+    let a = rig_with("resume", 3, dir.clone(), true);
+    a.create("looping").await;
+    a.create("other").await;
+    let mut b = rig_with("resume", 3, dir.clone(), true);
+    let previous = after_unclean_exits(&[&["looping", "other"], &["looping"]]);
+    b.backend = b.backend.with_safe_mode(previous.safe_mode_ids());
+    b.backend.restore().await;
+    // Live at both exits: left stopped, with the reason, and kept for the next restore.
+    assert!(matches!(
+        b.backend.status("looping"),
+        Some(WorkspaceStatus::Failed(_))
+    ));
+    let v = view(&b, "looping").info.unwrap();
+    assert_eq!(v.status, "failed");
+    assert_eq!(
+        v.status_text.unwrap(),
+        "Not resumed: the server stopped unexpectedly twice while this was running. Open it to resume."
+    );
+    // Live at only one: resumed as today.
+    assert_eq!(b.backend.status("other"), Some(WorkspaceStatus::Running));
+    let file = saved_file(&dir);
+    assert_eq!(file.len(), 2, "{file:?}");
+    assert_eq!(file[0]["name"], "looping");
+    assert_eq!(file[0]["retry"], true);
+    // The next restore, after a clean exit, brings it back.
+    let c = rig_with("resume", 3, dir.clone(), true);
+    c.backend.restore().await;
+    assert_eq!(c.backend.status("looping"), Some(WorkspaceStatus::Running));
+    for n in ["looping", "other"] {
+        a.backend.kill(n).await.ok();
+        b.backend.kill(n).await.ok();
+        c.backend.kill(n).await.ok();
+    }
+}
+
+#[tokio::test]
+async fn safe_mode_leaves_everything_resuming_after_one_unclean_exit() {
+    let dir = tmp();
+    let a = rig_with("resume", 2, dir.clone(), true);
+    a.create("s1").await;
+    let mut b = rig_with("resume", 2, dir.clone(), true);
+    let previous = after_unclean_exits(&[&["s1"]]);
+    assert!(previous.safe_mode_ids().is_empty());
+    b.backend = b.backend.with_safe_mode(previous.safe_mode_ids());
+    b.backend.restore().await;
+    assert_eq!(b.backend.status("s1"), Some(WorkspaceStatus::Running));
+    a.backend.kill("s1").await.ok();
+    b.backend.kill("s1").await.unwrap();
+}
+
 #[tokio::test]
 async fn a_failed_start_is_retried_at_the_next_restore_and_reports_an_error() {
     let dir = tmp();

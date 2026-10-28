@@ -547,6 +547,7 @@ fn build_backend(
                     .with_events(env.hub.clone())
                     .with_state_file(args.config_dir.join("acp-workspaces.json"))
                     .with_legacy_state_file(args.config_dir.join("acp-sessions.json"))
+                    .with_safe_mode(crash::safe_mode_ids())
                     .with_event_prefix(prefix),
             );
             backend.spawn_restore();

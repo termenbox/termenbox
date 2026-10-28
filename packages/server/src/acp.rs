@@ -1206,6 +1206,15 @@ fn running_in(workspaces: &HashMap<String, Entry>) -> usize {
 /// Writes the workspaces to the state file: running ones with their ACP id and whether a turn is open, the others with
 /// why they are not running.
 fn write_state(path: &std::path::Path, workspaces: &Mutex<HashMap<String, Entry>>) {
+    // The run marker keeps who is live (or being brought back), for the next start to judge a crash loop by.
+    crate::crash::set_live(
+        workspaces
+            .lock_or_recover()
+            .iter()
+            .filter(|(_, e)| e.live.is_some() || e.restoring)
+            .map(|(name, _)| name.clone())
+            .collect(),
+    );
     let mut saved: Vec<Saved> = workspaces
         .lock_or_recover()
         .iter()
@@ -1331,6 +1340,8 @@ pub struct AcpBackend {
     starting: Mutex<usize>,
     /// Names closed while a restore was still starting them: the restore ends what it started instead of keeping it.
     closed_while_restoring: Mutex<HashSet<String>>,
+    /// Workspaces live at the last two unclean exits: a restore leaves them stopped (decision 0143).
+    safe_mode: HashSet<String>,
 }
 
 impl AcpBackend {
@@ -1344,6 +1355,7 @@ impl AcpBackend {
             workspaces: Arc::new(Mutex::new(HashMap::new())),
             starting: Mutex::new(0),
             closed_while_restoring: Mutex::new(HashSet::new()),
+            safe_mode: HashSet::new(),
         }
     }
 
@@ -1353,6 +1365,12 @@ impl AcpBackend {
     }
 
     /// Where workspace ids are kept (names, directories, ACP ids: no text) to come back after a restart.
+    /// The ids a restore must not resume (`crash::safe_mode_ids`).
+    pub fn with_safe_mode(mut self, ids: HashSet<String>) -> Self {
+        self.safe_mode = ids;
+        self
+    }
+
     pub fn with_state_file(mut self, path: PathBuf) -> Self {
         self.state_file = Some(path);
         self
@@ -1548,6 +1566,9 @@ impl AcpBackend {
                     // Stopped for a reason a retry will not change: kept as it was.
                     let why = s.reason.clone().unwrap_or_default();
                     workspaces.insert(s.name.clone(), Entry::stopped(&s, why, false));
+                } else if self.safe_mode.contains(&s.name) {
+                    let why = "Not resumed: the server stopped unexpectedly twice while this was running. Open it to resume.".to_string();
+                    workspaces.insert(s.name.clone(), Entry::stopped(&s, why, true));
                 } else if free == 0 {
                     let why = format!(
                         "Not restored: at most {} agent workspaces run at once",
