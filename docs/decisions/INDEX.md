@@ -145,3 +145,4 @@
 | 0143-a-fault-in-one-acp-session-never-stops-the-server | A fault in one ACP session never stops the server, and a crashing server restarts with backoff and a safe mode | product | active | Sergey Strebulaev | - |
 | 0144-diagnostics-bundles-are-user-triggered-and-incidents-are-tracked-in-github-and-postmortems | Diagnostics bundles are user-triggered, and incidents are tracked in GitHub issues and postmortems | process | active | Sergey Strebulaev | - |
 | 0145-logging-never-waits-for-the-disk | Logging never waits for the disk | process | draft | - | - |
+| 0146-a-workspace-id-is-minted-by-the-server-and-the-name-is-only-a-label | A workspace id is minted by the server, and the name the owner types is only a label | product | active | Sergey Strebulaev | - |

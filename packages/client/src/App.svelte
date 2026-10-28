@@ -301,7 +301,7 @@
   let menuKey: string | null = null;
   let actionConfirm = false;
   let showNew = false;
-  let pendingOpen: { serverId: string; name: string } | null = null;
+  let pendingOpen: { serverId: string; name: string; before: string[] } | null = null;
   let quality = '';
   let keyboardOpen = false;
   let sheetHeld = false;
@@ -684,13 +684,14 @@
   }
 
   function createWorkspace(req: { serverId: string; backend?: string; dir?: string; template?: string; name: string }) {
-    pendingOpen = { serverId: req.serverId, name: req.name };
+    // The server chooses the id; the new workspace is the listed one with this name that was not there before.
+    pendingOpen = { serverId: req.serverId, name: req.name, before: $allWorkspaces.filter(w => w.serverId === req.serverId).map(w => w.id) };
     hub.send(req.serverId, { type: 'new_workspace', name: req.name, backend: req.backend, dir: req.dir, template: req.template });
   }
   /** The workspace the user just created opens by itself once the server lists it. */
   function openPending(serverId: string, list: import('./lib/protocol').WorkspaceInfo[]) {
     if (!pendingOpen || pendingOpen.serverId !== serverId) return;
-    const made = list.find(s => s.name === pendingOpen!.name);
+    const made = list.find(s => s.name === pendingOpen!.name && !pendingOpen!.before.includes(s.id));
     if (!made) return;
     pendingOpen = null;
     void attach(workspaceKey(serverId, made.id));

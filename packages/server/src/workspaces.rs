@@ -615,6 +615,17 @@ impl WorkspaceManager {
                 let mode = self.mode.label();
                 let previous = self.previous_exit.clone();
                 let health = self.health.as_ref().map(|h| h.history());
+                // Names a user chose are in no field name or token shape: the bundle scrubs the live ones from free text.
+                let names: Vec<String> = self
+                    .backend
+                    .list()
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .flat_map(|w| [w.id, w.name.as_str().to_string()])
+                    // A minted id is random; only an id an older server took from the typed name is text.
+                    .filter(|n| !crate::backend::is_minted_id(n))
+                    .collect();
                 // Reads up to 2 MB of log and scrubs it: off the async threads.
                 let text = tokio::task::spawn_blocking(move || {
                     crate::bundle::build(&crate::bundle::Inputs {
@@ -623,6 +634,7 @@ impl WorkspaceManager {
                         mode: &mode,
                         previous_exit: previous.as_ref(),
                         health,
+                        names: &names,
                     })
                 })
                 .await?;
@@ -1978,7 +1990,7 @@ mod propagation_tests {
         async fn list(&self) -> Result<Vec<termenbox_core::protocol::WorkspaceInfo>> {
             Ok(vec![termenbox_core::protocol::WorkspaceInfo {
                 id: "s".into(),
-                name: self.0.lock().unwrap().clone(),
+                name: self.0.lock().unwrap().clone().into(),
                 agent: None,
                 backend: None,
             }])

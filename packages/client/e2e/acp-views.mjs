@@ -156,6 +156,8 @@ try {
   check(await viewOn('terminal'), 'the default view is not Terminal');
   await create('term-one');
   await page.locator('.xterm').first().waitFor({ timeout: 30000 });
+  const termId = (await page.locator('[data-shell=sidebar] [data-key*="/tmux:"]').filter({ hasText: 'term-one' }).getAttribute('data-key', { timeout: 30000 })).split('/').pop();
+  check(/^tmux:ws-[0-9a-f]{32}$/.test(termId), `the terminal workspace id is not a minted one: ${termId}`);
   ok('New session: with the adapter on PATH and no config, Claude offers Terminal (default) and Agent view; a Terminal workspace opens the agent\'s own terminal');
 
   await openDialog();
@@ -163,7 +165,12 @@ try {
   await dialog.locator('[data-testid=view-acp]').click();
   check(await viewOn('acp'), 'a tap on Agent view does not select it');
   await create('agent-one');
-  await page.locator('[data-testid=acp-view][data-workspace$="/acp:agent-one"]').waitFor({ timeout: 30000 });
+  // The server minted the id; the sidebar row for the label carries it in its key (`<server>/<id>`).
+  const agentRow = page.locator('[data-shell=sidebar] [data-key*="/acp:"]').filter({ hasText: 'agent-one' });
+  const agentId = (await agentRow.getAttribute('data-key', { timeout: 30000 })).split('/').pop();
+  check(/^acp:ws-[0-9a-f]{32}$/.test(agentId), `the workspace id is not a minted one: ${agentId}`);
+  const agentView = page.locator(`[data-testid=acp-view][data-workspace$="/${agentId}"]`);
+  await agentView.waitFor({ timeout: 30000 });
   check((await page.locator('[data-testid=tier]').innerText()) === 'T0 · ACP', 'the agent view does not say T0 · ACP');
   await openDialog();
   check(await viewOn('acp'), 'the last choice (Agent view) was not remembered for Claude on this server');
@@ -178,10 +185,11 @@ try {
   await page.getByTestId('stop').waitFor({ timeout: 20000 });
   await restartServer();
   await page.reload();
-  const row = page.locator('[data-shell=sidebar] [data-key$="acp:agent-one"]');
+  // After the restart the same id comes back: a row with the label and that exact id.
+  const row = page.locator(`[data-shell=sidebar] [data-key$="/${agentId}"]`).filter({ hasText: 'agent-one' });
   await row.waitFor({ timeout: 40000 });
   await row.click();
-  await page.locator('[data-testid=acp-view][data-workspace$="/acp:agent-one"]').waitFor({ timeout: 30000 });
+  await agentView.waitFor({ timeout: 30000 });
   const notice = (t) => page.locator('[data-kind=notice]').filter({ hasText: t });
   await notice('A server restart interrupted the running turn.').waitFor({ timeout: 40000 });
   await notice('Restored after a server restart').waitFor({ timeout: 10000 });
@@ -191,7 +199,7 @@ try {
   ok('restart during an open turn: the workspace comes back by session/resume (or load) and says the restart interrupted the running turn, once');
 
   // The terminal workspace is untouched: still listed, still attachable.
-  const termRow = page.locator('[data-shell=sidebar] [data-key$="tmux:term-one"]');
+  const termRow = page.locator(`[data-shell=sidebar] [data-key$="/${termId}"]`).filter({ hasText: 'term-one' });
   await termRow.waitFor({ timeout: 20000 });
   await termRow.click();
   await page.locator('.xterm').first().waitFor({ timeout: 30000 });

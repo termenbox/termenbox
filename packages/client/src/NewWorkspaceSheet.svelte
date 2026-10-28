@@ -49,7 +49,7 @@
   $: acp = !!server && backend === 'acp';
   function pick(v: View) { wanted = v; saveView(viewStore(), serverId, template, v); }
   $: dirs = recentDirs(windows, `${serverId}/`);
-  $: taken = workspaces.filter(s => s.serverId === serverId).map(s => s.id);
+  $: taken = workspaces.filter(s => s.serverId === serverId).flatMap(s => [s.id, s.name]); // ids are the server's; the name is what is typed
   $: if (!nameTouched) name = suggestName(dir, template, taken);
   // Only tmux can start in a directory or run an agent; the sheet says so for other managers instead of ignoring them.
   $: tmux = !server || server.backends.length === 0 || backend === 'tmux';
