@@ -280,6 +280,13 @@ describe('askMicrophone', () => {
     expect(await askMicrophone({ mediaDevices: devices(getUserMedia), permissions })).toContain('[SecurityError]');
   });
 
+  it('does not block dictation on a failure that is not a denial (iOS InvalidStateError)', async () => {
+    const getUserMedia = async () => {
+      throw Object.assign(new Error('invalid'), { name: 'InvalidStateError' });
+    };
+    expect(await askMicrophone({ mediaDevices: devices(getUserMedia) })).toBeNull();
+  });
+
   it('lets the recognizer ask when the browser has no MediaDevices', async () => {
     expect(await askMicrophone({})).toBeNull();
   });
