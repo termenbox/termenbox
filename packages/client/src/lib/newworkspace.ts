@@ -81,6 +81,14 @@ export function inlineAgents(supported: { id: string; label: string }[], recent:
   return ids.slice(0, count).map(id => ok.get(id)!);
 }
 
+/** The inline tiles with `selected` always among them: a pick from the full list replaces the last tile so it stays visible. */
+export function visibleAgents(supported: { id: string; label: string }[], recent: string[], selected: string, count = 3): { id: string; label: string }[] {
+  const tiles = inlineAgents(supported, recent, count);
+  if (!selected || tiles.some(t => t.id === selected)) return tiles;
+  const pick = supported.find(t => t.id === selected);
+  return pick ? [...tiles.slice(0, Math.max(0, count - 1)), pick] : tiles;
+}
+
 const RECENT_DIRS_KEY = 'termenbox_recent_dirs';
 const MAX_RECENT_DIRS = 10;
 // Where storage is missing or throws, the list lives here for the rest of the page's life.
