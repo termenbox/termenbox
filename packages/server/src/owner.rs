@@ -247,6 +247,18 @@ fn turn_gate(state: &mut State, workspace: &str, r: &Report, now: u64) -> Verdic
     }
 }
 
+/// The id clients see for the workspace a tool declared. A pane started while tmux was the only manager has the plain
+/// name in its environment; with several managers every id is `manager:name`, so a plain name is this manager's
+/// workspace under its old spelling. Delivered as it stands, its events land on an id no client lists: no wait is
+/// raised and no turn is closed. A name with a `:` already says which manager it belongs to.
+fn client_id(prefix: &str, declared: &str) -> String {
+    if prefix.is_empty() || declared.contains(':') {
+        declared.to_string()
+    } else {
+        format!("{prefix}{declared}")
+    }
+}
+
 /// The resolver the event socket asks. Without a runner (not attached yet, or no tmux) it trusts the environment.
 #[derive(Default)]
 pub struct Resolver {
@@ -264,10 +276,15 @@ impl Resolver {
         let Some((runner, prefix)) = self.source.get() else {
             return Verdict::Deliver(r.declared.clone());
         };
+        let declared = client_id(prefix, &r.declared);
         // Attribution only concerns this manager's workspaces.
-        if !prefix.is_empty() && !r.declared.starts_with(prefix.as_str()) {
-            return Verdict::Deliver(r.declared.clone());
+        if !prefix.is_empty() && !declared.starts_with(prefix.as_str()) {
+            return Verdict::Deliver(declared);
         }
+        let r = &Report {
+            declared,
+            ..r.clone()
+        };
         let first = self.world(runner, prefix, now, false, false).await;
         let mut v = decide(&mut self.state.lock().unwrap(), first.as_ref(), r, now);
         // A workspace the cache has not seen yet, or evidence that needs a closer look (TUIs, screens): read again, once.
@@ -499,6 +516,44 @@ mod tests {
             ancestors: ancestors.to_vec(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_plain_name_from_before_the_prefix_is_this_managers_workspace() {
+        assert_eq!(
+            client_id("tmux:", "termenbox-claude"),
+            "tmux:termenbox-claude"
+        );
+        assert_eq!(
+            client_id("tmux:", "tmux:termenbox-claude"),
+            "tmux:termenbox-claude"
+        );
+        assert_eq!(
+            client_id("tmux:", "acp:agent"),
+            "acp:agent",
+            "another manager's id is left alone"
+        );
+        assert_eq!(
+            client_id("", "termenbox-claude"),
+            "termenbox-claude",
+            "one manager: no prefix"
+        );
+    }
+
+    #[test]
+    fn a_stale_plain_name_is_placed_by_the_pane_it_runs_in() {
+        let w = world(vec![workspace("tmux:a", &[100], &[], "")]);
+        let mut st = State::default();
+        let r = report(
+            "claude",
+            &client_id("tmux:", "a"),
+            Some("c1"),
+            &[150, 100, 50],
+        );
+        assert_eq!(
+            decide(&mut st, Some(&w), &r, 1),
+            Verdict::Deliver("tmux:a".into())
+        );
     }
 
     #[test]
