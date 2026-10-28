@@ -138,6 +138,7 @@ async fn fixture_full(history_runs: usize, limits: rtc::Limits) -> Fixture {
             WorkspaceManager::new(
                 Arc::new(crate::backend::TmuxBackend::default().with_events(env)),
                 crate::backend::RunMode::Container,
+                Arc::new(crate::registry::Registry::memory()),
             )
             .with_events(hub.clone())
             .with_uninstall(
@@ -1405,7 +1406,10 @@ async fn a_client_that_announces_the_protocol_speaks_the_workspace_vocabulary(ki
         )
         .await;
         let ok = c.recv_type("auth_ok").await;
-        assert_eq!(ok["protocol"], termenbox_core::ext::PROTOCOL_VERSION);
+        assert_eq!(
+            ok["protocol"],
+            announced.min(termenbox_core::ext::PROTOCOL_VERSION)
+        );
         c.send(json!({"type":"close_workspace","workspace":"no-such-workspace"}))
             .await;
         c.recv_type("error").await;
