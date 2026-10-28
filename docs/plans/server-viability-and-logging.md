@@ -77,8 +77,9 @@ Context: `docs/guide/install.md` explains the host install and state in `~/.conf
 Do: Add a "Logs and diagnostics" section: file location, retention, `TERMENBOX_LOG`, the crash prompt, the bundle and what it excludes, and that nothing is sent automatically.
 Done-when: the grep finds the section.
 
-### 5.2 Review against guardrails — [ ]
+### 5.2 Review against guardrails — [x]
 Class: review · Needs: 2.3, 3.2, 4.2 · Check: `go-getter conform`
 Context: Guardrails `a-fault-in-one-session-never-stops-the-server`, `audit-logging-no-secrets`, `diagnostics-never-include-secrets`, `resource-constraints` (measure idle RSS with logging on, fact 0047), `usage-stays-on-device`.
 Do: Run conform over the branch; measure idle RSS before/after; fill the cause section of the 2026-10-28 incident doc if new evidence exists.
 Done-when: conform reports no breaks and the RSS delta is noted in the PR.
+Result: conform skill (the CLI's `conform` is not implemented) found one gap, session-like ids in the bundle, fixed. No new evidence for the incident's cause, so its doc is unchanged. Idle RSS, release builds, 3 runs each, 8 s after /health: merge-base 8.7 MiB, branch 9.7 MiB (+1.0 MiB, about 12%); binary 9.8 to 11.0 MB. Put both in the PR.
