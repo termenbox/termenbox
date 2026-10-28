@@ -1793,6 +1793,7 @@ pub async fn session_answer(
 /// A one-tap answer (plan v8, K.4). It acts only on the prompt the user saw: the workspace's current prompt, with
 /// the same id and event number, confirmed by the agent's own hook (`confidence=high`), and still on the pane.
 /// The keys are the ones the screen's own choice list defines, never text from the client.
+#[allow(dead_code)] // the tests answer without a tab; the handler uses answer_tab
 pub async fn answer(
     backend: &dyn WorkspaceBackend,
     hub: &EventHub,
