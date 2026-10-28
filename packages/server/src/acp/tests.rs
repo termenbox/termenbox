@@ -28,6 +28,12 @@ fn fake_prompt(
     log: &dyn Fn(&Value),
 ) -> Value {
     match text {
+        "panic" => {
+            put(json!({"jsonrpc": "2.0", "method": "test/panic"}));
+            // Stay alive and silent: the server must end this child itself.
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            json!({"stopReason": "end_turn"})
+        }
         "updates" => {
             update(
                 json!({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "hmm "}}),
@@ -1645,4 +1651,30 @@ async fn the_state_file_is_written_whole_and_leaves_no_temporary() {
     assert!(!dir.join("workspaces.json.tmp").exists());
     assert!(!dir.join("workspaces.json.json.tmp").exists());
     r.backend.kill("a").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_panic_in_one_workspaces_reader_fails_that_workspace_and_frees_its_slot() {
+    let r = rig_with("", 2, tmp(), false);
+    r.create("a").await;
+    r.create("b").await;
+    r.prompt("a", "panic").await;
+    until("the failure", || {
+        matches!(r.backend.status("a"), Some(WorkspaceStatus::Failed(_)))
+    })
+    .await;
+    let Some(WorkspaceStatus::Failed(why)) = r.backend.status("a") else {
+        panic!()
+    };
+    assert_eq!(why, INTERNAL_FAILURE);
+    // The slot is free again and the other workspace still works.
+    assert_eq!(r.backend.running(), 1);
+    r.prompt("b", "updates").await;
+    until("the other workspace streams", || !r.events("b").is_empty()).await;
+    assert!(matches!(
+        r.backend.status("b"),
+        Some(WorkspaceStatus::Running)
+    ));
+    r.backend.kill("a").await.unwrap();
+    r.backend.kill("b").await.unwrap();
 }

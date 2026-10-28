@@ -55,6 +55,32 @@ impl<T> LockExt<T> for Mutex<T> {
     }
 }
 
+/// What the owner is told when a workspace's own task panicked. No panic text: that is in the server's log.
+const INTERNAL_FAILURE: &str =
+    "An internal error stopped this workspace. Your other workspaces are not affected.";
+/// After the agent closes its output it gets this long to exit by itself, so its exit status is the one reported;
+/// then it is killed (a child that is still running with its output closed can never answer again).
+const EXIT_GRACE: Duration = Duration::from_secs(2);
+
+/// Watches one task of a workspace. A panic in it is that workspace's failure and nobody else's (decision 0143): the
+/// task's panic is logged by the hook, and `on_panic` puts the workspace in a state its owner can see and leave.
+fn watch_task(
+    live: Arc<Live>,
+    what: &'static str,
+    task: tokio::task::JoinHandle<()>,
+    on_panic: fn(&Live),
+) {
+    tokio::spawn(async move {
+        if let Err(e) = task.await {
+            if e.is_panic() {
+                tracing::error!(target: "acp", "the {what} task of a workspace panicked");
+                // The handler must not unwind into the runtime either.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_panic(&live)));
+            }
+        }
+    });
+}
+
 /// One line from the agent is never longer than this; a longer one is dropped whole.
 const MAX_LINE: usize = 1 << 20;
 /// Streamed text waiting to become one message or thought event.
@@ -687,6 +713,11 @@ impl Live {
     }
 
     fn on_message(&self, v: Value) {
+        // Tests: a frame that panics the reader task, as a bug in the mapping of a hostile frame would.
+        #[cfg(test)]
+        if v.get("method").and_then(Value::as_str) == Some("test/panic") {
+            panic!("test panic in the reader task");
+        }
         let method = s(&v, "method").to_string();
         let id = v.get("id").cloned();
         match (method.as_str(), id) {
@@ -893,18 +924,27 @@ fn spawn_agent(
         out,
         kill: Mutex::new(Some(kill_tx)),
     });
-    tokio::spawn(async move {
+    let l = live.clone();
+    let writer = tokio::spawn(async move {
         while let Some(line) = out_rx.recv().await {
             if stdin.write_all(line.as_bytes()).await.is_err()
                 || stdin.write_all(b"\n").await.is_err()
                 || stdin.flush().await.is_err()
             {
+                // An agent nobody can write to is over: fail the workspace and let the reader task kill the child.
+                l.finish(WorkspaceStatus::Failed("the agent stopped reading".into()));
+                if let Some(kill) = l.kill.lock_or_recover().take() {
+                    let _ = kill.send(());
+                }
                 break;
             }
         }
     });
+    watch_task(live.clone(), "writer", writer, |l| {
+        l.finish(WorkspaceStatus::Failed(INTERNAL_FAILURE.into()))
+    });
     let l = live.clone();
-    tokio::spawn(async move {
+    let reader_task = tokio::spawn(async move {
         let mut reader = BufReader::new(stdout);
         loop {
             tokio::select! {
@@ -925,11 +965,22 @@ fn spawn_agent(
                 }
             }
         }
-        let status = match child.wait().await {
+        let exited = match tokio::time::timeout(EXIT_GRACE, child.wait()).await {
+            Ok(r) => r,
+            Err(_) => {
+                let _ = child.kill().await;
+                child.wait().await
+            }
+        };
+        let status = match exited {
             Ok(st) => WorkspaceStatus::Failed(st.to_string()),
             Err(e) => WorkspaceStatus::Failed(e.to_string()),
         };
         l.finish(status);
+    });
+    // The child lives in the reader task: when that task panics the child is dropped, and `kill_on_drop` ends it.
+    watch_task(live.clone(), "reader", reader_task, |l| {
+        l.finish(WorkspaceStatus::Failed(INTERNAL_FAILURE.into()))
     });
     Ok(live)
 }
@@ -1680,7 +1731,8 @@ impl WorkspaceBackend for AcpBackend {
             hub.record_project(&live.event_name, &live.dir);
         }
         let text = text.to_string();
-        tokio::spawn(async move {
+        let watcher = live.clone();
+        let task = tokio::spawn(async move {
             let r = live
                 .request(
                     "session/prompt",
@@ -1737,6 +1789,17 @@ impl WorkspaceBackend for AcpBackend {
                 Ok(_) => AgentState::Idle,
                 Err(_) => AgentState::Error,
             });
+        });
+        // A panic in the turn must not leave the workspace "still answering" for good.
+        watch_task(watcher, "prompt", task, |l| {
+            l.inner.lock_or_recover().turn = false;
+            l.stream(|st| {
+                st.notice(
+                    "error",
+                    "The reply stopped because of an internal error. Send the message again.",
+                )
+            });
+            l.turn_close(AgentState::Error);
         });
         Ok(())
     }
