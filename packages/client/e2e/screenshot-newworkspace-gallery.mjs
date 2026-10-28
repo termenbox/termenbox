@@ -44,13 +44,34 @@ const mobileDialog = mobilePage.locator('dialog[aria-label="New workspace"]');
 await mobileDialog.screenshot({ path: join(SHOTS, 'newworkspace-mobile-dialog.png') });
 console.log('Saved mobile dialog screenshot');
 
-// Test "Show all" button on mobile
-const showAllBtnMobile = mobilePage.locator('button:has-text("Show all")');
-if (await showAllBtnMobile.isVisible()) {
-  await showAllBtnMobile.click();
+// Test "Show all agents" button on mobile - opens PickerSheet
+const showAllAgentsBtnMobile = mobilePage.locator('button:has-text("Show all")').first();
+if (await showAllAgentsBtnMobile.isVisible()) {
+  await showAllAgentsBtnMobile.click();
+  await mobilePage.waitForTimeout(500);
+  // PickerSheet uses Dialog from bits-ui - look for the dialog
+  const agentPickerSheet = mobilePage.locator('[role="dialog"]:has-text("Choose agent")');
+  if (await agentPickerSheet.isVisible()) {
+    await agentPickerSheet.screenshot({ path: join(SHOTS, 'newworkspace-mobile-agent-picker.png') });
+    console.log('Saved mobile agent picker sheet screenshot');
+  }
+  // Close the picker
+  await mobilePage.keyboard.press('Escape');
   await mobilePage.waitForTimeout(300);
-  await mobileDialog.screenshot({ path: join(SHOTS, 'newworkspace-mobile-dialog-expanded.png') });
-  console.log('Saved mobile expanded dialog screenshot');
+}
+
+// Test "+N more" directory chips button on mobile
+const showMoreDirsBtnMobile = mobilePage.locator('button.chip.show-more:has-text("more")');
+if (await showMoreDirsBtnMobile.isVisible()) {
+  await showMoreDirsBtnMobile.click();
+  await mobilePage.waitForTimeout(500);
+  const dirPickerSheet = mobilePage.locator('[role="dialog"]:has-text("Recent directories")');
+  if (await dirPickerSheet.isVisible()) {
+    await dirPickerSheet.screenshot({ path: join(SHOTS, 'newworkspace-mobile-dir-picker.png') });
+    console.log('Saved mobile directory picker sheet screenshot');
+  }
+  await mobilePage.keyboard.press('Escape');
+  await mobilePage.waitForTimeout(300);
 }
 
 await mobileContext.close();
@@ -81,6 +102,34 @@ if (await browseBtn.isVisible()) {
   console.log('Browse button is visible on desktop');
   await desktopDialog.screenshot({ path: join(SHOTS, 'newworkspace-desktop-dialog-browse.png') });
   console.log('Saved desktop dialog with browse button screenshot');
+}
+
+// Test "Show all agents" button on desktop - opens PickerSheet (centered modal)
+const showAllAgentsBtnDesktop = desktopPage.locator('button:has-text("Show all")').first();
+if (await showAllAgentsBtnDesktop.isVisible()) {
+  await showAllAgentsBtnDesktop.click();
+  await desktopPage.waitForTimeout(500);
+  const agentPickerSheet = desktopPage.locator('[role="dialog"]:has-text("Choose agent")');
+  if (await agentPickerSheet.isVisible()) {
+    await agentPickerSheet.screenshot({ path: join(SHOTS, 'newworkspace-desktop-agent-picker.png') });
+    console.log('Saved desktop agent picker sheet screenshot');
+  }
+  await desktopPage.keyboard.press('Escape');
+  await desktopPage.waitForTimeout(300);
+}
+
+// Test "+N more" directory chips button on desktop
+const showMoreDirsBtnDesktop = desktopPage.locator('button.chip.show-more:has-text("more")');
+if (await showMoreDirsBtnDesktop.isVisible()) {
+  await showMoreDirsBtnDesktop.click();
+  await desktopPage.waitForTimeout(500);
+  const dirPickerSheet = desktopPage.locator('[role="dialog"]:has-text("Recent directories")');
+  if (await dirPickerSheet.isVisible()) {
+    await dirPickerSheet.screenshot({ path: join(SHOTS, 'newworkspace-desktop-dir-picker.png') });
+    console.log('Saved desktop directory picker sheet screenshot');
+  }
+  await desktopPage.keyboard.press('Escape');
+  await desktopPage.waitForTimeout(300);
 }
 
 await desktopContext.close();
