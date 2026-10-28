@@ -142,7 +142,12 @@ try {
     await dialog.locator('[data-testid=view]').waitFor({ timeout: 20000 });
   };
   const create = async (name) => {
-    await dialog.getByLabel('Directory').fill(work);
+    // The folder is chosen in the picker; the path bar takes the absolute path, then Select uses the listing.
+    await dialog.locator('[data-testid=folder-change]').click();
+    await dialog.locator('[data-testid=picker-path]').fill(work);
+    await dialog.locator('[data-testid=picker-go]').click();
+    await dialog.locator('[data-testid=picker-select]:not([disabled])').click();
+    await dialog.locator('[data-testid=picker-path]').waitFor({ state: 'detached' });
     await dialog.getByLabel('Name').fill(name);
     await dialog.getByRole('button', { name: 'Create' }).click();
     await dialog.waitFor({ state: 'detached' });
