@@ -202,6 +202,8 @@ pub enum ClientMessage {
     /// Owner-only: install the newer release now (decision 0077): the server leaves an `update-now` request for the
     /// root helper and answers `update_requested`. The service restarts when the update is installed.
     UpdateServer {},
+    /// Owner-only (decision 0144): asks for the server's diagnostics bundle, answered with `diagnostics_bundle`.
+    DiagnosticsBundle {},
     /// Owner-only, recently signed in: remove this server (decision 0072). `confirm_name` must equal the
     /// server's name; the flags choose the optional host cleanup (all off by default).
     Uninstall {
@@ -463,6 +465,14 @@ pub enum ServerMessage {
         #[serde(default)]
         available: String,
     },
+    /// The answer to `diagnostics_bundle` (decision 0144): scrubbed text for the owner to read, download or attach to an
+    /// issue, in `parts` messages (`part` counts from 0, in order) because the direct transport carries 64 KiB at most.
+    /// Built on request only; the server never sends it anywhere else.
+    DiagnosticsBundle {
+        part: u32,
+        parts: u32,
+        text: String,
+    },
     /// The release the updater has recorded changed while this connection was open (`update-status.json`);
     /// `available` is empty when the server is up to date. Same meaning as `auth_ok.update_available`.
     UpdateStatus {
@@ -696,6 +706,15 @@ pub enum ServerMessage {
         confirm: u32,
         levels: Vec<HealthLevel>,
         samples: Vec<HealthPoint>,
+    },
+    /// Decision 0142: the last run of this server ended without a clean exit (a crash, an out-of-memory kill, a power
+    /// loss). Sent after sign-in while the server has one to report. `at_ms` is the last time the old run was seen alive,
+    /// `streak` how many runs in a row ended this way, `crashed` whether a panic wrote a crash file. Nothing else: no
+    /// path, host name or text. A client shows it once per `at_ms`. An older server never sends it.
+    PreviousExit {
+        at_ms: u64,
+        streak: u32,
+        crashed: bool,
     },
     /// A message from a newer server; ignored.
     #[serde(other)]
@@ -1156,6 +1175,8 @@ mod tests {
         assert!(v.get("update_available").is_none());
         let v: ClientMessage = serde_json::from_str(r#"{"type":"update_server"}"#).unwrap();
         assert_eq!(v, ClientMessage::UpdateServer {});
+        let v: ClientMessage = serde_json::from_str(r#"{"type":"diagnostics_bundle"}"#).unwrap();
+        assert_eq!(v, ClientMessage::DiagnosticsBundle {});
         let v = serde_json::to_value(ClientMessage::History { from: 1, to: 2 }).unwrap();
         assert_eq!(v["type"], "history");
         assert_eq!(v["from"], 1);
@@ -1177,6 +1198,21 @@ mod tests {
         assert_eq!(v["type"], "server_health");
         assert_eq!(v["ram_percent"], 93);
         assert!(v.get("cpu_percent").is_none(), "unknown is absent, not 0");
+        let v = serde_json::to_value(ServerMessage::PreviousExit {
+            at_ms: 9,
+            streak: 2,
+            crashed: true,
+        })
+        .unwrap();
+        assert_eq!(v["type"], "previous_exit");
+        assert_eq!(
+            (
+                v["at_ms"].as_u64(),
+                v["streak"].as_u64(),
+                v["crashed"].as_bool()
+            ),
+            (Some(9), Some(2), Some(true))
+        );
         let v = serde_json::to_value(ClientMessage::HistoryDelete).unwrap();
         assert_eq!(v["type"], "history_delete");
         let v = serde_json::to_value(ServerMessage::HistoryDeleted { removed: 3 }).unwrap();

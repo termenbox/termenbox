@@ -180,6 +180,8 @@ impl ServerClient {
             | ServerMessage::HistoryDeleted { .. }
             | ServerMessage::ServerHealth { .. }
             | ServerMessage::HealthHistory { .. }
+            | ServerMessage::PreviousExit { .. }
+            | ServerMessage::DiagnosticsBundle { .. }
             | ServerMessage::ClaimPreview { .. }
             | ServerMessage::Unknown => {}
             ServerMessage::Error { message } => {

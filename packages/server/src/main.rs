@@ -21,12 +21,14 @@ mod agent_hooks;
 mod agentwatch;
 mod auth;
 mod backend;
+mod bundle;
 mod candidates;
 mod cert;
 mod claude_hooks;
 mod cloudflare;
 mod connection;
 mod control;
+mod crash;
 mod directory;
 #[cfg(test)]
 mod e2e;
@@ -40,6 +42,7 @@ mod layout;
 mod legacy;
 mod link;
 mod locale;
+mod logging;
 mod netutil;
 mod opencode_hooks;
 mod owner;
@@ -545,10 +548,11 @@ fn build_backend(
                     .with_events(env.hub.clone())
                     .with_state_file(args.config_dir.join("acp-workspaces.json"))
                     .with_legacy_state_file(args.config_dir.join("acp-sessions.json"))
+                    .with_safe_mode(crash::safe_mode_ids())
                     .with_event_prefix(prefix),
             );
-            let restoring = backend.clone();
-            tokio::spawn(async move { restoring.restore().await });
+            backend.spawn_restore();
+            backend.spawn_heartbeat();
             Ok(backend)
         }
         "command" => {
@@ -625,12 +629,7 @@ async fn main() -> anyhow::Result<()> {
         return run_tmux_passthrough();
     }
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    logging::init();
 
     let args = Args::parse();
     if let Some(adapter) = &args.hook {
@@ -765,6 +764,15 @@ async fn main() -> anyhow::Result<()> {
     if let Some(secret) = &args.claim_secret {
         auth.provide_claim(secret)?;
     }
+
+    // Only the server run path keeps a log file; a hook or a one-shot command does not.
+    logging::enable_file(&args.config_dir);
+    // After the log file exists, so the first line of a bad run is already in it: the hook writes the crash file and the
+    // marker says whether the last run ended without a clean exit (decision 0142).
+    crash::install_panic_hook(&args.config_dir);
+    let previous_run = crash::start(&args.config_dir);
+    previous_run.log();
+    let _clean_exit = crash::CleanExit;
 
     match auth.owner() {
         Some(owner) => info!("Server owner: @{}", owner.login),
@@ -921,6 +929,7 @@ async fn main() -> anyhow::Result<()> {
             .with_push(push.clone())
             .with_events(hub.clone())
             .with_health(health)
+            .with_previous_exit(previous_run.message())
             .with_agent_hooks(agent_hooks::Targets {
                 claude: claude_hooks::Target {
                     auto: args.claude_settings.is_none(),
@@ -949,6 +958,7 @@ async fn main() -> anyhow::Result<()> {
                     // Let the reply reach the client, then stop; Docker then finds the idle marker.
                     std::thread::spawn(|| {
                         std::thread::sleep(std::time::Duration::from_secs(1));
+                        crash::mark_clean();
                         std::process::exit(0);
                     });
                 }),
@@ -1277,7 +1287,7 @@ fn print_pairing(args: &Args, auth: &AuthState) -> anyhow::Result<()> {
 /// No credentials cross origins here: the WebSocket authenticates in its first message.
 fn router(state: AppState, dev_info: bool) -> Router {
     let mut app = Router::new()
-        .route("/health", get(|| async { "OK" }))
+        .route("/health", get(|| health::HEARTBEATS.respond()))
         .route("/ws", get(ws_handler));
     if dev_info {
         app = app.route("/rtc-info", get(rtc_info));
