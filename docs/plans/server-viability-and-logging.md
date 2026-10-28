@@ -4,7 +4,7 @@ Goal: after the 2026-10-28 incident (server died in ACP mode, no logs; `docs/inc
 
 Legend: `[ ]` pending, `[~]` in progress, `[x]` done, `[!]` blocked, `[>]` moved.
 
-### 1.1 JSONL log file with rotation and redaction — [ ]
+### 1.1 JSONL log file with rotation and redaction — [x]
 Class: implement · Needs: none · Check: `scripts/dev.sh cargo test -p termenbox-server logging`
 Context: `packages/server/src/main.rs` (fn main, ~line 606) initialises `tracing_subscriber::fmt()` to stderr only (fact 0061). Decision 0142 wants JSON Lines in `<config-dir>/logs/termenbox.jsonl` (config dir is `--config-dir` / `TERMENBOX_CONFIG_DIR`, `args.config_dir`) as well as stderr, capped at 100 MB total and 30 days, level `info`, overridden by `TERMENBOX_LOG` (an EnvFilter string, falling back to `RUST_LOG`). Guardrail `audit-logging-no-secrets` forbids secrets and ACP/terminal text in logs and requires a redaction layer. Server has `tracing-subscriber` with `env-filter`, `fmt`; the workspace `Cargo.toml` pins it. Release builds are size-tuned (fact 0047): add only small crates.
 Do: Add `packages/server/src/logging.rs` (declare it in `main.rs`) that builds a layered subscriber: stderr fmt layer as today plus a JSON file layer (enable the `json` feature, optionally `tracing-appender` non-blocking writer), a size-and-age pruner run at start and daily, and a layer or field filter that drops fields named `secret`, `token`, `key`, `signature`, `nonce`. Initialise it in `main` where the `fmt()` call is, only for the server run path (not `--hook`, `tmux`, or setup subcommands). Failure to open the directory is a stderr warning, not an exit. Add tests in `logging.rs`.
@@ -22,7 +22,7 @@ Context: Decision 0142 says the server logs `previous run ended uncleanly` with 
 Do: At start, if `RunMarker` says `Unclean`, log the warning with those fields and store a `PreviousExit` in app state; expose it through the existing authenticated server-info/status message in `packages/core/src/protocol.rs` (add an optional field, bump nothing else) and update `packages/client` types.
 Done-when: a test starts state with an unclean marker and the status payload carries `previous_exit.unclean == true`, and with a clean marker the field is absent; `cargo test -p termenbox-core` still passes.
 
-### 2.1 Audit panic paths in ACP session code — [ ]‖
+### 2.1 Audit panic paths in ACP session code — [x]‖
 Class: explore · Needs: none · Check: `test -s docs/plans/server-viability-and-logging-audit.md`
 Context: `packages/server/src/acp.rs`, `acp_stream.rs`, `backend.rs`, `event_log.rs`. Decision 0143 requires that one session's panic cannot stop others or poison shared state. Only 3 `tokio::spawn` calls are in `acp.rs`; the audit must also cover `std::thread`, `spawn_blocking`, `std::sync::Mutex`/`RwLock` shared across sessions, `unwrap`/`expect`/indexing on agent-provided data, and unbounded channels.
 Do: List every shared lock and every spawned task in the ACP path with file:line, who can panic while holding it, and a recommended fix (parking_lot, catch_unwind at the task root, bounded channel). Write the result to `docs/plans/server-viability-and-logging-audit.md`. Change no code.
