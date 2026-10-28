@@ -15,8 +15,9 @@ use termenbox_core::protocol::ServerMessage;
 
 /// How much of the log the bundle carries.
 const LOG_TAIL_BYTES: u64 = 2 * 1024 * 1024;
-/// A part stays far below the 64 KiB the direct transport carries, even if every character is escaped.
-const PART_BYTES: usize = 16 * 1024;
+/// A part stays below the 64 KiB the direct transport carries even if every byte were escaped to six (`\u001b`);
+/// `scrub` also replaces control characters, so that cannot happen.
+const PART_BYTES: usize = 8 * 1024;
 
 /// Field names whose value is left out whole: session text, and names a user gave to things.
 const OMITTED: &[&str] = &[
@@ -35,6 +36,8 @@ const OMITTED: &[&str] = &[
     "workspace_id",
     "window",
     "device",
+    "device_id",
+    "socket",
     "name",
     "title",
     "cwd",
@@ -61,6 +64,7 @@ const SECRETS: &[&str] = &[
     "session_key",
     "cert",
     "fingerprint",
+    "key",
 ];
 /// Field names that hold an address.
 const ADDRESSES: &[&str] = &[
@@ -163,15 +167,21 @@ fn newest_crash(logs: &Path) -> Option<String> {
             Some((ms, e.path()))
         })
         .max()?;
-    tail_of(&newest.1, 256 * 1024).map(|(text, _)| text)
+    let (text, _) = tail_of(&newest.1, 256 * 1024)?;
+    // The file is pretty-printed; one line per object lets the field-name cleaning apply to it.
+    Some(match serde_json::from_str::<Value>(&text) {
+        Ok(value) => value.to_string(),
+        Err(_) => text,
+    })
 }
 
 /// The last `LOG_TAIL_BYTES` of the log, filled from the newest rotated file when the current one is short.
 fn log_tail(logs: &Path) -> String {
     let current = logs.join("termenbox.jsonl");
-    let (mut text, _) = tail_of(&current, LOG_TAIL_BYTES).unwrap_or_default();
+    let (mut text, cut) = tail_of(&current, LOG_TAIL_BYTES).unwrap_or_default();
     let short = LOG_TAIL_BYTES.saturating_sub(text.len() as u64);
-    if short > 0 {
+    // A current file that was cut already holds the newest 2 MB; joining an older file to it would hide a gap.
+    if !cut && short > 0 {
         let rotated = fs::read_dir(logs)
             .into_iter()
             .flatten()
@@ -278,12 +288,15 @@ fn is_delimiter(c: char) -> bool {
 
 /// Replaces certificates, tokens, secrets, addresses, ports and home paths in free text.
 pub fn scrub(text: &str) -> String {
+    let text: String = text
+        .chars()
+        .map(|c| if c.is_control() && c != '\t' { '?' } else { c })
+        .collect();
     let mut out = String::with_capacity(text.len());
     let mut token = String::new();
     // The token before a delimiter named a secret or was `Bearer`: the next one is its value.
     let mut redact_next = false;
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
+    for c in text.chars() {
         if !is_delimiter(c) {
             token.push(c);
             continue;
@@ -341,14 +354,12 @@ fn classify_core(t: &str) -> String {
         return "[path]".into();
     }
     if t.contains("://") {
-        // The query of a URL can hold anything; the rest of it is public by construction or an address.
+        // Only the project's own host is kept: any other can name the owner's account or machine.
         let no_query = t.split(['?', '#']).next().unwrap_or(t);
-        let rest = no_query.split_once("://").map_or(no_query, |r| r.1);
-        let authority = rest.split('/').next().unwrap_or(rest);
-        if is_ipv4(authority) || is_ipv6(authority) || has_port(authority) {
-            return "[host]".into();
+        if no_query.starts_with("https://github.com/termenbox/") {
+            return no_query.to_string();
         }
-        return no_query.to_string();
+        return "[url]".into();
     }
     if is_ipv4(t) || is_ipv6(t) {
         return "[ip]".into();
@@ -444,7 +455,7 @@ mod tests {
         fs::write(logs.join("termenbox.jsonl"), lines.join("\n") + "\n").unwrap();
         fs::write(
             logs.join("crash-1000.json"),
-            r#"{"message":"called unwrap on /home/alice/.claude/projects/x","location":"packages/server/src/acp.rs:12","backtrace":"at /home/alice/.cargo/registry/src/foo.rs:9"}"#,
+            "{\n  \"message\": \"called unwrap at /home/alice/.claude/projects/x\",\n  \"session\": \"client-x-deploy\",\n  \"token\": \"tok-9\",\n  \"location\": \"packages/server/src/acp.rs:12\",\n  \"backtrace\": \"at /home/alice/.cargo/registry/src/foo.rs:9 wss://relay.owner.workers.dev/s/route1\"\n}",
         )
         .unwrap();
         let previous = ServerMessage::PreviousExit {
@@ -476,6 +487,8 @@ mod tests {
             "alice",
             "my-secret-project",
             "client-x-deploy",
+            "tok-9",
+            "workers.dev",
             "devkey-9f3a",
             "rotate the prod database",
             "rm -rf",
@@ -524,6 +537,25 @@ mod tests {
         let all = parts(&scrub_lines(&tail));
         assert!(all.iter().all(|p| p.len() <= PART_BYTES));
         assert_eq!(all.concat(), scrub_lines(&tail));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn control_characters_are_replaced_and_a_cut_log_is_not_joined_to_an_older_one() {
+        assert_eq!(scrub("a\u{1b}[31mred"), "a?[31mred");
+        let dir = temp_dir();
+        let logs = dir.join("logs");
+        fs::write(
+            logs.join("termenbox-old.jsonl"),
+            "{\"fields\":{\"event\":\"older\"}}\n",
+        )
+        .unwrap();
+        let line = format!("{{\"fields\":{{\"event\":\"{}\"}}}}\n", "x".repeat(200));
+        let count = (LOG_TAIL_BYTES as usize / line.len()) + 50;
+        fs::write(logs.join("termenbox.jsonl"), line.repeat(count)).unwrap();
+        assert!(!log_tail(&logs).contains("older"));
+        fs::write(logs.join("termenbox.jsonl"), line).unwrap();
+        assert!(log_tail(&logs).contains("older"));
         let _ = fs::remove_dir_all(&dir);
     }
 }
