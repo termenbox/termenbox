@@ -136,7 +136,9 @@ impl ServerClient {
             | ServerMessage::UninstallDone { .. }
             | ServerMessage::UpdateRequested { .. }
             | ServerMessage::UpdateStatus { .. }
-            | ServerMessage::Candidates { .. } => {}
+            | ServerMessage::Candidates { .. }
+            | ServerMessage::DirListing { .. }
+            | ServerMessage::DirError { .. } => {}
             ServerMessage::Workspaces { workspaces } => {
                 info!("Received {} workspaces", workspaces.len());
                 for workspace in workspaces {
