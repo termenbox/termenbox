@@ -1,0 +1,43 @@
+{
+  "id": "V33",
+  "title": "By default a call that arrives away with no escalation is refused",
+  "covers": [
+    "G1",
+    "I2"
+  ],
+  "session": {
+    "session_id": "sess-33",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "tool_call",
+      "key": "k1",
+      "tool": "shell:ls",
+      "permission": "read:docs",
+      "error": true
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED"
+    ],
+    "cell": [
+      "Det",
+      "None"
+    ],
+    "scope_version": 0,
+    "queue": [],
+    "forwarded": []
+  }
+}
