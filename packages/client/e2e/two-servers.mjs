@@ -146,7 +146,9 @@ try {
       return cmds.trim().split('\n').every((l) => l.startsWith('0 '));
     }, `${s.label} agents`);
   }
-  for (const [s, name] of [[a, 'api'], [a, 'web'], [a, 'docs'], [b, 'infra']]) s.tmux('send-keys', '-t', `=${name}:`, `READY-${name}`, 'Enter');
+  // The server minted each id; the name typed is the @termenbox_name label.
+  const idOf = (s, name) => s.tmux('list-sessions', '-F', '#{session_name}|#{@termenbox_name}').split('\n').map((l) => l.split('|')).find(([, label]) => label === name)?.[0] ?? fail(`no tmux session labelled ${name}`);
+  for (const [s, name] of [[a, 'api'], [a, 'web'], [a, 'docs'], [b, 'infra']]) s.tmux('send-keys', '-t', `=${idOf(s, name)}:`, `READY-${name}`, 'Enter');
 
   // The real app on a phone with both servers saved.
   const ctx = await browser.newContext(contextOptions({ viewport: { width: 390, height: 800 }, hasTouch: true, isMobile: true }));
@@ -196,19 +198,19 @@ try {
   await page.waitForFunction(() => document.querySelector('[role=tab][aria-selected=true]'));
 
   // 2. New window and window close reach the real tmux.
-  const windowsOf = (s, name) => s.tmux('list-windows', '-t', `=${name}`, '-F', '#{window_index}').split('\n').filter(Boolean).length;
+  const windowsOf = (s, name) => s.tmux('list-windows', '-t', `=${idOf(s, name)}`, '-F', '#{window_index}').split('\n').filter(Boolean).length;
   await tab('api').click(); // the active tab opens its windows
   await menu('api').waitFor();
   await menu('api').getByRole('button', { name: '+ New window' }).click();
   await waitFor(() => windowsOf(a, 'api') === 2, 'a second tmux window');
   // The new window must stay the one on screen: attaching again used to jump back to the agent window.
   await sleep(1500);
-  const activeWindow = () => a.tmux('list-windows', '-t', '=api', '-F', '#{window_index} #{window_active}').split('\n').map((l) => l.split(' ')).find((l) => l[1] === '1')[0];
+  const activeWindow = () => a.tmux('list-windows', '-t', `=${idOf(a, 'api')}`, '-F', '#{window_index} #{window_active}').split('\n').map((l) => l.split(' ')).find((l) => l[1] === '1')[0];
   if (activeWindow() !== '1') fail(`the new window did not stay current: window ${activeWindow()} is`);
   await tab('api').click();
   await menu('api').waitFor();
   await menu('api').getByText('bash', { exact: false }).first().waitFor();
-  const index = Number(a.tmux('list-windows', '-t', '=api', '-F', '#{window_index} #{window_active}').split('\n').map((l) => l.split(' ')).find((l) => l[1] === '1')[0]);
+  const index = Number(a.tmux('list-windows', '-t', `=${idOf(a, 'api')}`, '-F', '#{window_index} #{window_active}').split('\n').map((l) => l.split(' ')).find((l) => l[1] === '1')[0]);
   await menu('api').getByRole('button', { name: `Close window ${index}` }).click();
   const confirmButton = menu('api').getByRole('button', { name: `Confirm closing window ${index}` });
   if (await confirmButton.count()) await confirmButton.click(); // an idle shell closes at once; a busy one asks
@@ -222,7 +224,7 @@ try {
   const activeBefore = await activeTab();
   const sendNeedsInput = (s, name) =>
     s.tmux(
-      'new-window', '-d', '-t', `=${name}:`,
+      'new-window', '-d', '-t', `=${idOf(s, name)}:`,
       // node instead of python3: node is guaranteed in the container and on the bare runner.
       `node -e 'const n=require("net");const c=n.connect(process.env.TERMENBOX_EVENT_SOCKET);c.write(JSON.stringify({session:process.env.TERMENBOX_SESSION,token:process.env.TERMENBOX_EVENT_TOKEN,adapter:"claude",data:{hook_event_name:"Notification",message:"Allow rm?"}})+"\\n");c.end()'`,
     );

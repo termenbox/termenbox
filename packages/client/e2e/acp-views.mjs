@@ -163,7 +163,7 @@ try {
   await dialog.locator('[data-testid=view-acp]').click();
   check(await viewOn('acp'), 'a tap on Agent view does not select it');
   await create('agent-one');
-  await page.locator('[data-testid=acp-view][data-workspace$="/acp:agent-one"]').waitFor({ timeout: 30000 });
+  await page.getByTestId('acp-view').waitFor({ timeout: 30000 });
   check((await page.locator('[data-testid=tier]').innerText()) === 'T0 · ACP', 'the agent view does not say T0 · ACP');
   await openDialog();
   check(await viewOn('acp'), 'the last choice (Agent view) was not remembered for Claude on this server');
@@ -178,10 +178,10 @@ try {
   await page.getByTestId('stop').waitFor({ timeout: 20000 });
   await restartServer();
   await page.reload();
-  const row = page.locator('[data-shell=sidebar] [data-key$="acp:agent-one"]');
+  const row = page.locator('[data-shell=sidebar] [data-key*="/acp:"]').filter({ hasText: 'agent-one' });
   await row.waitFor({ timeout: 40000 });
   await row.click();
-  await page.locator('[data-testid=acp-view][data-workspace$="/acp:agent-one"]').waitFor({ timeout: 30000 });
+  await page.getByTestId('acp-view').waitFor({ timeout: 30000 });
   const notice = (t) => page.locator('[data-kind=notice]').filter({ hasText: t });
   await notice('A server restart interrupted the running turn.').waitFor({ timeout: 40000 });
   await notice('Restored after a server restart').waitFor({ timeout: 10000 });
@@ -191,7 +191,7 @@ try {
   ok('restart during an open turn: the workspace comes back by session/resume (or load) and says the restart interrupted the running turn, once');
 
   // The terminal workspace is untouched: still listed, still attachable.
-  const termRow = page.locator('[data-shell=sidebar] [data-key$="tmux:term-one"]');
+  const termRow = page.locator('[data-shell=sidebar] [data-key*="/tmux:"]').filter({ hasText: 'term-one' });
   await termRow.waitFor({ timeout: 20000 });
   await termRow.click();
   await page.locator('.xterm').first().waitFor({ timeout: 30000 });
