@@ -150,3 +150,19 @@ describe('recent folders', () => {
     expect(mergeRecentDirs(['/kept'], wins, 'a/')).toEqual(['/kept']);
   });
 });
+
+describe('server home memory', () => {
+  it('keeps a home per server and survives storage that throws', async () => {
+    const { getHome, saveHome } = await import('./newworkspace');
+    const store = new Map<string, string>();
+    const ok = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) };
+    saveHome('a', '/home/a', ok);
+    saveHome('b', '/home/b', ok);
+    expect(getHome('a', ok)).toBe('/home/a');
+    expect(getHome('b', ok)).toBe('/home/b');
+    const boom = { getItem: () => { throw new Error('off'); }, setItem: () => { throw new Error('off'); } };
+    saveHome('c', '/home/c', boom);
+    expect(getHome('c', boom)).toBe('/home/c');
+    expect(getHome('zzz', boom)).toBe('');
+  });
+});

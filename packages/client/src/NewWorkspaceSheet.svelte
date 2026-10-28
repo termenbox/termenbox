@@ -9,6 +9,7 @@
   import {
     backendFor,
     defaultAgent,
+    getHome,
     getLastServer,
     getRecentAgents,
     getRecentDirs,
@@ -18,6 +19,7 @@
     managerOptions,
     mergeRecentDirs,
     resolveView,
+    saveHome,
     saveLastServer,
     saveRecentAgent,
     saveRecentDir,
@@ -92,7 +94,7 @@
   $: tmux = !server || server.backends.length === 0 || backend === 'tmux';
   $: ok = !!server && validName(name) && validDir(dir) && !taken.includes(name) && (!acp || (!!template && dir !== ''));
   $: problem = acp && !template ? 'This server allows no agent workspaces yet.' : acp && dir === '' ? 'Choose the directory the agent works in, like /home/you/project.' : !validDir(dir) ? 'The directory must be an absolute path, like /home/you/project.' : taken.includes(name) ? 'That name is taken.' : !validName(name) ? 'Use letters, digits, - and _ (up to 64).' : '';
-  $: home = homes[serverId] ?? '';
+  $: home = homes[serverId] ?? getHome(serverId);
   $: agentLabel = template === 'shell' ? 'Shell' : TEMPLATE_BY_ID[template]?.label ?? template;
   $: summary = tmux || acp
     ? `${agentLabel} ${dir ? `in ${displayPath(dir, home, 36)}` : 'in the default folder'}`
@@ -101,7 +103,7 @@
   // The picker learns the home folder from the first listing, which the field then uses to show `~/…`.
   const list = (req: { path?: string; prefix?: string; hidden?: boolean }) => {
     const id = serverId;
-    return listDir(id, req).then(r => { if (r.ok) homes = { ...homes, [id]: r.home }; return r; });
+    return listDir(id, req).then(r => { if (r.ok) { homes = { ...homes, [id]: r.home }; saveHome(id, r.home); } return r; });
   };
 
   function create() {

@@ -16,6 +16,12 @@ export interface BrowserState {
   outside: boolean;
 }
 
+/** Up goes to a folder the server will list: inside home, below it. At home (or outside it) there is nowhere to go; Home returns. */
+export function canGoUp(s: Pick<BrowserState, 'path' | 'home'>): boolean {
+  if (!s.path || parentOf(s.path) === null) return false;
+  return !s.home || (s.path !== s.home && isUnderHome(s.path, s.home));
+}
+
 /** The state machine behind the folder picker, kept apart from the component so it runs without a DOM. */
 export class FolderBrowser {
   state: BrowserState = { status: 'loading', path: '', home: '', entries: [], truncated: false, error: '', filter: '', hidden: false, outside: false };
@@ -39,8 +45,8 @@ export class FolderBrowser {
   }
 
   enter(name: string) { return this.open(`${this.state.path.replace(/\/+$/, '')}/${name}`); }
-  /** One level up; a no-op at `/`. */
-  up() { const p = parentOf(this.state.path); return p ? this.open(p) : Promise.resolve(); }
+  /** One level up; a no-op at home or outside it (see canGoUp). */
+  up() { const p = canGoUp(this.state) ? parentOf(this.state.path) : null; return p ? this.open(p) : Promise.resolve(); }
   toHome() { return this.open(undefined); }
   retry() { return this.open(this.state.path || undefined, { keepFilter: true }); }
   setFilter(filter: string) { this.state = { ...this.state, filter }; return this.open(this.state.path || undefined, { keepFilter: true }); }

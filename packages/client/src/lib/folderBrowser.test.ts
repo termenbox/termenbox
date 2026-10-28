@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { FolderBrowser } from './folderBrowser';
+import { FolderBrowser, canGoUp } from './folderBrowser';
 import { DirClient, type DirReply, type ListDir } from './dirClient';
 
 const HOME = '/home/u';
@@ -62,6 +62,17 @@ describe('FolderBrowser', () => {
     await b.open('/home/u/code');
     await b.toHome();
     expect(b.state.path).toBe(HOME);
+  });
+  it('has no Up at home, where the parent is outside what the server lists', async () => {
+    const f = fake();
+    const b = new FolderBrowser(f.list);
+    await b.open();
+    expect(canGoUp(b.state)).toBe(false);
+    const n = f.calls.length;
+    await b.up();
+    expect(f.calls.length).toBe(n);
+    await b.open('/home/u/code');
+    expect(canGoUp(b.state)).toBe(true);
   });
   it('sends the filter as a prefix and keeps it on the same folder', async () => {
     const f = fake();

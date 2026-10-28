@@ -106,6 +106,20 @@ export function saveLastServer(serverId: string, storage: Pick<Storage, 'setItem
   try { storage?.setItem(LAST_SERVER_KEY, serverId); } catch { /* Private mode: kept in memory. */ }
 }
 
+const HOMES_KEY = 'termenbox_server_homes';
+const homeMemory = new Map<string, string>();
+/** A server user's home folder as its last listing said, so `~/…` shows before the picker is opened again. */
+export function getHome(serverId: string, storage: Pick<Storage, 'getItem'> | undefined = viewStore()): string {
+  try { return (JSON.parse(storage?.getItem(HOMES_KEY) || '{}') as Record<string, string>)[serverId] || homeMemory.get(serverId) || ''; } catch { return homeMemory.get(serverId) ?? ''; }
+}
+export function saveHome(serverId: string, home: string, storage: Pick<Storage, 'getItem' | 'setItem'> | undefined = viewStore()): void {
+  homeMemory.set(serverId, home);
+  try {
+    const all = JSON.parse(storage?.getItem(HOMES_KEY) || '{}') as Record<string, string>;
+    storage?.setItem(HOMES_KEY, JSON.stringify({ ...all, [serverId]: home }));
+  } catch { /* Private mode: kept in memory. */ }
+}
+
 const RECENT_DIRS_KEY = 'termenbox_recent_dirs';
 const MAX_RECENT_DIRS = 10;
 // Where storage is missing or throws, the list lives here for the rest of the page's life.

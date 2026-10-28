@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import DialogLayer from './lib/ui/sheet/DialogLayer.svelte';
-  import { FolderBrowser, type BrowserState } from './lib/folderBrowser';
+  import { FolderBrowser, canGoUp, type BrowserState } from './lib/folderBrowser';
   import type { ListDir } from './lib/dirClient';
   import { breadcrumb, displayPath, parentOf } from './lib/dirs';
 
@@ -41,8 +41,9 @@
   onDestroy(() => { clearTimeout(slowTimer); clearTimeout(filterTimer); });
 
   const trail = $derived(view.home ? breadcrumb(view.path, view.home) : []);
-  const canUp = $derived(!!view.path && parentOf(view.path) !== null);
-  const selection = $derived(browser.selection ?? (view.status === 'ready' && view.path ? view.path : null));
+  const canUp = $derived(canGoUp(view));
+  // From `view` (reactive), not `browser.selection`: the browser is a plain class, so reading it would freeze the derived value.
+  const selection = $derived(view.status === 'ready' && view.path ? view.path : null);
 
   function go() { typedError = browser.go(typed) ?? ''; }
   function choose() {
