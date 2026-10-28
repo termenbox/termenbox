@@ -8,11 +8,12 @@ Goal: the New workspace dialog (`packages/client/src/NewWorkspaceSheet.svelte`) 
 
 Legend: `[ ]` pending, `[~]` in progress, `[x]` done, `[!]` blocked, `[>]` moved.
 
-### 0.1 Clean the working tree and drop the ad-hoc screenshot scripts — [ ]
+### 0.1 Clean the working tree and drop the ad-hoc screenshot scripts — [x]
 Class: implement · Needs: none · Check: `test -z "$(git ls-files packages/client/e2e/dist)" && ! test -e packages/client/e2e/debug-picker.mjs && ! test -e packages/client/e2e/screenshot-newworkspace-gallery.mjs && ! test -e packages/client/e2e/screenshot-newworkspace.mjs && ! test -e packages/client/e2e/verify-picker-screenshot.mjs && ! test -e packages/client/e2e/NewWorkspaceSheetGallery.ts && git check-ignore -q origin/x test-results/x`
 Context: earlier attempts left untracked `origin/` (a stray git ref folder), `.claude/worktrees/`, `packages/client/test-results/`, and three overlapping screenshot scripts in `packages/client/e2e/` (`debug-picker.mjs`, `screenshot-newworkspace.mjs`, `screenshot-newworkspace-gallery.mjs`, `verify-picker-screenshot.mjs`) that skip a capture when a sheet is not visible, so they passed while showing nothing (the guardrail `ux-scenarios-assert-a-state-before-they-capture-it`). Their PNGs were force-added under `packages/client/e2e/dist/newworkspace-shots/` although `dist/` is ignored. A gallery page `e2e/NewWorkspaceSheetGallery.{html,ts}` mounts the sheet standalone for them.
 Do: `git rm` the tracked PNGs under `packages/client/e2e/dist/`, the four scripts above and `NewWorkspaceSheetGallery.html` / `.ts`; remove the gallery entry from `packages/client/e2e/vite.config.ts` if it lists it. Delete the untracked `origin/` and `packages/client/test-results/` directories after looking at what is in them (`origin/develop` is a file, not a ref: confirm it holds nothing you need). Add `test-results/` and `/origin/` to the repo `.gitignore`; do not touch `.claude/worktrees/` other than ignoring it if it is not already.
 Done-when: the Check exits 0 and `git status --short` shows only the intended deletions and `.gitignore`.
+Result (2026-10-28): done on branch `feat/new-workspace-dialog-ux`, started from the scratch branch because `develop` lacks the dialog code this plan replaces. `origin/develop` was NOT deleted: it is a registered git worktree (branch `user-docs`, staged deletions of old video scripts), so it is only ignored. The Check's `git check-ignore -q` with two paths errors in git; use it without `-q`.
 
 ### 1.1 `list_dir` in core and server — [ ]
 Class: implement · Needs: 0.1 · Check: `scripts/dev.sh cargo test -p termenbox-core -p termenbox-server list_dir`
