@@ -71,6 +71,48 @@ export function orderTemplatesByRecent(supported: { id: string; label: string }[
   return [...recentTemplates, ...remaining];
 }
 
+/** What a cold start offers before the device has any history (decision 0141). */
+export const COLD_START_AGENTS = ['claude', 'codex', 'shell'];
+
+/** The tiles shown in the dialog: recent agents first, then the cold-start list, then the rest, all supported ones only. */
+export function inlineAgents(supported: { id: string; label: string }[], recent: string[], count = 3): { id: string; label: string }[] {
+  const ok = new Map(supported.map(t => [t.id, t]));
+  const ids = [...new Set([...recent, ...COLD_START_AGENTS, ...supported.map(t => t.id)])].filter(id => ok.has(id));
+  return ids.slice(0, count).map(id => ok.get(id)!);
+}
+
+const RECENT_DIRS_KEY = 'termenbox_recent_dirs';
+const MAX_RECENT_DIRS = 10;
+// Where storage is missing or throws, the list lives here for the rest of the page's life.
+const dirMemory = new Map<string, string[]>();
+
+/** Folders used for new workspaces on this server from this device, most recent first (up to 10). */
+export function getRecentDirs(serverId: string, storage: Pick<Storage, 'getItem'> | undefined = viewStore()): string[] {
+  if (!storage) return dirMemory.get(serverId) ?? [];
+  try {
+    const all = JSON.parse(storage.getItem(RECENT_DIRS_KEY) ?? '{}');
+    const list = all && typeof all === 'object' ? all[serverId] : undefined;
+    return Array.isArray(list) ? list.filter((d): d is string => typeof d === 'string').slice(0, MAX_RECENT_DIRS) : [];
+  } catch { return dirMemory.get(serverId) ?? []; } // Unreadable: what this page remembers.
+}
+
+/** Remembers a folder a workspace was created in (MRU, max 10). Call it on create, not on click. */
+export function saveRecentDir(serverId: string, path: string, storage: Pick<Storage, 'getItem' | 'setItem'> | undefined = viewStore()): void {
+  if (!path.startsWith('/')) return;
+  const next = [path, ...getRecentDirs(serverId, storage).filter(d => d !== path)].slice(0, MAX_RECENT_DIRS);
+  dirMemory.set(serverId, next);
+  try {
+    let all: Record<string, unknown> = {};
+    try { const v = JSON.parse(storage?.getItem(RECENT_DIRS_KEY) ?? '{}'); if (v && typeof v === 'object' && !Array.isArray(v)) all = v; } catch { /* Start again. */ }
+    storage?.setItem(RECENT_DIRS_KEY, JSON.stringify({ ...all, [serverId]: next }));
+  } catch { /* Private mode: kept in memory. */ }
+}
+
+/** The recent folders to offer: the stored ones, or, on a device with none yet, the folders open workspaces use. */
+export function mergeRecentDirs(stored: string[], windows: WindowMap, serverPrefix: string, limit = MAX_RECENT_DIRS): string[] {
+  return (stored.length ? stored : recentDirs(windows, serverPrefix, limit)).slice(0, limit);
+}
+
 /** Directories already in use on the server, most used first: the pick list for "where". */
 export function recentDirs(windows: WindowMap, serverPrefix: string, limit = 6): string[] {
   const count = new Map<string, number>();
