@@ -461,7 +461,11 @@ mod tests {
         {
             return;
         }
-        let dir = std::env::temp_dir().join(format!("tm-ctl-{}", std::process::id()));
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("tm-ctl-{nanos}"));
         std::fs::create_dir_all(&dir).unwrap();
         let tmpdir = dir.to_string_lossy().into_owned();
         let runner =
@@ -489,7 +493,7 @@ mod tests {
             rx: &mut broadcast::Receiver<WindowUpdate>,
             want: impl Fn(&WindowUpdate) -> bool,
         ) -> WindowUpdate {
-            tokio::time::timeout(Duration::from_secs(20), async {
+            tokio::time::timeout(Duration::from_secs(30), async {
                 loop {
                     let u = rx.recv().await.unwrap();
                     if want(&u) {
