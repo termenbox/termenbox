@@ -29,6 +29,7 @@ bootstrap-generated: true
 | lan | Local area network addressing, RFC1918, off-grid connectivity |
 | mobile | Touch, gestures, battery, background |
 | monorepo | Repository structure, workspaces |
+| observability | Logs, crash records, diagnostics bundles, incident tracking |
 | network | Transport, protocols, binding |
 | parity | Web/native feature parity |
 | performance | Latency, throughput, memory, CPU |

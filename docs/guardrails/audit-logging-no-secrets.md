@@ -2,16 +2,16 @@
 id: audit-logging-no-secrets
 title: Audit Logging Without Secrets
 status: active
-governed-by: 0006,0009
+governed-by: 0006,0009,0142
 grounded-in: 0008,0011
 derivation-note: SSH auth + crypto decisions require audit trail; secrets guardrail forbids logging secrets
-tags: [security, audit, logging]
+tags: [security, audit, logging, observability]
 ---
 
 # Guardrail: Audit Logging Without Secrets
 
 ## Rule
-**MUST** log all security-relevant actions. **MUST NOT** log any secret material (keys, challenges, signatures, nonces, session keys).
+**MUST** log all security-relevant actions. **MUST NOT** log any secret material (keys, challenges, signatures, nonces, session keys). **MUST NOT** log ACP message text, terminal output or keystrokes at any level.
 
 ## Required Audit Events
 | Event | Fields (Logged) | Fields (Never Logged) |
@@ -23,7 +23,7 @@ tags: [security, audit, logging]
 | Config change | `timestamp, session_id, key_fingerprint, change` | `full_config` |
 
 ## Log Format
-Structured JSON (one line per event):
+Structured JSON Lines (one object per line), written to `<config-dir>/logs/termenbox.jsonl` as well as stderr (0142):
 ```json
 {
   "ts": "2026-10-09T12:34:56.789Z",
@@ -37,7 +37,7 @@ Structured JSON (one line per event):
 ```
 
 ## Log Retention
-- Local (server): 30 days rolling, max 100 MB
+- Local (server): 30 days rolling, max 100 MB, rotated by the server itself
 - No central log aggregation required (self-hosted)
 - User controls retention via systemd `journald` config
 

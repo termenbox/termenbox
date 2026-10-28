@@ -9,7 +9,7 @@
 | resource-constraints | Resource Constraints (512MB RAM, 1 vCPU) | 0001 | 0001 | active |
 | security-secrets-handling | Secrets Handling (Memory Only, No Logs) | 0006,0009 | 0008,0011 | active |
 | internal-network-binding | Internal Network Binding (127.0.0.1 Only) | 0001 | 0001 | active |
-| audit-logging-no-secrets | Audit Logging Without Secrets | 0006,0009 | 0008,0011 | active |
+| audit-logging-no-secrets | Audit Logging Without Secrets | 0006,0009,0142 | 0008,0011 | active |
 | paranoid-mode | Paranoid Mode (Outbound Block) | 0001 | 0001 | active |
 | bootstrap-simplicity | 1-2 Click Bootstrap for Users | 0013 | 0001,0011 | active |
 | ci-only-builds | All Builds Run in CI Only | 0010,0011 | 0010,0011 | active |
@@ -63,3 +63,4 @@ a-phone-check-names-its-platform,"A phone check names the platform it ran on, an
 | protocol-core-stays-acp-v1 | The protocol core stays ACP v1; extensions are namespaced, negotiated and ignorable | 0136 | 0111,0136 | active |
 | control-never-waits-behind-bulk | Control messages never wait behind bulk traffic | 0139 | 0096,0139 | active |
 | relay-credentials-are-owner-scoped-minted-after-auth-and-capped | Relay and signaling resources belong to the owner's account, credentials are minted only after authentication, and relayed bytes are capped | 0141 | 0140,0058 | active |
+| a-fault-in-one-session-never-stops-the-server | A fault in one session never stops the server, and a death always leaves a record | 0142,0143 | 0142,0143 | active |

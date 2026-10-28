@@ -146,3 +146,6 @@
 | 0139-control-bytes-and-events-travel-on-separate-channels-and-events-replay-from-a-sequence-log | Control, terminal bytes and agent events travel on separate channels, and events replay from a sequence log | product | active | Sergey Strebulaev | - |
 | 0140-native-wrappers-are-optional-and-the-pwa-stays-first-class | Native wrappers are optional enhancements and the PWA stays the reference client | product | active | Sergey Strebulaev | - |
 | 0141-assisted-connection-runs-on-the-owners-cloudflare-account | A server that cannot be reached directly is helped by free public STUN, a signaling Worker and a TURN key that live in the owner's Cloudflare account, never in the project's | product | active | Sergey Strebulaev | - |
+| 0142-the-server-keeps-its-own-jsonl-logs-and-a-crash-record | The server keeps its own JSONL logs and a crash record | process | active | Sergey Strebulaev | - |
+| 0143-a-fault-in-one-acp-session-never-stops-the-server | A fault in one ACP session never stops the server, and a crashing server restarts with backoff and a safe mode | product | active | Sergey Strebulaev | - |
+| 0144-diagnostics-bundles-are-user-triggered-and-incidents-are-tracked-in-github-and-postmortems | Diagnostics bundles are user-triggered, and incidents are tracked in GitHub issues and postmortems | process | active | Sergey Strebulaev | - |

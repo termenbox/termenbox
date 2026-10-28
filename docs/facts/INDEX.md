@@ -59,5 +59,6 @@
 | 0058 | Cloudflare STUN is free and unlimited, Cloudflare TURN is free to 1,000 GB a month, and Google publishes no STUN terms | network, cloudflare, limits, transport | active |
 | 0059 | STUN-only punching failed from an iPhone on cellular to a WSL2 NAT server, and the Cloudflare TURN relay connected | network, nat, stun, turn, wsl, ios, cellular, transport | active |
 | 0060 | The server uses the turn crate for its relay, and the Cloudflare setup needs three token scopes | turn, cloudflare, durable-object, api-token, transport | active |
+| 0061 | The server logs to stderr only and leaves no record of its own death | server, observability, deployment | active |
 
 <!-- bootstrap-generated: true -->
