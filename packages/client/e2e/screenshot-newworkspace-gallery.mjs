@@ -39,6 +39,10 @@ const mobileContext = await browser.newContext({
 const mobilePage = await mobileContext.newPage();
 await setupPage(mobilePage);
 
+// Mobile full page
+await mobilePage.screenshot({ path: join(SHOTS, 'newworkspace-mobile-full.png'), fullPage: true });
+console.log('Saved mobile full page screenshot');
+
 // Mobile dialog
 await mobilePage.screenshot({ path: join(SHOTS, 'newworkspace-mobile-dialog.png') });
 console.log('Saved mobile dialog screenshot');
@@ -52,6 +56,9 @@ if (await showAllBtnMobile.isVisible()) {
   if (await agentPickerSheet.isVisible()) {
     await agentPickerSheet.screenshot({ path: join(SHOTS, 'newworkspace-mobile-agent-picker-open.png') });
     console.log('Saved mobile agent picker OPEN screenshot');
+    // Also capture the closed picker component in the DOM
+    await mobilePage.screenshot({ path: join(SHOTS, 'newworkspace-mobile-agent-picker.png') });
+    console.log('Saved mobile agent picker (closed in DOM) screenshot');
   }
   await mobilePage.keyboard.press('Escape');
   await mobilePage.waitForTimeout(300);
@@ -66,6 +73,8 @@ if (await showMoreDirsBtnMobile.isVisible()) {
   if (await dirPickerSheet.isVisible()) {
     await dirPickerSheet.screenshot({ path: join(SHOTS, 'newworkspace-mobile-dir-picker-open.png') });
     console.log('Saved mobile directory picker OPEN screenshot');
+    await mobilePage.screenshot({ path: join(SHOTS, 'newworkspace-mobile-dir-picker.png') });
+    console.log('Saved mobile directory picker (closed in DOM) screenshot');
   }
   await mobilePage.keyboard.press('Escape');
   await mobilePage.waitForTimeout(300);
@@ -81,9 +90,21 @@ const desktopContext = await browser.newContext({
 const desktopPage = await desktopContext.newPage();
 await setupPage(desktopPage);
 
+// Desktop full page
+await desktopPage.screenshot({ path: join(SHOTS, 'newworkspace-desktop-full.png'), fullPage: true });
+console.log('Saved desktop full page screenshot');
+
 // Desktop dialog
 await desktopPage.screenshot({ path: join(SHOTS, 'newworkspace-desktop-dialog.png') });
 console.log('Saved desktop dialog screenshot');
+
+// Test "Browse..." button visibility on desktop
+const browseBtn = desktopPage.locator('button:has-text("Browse")');
+if (await browseBtn.isVisible()) {
+  console.log('Browse button is visible on desktop');
+  await desktopPage.screenshot({ path: join(SHOTS, 'newworkspace-desktop-dialog-browse.png') });
+  console.log('Saved desktop dialog with browse button screenshot');
+}
 
 // Test "Show all agents" button on desktop - opens PickerSheet (centered modal)
 const showAllBtnDesktop = desktopPage.locator('button:has-text("Show all")').first();
@@ -94,6 +115,8 @@ if (await showAllBtnDesktop.isVisible()) {
   if (await agentPickerSheet.isVisible()) {
     await agentPickerSheet.screenshot({ path: join(SHOTS, 'newworkspace-desktop-agent-picker-open.png') });
     console.log('Saved desktop agent picker OPEN screenshot');
+    await desktopPage.screenshot({ path: join(SHOTS, 'newworkspace-desktop-agent-picker.png') });
+    console.log('Saved desktop agent picker (closed in DOM) screenshot');
   }
   await desktopPage.keyboard.press('Escape');
   await desktopPage.waitForTimeout(300);
@@ -108,6 +131,8 @@ if (await showMoreDirsBtnDesktop.isVisible()) {
   if (await dirPickerSheet.isVisible()) {
     await dirPickerSheet.screenshot({ path: join(SHOTS, 'newworkspace-desktop-dir-picker-open.png') });
     console.log('Saved desktop directory picker OPEN screenshot');
+    await desktopPage.screenshot({ path: join(SHOTS, 'newworkspace-desktop-dir-picker.png') });
+    console.log('Saved desktop directory picker (closed in DOM) screenshot');
   }
   await desktopPage.keyboard.press('Escape');
   await desktopPage.waitForTimeout(300);
