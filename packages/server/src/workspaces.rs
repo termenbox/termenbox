@@ -965,6 +965,8 @@ impl WorkspaceManager {
             }
             ClientMessage::CloseWorkspace { workspace } => {
                 info!(target: "audit", event = "close_workspace", provider = %identity.provider, account_id = %identity.id, login = %identity.login, session = %workspace);
+                // Drop this connection's tmux client first: a live client can keep kill-session waiting.
+                *attachment = None;
                 self.registry
                     .close_workspace(self.backend.as_ref(), &workspace)
                     .await?;
