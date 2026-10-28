@@ -6,6 +6,7 @@ import { launch, contextOptions, trace, keepIfFailed, ENGINE } from './browser.m
 import { createServer } from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname, basename } from 'node:path';
+import { FakeTree } from './fake-tree.mjs';
 
 const dist = join(import.meta.dirname, '../dist');
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.png': 'image/png', '.woff2': 'font/woff2' };
@@ -34,6 +35,7 @@ export class ScriptedServer {
   received = [];
   sockets = new Set();
   views = new Map();
+  tree = new FakeTree();
   states = { s1: 'needs_input', s2: 'needs_input', s3: 'idle' };
   names = { s1: 'build', s2: 'deploy', s3: 'shell' };
   constructor() {
@@ -63,6 +65,7 @@ export class ScriptedServer {
         this.send(ws, this.snapshot());
         break;
       case 'list_workspaces': this.send(ws, { type: 'workspaces', workspaces: this.workspaces() }); break;
+      case 'list_dir': this.send(ws, this.tree.reply(m)); break;
       case 'ping': this.send(ws, { type: 'pong' }); break;
       case 'attach':
         this.send(ws, { type: 'workspace_attached', workspace_id: m.workspace_id });
