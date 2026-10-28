@@ -330,16 +330,17 @@ impl Registry {
             self.ensure_windows(backend, &record).await?;
         }
         let absolute = resolve_tab_dir(&root, dir)?;
-        let window = self
+        let (tab, window) = self
             .create_window(backend, &record, kind, label, &absolute, dir)
             .await?;
+        // A client that creates a tab expects to land in it; an attaching client asks for it explicitly.
+        let _ = backend.focus_tab(&record.id, &window).await;
         let mut state = self.state.lock().unwrap();
         let record = state
             .workspaces
             .iter_mut()
             .find(|r| r.id == workspace)
             .ok_or_else(|| anyhow!("Unknown workspace"))?;
-        let tab = window.0;
         record.tabs.push(tab.clone());
         record.focus = Some(tab.id.clone());
         record.next_tab = record.next_tab.max(tab_number(&tab.id) + 1);
@@ -505,6 +506,7 @@ impl Registry {
         let window = backend
             .ensure_session(&record.id, &record.label, &record.dir, &spec)
             .await?;
+        let _ = backend.focus_tab(&record.id, &window).await;
         let mut state = self.state.lock().unwrap();
         let record = state
             .workspaces
