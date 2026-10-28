@@ -61,3 +61,5 @@ a-phone-check-names-its-platform,"A phone check names the platform it ran on, an
 | ux-hard-rules-block-the-pr-the-rest-is-advisory | The UX job fails a pull request on objective rule breaks only; trends, diffs and heuristic findings are advisory | 0135 | ux-acceptance-targets,a-phone-check-names-its-platform | active |
 | protocol-core-stays-acp-v1 | The protocol core stays ACP v1; extensions are namespaced, negotiated and ignorable | 0136 | 0111,0136 | active |
 | control-never-waits-behind-bulk | Control messages never wait behind bulk traffic | 0139 | 0096,0139 | active |
+| listdir-is-owner-only-home-confined-and-directories-only | Directory listing for the folder picker is owner-only, confined to the home directory, and returns directories only | 0140 | 0140,0058,audit-logging-no-secrets | active |
+| ux-scenarios-assert-a-state-before-they-capture-it | A UX scenario asserts the state it claims to show before it records or screenshots it | 0135 | 0135,0056,0141 | active |
