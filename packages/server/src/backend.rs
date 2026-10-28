@@ -13,6 +13,23 @@ use crate::control::WindowState;
 use crate::events::EventEnv;
 use crate::pty::Attachment;
 
+/// A tab a host should create: the registry's id and label, the template it starts from, and its absolute directory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TabSpec {
+    pub id: String,
+    pub label: String,
+    pub kind: String,
+    pub dir: String,
+}
+
+/// What creating a workspace produced: the id the host chose (a minted one for tmux and ACP, the typed name for a
+/// command manager) and, for a host with windows, the first tab's window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CreatedWorkspace {
+    pub id: String,
+    pub window: Option<String>,
+}
+
 #[async_trait]
 pub trait WorkspaceBackend: Send + Sync {
     fn name(&self) -> &str;
@@ -92,6 +109,68 @@ pub trait WorkspaceBackend: Send + Sync {
         Err(anyhow!("this workspace manager has no windows"))
     }
 
+    // ---- Tabs (decision 0147). A manager with no windows refuses all of these.
+
+    /// Creates a workspace and its first tab, returning the id the manager chose and the first window.
+    async fn create_workspace(
+        &self,
+        name: &str,
+        backend: Option<&str>,
+        dir: Option<&str>,
+        template: Option<&str>,
+        _first: &TabSpec,
+    ) -> Result<CreatedWorkspace> {
+        self.create_with(name, backend, dir, template).await?;
+        Ok(CreatedWorkspace {
+            id: name.to_string(),
+            window: None,
+        })
+    }
+    /// Opens a tab's window and returns the tmux window id.
+    async fn new_tab(&self, _id: &str, _spec: &TabSpec) -> Result<String> {
+        Err(anyhow!("this workspace manager has no tabs"))
+    }
+    /// Makes sure a workspace has a session and a first window, recreating a session that is gone.
+    async fn ensure_session(
+        &self,
+        _id: &str,
+        _label: &str,
+        _dir: &str,
+        _first: &TabSpec,
+    ) -> Result<String> {
+        Err(anyhow!("this workspace manager has no tabs"))
+    }
+    /// Renames a tab without touching its process or window.
+    async fn rename_tab(&self, _id: &str, _window: &str, _label: &str) -> Result<()> {
+        Err(anyhow!("this workspace manager has no tabs"))
+    }
+    /// Makes a tab's window the current one for the workspace.
+    async fn focus_tab(&self, _id: &str, _window: &str) -> Result<()> {
+        Err(anyhow!("this workspace manager has no tabs"))
+    }
+    /// Kills a tab's window.
+    async fn close_tab(&self, _id: &str, _window: &str) -> Result<()> {
+        Err(anyhow!("this workspace manager has no tabs"))
+    }
+    /// Starts a terminal attached to one tab's window.
+    async fn attach_tab(
+        &self,
+        id: &str,
+        _window: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Attachment> {
+        self.attach(id, cols, rows)
+    }
+    /// A tab's screen with colour codes kept.
+    async fn capture_tab_styled(&self, id: &str, _window: &str) -> Result<String> {
+        self.capture_styled(id).await
+    }
+    /// Types into one tab's pane instead of the workspace's current one.
+    async fn send_text_to_window(&self, id: &str, _window: &str, text: &str) -> Result<()> {
+        self.send_text(id, text).await
+    }
+
     // ---- T0: ACP workspaces (decision 0111). A manager that runs none refuses all of these.
 
     /// The agents the owner allows as ACP workspaces.
@@ -157,6 +236,43 @@ pub fn new_id() -> String {
 pub fn is_minted_id(id: &str) -> bool {
     id.strip_prefix("ws-")
         .is_some_and(|h| h.len() == 32 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// A target this server may address in tmux: an id it minted, or a name an older server used. It reaches tmux as one
+/// argv word, never through a shell, so the strict new-name alphabet is not needed here; control characters and a
+/// leading `-` (an option injection) are still refused.
+pub fn valid_target(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && !name.starts_with('-')
+        && !name
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || c == ':')
+}
+
+/// The default label a tab of this template starts with.
+pub fn tab_label(kind: &str) -> String {
+    match kind {
+        "shell" => "Shell",
+        "claude" => "Claude Code",
+        "codex" => "Codex",
+        "copilot" => "Copilot",
+        "opencode" => "OpenCode",
+        "gemini" => "Gemini",
+        "kilo" => "Kilo",
+        "aider" => "Aider",
+        "goose" => "Goose",
+        "amp" => "Amp",
+        "qwen" => "Qwen",
+        "cursor-agent" => "Cursor",
+        other => other,
+    }
+    .to_string()
+}
+
+/// Whether a tab may start this template. The allowlist stays server-side; `shell` is always allowed.
+pub fn valid_template(kind: &str) -> bool {
+    kind == "shell" || crate::adapters::AGENTS.contains(&kind)
 }
 
 /// The display name a client may give a workspace: trimmed, one line, at most 64 characters, no `|` (the list format's
@@ -667,6 +783,53 @@ impl TmuxBackend {
         self.events = Some(events);
         self
     }
+
+    fn window_target(id: &str, window: &str) -> String {
+        format!("={id}:{window}")
+    }
+
+    /// Marks a window as a registry tab: the id the reconciler looks for, the label clients show, and no automatic
+    /// rename that would overwrite it.
+    async fn set_tab_options(&self, id: &str, window: &str, tab: &str, label: &str) -> Result<()> {
+        let target = Self::window_target(id, window);
+        for (option, value) in [("@termenbox_tab", tab), ("@termenbox_label", label)] {
+            let args = ["set-option", "-w", "-t", &target, option, value].map(String::from);
+            let out = self.runner.run("tmux", &args).await?;
+            if !out.status.success() {
+                return Err(anyhow!(
+                    "tmux set-option failed: {}",
+                    tmux_stderr(&out.stderr)
+                ));
+            }
+        }
+        for (flag, option, value) in [
+            ("set-window-option", "automatic-rename", "off"),
+            ("rename-window", "", label),
+        ] {
+            let mut args = vec![flag.to_string(), "-t".into(), target.clone()];
+            if !option.is_empty() {
+                args.push(option.to_string());
+            }
+            args.push(value.to_string());
+            let out = self.runner.run("tmux", &args).await?;
+            if !out.status.success() && flag == "set-window-option" {
+                return Err(anyhow!("tmux {flag} failed: {}", tmux_stderr(&out.stderr)));
+            }
+        }
+        Ok(())
+    }
+
+    /// Types the template's command into a tab's shell, so quitting the agent leaves the shell (and the tab) alive.
+    async fn start_template(&self, id: &str, window: &str, kind: &str) -> Result<()> {
+        if kind == "shell" {
+            return Ok(());
+        }
+        if !crate::adapters::AGENTS.contains(&kind) {
+            return Err(anyhow!("Unknown agent template"));
+        }
+        self.send_text_to_window(id, window, &format!("{kind}\r"))
+            .await
+    }
 }
 
 #[async_trait]
@@ -686,7 +849,11 @@ impl WorkspaceBackend for TmuxBackend {
         if !out.status.success() {
             let stderr = tmux_stderr(&out.stderr);
             // No server yet simply means no workspaces.
-            if stderr.contains("no server running") || stderr.contains("No such file") {
+            if stderr.contains("no server running")
+                || stderr.contains("No such file")
+                || stderr.contains("server exited unexpectedly")
+                || stderr.contains("error connecting")
+            {
                 return Ok(vec![]);
             }
             return Err(anyhow!("tmux list-sessions failed: {stderr}"));
@@ -696,6 +863,262 @@ impl WorkspaceBackend for TmuxBackend {
 
     async fn create(&self, name: &str) -> Result<()> {
         self.create_with(name, None, None, None).await
+    }
+
+    async fn create_workspace(
+        &self,
+        name: &str,
+        _backend: Option<&str>,
+        dir: Option<&str>,
+        _template: Option<&str>,
+        first: &TabSpec,
+    ) -> Result<CreatedWorkspace> {
+        let label = clean_label(name)?.ok_or_else(|| anyhow!("A workspace needs a name"))?;
+        let id = new_id();
+        let mut args: Vec<String> = ["new-session", "-d", "-P", "-F", "#{window_id}", "-s", &id]
+            .map(String::from)
+            .into();
+        if let Some(dir) = dir.filter(|d| !d.is_empty()) {
+            if !valid_dir(dir) {
+                return Err(anyhow!("The directory must be an absolute path"));
+            }
+            args.extend(["-c".to_string(), dir.to_string()]);
+        }
+        for var in self
+            .events
+            .iter()
+            .flat_map(|e| e.vars(&format!("{}{id}", self.event_prefix)))
+        {
+            args.extend(["-e".to_string(), var]);
+        }
+        let out = self.runner.run_as(true, "tmux", &args).await?;
+        if !out.status.success() {
+            return Err(anyhow!(
+                "tmux new-session failed: {}",
+                tmux_stderr(&out.stderr)
+            ));
+        }
+        let window = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if window.is_empty() {
+            let _ = self.kill(&id).await;
+            return Err(anyhow!("tmux did not name the new window"));
+        }
+        if let Err(e) = self.rename(&id, &label).await {
+            let _ = self.kill(&id).await;
+            return Err(e);
+        }
+        if let Err(e) = self
+            .set_tab_options(&id, &window, &first.id, &first.label)
+            .await
+        {
+            let _ = self.kill(&id).await;
+            return Err(e);
+        }
+        if let Err(e) = self.start_template(&id, &window, &first.kind).await {
+            let _ = self.kill(&id).await;
+            return Err(e);
+        }
+        Ok(CreatedWorkspace {
+            id,
+            window: Some(window),
+        })
+    }
+
+    async fn ensure_session(
+        &self,
+        id: &str,
+        label: &str,
+        dir: &str,
+        first: &TabSpec,
+    ) -> Result<String> {
+        if !valid_target(id) {
+            return Err(anyhow!("Unknown workspace"));
+        }
+        let has = ["has-session", "-t", &format!("={id}")].map(String::from);
+        let exists = self
+            .runner
+            .run("tmux", &has)
+            .await
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if exists {
+            return self.new_tab(id, first).await;
+        }
+        if !valid_dir(dir) {
+            return Err(anyhow!("The directory must be an absolute path"));
+        }
+        let mut args: Vec<String> = [
+            "new-session",
+            "-d",
+            "-P",
+            "-F",
+            "#{window_id}",
+            "-s",
+            id,
+            "-c",
+            dir,
+        ]
+        .map(String::from)
+        .into();
+        for var in self
+            .events
+            .iter()
+            .flat_map(|e| e.vars(&format!("{}{id}", self.event_prefix)))
+        {
+            args.extend(["-e".to_string(), var]);
+        }
+        let out = self.runner.run_as(true, "tmux", &args).await?;
+        if !out.status.success() {
+            return Err(anyhow!(
+                "tmux new-session failed: {}",
+                tmux_stderr(&out.stderr)
+            ));
+        }
+        let window = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if window.is_empty() {
+            return Err(anyhow!("tmux did not name the new window"));
+        }
+        self.rename(id, label).await?;
+        self.set_tab_options(id, &window, &first.id, &first.label)
+            .await?;
+        self.start_template(id, &window, &first.kind).await?;
+        Ok(window)
+    }
+
+    async fn new_tab(&self, id: &str, spec: &TabSpec) -> Result<String> {
+        if !valid_target(id) {
+            return Err(anyhow!("Unknown workspace"));
+        }
+        if !valid_dir(&spec.dir) {
+            return Err(anyhow!("The directory must be an absolute path"));
+        }
+        let args = [
+            "new-window",
+            "-d",
+            "-t",
+            &format!("={id}:"),
+            "-c",
+            &spec.dir,
+            "-P",
+            "-F",
+            "#{window_id}",
+        ]
+        .map(String::from);
+        let out = self.runner.run("tmux", &args).await?;
+        if !out.status.success() {
+            return Err(anyhow!(
+                "could not open a tab: {}",
+                tmux_stderr(&out.stderr)
+            ));
+        }
+        let window = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if window.is_empty() {
+            return Err(anyhow!("tmux did not name the new tab"));
+        }
+        self.set_tab_options(id, &window, &spec.id, &spec.label)
+            .await?;
+        if let Err(e) = self.start_template(id, &window, &spec.kind).await {
+            let _ = self.close_tab(id, &window).await;
+            return Err(e);
+        }
+        Ok(window)
+    }
+
+    async fn rename_tab(&self, id: &str, window: &str, label: &str) -> Result<()> {
+        if !valid_target(id) {
+            return Err(anyhow!("Unknown workspace"));
+        }
+        let label = clean_label(label)?.unwrap_or_else(|| "Tab".into());
+        let target = Self::window_target(id, window);
+        let args = [
+            "set-option",
+            "-w",
+            "-t",
+            &target,
+            "@termenbox_label",
+            &label,
+        ]
+        .map(String::from);
+        let out = self.runner.run("tmux", &args).await?;
+        if !out.status.success() {
+            return Err(anyhow!("that tab is gone"));
+        }
+        let args = ["rename-window", "-t", &target, &label].map(String::from);
+        let _ = self.runner.run("tmux", &args).await?;
+        Ok(())
+    }
+
+    async fn focus_tab(&self, id: &str, window: &str) -> Result<()> {
+        if !valid_target(id) {
+            return Err(anyhow!("Unknown workspace"));
+        }
+        let args = ["select-window", "-t", &Self::window_target(id, window)].map(String::from);
+        let out = self.runner.run("tmux", &args).await?;
+        if !out.status.success() {
+            return Err(anyhow!("that tab is gone"));
+        }
+        Ok(())
+    }
+
+    async fn close_tab(&self, id: &str, window: &str) -> Result<()> {
+        if !valid_target(id) {
+            return Err(anyhow!("Unknown workspace"));
+        }
+        let args = ["kill-window", "-t", &Self::window_target(id, window)].map(String::from);
+        let out = self.runner.run("tmux", &args).await?;
+        if !out.status.success() {
+            return Err(anyhow!("that tab is gone"));
+        }
+        Ok(())
+    }
+
+    async fn attach_tab(&self, id: &str, window: &str, cols: u16, rows: u16) -> Result<Attachment> {
+        if !valid_target(id) {
+            return Err(anyhow!("Unknown workspace"));
+        }
+        let args = ["select-window", "-t", &Self::window_target(id, window)].map(String::from);
+        let out = self.runner.run("tmux", &args).await?;
+        if !out.status.success() {
+            return Err(anyhow!("that tab is gone"));
+        }
+        self.attach(id, cols, rows)
+    }
+
+    async fn capture_tab_styled(&self, id: &str, window: &str) -> Result<String> {
+        if !valid_target(id) {
+            return Err(anyhow!("Unknown workspace"));
+        }
+        let args = [
+            "capture-pane",
+            "-e",
+            "-p",
+            "-t",
+            &Self::window_target(id, window),
+        ]
+        .map(String::from);
+        let out = self.runner.run("tmux", &args).await?;
+        if !out.status.success() {
+            return Err(anyhow!("the tab cannot be read"));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    async fn send_text_to_window(&self, id: &str, window: &str, text: &str) -> Result<()> {
+        if !valid_target(id) {
+            return Err(anyhow!("Unknown workspace"));
+        }
+        let target = Self::window_target(id, window);
+        for (i, part) in text.split('\r').enumerate() {
+            if i > 0 {
+                let args = ["send-keys", "-t", &target, "Enter"].map(String::from);
+                self.runner.run("tmux", &args).await?;
+            }
+            if !part.is_empty() {
+                let args = ["send-keys", "-t", &target, "-l", "--", part].map(String::from);
+                self.runner.run("tmux", &args).await?;
+            }
+        }
+        Ok(())
     }
 
     async fn create_with(
@@ -752,7 +1175,7 @@ impl WorkspaceBackend for TmuxBackend {
     }
 
     async fn capture(&self, id: &str) -> Result<String> {
-        if !valid_name(id) {
+        if !valid_target(id) {
             return Err(anyhow!("Unknown workspace"));
         }
         let args = ["capture-pane", "-p", "-t", &format!("={id}:")].map(String::from);
@@ -764,7 +1187,7 @@ impl WorkspaceBackend for TmuxBackend {
     }
 
     async fn capture_history(&self, id: &str) -> Result<String> {
-        if !valid_name(id) {
+        if !valid_target(id) {
             return Err(anyhow!("Unknown workspace"));
         }
         // `-S -` and `-E -` are the start and end of the history; `-J` joins the lines the width wrapped.
@@ -791,7 +1214,7 @@ impl WorkspaceBackend for TmuxBackend {
     }
 
     async fn capture_styled(&self, id: &str) -> Result<String> {
-        if !valid_name(id) {
+        if !valid_target(id) {
             return Err(anyhow!("Unknown workspace"));
         }
         let args = ["capture-pane", "-e", "-p", "-t", &format!("={id}:")].map(String::from);
@@ -803,7 +1226,7 @@ impl WorkspaceBackend for TmuxBackend {
     }
 
     async fn capture_window_styled(&self, id: &str, index: u32) -> Result<String> {
-        if !valid_name(id) {
+        if !valid_target(id) {
             return Err(anyhow!("Unknown workspace"));
         }
         let args = ["capture-pane", "-e", "-p", "-t", &format!("={id}:{index}")].map(String::from);
@@ -815,7 +1238,7 @@ impl WorkspaceBackend for TmuxBackend {
     }
 
     async fn send_text(&self, id: &str, text: &str) -> Result<()> {
-        if !valid_name(id) {
+        if !valid_target(id) {
             return Err(anyhow!("Unknown workspace"));
         }
         // `\r` is Enter; everything else is literal (`-l`), so no tmux key name can be smuggled in.
@@ -834,7 +1257,7 @@ impl WorkspaceBackend for TmuxBackend {
     }
 
     async fn rename(&self, id: &str, name: &str) -> Result<()> {
-        if !valid_name(id) {
+        if !valid_target(id) {
             return Err(anyhow!("Unknown workspace"));
         }
         let label = clean_label(name)?;
@@ -859,7 +1282,7 @@ impl WorkspaceBackend for TmuxBackend {
     }
 
     async fn kill(&self, id: &str) -> Result<()> {
-        if !valid_name(id) {
+        if !valid_target(id) {
             return Err(anyhow!("Unknown workspace"));
         }
         let args = ["kill-session", "-t", &format!("={id}")].map(String::from);
@@ -878,7 +1301,7 @@ impl WorkspaceBackend for TmuxBackend {
     }
 
     async fn select_window(&self, id: &str, index: u32) -> Result<()> {
-        if !valid_name(id) {
+        if !valid_target(id) {
             return Err(anyhow!("Unknown workspace"));
         }
         let args = ["select-window", "-t", &format!("={id}:{index}")].map(String::from);
@@ -890,7 +1313,7 @@ impl WorkspaceBackend for TmuxBackend {
     }
 
     async fn focus_window(&self, id: &str, index: u32) -> Result<bool> {
-        if !valid_name(id) {
+        if !valid_target(id) {
             return Err(anyhow!("Unknown workspace"));
         }
         let args = [
@@ -913,7 +1336,7 @@ impl WorkspaceBackend for TmuxBackend {
     }
 
     async fn new_window(&self, id: &str) -> Result<()> {
-        if !valid_name(id) {
+        if !valid_target(id) {
             return Err(anyhow!("Unknown workspace"));
         }
         // tmux does not expand a format in -c, so ask for the current window's directory first. It is passed
@@ -940,7 +1363,7 @@ impl WorkspaceBackend for TmuxBackend {
     }
 
     async fn kill_window(&self, id: &str, index: u32) -> Result<()> {
-        if !valid_name(id) {
+        if !valid_target(id) {
             return Err(anyhow!("Unknown workspace"));
         }
         let args = ["kill-window", "-t", &format!("={id}:{index}")].map(String::from);
@@ -952,7 +1375,7 @@ impl WorkspaceBackend for TmuxBackend {
     }
 
     fn attach(&self, id: &str, cols: u16, rows: u16) -> Result<Attachment> {
-        if !valid_name(id) {
+        if !valid_target(id) {
             return Err(anyhow!("Unknown workspace"));
         }
         // `=` makes the target an exact name match.
@@ -1023,6 +1446,89 @@ impl WorkspaceBackend for CompositeBackend {
             None => &self.parts[0].1,
         };
         b.create_with(name, backend, dir, template).await
+    }
+
+    async fn create_workspace(
+        &self,
+        name: &str,
+        backend: Option<&str>,
+        dir: Option<&str>,
+        template: Option<&str>,
+        first: &TabSpec,
+    ) -> Result<CreatedWorkspace> {
+        let kind = backend.unwrap_or(&self.parts[0].0);
+        let mut made = self
+            .part(kind)?
+            .create_workspace(name, backend, dir, template, first)
+            .await?;
+        made.id = format!("{kind}:{}", made.id);
+        Ok(made)
+    }
+
+    async fn new_tab(&self, id: &str, spec: &TabSpec) -> Result<String> {
+        let (kind, name) = id
+            .split_once(':')
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
+        self.part(kind)?.new_tab(name, spec).await
+    }
+
+    async fn ensure_session(
+        &self,
+        id: &str,
+        label: &str,
+        dir: &str,
+        first: &TabSpec,
+    ) -> Result<String> {
+        let (kind, name) = id
+            .split_once(':')
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
+        self.part(kind)?
+            .ensure_session(name, label, dir, first)
+            .await
+    }
+
+    async fn rename_tab(&self, id: &str, window: &str, label: &str) -> Result<()> {
+        let (kind, name) = id
+            .split_once(':')
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
+        self.part(kind)?.rename_tab(name, window, label).await
+    }
+
+    async fn focus_tab(&self, id: &str, window: &str) -> Result<()> {
+        let (kind, name) = id
+            .split_once(':')
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
+        self.part(kind)?.focus_tab(name, window).await
+    }
+
+    async fn close_tab(&self, id: &str, window: &str) -> Result<()> {
+        let (kind, name) = id
+            .split_once(':')
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
+        self.part(kind)?.close_tab(name, window).await
+    }
+
+    async fn attach_tab(&self, id: &str, window: &str, cols: u16, rows: u16) -> Result<Attachment> {
+        let (kind, name) = id
+            .split_once(':')
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
+        self.part(kind)?.attach_tab(name, window, cols, rows).await
+    }
+
+    async fn capture_tab_styled(&self, id: &str, window: &str) -> Result<String> {
+        let (kind, name) = id
+            .split_once(':')
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
+        self.part(kind)?.capture_tab_styled(name, window).await
+    }
+
+    async fn send_text_to_window(&self, id: &str, window: &str, text: &str) -> Result<()> {
+        let (kind, name) = id
+            .split_once(':')
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
+        self.part(kind)?
+            .send_text_to_window(name, window, text)
+            .await
     }
 
     fn attach(&self, id: &str, cols: u16, rows: u16) -> Result<Attachment> {
@@ -1283,7 +1789,7 @@ impl WorkspaceBackend for CommandBackend {
     }
 
     fn attach(&self, id: &str, cols: u16, rows: u16) -> Result<Attachment> {
-        if !valid_name(id) {
+        if !valid_target(id) {
             return Err(anyhow!("Unknown workspace"));
         }
         let argv = Self::fill(&self.attach, id);
