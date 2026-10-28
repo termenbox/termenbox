@@ -2,7 +2,6 @@
 
 | ID | Title | Governed By | Grounded In | Status |
 |---|---|---|---|---|
-| no-native-apps | No Native Applications | 0011 | 0002,0003,0010 | superseded |
 | native-wrapper-keeps-web-parity | Native wrappers are optional and the web client stays complete | 0140 | 0002,0003,0010,0140 | active |
 | no-paid-services | No Paid Services in Required Stack | 0011,0140 | 0001,0013 | active |
 | minimum-browser-support | Minimum Browser Support Policy | 0001,0005 | 0003,0004 | active |

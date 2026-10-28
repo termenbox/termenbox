@@ -49,6 +49,20 @@ bootstrap-generated: true
 | transport | WebTransport, WebSocket, QUIC |
 | wsl | WSL2 and other NAT'd VM hosts |
 | wasm | WebAssembly, Rust→WASM, wasm-bindgen |
+| api-token | Scoped API tokens and the permissions they need |
+| audit | Security-relevant action records |
+| cellular | Mobile-carrier networks and their NAT behaviour |
+| durable-object | Cloudflare Durable Objects |
+| installer | The install script and what it changes on the host |
+| limits | Quotas and caps set by a service or the plan |
+| logging | The server's log output, files and levels |
+| nat | Network address translation and hole punching |
+| networking | Addressing, ports, firewalls and routes between devices |
+| onboarding | First-run flow for a new user or server |
+| release | Versioned builds, channels and their publication |
+| stun | STUN discovery of public addresses |
+| turn | TURN relays |
+| updater | In-place server updates |
 
 <!-- Umbrella tags (carried by >50% of active decisions): -->
 <!-- None yet — decisions still drafting -->
