@@ -41,11 +41,11 @@ Context: `acp.rs` restores saved workspaces after a restart (`session/resume`/`s
 Do: Keep a small counter in the run marker file (consecutive unclean exits and the workspace ids live at each). On restore, skip auto-resume for ids present in the last two unclean sets and set the notice "Not resumed: the server stopped unexpectedly twice while this was running. Open it to resume." Reset the counter on a clean exit or after 10 minutes of uptime.
 Done-when: a test with two simulated unclean exits restores the live workspace stopped with the notice, and with one unclean exit it resumes as today. (Done: `acp::tests::safe_mode_*`, `crash::tests::safe_mode_*`. The entry is kept with `retry`, so the next restore that is not in a loop resumes it; there is no open-to-resume action yet, so the notice's "Open it" is only true after a restart.)
 
-### 3.1 Restart policy in installed units — [ ]‖
+### 3.1 Restart policy in installed units — [x]‖
 Class: implement · Needs: none · Check: `grep -c "Restart=always" packages/client/installer/install.sh`
 Context: `packages/client/installer/install.sh` writes systemd units in two places (lines ~819 and ~990) with `Restart=on-failure` and `RestartSec=2`; `docker/docker-compose.yml` has `restart: unless-stopped`. Decision 0143 wants `Restart=always`, `RestartSec=2`, and a start-limit that ends in a visible failed state. Updates deliberately restart the unit (`KillMode=process` keeps tmux alive), so `Restart=always` must not fight the updater or uninstaller (`packages/server/src/updater.rs`, `uninstall.rs`).
 Do: Change both unit writers to `Restart=always` with `StartLimitIntervalSec=300` and `StartLimitBurst=10` in `[Unit]`/`[Service]` as systemd requires; confirm `systemctl stop` still stops it. Update any installer test that matches the old text.
-Done-when: the grep prints 2; installer tests/shellcheck in CI config pass (`scripts/dev.sh sh -c 'ls packages/client/installer'` lists the test, run it).
+Done-when: the grep prints 2; installer tests/shellcheck in CI config pass (`scripts/dev.sh sh -c 'ls packages/client/installer'` lists the test, run it). (Done: grep prints 2; shellcheck -S warning is clean; `packages/server/tests/install_channels.rs` now asserts the user unit's four lines and passes with `install_script` and `uninstall_script`. Uninstall and the updater use `disable --now` and `restart`, which `Restart=always` does not fight. The system-unit writer is covered by `.github/scripts/test-native-install.sh` in CI only.)
 
 ### 3.2 A health check that sees hangs — [ ]
 Class: implement · Needs: 2.2 · Check: `scripts/dev.sh cargo test -p termenbox-server health`
