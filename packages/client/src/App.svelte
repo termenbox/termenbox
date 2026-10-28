@@ -28,6 +28,7 @@
   import type { ServerListItem } from './lib/protocol';
   import { parseClaim, parseServerLink, serverCode, serverLink } from './lib/onboard';
   import { sendServerLink } from './lib/share';
+  import { DirClient } from './lib/dirClient';
   import { ServerHub, newWorkspaceTargets, serverKey, workspaceDestinations, workspaceKey, type HubServer } from './lib/hub';
   import { lookup } from './lib/directory';
   import { linksToAccount, mergePaired, parsePairLink, type PairLink } from './lib/pair';
@@ -117,6 +118,13 @@
   let listPage = false;
   $: away = serversPage || $destination !== 'workspaces' || listPage;
   $: if ($destination !== 'settings') serversPage = false;
+  // `list_dir` for the folder picker: one in-order request queue per server; its replies come back through onMessage.
+  const dirClients = new Map<string, DirClient>();
+  const listDir = (serverId: string, req: { path?: string; prefix?: string; hidden?: boolean }) => {
+    let c = dirClients.get(serverId);
+    if (!c) dirClients.set(serverId, c = new DirClient(m => hub.send(serverId, m)));
+    return c.list(req);
+  };
   const hub = new ServerHub({
     credentials: async () => {
       const pair = await deviceKey();
@@ -142,10 +150,11 @@
         if (!away && id === activeServerId && key === activeKey) showWorkspace(key);
       });
     },
-    onDrop: (_id, reason, upMs) => noteError(`connection lost after ${Math.round(upMs / 1000)} s: ${reason}`),
+    onDrop: (_id, reason, upMs) => { dirClients.get(_id)?.fail('The connection was lost.'); noteError(`connection lost after ${Math.round(upMs / 1000)} s: ${reason}`); },
     onFatal: (_id, reason) => { noteError(`connection: ${reason}`); showToast(reason, 'error'); },
     onMessage: (_id, msg) => {
       const id = _id;
+      dirClients.get(_id)?.handle(msg);
       if (msg.type === 'snapshot') snapshots.apply(workspaceKey(_id, msg.workspace), msg);
       else if (msg.type === 'workspace_attached') preview = null;
       else if (msg.type === 'workspace_view') { if (id === activeServerId && msg.workspace === activeWorkspaceId) heldView = mergeView(heldView, msg); }
@@ -1053,7 +1062,7 @@
       ondetach={() => detach(menuWorkspace.key)} oncloseworkspace={() => { actionConfirm = true; actionKey = menuWorkspace.key; }} onclose={() => menuKey = null} />
   {/if}
   {#if showNew}
-    <NewWorkspaceSheet servers={newWorkspaceTargets($hubServers).servers} initialServerId={newTarget.serverId} locked={newTarget.locked} workspaces={$allWorkspaces} windows={$allWindows} oncreate={createWorkspace} onclose={() => showNew = false} />
+    <NewWorkspaceSheet servers={newWorkspaceTargets($hubServers).servers} initialServerId={newTarget.serverId} locked={newTarget.locked} workspaces={$allWorkspaces} windows={$allWindows} oncreate={createWorkspace} {listDir} onclose={() => showNew = false} />
   {/if}
 
   {#if reportText !== null}

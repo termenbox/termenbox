@@ -89,6 +89,23 @@ export function visibleAgents(supported: { id: string; label: string }[], recent
   return pick ? [...tiles.slice(0, Math.max(0, count - 1)), pick] : tiles;
 }
 
+/** The agent preselected when the dialog opens: the last one used here, else Claude Code, else the first one offered. */
+export function defaultAgent(supported: { id: string }[], recent: string[]): string {
+  const ids = supported.map(t => t.id);
+  return recent.find(id => ids.includes(id)) ?? (ids.includes('claude') ? 'claude' : ids[0] ?? 'claude');
+}
+
+const LAST_SERVER_KEY = 'termenbox_new_workspace_server';
+let lastServerMemory = '';
+/** The server a workspace was last created on from this device. */
+export function getLastServer(storage: Pick<Storage, 'getItem'> | undefined = viewStore()): string {
+  try { return storage?.getItem(LAST_SERVER_KEY) || lastServerMemory; } catch { return lastServerMemory; }
+}
+export function saveLastServer(serverId: string, storage: Pick<Storage, 'setItem'> | undefined = viewStore()): void {
+  lastServerMemory = serverId;
+  try { storage?.setItem(LAST_SERVER_KEY, serverId); } catch { /* Private mode: kept in memory. */ }
+}
+
 const RECENT_DIRS_KEY = 'termenbox_recent_dirs';
 const MAX_RECENT_DIRS = 10;
 // Where storage is missing or throws, the list lives here for the rest of the page's life.

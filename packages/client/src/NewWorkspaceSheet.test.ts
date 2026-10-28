@@ -95,34 +95,66 @@ describe('the View control', () => {
   });
 });
 
-describe('agent picker', () => {
-  it('shows "Show all N agents" button when more than 6 agents available', () => {
-    const out = html({ servers: manyAgents, initialServerId: 'a', locked: true, windows: manyDirs });
-    expect(out).toContain('Show all 12 agents');
+describe('the agent row', () => {
+  const tmuxOnly = [server('a', 'alpha')];
+  it('shows three tiles and a More tile that counts every agent', () => {
+    const out = html({ servers: manyAgents, initialServerId: 'a', locked: true });
+    expect(out.match(/data-testid="agent-tile"/g)).toHaveLength(3);
+    expect(out).toMatch(/data-testid="agents-more"[\s\S]*?<small[^>]*>12</);
+    expect(out).not.toContain('Show all');
   });
-
-  it('shows only first 6 agents in grid, rest in picker', () => {
-    const out = html({ servers: manyAgents, initialServerId: 'a', locked: true, windows: manyDirs });
-    // Should have 6 agent buttons in the grid
-    const agentButtons = (out.match(/role="radio"/g) || []).length;
-    expect(agentButtons).toBeGreaterThanOrEqual(6);
+  it('starts on Claude Code and offers claude, codex and shell on a device with no history', () => {
+    const out = html({ servers: tmuxOnly });
+    expect(out).toMatch(/aria-checked="true"[^>]*data-testid="agent-tile"[\s\S]*?Claude Code/);
+    for (const label of ['Claude Code', 'Codex', 'Shell']) expect(out).toContain(label);
+  });
+  it('preselects the last used agent', () => {
+    vi.stubGlobal('localStorage', { getItem: (k: string) => (k === 'termenbox_recent_agents' ? '{"a":["codex"]}' : null), setItem: () => {} });
+    try {
+      const out = html({ servers: tmuxOnly });
+      expect(out).toMatch(/aria-checked="true"[^>]*data-testid="agent-tile"[\s\S]*?Codex/);
+    } finally { vi.unstubAllGlobals(); }
   });
 });
 
-describe('directory chips picker', () => {
-  it('shows "+N more" button when more than 3 directories', () => {
-    const out = html({ servers: [server('a', 'alpha', ['tmux', 'acp'], ['claude'])], initialServerId: 'a', locked: true, windows: manyDirs });
-    expect(out).toContain('+1 more');
+describe('the folder field', () => {
+  const one = [server('a', 'alpha', ['tmux', 'acp'], ['claude'])];
+  it('has no free-text path input, only a readonly field and a Choose button', () => {
+    const out = html({ servers: one, initialServerId: 'a', locked: true });
+    expect(out).not.toContain('placeholder="/home/you/project');
+    expect(out).toContain('aria-label="Folder"');
+    expect(out).toContain('data-testid="folder-change"');
+    expect(out).toContain('Choose a folder');
+    expect(out).not.toContain('type="file"');
   });
+  it('seeds the chips from the folders of open workspaces and keeps three of them with a More chip', () => {
+    const out = html({ servers: one, initialServerId: 'a', locked: true, windows: manyDirs });
+    expect(out.match(/data-testid="dir-chip"/g)).toHaveLength(3);
+    expect(out).toContain('data-testid="dirs-more"');
+  });
+  it('saves no recents while the dialog is only open (they are written by create())', () => {
+    const st: Record<string, string> = {};
+    vi.stubGlobal('localStorage', { getItem: (k: string) => st[k] ?? null, setItem: (k: string, v: string) => { st[k] = v; } });
+    try {
+      html({ servers: one, initialServerId: 'a', locked: true, windows: manyDirs });
+      expect(st.termenbox_recent_agents).toBeUndefined(); // create() is the only writer; its click path is asserted in the browser (5.1)
+      expect(st.termenbox_recent_dirs).toBeUndefined();
+    } finally { vi.unstubAllGlobals(); }
+  });
+});
 
-  it('shows first 3 dirs as chips, rest in picker', () => {
-    const out = html({ servers: [server('a', 'alpha', ['tmux', 'acp'], ['claude'])], initialServerId: 'a', locked: true, windows: manyDirs });
-    // Should have chip buttons for first 3 dirs
-    expect(out).toContain('/home/user/project1');
-    expect(out).toContain('/home/user/project2');
-    expect(out).toContain('/home/user/project3');
-    // 4th dir should NOT be in chips (only in picker)
-    const chipSection = out.substring(out.indexOf('dir-chips'), out.indexOf('</div>', out.indexOf('dir-chips')) + 6);
-    expect(chipSection).not.toContain('/home/user/project4');
+describe('the footer', () => {
+  it('summarises the agent and the folder and says so politely', () => {
+    const out = html({ servers: [server('a', 'alpha')] });
+    expect(out).toMatch(/aria-live="polite"[^>]*data-testid="summary"[^>]*>Claude Code in the default folder</);
+  });
+  it('hides the Server select for one server and shows it for several', () => {
+    expect(html({ servers: [server('a', 'alpha')] })).not.toContain('Server <');
+    expect(html({ servers: [server('a', 'alpha'), server('b', 'beta')] })).toContain('Server <');
+  });
+  it('keeps Create disabled with the reason visible for an ACP server with no folder', () => {
+    const out = html({ servers: [server('a', 'alpha', ['acp'], ['claude'])], initialServerId: 'a', locked: true });
+    expect(out).toContain('Choose the directory the agent works in');
+    expect(out).toMatch(/<button[^>]*disabled[^>]*>Create<|<button type="submit"[^>]*disabled/);
   });
 });
