@@ -274,6 +274,18 @@ pub enum ClientMessage {
         name: String,
     },
     ListWorkspaces,
+    /// Asks for the directories directly inside `path` (the server user's `$HOME` when absent), for the folder
+    /// picker (decision 0140). Owner only, confined to `$HOME`; answered with `dir_listing` or `dir_error`.
+    ListDir {
+        #[serde(default)]
+        path: Option<String>,
+        /// Keeps only names that start with it, case-insensitively.
+        #[serde(default)]
+        prefix: Option<String>,
+        /// Includes names that start with a dot.
+        #[serde(default)]
+        hidden: bool,
+    },
     NewWorkspace {
         name: String,
         /// Which workspace manager to create it in (`tmux`, `command`); the first one when absent.
@@ -521,6 +533,21 @@ pub enum ServerMessage {
     },
     Workspaces {
         workspaces: Vec<WorkspaceInfo>,
+    },
+    /// Answer to `list_dir`: the directories inside `path`, never files (decision 0140). `parent` is absent at
+    /// `home`; `truncated` says more than `DIR_LISTING_MAX` matched.
+    DirListing {
+        path: String,
+        #[serde(default)]
+        parent: Option<String>,
+        entries: Vec<DirEntry>,
+        #[serde(default)]
+        truncated: bool,
+        home: String,
+    },
+    /// `list_dir` was refused or failed; `reason` is a short sentence for the user.
+    DirError {
+        reason: String,
     },
     WorkspaceAttached {
         workspace_id: String,
@@ -791,6 +818,20 @@ pub enum AcpBody {
     Notice { level: String, text: String },
     #[serde(other)]
     Unknown,
+}
+
+/// The most directories one `dir_listing` carries.
+pub const DIR_LISTING_MAX: usize = 500;
+
+/// One directory in a `dir_listing`: a name only, never a path, size or time.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct DirEntry {
+    pub name: String,
+    /// A symbolic link to a directory; the server did not follow it out of `$HOME`.
+    #[serde(default)]
+    pub symlink: bool,
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]

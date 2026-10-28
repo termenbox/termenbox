@@ -76,6 +76,12 @@
   ],
   "bulk_or_other": [
     {
+      "type": "list_dir",
+      "path": "/home/me",
+      "prefix": "co",
+      "hidden": false
+    },
+    {
       "type": "list_workspaces"
     },
     {

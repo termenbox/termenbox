@@ -788,6 +788,26 @@ impl WorkspaceManager {
                 send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
                 let _ = self.list_changed.send(conn);
             }
+            ClientMessage::ListDir {
+                path,
+                prefix,
+                hidden,
+            } => {
+                let is_owner = auth
+                    .owner()
+                    .is_some_and(|o| o.provider == identity.provider && o.id == identity.id);
+                // The time and the key are in the line; the entries never are (guardrail listdir-is-owner-only...).
+                info!(target: "audit", event = "list_dir", provider = %identity.provider, account_id = %identity.id, owner = is_owner, path_hash = %crate::listdir::path_hash(path.as_deref()));
+                let reply = crate::listdir::answer(
+                    is_owner,
+                    crate::listdir::server_home(),
+                    path,
+                    prefix,
+                    hidden,
+                )
+                .await;
+                send_r(tx, &reply).await?;
+            }
             ClientMessage::Peek { workspace, hash } => {
                 // Only a counter in the audit log: what is on the screen is never logged.
                 audit_peek(&identity.provider, &identity.id, &workspace);

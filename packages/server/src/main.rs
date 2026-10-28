@@ -38,6 +38,7 @@ mod journal;
 mod layout;
 mod legacy;
 mod link;
+mod listdir;
 mod locale;
 mod netutil;
 mod opencode_hooks;
