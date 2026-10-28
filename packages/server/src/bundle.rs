@@ -30,7 +30,11 @@ const OMITTED: &[&str] = &[
     "keystrokes",
     "data",
     "session",
+    "session_id",
     "workspace",
+    "workspace_id",
+    "window",
+    "device",
     "name",
     "title",
     "cwd",
@@ -429,7 +433,7 @@ mod tests {
         let lines = [
             // what the log layer writes, with fields that must not survive a second look
             format!(
-                r#"{{"ts":"2026-10-28T11:51:09.638Z","level":"info","target":"audit","fields":{{"event":"sign_in","login":"alice-the-owner","remote":"203.0.113.9:51234","session":"my-secret-project","message":"signed in from 203.0.113.9:51234 with {GH}"}}}}"#
+                r#"{{"ts":"2026-10-28T11:51:09.638Z","level":"info","target":"audit","fields":{{"event":"sign_in","login":"alice-the-owner","remote":"203.0.113.9:51234","session":"my-secret-project","workspace_id":"client-x-deploy","device":"devkey-9f3a","message":"signed in from 203.0.113.9:51234 with {GH}"}}}}"#
             ),
             // ACP message text under the names the layer would have dropped, and in nested values
             r#"{"ts":"2026-10-28T11:51:10.000Z","level":"debug","target":"acp","fields":{"text":"please rotate the prod database password","prompt":"ssh root@10.1.2.3","content":["rm -rf /home/alice/work"],"event":"acp_update"}}"#.into(),
@@ -471,6 +475,8 @@ mod tests {
             "/home/alice",
             "alice",
             "my-secret-project",
+            "client-x-deploy",
+            "devkey-9f3a",
             "rotate the prod database",
             "rm -rf",
             dir.to_str().unwrap(),
