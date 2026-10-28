@@ -22,8 +22,9 @@ describe('BundleReader', () => {
     expect(r.add(2, 3, 'c')).toBeNull();
     expect(r.add(0, 1, 'fresh')).toBe('fresh');
   });
-  it('scrubs again whatever the server sent', () => {
-    expect(new BundleReader().add(0, 1, `cert ${CERT} from 10.0.0.5:4443`)).not.toMatch(/10\.0\.0\.5|eyJ2/);
+  it('keeps what the server sent, source locations and times included', () => {
+    const text = 'panic at packages/server/src/acp.rs:12 11:51:09';
+    expect(new BundleReader().add(0, 1, text)).toBe(text);
   });
 });
 
@@ -71,6 +72,21 @@ describe('the issue address', () => {
     expect(diag).toContain('"n":4999');
     expect(diag).not.toContain('"n":0}');
     expect(plan.copy).toBeUndefined();
+  });
+  it('still carries the newest log lines when a crash file made the head long', () => {
+    const crash = `{"backtrace":"${'frame '.repeat(2000)}"}`;
+    const long = bundle(300).replace('previous exit:', `newest crash file:\n${crash}\n\nprevious exit:`);
+    const t = trimForUrl(long);
+    expect(t.text).toContain('log (newest last):');
+    expect(t.text).toContain('"n":299');
+    expect(encodeURIComponent(t.text).length).toBeLessThanOrEqual(MAX_URL_TEXT);
+  });
+  it('does not throw on non-ASCII text cut mid-character, and bounds what the user wrote', () => {
+    const emoji = bundle(5).replace('channel: stable', '😀'.repeat(5000));
+    expect(() => trimForUrl(emoji)).not.toThrow();
+    const plan = incidentPlan(bundle(5000), 'ы'.repeat(1500));
+    expect(plan.url.length - 'https://github.com/termenbox/termenbox/issues/new?'.length).toBeLessThan(MAX_URL_TEXT + 1600 + 200);
+    expect(new URL(plan.url).searchParams.get('what')?.length).toBeGreaterThan(0);
   });
   it('trims even when the head alone is too long', () => {
     const t = trimForUrl('x'.repeat(MAX_URL_TEXT * 2));

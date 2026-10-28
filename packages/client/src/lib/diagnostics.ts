@@ -1,6 +1,6 @@
 // Server diagnostics (decision 0144): the owner asks the server for a scrubbed bundle, reads it, and then downloads it or
 // opens a prefilled `incident` issue. Nothing leaves the app without a tap. After an unclean exit the app says so once.
-import { MAX_URL_TEXT, scrub, type Plan } from './report';
+import { MAX_URL_TEXT, type Plan } from './report';
 
 const REPO = 'termenbox/termenbox';
 /** Where the server's bundle puts the log; the part of the bundle that matters least when the text must be cut. */
@@ -22,7 +22,8 @@ export class BundleReader {
     if (this.held.length < parts) return null;
     const whole = this.held.join('');
     this.held = [];
-    return scrub(whole);
+    // The server has already scrubbed it; scrubbing again would also rewrite `acp.rs:12` and `11:51:09`.
+    return whole;
   }
 }
 
@@ -30,20 +31,33 @@ function encodedLength(text: string): number {
   return encodeURIComponent(text).length;
 }
 
-/** Cuts the text until its encoded form fits, keeping the head (versions, exit report, crash) and the end of the log. */
+/** Drops a lone high surrogate a slice may leave at the end: encodeURIComponent throws on it. */
+function wellFormed(text: string): string {
+  const last = text.charCodeAt(text.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? text.slice(0, -1) : text;
+}
+
+function shrinkTo(text: string, max: number, note = ''): string {
+  let cut = text;
+  while (cut.length > 0 && encodedLength(cut + note) > max) cut = wellFormed(cut.slice(0, Math.floor(cut.length * 0.9)));
+  return cut;
+}
+
+/**
+ * Cuts the text until its encoded form fits. The versions and exit report at the top keep at most 40% of the room,
+ * so the newest log lines always get the rest, even after a crash file made the head long.
+ */
 export function trimForUrl(text: string, max = MAX_URL_TEXT): { text: string; trimmed: boolean } {
   if (encodedLength(text) <= max) return { text, trimmed: false };
   const at = text.indexOf(LOG_HEADER);
-  const head = at < 0 ? text : text.slice(0, at + LOG_HEADER.length);
+  const pre = at < 0 ? text : text.slice(0, at);
   const log = at < 0 ? '' : text.slice(at + LOG_HEADER.length);
-  const fits = (t: string) => encodedLength(t + TRIMMED) <= max;
-  // The log's newest lines matter most: drop from its start, a line at a time, then from the head's end if still too long.
+  const head = shrinkTo(pre, Math.floor(max * 0.4)) + (at < 0 ? '' : LOG_HEADER);
   const lines = log.split('\n');
   let keep = lines.length;
-  while (keep > 0 && !fits(head + lines.slice(lines.length - keep).join('\n'))) keep = Math.max(0, keep - Math.max(1, Math.floor(keep / 8)));
-  let cut = head + lines.slice(lines.length - keep).join('\n');
-  while (cut.length > 0 && !fits(cut)) cut = cut.slice(0, Math.floor(cut.length * 0.9));
-  return { text: cut + TRIMMED, trimmed: true };
+  const tail = (n: number) => lines.slice(lines.length - n).join('\n');
+  while (keep > 0 && encodedLength(head + tail(keep) + TRIMMED) > max) keep = Math.max(0, keep - Math.max(1, Math.floor(keep / 8)));
+  return { text: shrinkTo(head + tail(keep), max, TRIMMED) + TRIMMED, trimmed: true };
 }
 
 /** The `version:` line of the bundle, for the template's version field. */
@@ -53,11 +67,13 @@ function versionOf(text: string): string {
 
 /** The prefilled issue. The text shown to the user is what goes in; what does not fit is theirs to attach. */
 export function incidentPlan(text: string, what = ''): Plan & { trimmed: boolean } {
-  const { text: fit, trimmed } = trimForUrl(text);
+  // The user's words are bounded by their encoded size too, and come out of the diagnostics' share.
+  const said = what ? encodeURIComponent(shrinkTo(what, 1500)) : '';
+  const { text: fit, trimmed } = trimForUrl(text, MAX_URL_TEXT - said.length);
   const version = versionOf(text);
   const query = [
     'template=incident.yml',
-    what ? `what=${encodeURIComponent(what.slice(0, 1500))}` : '',
+    said ? `what=${said}` : '',
     version ? `version=${encodeURIComponent(version)}` : '',
     `diagnostics=${encodeURIComponent(fit)}`,
   ].filter(Boolean).join('&');
