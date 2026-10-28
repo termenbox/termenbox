@@ -3,7 +3,7 @@
 # every cache (cargo, target/, pnpm store, Playwright browsers) lives in a named volume, not in the image.
 #
 #   rust  : cargo build/test/clippy for the server (C toolchain, cmake for aws-lc, OpenSSL headers, tmux for the e2e tests)
-#   full  : rust + Node 24 + pnpm 9 + Debian's Chromium, which the e2e scripts use through CHROME_PATH (CI uses
+#   full  : rust + Node 24 + pnpm 9 + Debian's Chromium and ffmpeg (the feature videos, e2e/video), which the e2e scripts use through CHROME_PATH (CI uses
 #           Google Chrome stable; this is the same engine, pinned by the image rather than by the runner)
 FROM rust:1-slim-bookworm AS rust
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -29,7 +29,7 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && npm install -g pnpm@9 \
     && apt-get update \
-    && apt-get install -y --no-install-recommends chromium fonts-dejavu-core fonts-liberation \
+    && apt-get install -y --no-install-recommends chromium ffmpeg fonts-dejavu-core fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 ENV PNPM_HOME=/cache/pnpm \
     npm_config_store_dir=/cache/pnpm-store \

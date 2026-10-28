@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { backendFor, loadView, managerOptions, recentDirs, resolveView, saveView, suggestName, TEMPLATES, validDir, validName, viewControl } from './newworkspace';
+import { backendFor, COLD_START_AGENTS, getRecentDirs, inlineAgents, mergeRecentDirs, saveRecentDir, loadView, managerOptions, recentDirs, resolveView, saveView, suggestName, TEMPLATES, validDir, validName, viewControl } from './newworkspace';
 
 const w = (path: string) => ({ index: 0, name: 'n', command: 'bash', path, active: false });
 
@@ -100,5 +100,69 @@ describe('the view', () => {
     expect(loadView(undefined, 'a', 'claude')).toBe('terminal');
     saveView(undefined, 'a', 'claude', 'acp');
     expect(loadView(undefined, 'a', 'claude')).toBe('acp');
+  });
+});
+
+const store = () => { const m = new Map<string, string>(); return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v) }; };
+const broken = { getItem: () => { throw new Error('off'); }, setItem: () => { throw new Error('off'); } };
+
+describe('the agent tiles', () => {
+  it('offers claude, codex, shell on a cold start of a tmux server', () => {
+    expect(inlineAgents(TEMPLATES, []).map(t => t.id)).toEqual(COLD_START_AGENTS);
+  });
+  it('puts recent agents first and pads from the cold-start list', () => {
+    expect(inlineAgents(TEMPLATES, ['gemini']).map(t => t.id)).toEqual(['gemini', 'claude', 'codex']);
+    expect(inlineAgents(TEMPLATES, ['codex', 'gemini', 'aider', 'amp']).map(t => t.id)).toEqual(['codex', 'gemini', 'aider']);
+  });
+  it('never offers an unsupported agent', () => {
+    const acp = TEMPLATES.filter(t => ['claude', 'gemini', 'shell'].includes(t.id));
+    expect(inlineAgents(acp, ['codex', 'aider']).map(t => t.id)).toEqual(['claude', 'shell', 'gemini']);
+    expect(inlineAgents([], ['claude'])).toEqual([]);
+  });
+});
+
+describe('recent folders', () => {
+  it('keeps the most recent first, once each, at most ten, per server', () => {
+    const s = store();
+    for (let i = 0; i < 12; i++) saveRecentDir('a', `/d${i}`, s);
+    saveRecentDir('a', '/d5', s);
+    saveRecentDir('b', '/other', s);
+    const a = getRecentDirs('a', s);
+    expect(a).toHaveLength(10);
+    expect(a.slice(0, 2)).toEqual(['/d5', '/d11']);
+    expect(getRecentDirs('b', s)).toEqual(['/other']);
+  });
+  it('ignores a relative path', () => {
+    const s = store();
+    saveRecentDir('a', 'code', s);
+    expect(getRecentDirs('a', s)).toEqual([]);
+  });
+  it('falls back to memory when storage throws', () => {
+    saveRecentDir('mem', '/x', broken);
+    expect(getRecentDirs('mem', broken)).toEqual(['/x']);
+  });
+  it('survives with no open windows and seeds from them only when empty', () => {
+    const s = store();
+    saveRecentDir('a', '/kept', s);
+    expect(mergeRecentDirs(getRecentDirs('a', s), {}, 'a/')).toEqual(['/kept']);
+    const wins = { 'a/ws': { windows: [{ path: '/open', index: 0 }] } } as never;
+    expect(mergeRecentDirs([], wins, 'a/')).toEqual(['/open']);
+    expect(mergeRecentDirs(['/kept'], wins, 'a/')).toEqual(['/kept']);
+  });
+});
+
+describe('server home memory', () => {
+  it('keeps a home per server and survives storage that throws', async () => {
+    const { getHome, saveHome } = await import('./newworkspace');
+    const store = new Map<string, string>();
+    const ok = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) };
+    saveHome('a', '/home/a', ok);
+    saveHome('b', '/home/b', ok);
+    expect(getHome('a', ok)).toBe('/home/a');
+    expect(getHome('b', ok)).toBe('/home/b');
+    const boom = { getItem: () => { throw new Error('off'); }, setItem: () => { throw new Error('off'); } };
+    saveHome('c', '/home/c', boom);
+    expect(getHome('c', boom)).toBe('/home/c');
+    expect(getHome('zzz', boom)).toBe('');
   });
 });

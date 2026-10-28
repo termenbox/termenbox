@@ -6,6 +6,7 @@ import { launch, contextOptions, trace, keepIfFailed, ENGINE } from './browser.m
 import { createServer } from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname, basename } from 'node:path';
+import { FakeTree } from './fake-tree.mjs';
 
 const dist = join(import.meta.dirname, '../dist');
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.png': 'image/png', '.woff2': 'font/woff2' };
@@ -34,6 +35,7 @@ export class ScriptedServer {
   received = [];
   sockets = new Set();
   views = new Map();
+  tree = new FakeTree();
   states = { s1: 'needs_input', s2: 'needs_input', s3: 'idle' };
   names = { s1: 'build', s2: 'deploy', s3: 'shell' };
   constructor() {
@@ -63,6 +65,7 @@ export class ScriptedServer {
         this.send(ws, this.snapshot());
         break;
       case 'list_workspaces': this.send(ws, { type: 'workspaces', workspaces: this.workspaces() }); break;
+      case 'list_dir': this.send(ws, this.tree.reply(m)); break;
       case 'ping': this.send(ws, { type: 'pong' }); break;
       case 'attach':
         this.send(ws, { type: 'workspace_attached', workspace_id: m.workspace_id });
@@ -95,9 +98,9 @@ export async function startShared() {
 
 let scenarios = 0;
 
-export async function startApp(shared, { viewport, deviceScaleFactor, storage = {}, blockedStorage = false, clipboard = false, server = new ScriptedServer() } = {}) {
+export async function startApp(shared, { viewport, deviceScaleFactor, storage = {}, blockedStorage = false, clipboard = false, server = new ScriptedServer(), contextExtra = {} } = {}) {
   const { origin, browser } = shared;
-  const ctx = await browser.newContext(contextOptions({ viewport, ...(deviceScaleFactor ? { deviceScaleFactor } : {}), isMobile: false, hasTouch: false, ...(clipboard && ENGINE === 'chromium' ? { permissions: ['clipboard-read', 'clipboard-write'] } : {}) }));
+  const ctx = await browser.newContext(contextOptions({ viewport, ...(deviceScaleFactor ? { deviceScaleFactor } : {}), isMobile: false, hasTouch: false, ...contextExtra, ...(clipboard && ENGINE === 'chromium' ? { permissions: ['clipboard-read', 'clipboard-write'] } : {}) }));
   const label = `${basename(process.argv[1], '.mjs')}-${++scenarios}`;
   await trace(ctx, label);
   const seed = { termenbox_auth: JSON.stringify({ cert, login: 'tester' }), termenbox_ios_hint: '1',

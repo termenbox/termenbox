@@ -41,6 +41,7 @@ mod journal;
 mod layout;
 mod legacy;
 mod link;
+mod listdir;
 mod locale;
 mod logging;
 mod netutil;
