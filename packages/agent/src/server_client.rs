@@ -143,7 +143,7 @@ impl ServerClient {
                     debug!("Workspace: {} ({})", workspace.name, workspace.id);
                 }
             }
-            ServerMessage::WorkspaceAttached { workspace_id } => {
+            ServerMessage::WorkspaceAttached { workspace_id, .. } => {
                 info!("Attached to workspace: {}", workspace_id);
                 *current_workspace = Some(workspace_id.clone());
 

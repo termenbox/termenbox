@@ -1859,6 +1859,8 @@ impl WorkspaceBackend for AcpBackend {
                 name: e.label.clone().unwrap_or_else(|| name.clone()).into(),
                 agent: Some(e.agent.clone()),
                 backend: None,
+                dir: e.dir.clone(),
+                ..Default::default()
             })
             .collect();
         v.sort_by(|a, b| a.id.cmp(&b.id));

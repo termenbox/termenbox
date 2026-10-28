@@ -193,6 +193,7 @@ pub fn parse_list(output: &str) -> Vec<WorkspaceInfo> {
                 name: name.into(),
                 agent: None,
                 backend: None,
+                ..Default::default()
             })
         })
         .collect()

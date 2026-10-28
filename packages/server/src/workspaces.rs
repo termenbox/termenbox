@@ -337,7 +337,7 @@ impl WorkspaceManager {
                         }
                         continue;
                     };
-                    if let (true, ClientMessage::Attach { workspace_id }) = (self.mode.is_host(), &client_msg) {
+                    if let (true, ClientMessage::Attach { workspace_id, .. }) = (self.mode.is_host(), &client_msg) {
                         // Who got a shell on the host and as whom; never what they typed.
                         info!(target: "audit", event = "host_session", provider = %identity.provider, account_id = %identity.id, login = %identity.login, run_as = %self.mode.label(), session = %workspace_id);
                     }
@@ -751,7 +751,7 @@ impl WorkspaceManager {
                     .await?;
                 }
             }
-            ClientMessage::Foreground { workspace } => {
+            ClientMessage::Foreground { workspace, tab: _ } => {
                 if let Some(p) = &self.push {
                     p.set_foreground(conn, workspace);
                 }
@@ -763,6 +763,7 @@ impl WorkspaceManager {
             }
             ClientMessage::Answer {
                 workspace,
+                tab: _,
                 prompt_id,
                 seq,
                 choice,
@@ -857,7 +858,7 @@ impl WorkspaceManager {
                 send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
                 let _ = self.list_changed.send(conn);
             }
-            ClientMessage::Peek { workspace, hash } => {
+            ClientMessage::Peek { workspace, tab: _, hash } => {
                 // Only a counter in the audit log: what is on the screen is never logged.
                 audit_peek(&identity.provider, &identity.id, &workspace);
                 let window = self
@@ -1070,6 +1071,14 @@ impl WorkspaceManager {
                 info!(target: "audit", event = "history_deleted", provider = %identity.provider, account_id = %identity.id, login = %identity.login, removed);
                 send_r(tx, &ServerMessage::HistoryDeleted { removed }).await?;
             }
+            ClientMessage::NewTab { .. }
+            | ClientMessage::RenameTab { .. }
+            | ClientMessage::CloseTab { .. }
+            | ClientMessage::MoveTab { .. }
+            | ClientMessage::FocusTab { .. }
+            | ClientMessage::MoveWorkspace { .. } => {
+                return Err(anyhow::anyhow!("Workspace tabs are not available yet"));
+            }
             ClientMessage::Unknown => {}
             ClientMessage::ListWorkspaces => {
                 let workspaces = self.backend.list().await?;
@@ -1093,7 +1102,7 @@ impl WorkspaceManager {
                 send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
                 let _ = self.list_changed.send(conn);
             }
-            ClientMessage::Attach { workspace_id } => {
+            ClientMessage::Attach { workspace_id, tab: _ } => {
                 *attachment = None; // detach the previous one first
                                     // Land in the window the tab showed, unless somebody else is looking at the workspace.
                 if let Some(index) = self
@@ -1104,7 +1113,14 @@ impl WorkspaceManager {
                     let _ = self.backend.focus_window(&workspace_id, index).await;
                 }
                 *attachment = Some(self.backend.attach(&workspace_id, *cols, *rows)?);
-                send_r(tx, &ServerMessage::WorkspaceAttached { workspace_id }).await?;
+                send_r(
+                    tx,
+                    &ServerMessage::WorkspaceAttached {
+                        workspace_id,
+                        tab: None,
+                    },
+                )
+                .await?;
             }
             ClientMessage::Detach => {
                 *attachment = None;
@@ -1993,6 +2009,7 @@ mod propagation_tests {
                 name: self.0.lock().unwrap().clone().into(),
                 agent: None,
                 backend: None,
+                ..Default::default()
             }])
         }
         async fn create(&self, _: &str) -> Result<()> {
