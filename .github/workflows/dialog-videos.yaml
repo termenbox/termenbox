@@ -1,0 +1,70 @@
+name: Dialog Videos
+
+# DECISION-0141: captioned walkthroughs of the New workspace dialog, rendered on scripted data (packages/client/e2e/video).
+# Dispatch only: never on a push, a pull request or a schedule. No secrets and no model call.
+on:
+  workflow_dispatch:
+    inputs:
+      case:
+        description: Which walkthrough
+        type: choice
+        options: [all, recent-folder, other-agent, browse-folder, type-path]
+        default: all
+      profile:
+        description: Which screen
+        type: choice
+        options: [phone, desktop, both]
+        default: both
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    name: Render the walkthroughs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install the browser
+        working-directory: packages/client
+        run: pnpm exec playwright-core install --with-deps chromium
+
+      - name: Build the client and its e2e pages
+        working-directory: packages/client
+        run: pnpm run e2e:build
+
+      - name: Render
+        working-directory: packages/client
+        env:
+          CASE: ${{ inputs.case }}
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          cases="$CASE"; [ "$cases" = all ] && cases="recent-folder other-agent browse-folder type-path"
+          profiles="$PROFILE"; [ "$profiles" = both ] && profiles="phone desktop"
+          for c in $cases; do
+            for p in $profiles; do
+              node e2e/video/render.mjs --case "$c" --profile "$p" --out "$GITHUB_WORKSPACE/videos"
+            done
+          done
+          ls -l "$GITHUB_WORKSPACE/videos"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dialog-videos
+          path: videos
+          retention-days: 30
+          if-no-files-found: error
