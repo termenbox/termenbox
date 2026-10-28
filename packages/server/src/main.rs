@@ -27,6 +27,7 @@ mod claude_hooks;
 mod cloudflare;
 mod connection;
 mod control;
+mod crash;
 mod directory;
 #[cfg(test)]
 mod e2e;
@@ -764,6 +765,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Only the server run path keeps a log file; a hook or a one-shot command does not.
     logging::enable_file(&args.config_dir);
+    // After the log file exists, so the first line of a bad run is already in it: the hook writes the crash file and the
+    // marker says whether the last run ended without a clean exit (decision 0142).
+    crash::install_panic_hook(&args.config_dir);
+    let _previous_run = crash::start(&args.config_dir);
+    let _clean_exit = crash::CleanExit;
 
     match auth.owner() {
         Some(owner) => info!("Server owner: @{}", owner.login),
@@ -948,6 +954,7 @@ async fn main() -> anyhow::Result<()> {
                     // Let the reply reach the client, then stop; Docker then finds the idle marker.
                     std::thread::spawn(|| {
                         std::thread::sleep(std::time::Duration::from_secs(1));
+                        crash::mark_clean();
                         std::process::exit(0);
                     });
                 }),
