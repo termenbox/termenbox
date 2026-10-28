@@ -9,12 +9,12 @@ const server = (id: string, name: string, backends = ['tmux'], acpAgents: string
   server: { server_url: '', server_id: id, server_name: name, registered_at: 0, record: { ip: '127.0.0.1', udp_port: 1, fingerprint: '' } } as HubServer['server'],
 });
 const manyAgents = [server('a', 'alpha', ['tmux', 'acp'], ['claude', 'codex', 'opencode', 'copilot', 'gemini', 'kilo', 'aider', 'goose'])];
-const manyDirs: WindowMap = {
+const manyDirs = {
   'a/ws-1': { windows: [{ path: '/home/user/project1' }] },
   'a/ws-2': { windows: [{ path: '/home/user/project2' }] },
   'a/ws-3': { windows: [{ path: '/home/user/project3' }] },
   'a/ws-4': { windows: [{ path: '/home/user/project4' }] },
-};
+} as unknown as WindowMap; // fixtures carry only the path
 const html = (props: Record<string, unknown>) => (render as unknown as (c: unknown, o: { props: Record<string, unknown> }) => { body: string })(NewWorkspaceSheet, { props: { workspaces: [], windows: {}, oncreate: () => {}, onclose: () => {}, ...props } }).body;
 
 describe('the new workspace sheet', () => {

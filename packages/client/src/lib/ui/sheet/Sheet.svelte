@@ -10,7 +10,7 @@
     onclose,
     class: className = '',
     children,
-  }: { open?: boolean; title: string; side?: 'bottom' | 'right' | 'center'; onclose?: () => void; class?: string; children: Snippet } = $props();
+  }: { open?: boolean; title: string; side?: 'bottom' | 'right'; onclose?: () => void; class?: string; children: Snippet } = $props();
 </script>
 
 <!-- A panel docked to an edge of the app shell (no portal, see Dialog). -->
@@ -25,8 +25,7 @@
       class={cn(
         'absolute overflow-y-auto border-border bg-bg-secondary p-4',
         side === 'bottom' ? 'inset-x-0 bottom-0 max-h-[85%] rounded-t-2xl border-t' :
-        side === 'right' ? 'inset-y-0 right-0 w-[min(100%,360px)] border-l' :
-        'inset-0 max-h-[85%] max-w-[500px] m-auto rounded-xl border',
+        'inset-y-0 right-0 w-[min(100%,360px)] border-l',
         className,
       )}
     >

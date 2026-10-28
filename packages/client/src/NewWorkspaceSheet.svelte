@@ -254,8 +254,6 @@
     {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
     <div class="actions"><button type="button" class="secondary" on:click={onclose}>Cancel</button><button type="submit" disabled={!ok}>Create</button></div>
   </form>
-</dialog>
-
 <!-- Agent Picker Sheet -->
 <PickerSheet
   bind:open={showAgentPicker}
@@ -266,7 +264,6 @@
   filterable
   filterPlaceholder="Filter agents…"
   emptyMessage="No agents match"
-  side="center"
 />
 
 <!-- Directory Chips Picker Sheet -->
@@ -279,8 +276,8 @@
   filterable
   filterPlaceholder="Filter directories…"
   emptyMessage="No directories match"
-  side="center"
 />
+</dialog>
 
 <style>
   dialog { margin: auto auto 0; width: min(100%, 460px); max-height: calc(var(--app-height, 100dvh) - 16px); overflow-y: auto; padding: 0; border: 1px solid var(--border); border-radius: 16px 16px 0 0; background: var(--bg-secondary); color: var(--fg); }
