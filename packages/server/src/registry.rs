@@ -627,16 +627,16 @@ impl Registry {
             (record, id)
         };
         self.ensure_windows(backend, &record).await?;
-        let window = {
-            let state = self.state.lock().unwrap();
-            state
-                .workspaces
-                .iter()
-                .find(|r| r.id == workspace)
-                .and_then(|r| r.tabs.iter().find(|t| t.id == tab))
-                .and_then(|t| t.window.clone())
-                .ok_or_else(|| anyhow!("Unknown tab"))?
-        };
+        let record = self
+            .state
+            .lock()
+            .unwrap()
+            .workspaces
+            .iter()
+            .find(|r| r.id == workspace)
+            .cloned()
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
+        let window = self.window_for_tab(backend, &record, &tab).await?;
         let attachment = backend.attach_tab(&record.id, &window, cols, rows).await?;
         {
             let mut state = self.state.lock().unwrap();
@@ -654,9 +654,8 @@ impl Registry {
         backend: &dyn WorkspaceBackend,
         record: &WorkspaceRecord,
     ) -> Result<()> {
-        if record.tabs.iter().any(|t| t.window.is_some())
-            && backend.windows(&record.id).await.is_ok()
-        {
+        if backend.windows(&record.id).await.is_ok() {
+            // The session is alive; a tab whose window was closed outside is recreated alone, by window_for_tab.
             return Ok(());
         }
         if record.tabs.is_empty() {
@@ -736,22 +735,58 @@ impl Registry {
                 .or_else(|| record.tabs.first().map(|t| t.id.clone()));
             (record, id)
         };
-        if record.tabs.iter().any(|t| t.window.is_none())
-            || backend.windows(&record.id).await.is_err()
-        {
+        if backend.windows(&record.id).await.is_err() {
             self.ensure_windows(backend, &record).await?;
         }
-        let state = self.state.lock().unwrap();
-        Ok(state
-            .workspaces
+        let Some(tab) = tab else {
+            return Ok(None);
+        };
+        let record = {
+            let state = self.state.lock().unwrap();
+            match state.workspaces.iter().find(|r| r.id == workspace) {
+                Some(record) => record.clone(),
+                None => return Ok(None),
+            }
+        };
+        let Some(known) = record.tabs.iter().find(|t| t.id == tab) else {
+            return Ok(None);
+        };
+        if known.window.is_some() {
+            return Ok(known.window.clone());
+        }
+        Ok(Some(self.window_for_tab(backend, &record, &tab).await?))
+    }
+
+    /// A tab whose window was closed outside termenbox is recreated as a shell in its own directory, alone.
+    async fn window_for_tab(
+        &self,
+        backend: &dyn WorkspaceBackend,
+        record: &WorkspaceRecord,
+        tab: &str,
+    ) -> Result<String> {
+        let known = record
+            .tabs
             .iter()
-            .find(|r| r.id == workspace)
-            .and_then(|r| {
-                r.tabs
-                    .iter()
-                    .find(|t| Some(t.id.as_str()) == tab.as_deref())
-            })
-            .and_then(|t| t.window.clone()))
+            .find(|t| t.id == tab)
+            .ok_or_else(|| anyhow!("Unknown tab"))?;
+        if let Some(window) = &known.window {
+            return Ok(window.clone());
+        }
+        let spec = TabSpec {
+            id: known.id.clone(),
+            label: known.label.clone(),
+            kind: "shell".into(),
+            dir: resolve_tab_dir(&record.dir, &known.dir)?,
+        };
+        let window = backend.new_tab(&record.id, &spec).await?;
+        let mut state = self.state.lock().unwrap();
+        if let Some(r) = state.workspaces.iter_mut().find(|r| r.id == record.id) {
+            if let Some(t) = r.tabs.iter_mut().find(|t| t.id == tab) {
+                t.window = Some(window.clone());
+            }
+            self.save(&state);
+        }
+        Ok(window)
     }
 
     pub fn tabs(&self, workspace: &str) -> Vec<TabRecord> {
