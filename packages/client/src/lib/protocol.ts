@@ -7,6 +7,8 @@ export type ClientMessage =
   | { type: 'revoke_device'; device: string }
   /** Owner-only: install the newer release now; the answer is `update_requested`, and the service restarts when it is done. */
   | { type: 'update_server' }
+  /** Owner-only (decision 0144): asks for the scrubbed diagnostics bundle; the answer is `diagnostics_bundle` parts. */
+  | { type: 'diagnostics_bundle' }
   | { type: 'uninstall'; confirm_name: string; delete_user?: boolean; remove_tmux?: boolean; kill_workspaces?: boolean }
   | { type: 'agent_sync'; after: Record<string, number> }
   | { type: 'peek'; workspace: string; hash?: string }
@@ -117,7 +119,9 @@ export type ServerMessage =
   | { type: 'acp_events'; workspace: string; epoch: number; last: number; reset?: boolean; frames: unknown[] }
   | { type: 'control_ack'; req: number; ok: boolean; error?: string }
   /** The server's last run ended without a clean exit (decision 0142). `at_ms` is when it was last seen alive: show it once per value. */
-  | { type: 'previous_exit'; at_ms: number; streak: number; crashed: boolean };
+  | { type: 'previous_exit'; at_ms: number; streak: number; crashed: boolean }
+  /** One part (from 0, in order) of the answer to `diagnostics_bundle`: the direct transport carries 64 KiB a message. */
+  | { type: 'diagnostics_bundle'; part: number; parts: number; text: string };
 
 /** One health sample in whole percents. A metric the server could not read is absent, never 0 (the first CPU sample is always absent). */
 export interface HealthPoint { ts: number; cpu_percent?: number; ram_percent?: number; disk_percent?: number; event_log_bytes?: number }

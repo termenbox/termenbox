@@ -59,7 +59,7 @@ Context: Decision 0144 and guardrail `diagnostics-never-include-secrets` (scrub 
 Do: Add an authenticated owner-only request that returns a bundle: last 2 MB of `termenbox.jsonl`, newest crash file, previous-exit report, versions/channel, health history. Scrub server-side (IPv4/IPv6, ports, tokens, home paths, anything the log layer would drop) in a new `bundle.rs`. Return text; never write it elsewhere.
 Done-when: a test feeds a log containing realistic secrets, addresses, a home path and ACP message text and the bundle contains none of them; non-owners get an error.
 
-### 4.2 Client: preview, download, crash prompt, prefilled issue — [ ]
+### 4.2 Client: preview, download, crash prompt, prefilled issue — [x]
 Class: implement · Needs: 4.1 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test'`
 Context: `packages/client/src/lib/report.ts` builds the problem report, shows it to the user before it leaves and opens GitHub (decision 0086); `.github/ISSUE_TEMPLATE/problem.yml` is the template. Decision 0144: after a `previous_exit` message (step 1.3; show it once per `at_ms`) the app says so once and offers to build the bundle and open a prefilled GitHub issue labelled `incident`. Guardrails `errors-fit-one-screen`, `ui-never-moves-under-the-finger`, `usage-stays-on-device` apply: nothing is sent without a tap.
 Do: Add an "Server diagnostics" action next to Report a problem that requests the bundle, shows it, and offers Download and Open issue (template `incident.yml`, text trimmed to fit the URL, rest attached by the user). Add the one-time unclean-exit banner. Add tests alongside `report.test.ts`.

@@ -9,6 +9,7 @@
   /** Settings is a destination of its own; the menu only leads there. */
   export let onsettings: () => void;
   export let onreport: () => void;
+  export let ondiagnostics: () => void = () => {};
   /** Unread inbox items, and the way into the inbox. */
   export let unread = 0;
   export let oninbox: () => void = () => {};
@@ -29,6 +30,7 @@
     <button class="secondary" on:click={() => choose(oninbox)}>Inbox{#if unread > 0} ({unread} unread){/if}</button>
     <button class="secondary" on:click={() => choose(onsettings)}>Settings</button>
     <button class="secondary" on:click={() => choose(onreport)}>Report a problem</button>
+    <button class="secondary" on:click={() => choose(ondiagnostics)}>Server diagnostics</button>
     <p class="ver">Termenbox {APP_VERSION}</p>
     <div class="account">{#if avatar && !broken}<img src={avatar} alt="" width="28" height="28" referrerpolicy="no-referrer" on:error={() => broken = true} />{/if}<span>@{user}</span></div>
     <button class="secondary" on:click={() => choose(onlogout)}>Log out</button>
