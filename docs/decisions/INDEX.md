@@ -146,3 +146,4 @@
 | 0144-diagnostics-bundles-are-user-triggered-and-incidents-are-tracked-in-github-and-postmortems | Diagnostics bundles are user-triggered, and incidents are tracked in GitHub issues and postmortems | process | active | Sergey Strebulaev | - |
 | 0145-logging-never-waits-for-the-disk | Logging never waits for the disk | process | draft | - | - |
 | 0146-a-workspace-id-is-minted-by-the-server-and-the-name-is-only-a-label | A workspace id is minted by the server, and the name the owner types is only a label | product | active | Sergey Strebulaev | - |
+| 0147-a-workspace-is-a-server-record-and-each-tab-is-a-tmux-window | A workspace is a server record and each tab is a tmux window | product | active | Sergey Strebulaev | - |
