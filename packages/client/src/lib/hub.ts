@@ -21,6 +21,8 @@ export interface HubServer {
   /** The owner asked this server to update; it restarts when done, and the reconnect brings the new version. */
   updating?: boolean;
   backends: string[];
+  /** The server serves workspace tabs and the tab messages. */
+  tabs?: boolean;
   /** The agents the owner allows as ACP workspaces (T0); empty when the server runs none. */
   acpAgents: string[];
   /** Live window updates run (tmux 3.2+); false shows a notice in the server's status. */
@@ -100,7 +102,7 @@ export class ServerHub {
       else this.publish();
       return;
     }
-    const entry: Entry = { id, server, state: 'connecting', reason: '', version: '', updateAvailable: '', updating: false, backends: [], acpAgents: [], controlMode: false, tmuxVersion: '', prefix: '', connection: null, path: '', failures: [],
+    const entry: Entry = { id, server, state: 'connecting', reason: '', version: '', updateAvailable: '', updating: false, backends: [], tabs: false, acpAgents: [], controlMode: false, tmuxVersion: '', prefix: '', connection: null, path: '', failures: [],
       workspaces: [], agents: {}, windows: {}, refresh: !server.record && !server.bundle && !!server.server_id, everReady: false };
     this.entries.set(id, entry);
     this.connect(entry);
@@ -109,6 +111,28 @@ export class ServerHub {
   /** This device's last round trip to a server, from its heartbeat; null before the first one. */
   rtt(id: string): number | null { return this.entries.get(id)?.connection?.rtt ?? null; }
   send(id: string, message: ClientMessage) { this.connection(id)?.send(message); }
+  /** A tab message for the workspace a device shows: the wire carries the server-local workspace id. */
+  sendTab(key: string, message: ClientMessage) { this.sendToWorkspace(key, message); }
+  newTab(key: string, template: string, label = '', dir = '') {
+    this.sendToWorkspace(key, { type: 'new_tab', workspace: key, template, label, dir });
+  }
+  renameTab(key: string, tab: string, label: string) {
+    this.sendToWorkspace(key, { type: 'rename_tab', workspace: key, tab, label });
+  }
+  closeTab(key: string, tab: string) {
+    this.sendToWorkspace(key, { type: 'close_tab', workspace: key, tab });
+  }
+  moveTab(key: string, tab: string, index: number) {
+    this.sendToWorkspace(key, { type: 'move_tab', workspace: key, tab, index });
+  }
+  focusTab(key: string, tab: string) {
+    this.sendToWorkspace(key, { type: 'focus_tab', workspace: key, tab });
+  }
+  /** The server's own order; every device follows the broadcast. */
+  moveWorkspace(key: string, index: number) {
+    const found = this.findWorkspace(key);
+    if (found) this.send(found.serverId, { type: 'move_workspace', workspace: found.id, index });
+  }
   /** Global keys stay in the UI; the wire always carries the original server-local workspace id. */
   sendToWorkspace(key: string, message: ClientMessage) {
     const workspace = this.findWorkspace(key);
@@ -184,7 +208,7 @@ export class ServerHub {
         e.everReady = true;
         const { claim, ...saved } = e.server;
         e.server = { ...saved, server_name: saved.server_name || msg.server_name };
-        e.version = msg.version ?? ''; e.updateAvailable = msg.update_available ?? ''; e.updating = false; e.backends = msg.backends ?? []; e.acpAgents = msg.acp_agents ?? [];
+        e.version = msg.version ?? ''; e.updateAvailable = msg.update_available ?? ''; e.updating = false; e.backends = msg.backends ?? []; e.tabs = !!msg.tabs; e.acpAgents = msg.acp_agents ?? [];
         e.controlMode = !!msg.control_mode; e.tmuxVersion = msg.tmux_version ?? ''; e.prefix = msg.prefix ?? '';
         this.publish(); this.opts.onSaved?.(e.server);
         connection.send({ type: 'list_workspaces' });
@@ -251,7 +275,7 @@ export class ServerHub {
   }
   /** The server list alone: a health sample every 10 s per server must not rebuild the workspace, agent and window stores. */
   private publishServers(entries = [...this.entries.values()]) {
-    this.servers.set(entries.map(({ id, server, state, reason, version, updateAvailable, updating, backends, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures }) => ({ id, server, state, reason, version, updateAvailable, updating, backends, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures })));
+    this.servers.set(entries.map(({ id, server, state, reason, version, updateAvailable, updating, backends, tabs, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures }) => ({ id, server, state, reason, version, updateAvailable, updating, backends, tabs, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures })));
   }
   private publish() {
     const entries = [...this.entries.values()];

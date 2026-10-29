@@ -49,6 +49,15 @@ describe('applyOrder', () => {
   });
 });
 
+describe('the order the server sent', () => {
+  it('wins over the device order when every workspace has one', () => {
+    const server = (key: string, order: number) => ({ key, serverId: 's1', name: key, order });
+    expect(keys(orderWorkspaces([server('s1/c', 2), server('s1/a', 0), server('s1/b', 1)]))).toEqual(['s1/a', 's1/b', 's1/c']);
+    // A server that predates order keeps the device-local one.
+    expect(keys(orderWorkspaces([w('s1', 'c'), w('s1', 'a')]))).toEqual(['s1/c', 's1/a']);
+  });
+});
+
 describe('the order kept on the device', () => {
   it('reads and writes per server, survives garbage and a storage that throws', () => {
     const mem = new Mem();
