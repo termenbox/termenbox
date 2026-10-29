@@ -5,6 +5,7 @@ import { needsYou } from './tabs';
 import type { AgentMap, WorkspaceAgent } from './agents';
 import type { HubServer, HubWorkspace } from './hub';
 import type { FleetState } from './ds/states';
+import { aggregateStatus } from './workspaceTabs';
 
 export function fleetOf(agent?: WorkspaceAgent): FleetState {
   if (!agent) return 'idle';
@@ -24,7 +25,7 @@ export function navGroups(servers: HubServer[], workspaces: HubWorkspace[], agen
     server,
     workspaces: workspaces
       .filter((s) => s.serverId === server.id)
-      .map((s): NavWorkspace => ({ key: s.key, name: s.name, serverId: s.serverId, serverName: s.serverName, state: fleetOf(agents[s.key]), agent: agents[s.key]?.agent })),
+      .map((s): NavWorkspace => ({ key: s.key, name: s.name, serverId: s.serverId, serverName: s.serverName, state: aggregateStatus(s.key, s, agents[s.key]), agent: agents[s.key]?.agent })),
   }));
 }
 
