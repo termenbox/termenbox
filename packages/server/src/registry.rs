@@ -14,7 +14,7 @@ use std::sync::Mutex;
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use termenbox_core::protocol::{TabInfo, WorkspaceInfo};
+use termenbox_core::protocol::{Label, TabInfo, WorkspaceInfo};
 
 use crate::backend::{
     clean_label, tab_label, valid_dir, valid_template, CreatedWorkspace, TabSpec, WorkspaceBackend,
@@ -27,7 +27,7 @@ const VERSION: u32 = 1;
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct TabRecord {
     pub id: String,
-    pub label: String,
+    pub label: Label,
     /// The template it started from (`shell`, `claude`, ...).
     pub kind: String,
     /// A directory inside the workspace, relative to it; empty means the workspace directory.
@@ -43,7 +43,7 @@ pub struct TabRecord {
 pub struct WorkspaceRecord {
     /// The wire id: a minted `ws-…`, or an older workspace's name, prefixed by the backend in a composite server.
     pub id: String,
-    pub label: String,
+    pub label: Label,
     pub dir: String,
     /// Set only when the server runs more than one backend (`tmux`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -148,7 +148,7 @@ impl Registry {
                 None => {
                     let record = WorkspaceRecord {
                         id: info.id.clone(),
-                        label: label.clone(),
+                        label: label.clone().into(),
                         dir: dir_of(&observed),
                         backend: info.backend.clone(),
                         order: 0,
@@ -273,7 +273,7 @@ impl Registry {
         let mut state = self.state.lock().unwrap();
         let record = WorkspaceRecord {
             id: made.id.clone(),
-            label,
+            label: label.into(),
             dir: root,
             backend: if kinds.len() > 1 {
                 Some("tmux".into())
@@ -284,7 +284,7 @@ impl Registry {
             focus: Some(first.id.clone()),
             tabs: vec![TabRecord {
                 id: first.id,
-                label: first.label,
+                label: first.label.into(),
                 kind: first.kind,
                 dir: String::new(),
                 order: 0,
@@ -373,7 +373,7 @@ impl Registry {
         Ok((
             TabRecord {
                 id,
-                label: spec.label,
+                label: spec.label.into(),
                 kind: kind.into(),
                 dir: relative.into(),
                 order: record.tabs.len() as u32,
@@ -426,7 +426,7 @@ impl Registry {
             .find(|r| r.id == workspace)
             .ok_or_else(|| anyhow!("Unknown workspace"))?;
         if let Some(t) = record.tabs.iter_mut().find(|t| t.id == tab) {
-            t.label = label;
+            t.label = label.into();
         }
         self.save(&state);
         Ok(())
@@ -504,7 +504,7 @@ impl Registry {
             dir: record.dir.clone(),
         };
         let window = backend
-            .ensure_session(&record.id, &record.label, &record.dir, &spec)
+            .ensure_session(&record.id, record.label.as_str(), &record.dir, &spec)
             .await?;
         let _ = backend.focus_tab(&record.id, &window).await;
         let mut state = self.state.lock().unwrap();
@@ -515,7 +515,7 @@ impl Registry {
             .ok_or_else(|| anyhow!("Unknown workspace"))?;
         record.tabs.push(TabRecord {
             id,
-            label,
+            label: label.into(),
             kind: "shell".into(),
             dir: String::new(),
             order: 0,
@@ -667,7 +667,7 @@ impl Registry {
                 dir: record.dir.clone(),
             };
             let window = backend
-                .ensure_session(&record.id, &record.label, &record.dir, &spec)
+                .ensure_session(&record.id, record.label.as_str(), &record.dir, &spec)
                 .await?;
             let mut state = self.state.lock().unwrap();
             if let Some(r) = state.workspaces.iter_mut().find(|r| r.id == record.id) {
@@ -689,13 +689,13 @@ impl Registry {
         for (i, tab) in record.tabs.iter().enumerate() {
             let spec = TabSpec {
                 id: tab.id.clone(),
-                label: tab.label.clone(),
+                label: tab.label.as_str().to_string(),
                 kind: "shell".into(),
                 dir: resolve_tab_dir(&record.dir, &tab.dir)?,
             };
             let window = if i == 0 {
                 backend
-                    .ensure_session(&record.id, &record.label, &record.dir, &spec)
+                    .ensure_session(&record.id, record.label.as_str(), &record.dir, &spec)
                     .await?
             } else {
                 backend.new_tab(&record.id, &spec).await?
@@ -774,7 +774,7 @@ impl Registry {
         }
         let spec = TabSpec {
             id: known.id.clone(),
-            label: known.label.clone(),
+            label: known.label.as_str().to_string(),
             kind: "shell".into(),
             dir: resolve_tab_dir(&record.dir, &known.dir)?,
         };
@@ -825,7 +825,7 @@ impl Registry {
             {
                 let mut state = self.state.lock().unwrap();
                 if let Some(record) = state.workspaces.iter_mut().find(|r| r.id == workspace) {
-                    record.label = label;
+                    record.label = label.into();
                 }
                 self.save(&state);
             }
@@ -895,7 +895,7 @@ fn record_info(
         .iter()
         .map(|t| TabInfo {
             id: t.id.clone(),
-            label: t.label.clone().into(),
+            label: t.label.clone(),
             kind: t.kind.clone(),
             dir: t.dir.clone(),
             order: t.order,
@@ -905,7 +905,7 @@ fn record_info(
     tabs.sort_by_key(|t| t.order);
     WorkspaceInfo {
         id: record.id.clone(),
-        name: record.label.clone().into(),
+        name: record.label.clone(),
         agent,
         backend,
         dir: record.dir.clone(),
@@ -947,7 +947,7 @@ fn synthetic_info(info: &WorkspaceInfo, order: &[String]) -> WorkspaceInfo {
 
 fn reconcile_record(record: &mut WorkspaceRecord, windows: &[WindowState], label: &str) {
     if !label.is_empty() {
-        record.label = label.to_string();
+        record.label = label.into();
     }
     if record.dir.is_empty() {
         record.dir = dir_of(windows);
@@ -966,7 +966,7 @@ fn reconcile_record(record: &mut WorkspaceRecord, windows: &[WindowState], label
         if let Some(tab) = matched {
             tab.window = Some(window.window_id.clone());
             if !window.info.name.is_empty() {
-                tab.label = window.info.name.clone();
+                tab.label = window.info.name.clone().into();
             }
             continue;
         }
@@ -979,7 +979,7 @@ fn reconcile_record(record: &mut WorkspaceRecord, windows: &[WindowState], label
             .unwrap_or_else(|| "shell".to_string());
         record.tabs.push(TabRecord {
             id,
-            label: window.info.name.clone(),
+            label: window.info.name.clone().into(),
             kind,
             dir: relative_to(&record.dir, &window.info.path),
             order: record.tabs.len() as u32,
@@ -1019,12 +1019,12 @@ fn tab_number(id: &str) -> u32 {
 }
 
 fn unique_label(base: &str, tabs: &[TabRecord]) -> String {
-    if !tabs.iter().any(|t| t.label == base) {
+    if !tabs.iter().any(|t| t.label.as_str() == base) {
         return base.to_string();
     }
     for n in 2..1000 {
         let candidate = format!("{base} {n}");
-        if !tabs.iter().any(|t| t.label == candidate) {
+        if !tabs.iter().any(|t| t.label.as_str() == candidate) {
             return candidate;
         }
     }

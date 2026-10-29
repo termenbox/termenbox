@@ -569,7 +569,7 @@ impl WorkspaceManager {
                     .and_then(|id| live.iter().find(|w| w.window_id == id));
                 WindowInfo {
                     index: t.order,
-                    name: t.label.clone(),
+                    name: t.label.as_str().to_string(),
                     command: observed
                         .map(|w| w.info.command.clone())
                         .unwrap_or_else(|| t.kind.clone()),
@@ -610,7 +610,7 @@ impl WorkspaceManager {
                 let observed = at.and_then(|i| update.windows.get(i));
                 WindowInfo {
                     index: t.order,
-                    name: t.label.clone(),
+                    name: t.label.as_str().to_string(),
                     command: observed
                         .map(|w| w.command.clone())
                         .unwrap_or_else(|| t.kind.clone()),

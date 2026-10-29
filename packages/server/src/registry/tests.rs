@@ -68,13 +68,13 @@ fn every_tab_id_is_unique_and_labels_do_not_collide() {
     record.next_tab = 3;
     record.tabs.push(TabRecord {
         id,
-        label: unique_label("Shell", &record.tabs),
+        label: unique_label("Shell", &record.tabs).into(),
         kind: "shell".into(),
         dir: String::new(),
         order: 1,
         window: Some("@2".into()),
     });
-    assert_eq!(record.tabs[1].label, "Shell 2");
+    assert_eq!(record.tabs[1].label.as_str(), "Shell 2");
     assert_eq!(record.tabs[0].id, "t1");
     assert_eq!(record.tabs[1].id, "t2");
 }
