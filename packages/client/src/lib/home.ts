@@ -4,9 +4,9 @@
 import type { AgentMap, WorkspaceAgent } from './agents';
 import { bannerChoices } from './notify';
 import type { HubWorkspace } from './hub';
-import type { AttentionKind } from './protocol';
+import type { AttentionKind, TabAgentState } from './protocol';
 import type { FleetState } from './ds/states';
-import { aggregateStatus } from './workspaceTabs';
+import { aggregateStatus, tabAgentStates, tabOrder, tabStateKey } from './workspaceTabs';
 
 export type QueueKind = Exclude<AttentionKind, 'unknown'>;
 
@@ -53,16 +53,19 @@ export function fleetState(a: WorkspaceAgent | undefined): FleetState {
   return a?.state === 'working' ? 'working' : 'idle';
 }
 
-export function rowOf(s: HubWorkspace, a: WorkspaceAgent | undefined, unhealthy = false): Row {
+export function rowOf(s: HubWorkspace, a: WorkspaceAgent | undefined, unhealthy = false, tabStates: Record<string, TabAgentState> = {}): Row {
   const kind = kindOf(a);
+  const asking = kind === 'needs_input'
+    ? tabOrder(s.tabs).find((t) => tabStates[tabStateKey(s.key, t.id)]?.state === 'needs_input')
+    : undefined;
   return {
     key: s.key, name: s.name, serverId: s.serverId, serverName: s.serverName, agent: a?.agent,
-    state: aggregateStatus(s.key, s, a), kind,
+    state: aggregateStatus(s.key, s, a, tabAgentStates(s.key, tabStates)), kind,
     since: kind ? a?.attention?.raised_at ?? a?.waitingSince ?? a?.ts : undefined,
     title: a?.attention?.task?.title ?? a?.task?.title,
     prompt: kind === 'needs_input' ? a?.prompt : undefined,
     question: kind === 'needs_input' ? a?.attention?.prompt : undefined,
-    tab: s.focus,
+    tab: asking?.id ?? s.focus,
     tabs: s.tabs?.length,
     unhealthy: unhealthy || undefined,
   };
@@ -70,8 +73,8 @@ export function rowOf(s: HubWorkspace, a: WorkspaceAgent | undefined, unhealthy 
 
 /** `unhealthy` holds the ids of servers whose own verdict is unhealthy (U14); their rows carry the flag.
  *  Every open item across all servers: needs_input, then failed, then finished_unseen; the oldest wait first inside a kind. */
-export function queueOf(workspaces: HubWorkspace[], agents: AgentMap, unhealthy: ReadonlySet<string> = new Set()): Row[] {
-  return workspaces.map((s, i) => ({ r: rowOf(s, agents[s.key], unhealthy.has(s.serverId)), i }))
+export function queueOf(workspaces: HubWorkspace[], agents: AgentMap, unhealthy: ReadonlySet<string> = new Set(), tabStates: Record<string, TabAgentState> = {}): Row[] {
+  return workspaces.map((s, i) => ({ r: rowOf(s, agents[s.key], unhealthy.has(s.serverId), tabStates), i }))
     .filter((x) => x.r.kind)
     .sort((a, b) => KIND_RANK[a.r.kind!] - KIND_RANK[b.r.kind!] || (a.r.since ?? 0) - (b.r.since ?? 0) || a.i - b.i)
     .map((x) => x.r);
@@ -93,10 +96,10 @@ export function splitQueue(queue: Row[], focusKey?: string | null): HomeQueue {
 
 export type FleetCounts = Record<'needs-you' | 'working' | 'failed' | 'finished', number>;
 
-export function fleetCounts(workspaces: HubWorkspace[], agents: AgentMap): FleetCounts {
+export function fleetCounts(workspaces: HubWorkspace[], agents: AgentMap, tabStates: Record<string, TabAgentState> = {}): FleetCounts {
   const c: FleetCounts = { 'needs-you': 0, working: 0, failed: 0, finished: 0 };
   for (const s of workspaces) {
-    const st = aggregateStatus(s.key, s, agents[s.key]);
+    const st = aggregateStatus(s.key, s, agents[s.key], tabAgentStates(s.key, tabStates));
     if (st !== 'idle') c[st]++;
   }
   return c;
@@ -111,11 +114,11 @@ export function heroChoices(row: Row, a: WorkspaceAgent | undefined, now: number
  * The Workspaces destination: every workspace, by server, in the user's own order (lib/order.ts). A state never moves a row;
  * it shows on the row. Servers without workspaces are left out.
  */
-export function workspaceGroups(workspaces: HubWorkspace[], agents: AgentMap, unhealthy: ReadonlySet<string> = new Set()): { serverId: string; title: string; rows: Row[] }[] {
+export function workspaceGroups(workspaces: HubWorkspace[], agents: AgentMap, unhealthy: ReadonlySet<string> = new Set(), tabStates: Record<string, TabAgentState> = {}): { serverId: string; title: string; rows: Row[] }[] {
   const servers = [...new Set(workspaces.map((s) => s.serverId))];
   return servers.map((id) => {
     const mine = workspaces.filter((s) => s.serverId === id);
-    return { serverId: id, title: mine[0].serverName, rows: mine.map((s) => rowOf(s, agents[s.key], unhealthy.has(s.serverId))) };
+    return { serverId: id, title: mine[0].serverName, rows: mine.map((s) => rowOf(s, agents[s.key], unhealthy.has(s.serverId), tabStates)) };
   });
 }
 

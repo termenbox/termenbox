@@ -2,6 +2,7 @@
   import { EmptyState, QueueItem } from './lib/ds';
   import type { AgentMap } from './lib/agents';
   import type { HubWorkspace } from './lib/hub';
+  import type { TabAgentState } from './lib/protocol';
   import { ageText } from './lib/cards';
   import { workspaceGroups, type Row } from './lib/home';
   import { moveWorkspace, movedText } from './lib/order';
@@ -12,8 +13,8 @@
    * uses. Each row has a handle to drag it (the only part that does not scroll) and a button for the actions menu, where
    * rename and "Move up / Move down" work without dragging.
    */
-  let { workspaces, agents, now, onopen, onnew, onactions, onrename, onmove, unhealthy }: { workspaces: HubWorkspace[]; agents: AgentMap; now: number; /** Ids of the servers that say they are unhealthy (U14). */ unhealthy?: ReadonlySet<string>; onopen: (key: string) => void; onnew: (serverId?: string) => void; onactions?: (key: string) => void; /** The pencil: rename the workspace where it is shown. */ onrename?: (key: string, name: string) => void; /** The server's own order when the server serves tabs. */ onmove?: (key: string, index: number) => void } = $props();
-  const groups = $derived(workspaceGroups(workspaces, agents, unhealthy));
+  let { workspaces, agents, now, onopen, onnew, onactions, onrename, onmove, unhealthy, tabStates = {} }: { workspaces: HubWorkspace[]; agents: AgentMap; now: number; /** Ids of the servers that say they are unhealthy (U14). */ unhealthy?: ReadonlySet<string>; tabStates?: Record<string, TabAgentState>; onopen: (key: string) => void; onnew: (serverId?: string) => void; onactions?: (key: string) => void; /** The pencil: rename the workspace where it is shown. */ onrename?: (key: string, name: string) => void; /** The server's own order when the server serves tabs. */ onmove?: (key: string, index: number) => void } = $props();
+  const groups = $derived(workspaceGroups(workspaces, agents, unhealthy, tabStates));
   const meta = (r: Row) => [r.serverName, r.tabs ? `${r.tabs} ${r.tabs === 1 ? 'tab' : 'tabs'}` : '', r.since ? `waiting ${ageText(r.since, now)}` : ''].filter(Boolean).join(' · ');
 
   let scroller: HTMLElement | undefined = $state();

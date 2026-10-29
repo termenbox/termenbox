@@ -12,6 +12,7 @@
   import { edgeSwipeBack } from '../lib/edgeswipe';
   import type { AgentMap } from '../lib/agents';
   import type { HubServer, HubWorkspace } from '../lib/hub';
+  import type { TabAgentState } from '../lib/protocol';
 
   /**
    * The arrangement around a screen (decision 0101). Phone (720 px and below): content, then the bottom bar (hidden while
@@ -19,9 +20,9 @@
    * the content; with the sidebar hidden the bottom bar carries the destinations. The palette and the shortcut list are the
    * same at both widths. The frame never sizes the app: AppShell does (soft-keyboard-never-hides-input).
    */
-  let { current, onnavigate, servers, workspaces, agents, activeKey = null, chrome = true, inWorkspace = false, keyboardOpen = false, wide = $bindable(false), helpOpen = $bindable(false),
+  let { current, onnavigate, servers, workspaces, agents, tabStates = {}, activeKey = null, chrome = true, inWorkspace = false, keyboardOpen = false, wide = $bindable(false), helpOpen = $bindable(false),
     canCreate = true, onopen, onserver, onrename, oncloseworkspace, onaction = () => {}, onshortcut = () => {}, onback, children }: {
-    current: Destination; onnavigate: (d: Destination) => void; servers: HubServer[]; workspaces: HubWorkspace[]; agents: AgentMap; activeKey?: string | null; chrome?: boolean;
+    current: Destination; onnavigate: (d: Destination) => void; servers: HubServer[]; workspaces: HubWorkspace[]; agents: AgentMap; tabStates?: Record<string, TabAgentState>; activeKey?: string | null; chrome?: boolean;
     inWorkspace?: boolean; keyboardOpen?: boolean; wide?: boolean; helpOpen?: boolean; canCreate?: boolean; onopen: (key: string) => void; onserver: (id: string) => void;
     onrename?: (key: string, name: string) => void; oncloseworkspace?: (key: string) => void; onaction?: (id: string) => void; onshortcut?: (id: string) => void; onback?: () => void; children: Snippet;
   } = $props();
@@ -32,7 +33,7 @@
   const sidebarShown = $derived(chrome && wide && $layout.sidebarOpen);
 
   const mac = isMac();
-  const groups = $derived(navGroups(servers, workspaces, agents));
+  const groups = $derived(navGroups(servers, workspaces, agents, tabStates));
   const needsYou = $derived(groups.reduce((n, g) => n + g.workspaces.filter((s) => s.state === 'needs-you').length, 0));
   const entries = $derived(buildEntries({ servers, workspaces, agents, wide, sidebarOpen: $layout.sidebarOpen, splitOpen: $layout.splitOpen, canCreate }));
   const hint = $derived(mac ? SHORTCUTS[0].mac : SHORTCUTS[0].other);

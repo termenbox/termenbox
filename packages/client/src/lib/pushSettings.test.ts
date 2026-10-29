@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fromForm, mutable, toForm, toggle } from './pushSettings';
-import { parseFocusLink } from './router';
+import { parseFocusLink, parseFocusTab } from './router';
 import type { PushSettings } from './protocol';
 
 const base: PushSettings = { initial_wait_secs: 600, max_interval_secs: 3600, multiplier: 2, utc_offset_minutes: 0, muted_agents: [] };
@@ -28,6 +28,11 @@ describe('push deep link', () => {
   it('reads the workspace key out of #/home?focus=, decoded', () => {
     expect(parseFocusLink('#/home?focus=one%2Ftmux%3Awork')).toBe('one/tmux:work');
     expect(parseFocusLink('#/home?focus=a%2Db')).toBe('a-b');
+  });
+  it('reads the tab of a tab-level push, still decoding the workspace key', () => {
+    expect(parseFocusLink('#/home?focus=one%2Ftmux%3Awork&tab=t2')).toBe('one/tmux:work');
+    expect(parseFocusTab('#/home?focus=one%2Ftmux%3Awork&tab=t2')).toBe('t2');
+    expect(parseFocusTab('#/home?focus=one')).toBeNull();
   });
   it('ignores every other hash, a broken escape and an oversized key', () => {
     for (const h of ['', '#/home', '#/workspaces?focus=x', '#/home?focus=', '#/home?focus=%E0%A4%A', `#/home?focus=${'a'.repeat(300)}`, '#claim=abc']) expect(parseFocusLink(h)).toBeNull();

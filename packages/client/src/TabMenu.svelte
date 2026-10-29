@@ -3,19 +3,23 @@
   import AgentIcon from './AgentIcon.svelte';
   import { rememberFocus } from './lib/focus';
   import { RowDragger, type DragView } from './lib/dragsort';
-  import { tabIconAgent, tabIconCommand, tabOrder, tabPath } from './lib/workspaceTabs';
+  import { tabIconAgent, tabIconCommand, tabOrder, tabPath, tabStateKey, tabStateWord } from './lib/workspaceTabs';
   import type { HubWorkspace } from './lib/hub';
-  import type { TabInfo } from './lib/protocol';
+  import type { TabAgentState, TabInfo } from './lib/protocol';
 
   interface TabGroup { workspace: HubWorkspace; tabs: TabInfo[]; editable?: boolean }
   /**
    * Every tab of one workspace, or of every workspace from the Workspaces page (decision 0147). Rename and Delete are in
    * the row's own menu, never a one-tap on the tab; Close workspace is the only workspace action and always asks.
    */
-  let { groups, activeKey = null, activeTab = null, onopen, onrename, onclosetab, onmove, onnew, oncloseworkspace, onclose }: {
+  let { groups, activeKey = null, activeTab = null, states = {}, cacheTtlMs = 5 * 60_000, onopen, onrename, onclosetab, onmove, onnew, oncloseworkspace, onclose }: {
     groups: TabGroup[];
     activeKey?: string | null;
     activeTab?: string | null;
+    /** Per-tab agent state (`hub.tabStates`), keyed by workspace key and tab id. */
+    states?: Record<string, TabAgentState>;
+    /** The prompt-cache lifetime the device uses for the Cache expiring filter. */
+    cacheTtlMs?: number;
     onopen: (workspaceKey: string, tab: string) => void;
     onrename?: (workspaceKey: string, tab: TabInfo) => void;
     onclosetab?: (workspaceKey: string, tab: TabInfo) => void;
@@ -32,7 +36,29 @@
   let closing: string | null = $state(null);
   let drag: DragView | null = $state(null);
   let announcement = $state('');
+  let filter: 'all' | 'recent' | 'expiring' = $state('all');
   const single = $derived(groups.length === 1);
+  const stateOf = (workspaceKey: string, tab: string) => states[tabStateKey(workspaceKey, tab)];
+  /** A tab with a warm cache in its last minute: the same rule the old Workspaces filters used (decision 0083). */
+  function expiring(workspaceKey: string, tab: TabInfo): boolean {
+    const s = stateOf(workspaceKey, tab.id);
+    if (!s?.agent || !s.last_response_at || (s.state !== 'idle' && s.state !== 'done')) return false;
+    const left = cacheTtlMs - Math.max(0, Date.now() - s.last_response_at);
+    return left > 0 && left <= 60_000;
+  }
+  /** The server's order normally; Recent puts the tab whose agent spoke last first. */
+  function shownTabs(group: TabGroup): TabInfo[] {
+    const tabs = tabOrder(group.tabs);
+    if (filter === 'expiring') return tabs.filter((t) => expiring(group.workspace.key, t));
+    if (filter === 'recent') {
+      return [...tabs].sort((a, b) => {
+        const sa = stateOf(group.workspace.key, a.id);
+        const sb = stateOf(group.workspace.key, b.id);
+        return (sb?.last_response_at ?? sb?.ts ?? 0) - (sa?.last_response_at ?? sa?.ts ?? 0);
+      });
+    }
+    return tabs;
+  }
   const dragger = new RowDragger({
     scroller: () => scroller,
     onview: (v) => (drag = v),
@@ -82,9 +108,14 @@
     <button type="button" class="secondary close" aria-label="Close the tab menu" onclick={onclose}>✕</button>
   </header>
   <div class="sr" role="status" aria-live="polite">{announcement}</div>
+  <div class="filters" role="group" aria-label="Filter tabs">
+    <button type="button" class="secondary" aria-pressed={filter === 'all'} onclick={() => (filter = 'all')}>All</button>
+    <button type="button" class="secondary" aria-pressed={filter === 'recent'} onclick={() => (filter = 'recent')}>Recent</button>
+    <button type="button" class="secondary" aria-pressed={filter === 'expiring'} onclick={() => (filter = 'expiring')}>Cache expiring</button>
+  </div>
   <div class="list" bind:this={scroller}>
     {#each groups as group (group.workspace.key)}
-      {@const tabs = tabOrder(group.tabs)}
+      {@const tabs = shownTabs(group)}
       <section data-group={group.workspace.key} aria-label={`Tabs of ${group.workspace.name}`}>
         {#if !single}<h3>{group.workspace.name} <span>{group.workspace.serverName}</span></h3>{/if}
         {#each tabs as tab (tab.id)}
@@ -105,6 +136,10 @@
             <button type="button" class="tab" aria-current={active ? 'true' : undefined} onclick={() => open(group.workspace.key, tab.id)}>
               <AgentIcon command={tabIconCommand(tab)} agent={tabIconAgent(tab)} size={22} />
               <span class="text"><span class="label">{tab.label}</span><span class="path">{tabPath(group.workspace.dir, tab)}</span></span>
+              {#if stateOf(group.workspace.key, tab.id)}
+                {@const s = stateOf(group.workspace.key, tab.id)}
+                <span class="state" data-state={s?.state} class:needs={s?.state === 'needs_input'} class:working={s?.state === 'working'} class:failed={s?.state === 'error'}>{tabStateWord(s?.state)}</span>
+              {/if}
               {#if active}<span class="here" aria-label="current tab">●</span>{/if}
             </button>
             {#if group.editable !== false && (onrename || onclosetab)}
@@ -153,7 +188,14 @@
   .who strong, .who span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .who span { color: var(--fg-muted); font-size: 0.8rem; }
   .close { min-height: 44px; min-width: 44px; padding: 0; }
+  .filters { display: flex; gap: 4px; padding: 6px 8px 0; }
+  .filters button { min-height: 32px; padding: 0 10px; font-size: 0.8rem; }
+  .filters button[aria-pressed='true'] { border-color: var(--accent); color: var(--accent); }
   .list { overflow-y: auto; padding: 4px; }
+  .state { flex: 0 0 auto; padding: 2px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--fg-muted); font-size: 0.7rem; white-space: nowrap; }
+  .state.needs { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .state.working { color: var(--fg); }
+  .state.failed { border-color: var(--danger); color: var(--danger); }
   section { display: flex; flex-direction: column; gap: 2px; }
   h3 { margin: 8px 6px 2px; font-size: 0.8rem; font-weight: 600; color: var(--fg-muted); }
   h3 span { font-weight: 400; }
