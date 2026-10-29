@@ -5,6 +5,10 @@ const rand = (lo, hi) => lo + Math.random() * (hi - lo);
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2);
 
+let assertions = 0;
+/** Cases call this (through their expectThat) each time a state check passes; a still may only follow one. */
+export const noteAssertion = () => { assertions++; };
+
 /** The multiplier for every human delay: `normal` leaves them as they are, `slow` stretches them (the /regen pace=slow knob). */
 export const paceFactor = (pace = 'normal') => {
   if (pace === 'normal') return 1;
@@ -77,8 +81,24 @@ export function humanPage(page, profile, { pace = 'normal', caption: drawCaption
   let at = { x: vp.width * 0.5, y: vp.height * 0.85 };
   let bottomBar = true;
 
+  let lastStill = 0;
   const h = {
     page, phone,
+    /** Stills taken so far: {name, png}. render.mjs writes them only when the whole case passed. */
+    stills: [],
+    /**
+     * A screenshot of the page at the context's pixel ratio, without the pointer and caption. Call it right after an
+     * expectThat: it throws when no assertion has passed since the last still (GUARDRAIL ux-scenarios-assert-a-state-before-they-capture-it).
+     */
+    async still(name) {
+      if (assertions === lastStill) throw new Error(`still ${name}: no state was asserted before it`);
+      lastStill = assertions;
+      await h.pause(400);
+      await page.evaluate(() => { const r = document.getElementById('__human'); if (r) r.style.visibility = 'hidden'; });
+      const png = await page.screenshot({ type: 'png' });
+      await page.evaluate(() => { const r = document.getElementById('__human'); if (r) r.style.visibility = ''; });
+      h.stills.push({ name, png });
+    },
     top: () => page.evaluate(() => window.__humanTop?.()),
     /** A reader's pause after something changed. */
     pause: (ms = rand(600, 1200)) => wait(ms),

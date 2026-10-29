@@ -2,8 +2,9 @@
 // assertion of its final state, so a walkthrough that did not reach it fails instead of producing a video of something else
 // (GUARDRAIL ux-scenarios-assert-a-state-before-they-capture-it). They run on the scripted server and its fake home.
 import { HOME } from '../fake-tree.mjs';
+import { noteAssertion } from './lib.mjs';
 
-const expectThat = (cond, what) => { if (!cond) throw new Error(`final state: ${what}`); };
+const expectThat = (cond, what) => { if (!cond) throw new Error(`final state: ${what}`); noteAssertion(); };
 
 /** Opens the dialog the way the profile's user does: the visible New button, else the command palette. */
 async function openDialog({ h, page, dialog, q }) {
@@ -17,6 +18,7 @@ async function openDialog({ h, page, dialog, q }) {
   }
   await dialog.waitFor({ state: 'visible', timeout: 5000 });
   await q('agent-row').waitFor({ state: 'visible', timeout: 5000 });
+  expectThat(await dialog.isVisible(), 'the dialog did not open');
   await h.pause();
 }
 
@@ -48,11 +50,13 @@ export const cases = {
     async run(c) {
       const { h, q } = c;
       await openDialog(c);
+      await h.still('dialog-open');
       await h.say('Folders you used before are one tap away', q('dir-chip').first());
       await q('dir-chip').first().waitFor({ state: 'visible', timeout: 5000 });
       await h.tap(q('dir-chip').first());
       await h.say('The summary says what will be created', q('summary'));
       expectThat(/in ~\/code\/termenbox$/.test(await q('summary').innerText()), `summary was "${await q('summary').innerText()}"`);
+      await h.still('folder-chosen');
       const made = await create(c);
       expectThat(made.dir === `${HOME}/code/termenbox`, `new_workspace dir was ${made.dir}`);
     },

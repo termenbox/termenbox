@@ -38,6 +38,7 @@ let failure = null;
 let ready = 0;
 const started = Date.now();
 let t;
+let h;
 try {
   t = await startApp(shared, {
     viewport, deviceScaleFactor: scale, storage: { termenbox_ios_hint: '1', ...cases[caseName].storage },
@@ -47,7 +48,7 @@ try {
   await t.open();
   await sleep(800);
   ready = (Date.now() - started) / 1000;
-  const h = humanPage(t.page, profile, { pace, caption: captions });
+  h = humanPage(t.page, profile, { pace, caption: captions });
   await h.say('A rendered walkthrough on scripted data, not a real device');
   const dialog = t.page.locator('dialog[aria-label="New workspace"]');
   await cases[caseName].run({ h, page: t.page, dialog, q: (id) => dialog.locator(`[data-testid="${id}"]`), server: t.server });
@@ -79,7 +80,9 @@ run([...trim, '-i', webm, '-vf', `scale=${viewport.width * scale}:${viewport.hei
 const gifWidth = phone ? 320 : 640;
 run([...trim, '-i', webm, '-vf', `fps=10,scale=${gifWidth}:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96[p];[b][p]paletteuse=dither=bayer`, '-loop', '0', gif]);
 rmSync(work, { recursive: true, force: true });
+const stillFiles = [];
+for (const { name, png } of h.stills) { const f = `${base}-${name}.png`; writeFileSync(join(out, f), png); stillFiles.push(f); }
 // What the review ledger and the staleness check read (DECISION-0149): the hash says which inputs this video was made from.
 const meta = join(out, `${base}.render.json`);
-writeFileSync(meta, JSON.stringify({ case: caseName, profile, pace, captions, hash: await hashInputs(caseName), version: appVersion(), run: process.env.GITHUB_RUN_ID ?? null, renderedAt: new Date().toISOString(), files: [`${base}.mp4`, `${base}.gif`] }, null, 2) + '\n');
+writeFileSync(meta, JSON.stringify({ case: caseName, profile, pace, captions, hash: await hashInputs(caseName), version: appVersion(), run: process.env.GITHUB_RUN_ID ?? null, renderedAt: new Date().toISOString(), files: [`${base}.mp4`, `${base}.gif`, ...stillFiles] }, null, 2) + '\n');
 console.log(`ok  ${base}: ${mp4}, ${gif}`);

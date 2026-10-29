@@ -31,11 +31,12 @@ Do: add `--pace slow|normal` (slow multiplies every delay by 1.6, default normal
 Done-when: the Check passes and `render.mjs --case recent-folder --profile phone --pace slow` produces a longer video than the default.
 Progress: done 2026-10-29; knobs.test.mjs passes (host node); recent-folder/phone is 19.6 s at normal and 26.9 s with --pace slow. --no-caption draws nothing but keeps the same timing.
 
-### 1.4 Stills at marked steps — [ ]‖
+### 1.4 Stills at marked steps — [x]‖
 Class: implement · Needs: 1.1 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && pnpm run e2e:build && node e2e/video/render.mjs --case recent-folder --profile phone --out /tmp/stills && test $(ls /tmp/stills/recent-folder-phone-*.png | wc -l) -ge 2'`
 Context: guide pages need a still next to the steps. The guardrail `ux-scenarios-assert-a-state-before-they-capture-it` applies: a still is taken only after its state was asserted. Videos record at CSS size via Playwright `recordVideo`; a still is `page.screenshot`.
 Do: add `h.still(name)` to `humanPage` that waits for the caller's assertion to have passed (the case calls it right after an `expectThat(...)`; `still` throws if none ran since the last still), screenshots the page at DPR 2 into the output folder as `<case>-<profile>-<name>.png`, and records it in the `.render.json` `files`. Mark two steps in `recent-folder` (dialog open, folder chosen). A failed case writes no stills, like no video.
 Done-when: the Check passes and a failing final assertion leaves no PNG.
+Progress: done 2026-10-29; recent-folder/phone leaves two PNGs (dialog-open, folder-chosen) listed in render.json; stills are buffered and written only after the case passes; `expectThat` calls `noteAssertion()` and `h.still` throws without one. Stills are at the context's pixel ratio (phone 2, desktop 1), pointer and caption hidden.
 
 ### 2.1 Core promise cases: `add-server`, `resume-after-close` — [ ]‖
 Class: implement · Needs: 1.1 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && pnpm run e2e:build && for c in add-server resume-after-close; do for p in phone desktop; do node e2e/video/render.mjs --case $c --profile $p --out /tmp/core || exit 1; test -s /tmp/core/$c-$p.mp4 || exit 1; done; done'`
