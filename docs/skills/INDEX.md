@@ -11,3 +11,4 @@ walk-the-add-server-paths,"Walk every Add Server path on real devices before a r
 browser-support-check,"Tell engine automation from real-browser and real-iPhone checks","client, browser-support, compatibility, procedural",active
 improve-the-ux-from-ci,"Analyse the mobile and desktop UX from the CI report, change it, and prove the change helped","client, mobile, ux, ci, procedural",active
 render-a-feature-video,"Render a captioned feature video from a UX scenario","client, mobile, ux, ci, video, procedural",active
+review-and-publish-docs-media,"Review rendered documentation videos, send some back, and publish the approved ones to the site","docs, ci, video, ux, procedural",active
