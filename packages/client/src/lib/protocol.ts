@@ -266,7 +266,7 @@ export interface TimelineMessage {
 export interface WorkspaceInfo {
   id: string;
   name: string;
-  agent: 'tmux' | 'codex' | null;
+  agent: string | null;
   /** The workspace manager it lives in; set when the server runs more than one (`tmux`). */
   backend?: string;
   /** The workspace's absolute directory; empty when the backend does not know one. */
