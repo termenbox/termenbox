@@ -65,6 +65,38 @@
       "index": 0
     },
     {
+      "type": "new_tab",
+      "workspace": "s",
+      "template": "shell"
+    },
+    {
+      "type": "rename_tab",
+      "workspace": "s",
+      "tab": "t1",
+      "label": "Shell"
+    },
+    {
+      "type": "close_tab",
+      "workspace": "s",
+      "tab": "t1"
+    },
+    {
+      "type": "move_tab",
+      "workspace": "s",
+      "tab": "t1",
+      "index": 0
+    },
+    {
+      "type": "focus_tab",
+      "workspace": "s",
+      "tab": "t1"
+    },
+    {
+      "type": "move_workspace",
+      "workspace": "s",
+      "index": 0
+    },
+    {
       "type": "resize",
       "cols": 80,
       "rows": 24

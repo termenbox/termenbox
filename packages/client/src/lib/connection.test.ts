@@ -1,5 +1,6 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { backoffDelay, b64ToBytes, textToB64, Connection } from './connection';
+import { PROTOCOL_VERSION } from './extensions';
 import type { Transport } from './transport';
 
 describe('backoffDelay', () => {
@@ -400,7 +401,7 @@ describe('version negotiation and the legacy shim (step 3.2)', () => {
 
   it('announces the protocol version in its hello', async () => {
     const { c, sent } = await against({ type: 'auth_ok', protocol: 1, user: 'u', server_name: 's' });
-    expect(JSON.parse(sent[0])).toEqual({ type: 'hello', protocol: 1 });
+    expect(JSON.parse(sent[0])).toEqual({ type: 'hello', protocol: PROTOCOL_VERSION });
     c.close();
   });
 
