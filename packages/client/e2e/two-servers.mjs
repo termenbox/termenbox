@@ -332,10 +332,16 @@ try {
   await page.waitForFunction((l) => document.querySelector('[data-testid=tab-strip] [role=tab][aria-selected=true]')?.textContent?.includes(l), agentTab);
   await stripTabs.filter({ hasText: 'Shell' }).click();
   await page.waitForFunction(() => document.querySelector('[data-testid=tab-strip] [role=tab][aria-selected=true]')?.textContent?.includes('Shell'));
-  // The current tab opens the same menu; delete the tab there and leave the workspace alone.
+  // The current tab opens the same menu; delete the tab there and leave the workspace alone. The strip is rebuilt
+  // after the selected tab changes, so retry the click once the selected node is actually there.
   const currentTabButton = page.locator('[data-testid=tab-strip] [role=tab][aria-selected=true]');
   await currentTabButton.waitFor();
-  await currentTabButton.click();
+  await waitFor(async () => {
+    if (await menu().isVisible()) return true;
+    await currentTabButton.click();
+    await page.waitForTimeout(150);
+    return menu().isVisible();
+  }, 'the tab menu', 5000);
   await menu().waitFor();
   await menu().getByRole('button', { name: 'Actions for Shell', exact: true }).click();
   await menu().getByRole('button', { name: 'Delete', exact: true }).click();

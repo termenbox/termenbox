@@ -222,7 +222,9 @@ try {
   await page.locator('[data-kind=permission][data-state=answered]').filter({ hasText: 'Rejected · No' }).waitFor({ timeout: 15000 });
   await idle(page);
   check(logged().filter((m) => m.id >= 9000 && m.result?.outcome?.optionId === 'reject').length === 1, 'the agent did not receive exactly the rejecting option id');
-  check((await page.locator('[data-kind=tool][data-status=failed]').count()) === 1, 'the refused write is not shown as failed');
+  const failedTool = page.locator('[data-kind=tool][data-status=failed]');
+  await failedTool.waitFor({ timeout: 15000 });
+  check((await failedTool.count()) === 1, 'the refused write is not shown as failed');
   await say(page, 'shell ls /etc');
   await inline.waitFor({ timeout: 15000 });
   const shellText = await inline.innerText();
