@@ -8,12 +8,15 @@
   import type { FleetState } from './lib/ds/states';
   import type { AgentMap, WorkspaceAgent } from './lib/agents';
   import type { HubServer, HubWorkspace } from './lib/hub';
+  import type { TabAgentState } from './lib/protocol';
   import { ageText } from './lib/cards';
   import { continueTarget, fleetCounts, queueOf, rowOf, Settle, splitQueue, type HomeQueue, type Row } from './lib/home';
 
   /** Home (decision 0100): the oldest waiting decision, the rest of the queue, the four fleet counts and Continue. */
-  let { workspaces, agents, servers, now, lastKey, offer, focusKey = null, onopen, onanswer, onreply, onservers, onnew, onhook }: {
+  let { workspaces, agents, servers, now, lastKey, offer, focusKey = null, tabStates = {}, onopen, onanswer, onreply, onservers, onnew, onhook }: {
     workspaces: HubWorkspace[]; agents: AgentMap; servers: HubServer[]; now: number; lastKey: string | null;
+    /** Per-tab state from `hub.tabStates`, so the workspace row follows all its tabs. */
+    tabStates?: Record<string, TabAgentState>;
     onopen: (key: string) => void;
     onanswer: (key: string, choice: number, prompt: NonNullable<WorkspaceAgent['prompt']>) => void;
     onreply: (key: string, text: string) => void;
@@ -34,9 +37,9 @@
   // The servers that say they are unhealthy (U14): a server with no verdict yet, or an older one, is not.
   const unhealthy = $derived(new Set(servers.filter((s) => s.health && !s.health.healthy).map((s) => s.id)));
 
-  const counts = $derived(fleetCounts(workspaces, agents));
+  const counts = $derived(fleetCounts(workspaces, agents, tabStates));
   const live = $derived.by(() => {
-    const q = splitQueue(queueOf(workspaces, agents, unhealthy), focusKey);
+    const q = splitQueue(queueOf(workspaces, agents, unhealthy, tabStates), focusKey);
     return { ...q, decision: q.hero ? decisionFor(q.hero, agents[q.hero.key], now) : undefined, offerKey: offer ? `${offer.serverId}|${offer.agent}` : undefined };
   });
   const view = $derived.by(() => { beat; return settle.view(live, Date.now()); });
@@ -44,7 +47,7 @@
   $effect(() => { if (focusKey && view.hero?.key === focusKey) decisionEl?.scrollIntoView({ block: 'start' }); });
   const connected = $derived(new Set(servers.filter((s) => s.state === 'connected').map((s) => s.id)));
   const cont = $derived(continueTarget(lastKey, workspaces, connected, [...(view.hero ? [view.hero] : []), ...view.rest]));
-  const filtered = $derived(filter ? workspaces.map((s) => rowOf(s, agents[s.key], unhealthy.has(s.serverId))).filter((r) => r.state === filter) : []);
+  const filtered = $derived(filter ? workspaces.map((s) => rowOf(s, agents[s.key], unhealthy.has(s.serverId), tabStates)).filter((r) => r.state === filter) : []);
   const KIND_WORD = { needs_input: 'waiting', failed: 'failed', finished_unseen: 'finished' } as const;
 
   const meta = (r: Row) => [r.serverName, r.kind && r.since ? `${KIND_WORD[r.kind]} ${ageText(r.since, now)}` : ''].filter(Boolean).join(' · ');
@@ -101,7 +104,7 @@
       {#if cont}
         <section class="flex flex-col gap-2" aria-label="Continue" data-home-continue>
           <h2 class="text-sm font-semibold text-soft">Continue</h2>
-          <QueueItem name={cont.name} meta={`${cont.serverName} · last used`} state={rowOf(cont, agents[cont.key]).state} agent={agents[cont.key]?.agent} unhealthy={unhealthy.has(cont.serverId)} onclick={() => onopen(cont.key)} />
+          <QueueItem name={cont.name} meta={`${cont.serverName} · last used`} state={rowOf(cont, agents[cont.key], false, tabStates).state} agent={agents[cont.key]?.agent} unhealthy={unhealthy.has(cont.serverId)} onclick={() => onopen(cont.key)} />
         </section>
       {:else if !view.hero && !view.rest.length}
         {#if workspaces.length === 0}

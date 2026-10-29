@@ -93,9 +93,11 @@ export function applyAttention(map: AgentMap, items: Attention[]): AgentMap {
 
 /** Items to acknowledge: finished or failed ones of a workspace that is shown in the foreground of a visible page. A
  *  `needs_input` is never acknowledged by looking; only the prompt going away clears it. */
-export function attentionToAck(a: WorkspaceAgent | undefined, foreground: boolean, pageVisible: boolean, done: Set<string>): string[] {
+export function attentionToAck(a: WorkspaceAgent | undefined, foreground: boolean, pageVisible: boolean, done: Set<string>, visibleTab?: string | null): string[] {
   const it = a?.attention;
   if (!foreground || !pageVisible || !it || it.kind === 'needs_input' || done.has(it.id)) return [];
+  // A finished or failed item belongs to the tab that raised it; looking at another tab is not seeing it.
+  if (it.tab && it.tab !== visibleTab) return [];
   return [it.id];
 }
 

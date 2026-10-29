@@ -4,8 +4,9 @@ import { FrozenOrder } from './cards';
 import { needsYou } from './tabs';
 import type { AgentMap, WorkspaceAgent } from './agents';
 import type { HubServer, HubWorkspace } from './hub';
+import type { TabAgentState } from './protocol';
 import type { FleetState } from './ds/states';
-import { aggregateStatus } from './workspaceTabs';
+import { aggregateStatus, tabAgentStates } from './workspaceTabs';
 
 export function fleetOf(agent?: WorkspaceAgent): FleetState {
   if (!agent) return 'idle';
@@ -20,12 +21,12 @@ export interface NavWorkspace { key: string; name: string; serverId: string; ser
 export interface NavGroup { server: HubServer; workspaces: NavWorkspace[] }
 
 /** Servers in the hub's order; inside a server, the user's own order of workspaces (a state never moves one). */
-export function navGroups(servers: HubServer[], workspaces: HubWorkspace[], agents: AgentMap): NavGroup[] {
+export function navGroups(servers: HubServer[], workspaces: HubWorkspace[], agents: AgentMap, tabStates: Record<string, TabAgentState> = {}): NavGroup[] {
   return servers.map((server) => ({
     server,
     workspaces: workspaces
       .filter((s) => s.serverId === server.id)
-      .map((s): NavWorkspace => ({ key: s.key, name: s.name, serverId: s.serverId, serverName: s.serverName, state: aggregateStatus(s.key, s, agents[s.key]), agent: agents[s.key]?.agent })),
+      .map((s): NavWorkspace => ({ key: s.key, name: s.name, serverId: s.serverId, serverName: s.serverName, state: aggregateStatus(s.key, s, agents[s.key], tabAgentStates(s.key, tabStates)), agent: agents[s.key]?.agent })),
   }));
 }
 

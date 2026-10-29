@@ -106,7 +106,7 @@ describe('the message handler', () => {
 });
 
 describe('server status (activity and attention)', () => {
-  const att = (kind: 'needs_input' | 'finished_unseen' | 'failed', id = 'a1', workspace = 's') => ({ id, workspace, kind, raised_at: 5000 });
+  const att = (kind: 'needs_input' | 'finished_unseen' | 'failed', id = 'a1', workspace = 's', tab?: string) => ({ id, workspace, tab, kind, raised_at: 5000 });
   const base = (): AgentMap => applyActivity({}, [{ workspace: 's', activity: 'working', ts: 10_000, task: { title: 'fix login', started_at: 4_000, source: 'hook' } }], 9_000);
 
   it('derives the card state from activity and attention, and raw events no longer move it', () => {
@@ -146,6 +146,12 @@ describe('server status (activity and attention)', () => {
     expect(attentionToAck(m.s, true, false, done)).toEqual([]);
     expect(attentionToAck(m.s, true, true, done)).toEqual(['a1']);
     expect(attentionToAck(m.s, true, true, new Set(['a1']))).toEqual([]);
+  });
+
+  it('acknowledges a finished tab only while that tab is the visible one', () => {
+    const m = applyAttention(base(), [att('finished_unseen', 'a1', 's', 't2')]);
+    expect(attentionToAck(m.s, true, true, new Set(), 't1')).toEqual([]);
+    expect(attentionToAck(m.s, true, true, new Set(), 't2')).toEqual(['a1']);
   });
 
   it('never acknowledges a question by looking at it', () => {

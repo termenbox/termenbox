@@ -7,7 +7,7 @@
   import type { TabInfo } from './lib/protocol';
   import type { WindowMap } from './lib/windows';
   /**
-   * The top edge (decisions 0101, 0147). With a tab-capable server it is the workspace's tabs: one plaque on a phone,
+   * The top edge (decisions 0101, 0149). With a tab-capable server it is the workspace's tabs: one plaque on a phone,
    * the strip and + on a wide screen; on the Workspaces page it is one plaque that opens every workspace's tabs. An
    * older server keeps the old workspace strip and its Workspaces button.
    */

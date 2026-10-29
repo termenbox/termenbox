@@ -30,6 +30,13 @@ describe('the tab menu', () => {
     expect(bare).not.toContain('+ New window');
     expect(bare).not.toContain('Close workspace');
   });
+  it('shows each tab state and offers the Recent and Cache expiring filters', () => {
+    const out = html({ states: { 's/w/t2': { workspace: 'w', tab: 't2', state: 'needs_input', ts: 1, prompt: { id: 'p', kind: 'yes_no', choices: ['Yes'] } } } });
+    expect(out).toContain('Needs you');
+    expect(out).toContain('Recent');
+    expect(out).toContain('Cache expiring');
+    expect(out).toContain('All');
+  });
   it('groups tabs by workspace on the Workspaces page', () => {
     const other = { ...workspace, id: 'v', name: 'Docs', key: 's/v', tabs: [tab('t1', 'Docs shell', 0)] };
     const out = render(TabMenu, {

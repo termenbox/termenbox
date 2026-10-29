@@ -1,7 +1,7 @@
 import { derived, writable } from 'svelte/store';
 import { Connection, type ConnectionOptions, type ConnState } from './connection';
 import { applyActivity, applyAttention, applyEvents, applySnapshot, syncRequest, type AgentMap } from './agents';
-import type { ClientMessage, ServerHealth, ServerListItem, ServerMessage, WorkspaceInfo } from './protocol';
+import type { ClientMessage, ServerHealth, ServerListItem, ServerMessage, TabAgentState, WorkspaceInfo } from './protocol';
 import type { Target } from './transport';
 import { storedBundle, type PathFailure } from './paths';
 import { BundleRejected, decodeBundle, verifyBundle } from './bundle';
@@ -44,6 +44,7 @@ interface Entry extends HubServer {
   workspaces: WorkspaceInfo[];
   agents: AgentMap;
   windows: WindowMap;
+  tabStates: Record<string, TabAgentState>;
   refresh: boolean;
   everReady: boolean;
 }
@@ -82,6 +83,7 @@ export class ServerHub {
   readonly allWorkspaces = writable<HubWorkspace[]>([]);
   readonly agents = writable<AgentMap>({});
   readonly windows = writable<WindowMap>({});
+  readonly tabStates = writable<Record<string, TabAgentState>>({});
   readonly connectedCount = derived(this.servers, servers => servers.filter(s => s.state === 'connected').length);
   readonly overLimit = derived(this.connectedCount, count => count > 6);
 
@@ -103,7 +105,7 @@ export class ServerHub {
       return;
     }
     const entry: Entry = { id, server, state: 'connecting', reason: '', version: '', updateAvailable: '', updating: false, backends: [], tabs: false, acpAgents: [], controlMode: false, tmuxVersion: '', prefix: '', connection: null, path: '', failures: [],
-      workspaces: [], agents: {}, windows: {}, refresh: !server.record && !server.bundle && !!server.server_id, everReady: false };
+      workspaces: [], agents: {}, windows: {}, tabStates: {}, refresh: !server.record && !server.bundle && !!server.server_id, everReady: false };
     this.entries.set(id, entry);
     this.connect(entry);
   }
@@ -232,9 +234,10 @@ export class ServerHub {
     e.connection = connection;
     e.unsubscribe = connection.subscribe(msg => {
       if (!current()) return;
-      const changed = msg.type === 'workspaces' || msg.type === 'agent_snapshot' || msg.type === 'agent_events' || msg.type === 'window_list' || msg.type === 'activity' || msg.type === 'attention';
+      const changed = msg.type === 'workspaces' || msg.type === 'agent_snapshot' || msg.type === 'agent_events' || msg.type === 'window_list' || msg.type === 'activity' || msg.type === 'attention' || msg.type === 'tab_states';
       if (msg.type === 'workspaces') { e.workspaces = msg.workspaces; e.windows = forgetWindows(e.windows, msg.workspaces.map(s => s.id)); }
       if (msg.type === 'window_list') e.windows = applyWindowList(e.windows, msg);
+      if (msg.type === 'tab_states') e.tabStates = Object.fromEntries(msg.states.map(s => [`${s.workspace}/${s.tab}`, s]));
       if (msg.type === 'agent_snapshot') e.agents = applySnapshot(e.agents, msg.states);
       if (msg.type === 'activity') e.agents = applyActivity(e.agents, msg.workspaces, Date.now());
       if (msg.type === 'attention') e.agents = applyAttention(e.agents, msg.items);
@@ -284,5 +287,6 @@ export class ServerHub {
       serverId: e.id, serverName: e.server.server_name || 'Server', key: workspaceKey(e.id, s.id) })))));
     this.agents.set(Object.fromEntries(entries.filter(e => e.state !== 'paused').flatMap(e => Object.entries(e.agents).map(([id, a]) => [workspaceKey(e.id, id), a]))));
     this.windows.set(Object.fromEntries(entries.filter(e => e.state !== 'paused').flatMap(e => Object.entries(e.windows).map(([id, w]) => [workspaceKey(e.id, id), w]))));
+    this.tabStates.set(Object.fromEntries(entries.filter(e => e.state !== 'paused').flatMap(e => Object.values(e.tabStates).map(s => [`${workspaceKey(e.id, s.workspace)}/${s.tab}`, s]))));
   }
 }

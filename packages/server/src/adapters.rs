@@ -346,9 +346,11 @@ pub struct PaneScan {
     pub pane_id: String,
     /// The pane the workspace shows: the active pane of its active window.
     pub active: bool,
+    /// The tab record this pane's window carries (`@termenbox_tab`), empty for an old window.
+    pub tab: String,
 }
 
-/// `tmux list-panes -a -F '#{session_name}|#{pane_current_command}|#{window_activity}|#{pane_id}|#{window_active}|#{pane_active}'`
+/// `tmux list-panes -a -F '#{session_name}|#{pane_current_command}|#{window_activity}|#{pane_id}|#{window_active}|#{pane_active}|#{@termenbox_tab}'`
 pub fn parse_panes(output: &str, now_s: u64) -> Vec<PaneScan> {
     output
         .lines()
@@ -360,12 +362,14 @@ pub fn parse_panes(output: &str, now_s: u64) -> Vec<PaneScan> {
             let pane_id = f.next().unwrap_or("").trim().to_string();
             let active =
                 f.next().map(str::trim) == Some("1") && f.next().map(str::trim) == Some("1");
+            let tab = f.next().unwrap_or("").trim().to_string();
             Some(PaneScan {
                 workspace,
                 command,
                 quiet_for: now_s.saturating_sub(activity),
                 pane_id,
                 active,
+                tab,
             })
         })
         .collect()

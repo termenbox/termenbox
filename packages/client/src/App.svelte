@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
   import Terminal from './Terminal.svelte';
   import ServerList from './ServerList.svelte';
   import AddServerModal from './AddServerModal.svelte';
@@ -22,7 +22,7 @@
   import { SnapshotStore } from './lib/snapshots';
   import { serverAtLeast, NEW_WINDOW_VERSION } from './lib/serverVersion';
   import { loadHidden, needsYou, openTabs, saveHidden } from './lib/tabs';
-  import { focusedTab, liveTab, loadActiveTab, saveActiveTab, tabOrder } from './lib/workspaceTabs';
+  import { focusedTab, liveTab, loadActiveTab, saveActiveTab, tabForPrompt, tabOrder } from './lib/workspaceTabs';
   import { windowToOpen } from './lib/windows';
   import { installAudioUnlock, onAudioRunning, playChime } from './lib/bell';
   import { announce, waitingList, createAttention, createNotifier, createAlerter } from './lib/notify';
@@ -60,7 +60,7 @@
   import Home from './Home.svelte';
   import WorkspaceGroups from './WorkspaceGroups.svelte';
   import { moveWorkspace, placementOf } from './lib/order';
-  import { destination, navigate, parseFocusLink, startRouter, type Destination } from './lib/router';
+  import { destination, navigate, parseFocusLink, parseFocusTab, startRouter, type Destination } from './lib/router';
   import ReportDialog from './ReportDialog.svelte';
   import ServerDiagnosticsDialog from './ServerDiagnosticsDialog.svelte';
   import ExitBanner from './ExitBanner.svelte';
@@ -282,7 +282,7 @@
   let viewPoll: ReturnType<typeof setInterval> | undefined;
   function requestWorkspaceView() { if (activeKey) hub.sendToWorkspace(activeKey, requestView(activeWorkspaceId ?? '', heldView)); }
   $: { activeKey; if (viewPoll) clearInterval(viewPoll); viewPoll = undefined; if (viewPolling) { requestWorkspaceView(); viewPoll = setInterval(requestWorkspaceView, 2000); } }
-  $: activeRow = activeWorkspace ? rowOf(activeWorkspace, $allAgents[activeWorkspace.key]) : null;
+  $: activeRow = activeWorkspace ? rowOf(activeWorkspace, $allAgents[activeWorkspace.key], false, $allTabStates) : null;
   /** The last screen seen for the workspace being opened, dimmed in the terminal until the live repaint replaces it. */
   let preview: string | null = null;
   const hubServers = hub.servers;
@@ -290,6 +290,7 @@
   const allWorkspaces = hub.allWorkspaces;
   $: workspaceCounts = $allWorkspaces.reduce<Record<string, number>>((n, s) => ({ ...n, [s.serverId]: (n[s.serverId] ?? 0) + 1 }), {});
   const allAgents = hub.agents;
+  const allTabStates = hub.tabStates;
   const connectedCount = hub.connectedCount;
   const overLimit = hub.overLimit;
   $: selected = $hubServers.find(s => s.id === activeServerId);
@@ -364,16 +365,16 @@
     } catch (e) { showToast(e instanceof Error ? e.message : 'Notifications failed', 'error'); }
   }
   // Tell the servers which workspace is in front, so a push is not sent for what someone is looking at.
-  let reportedFg: { serverId: string; workspace: string } | null = null;
+  let reportedFg: { serverId: string; workspace: string; tab?: string | null } | null = null;
   function reportForeground() {
     const s = activeKey && !away && pageVisible ? hub.findWorkspace(activeKey) : undefined;
-    const next = s ? { serverId: s.serverId, workspace: s.id } : null;
-    if (next?.serverId === reportedFg?.serverId && next?.workspace === reportedFg?.workspace) return;
+    const next = s ? { serverId: s.serverId, workspace: s.id, tab: activeTabId } : null;
+    if (next?.serverId === reportedFg?.serverId && next?.workspace === reportedFg?.workspace && next?.tab === reportedFg?.tab) return;
     if (reportedFg && reportedFg.serverId !== next?.serverId) hub.send(reportedFg.serverId, { type: 'foreground', workspace: null });
-    if (next) hub.send(next.serverId, { type: 'foreground', workspace: next.workspace });
+    if (next) hub.send(next.serverId, { type: 'foreground', workspace: next.workspace, tab: next.tab });
     reportedFg = next;
   }
-  $: activeKey, away, pageVisible, reportForeground();
+  $: activeKey, away, pageVisible, activeTabId, reportForeground();
   let actionKey: string | null = null;
   let cardExpanded = false;
   $: actionWorkspace = $allWorkspaces.find(s => s.key === actionKey);
@@ -443,7 +444,7 @@
     if (s) hub.send(s.serverId, m);
   }
   $: if (activeKey && !away) {
-    for (const id of attentionToAck($allAgents[activeKey], true, pageVisible, acked)) {
+    for (const id of attentionToAck($allAgents[activeKey], true, pageVisible, acked, activeTabId)) {
       acked.add(id);
       sendAttention(activeKey, { type: 'ack', attention_id: id });
     }
@@ -619,6 +620,33 @@
 
   /** A push opened the app on a decision (U11): Home shows that workspace's card first, whether or not its server is connected yet. */
   let focusKey: string | null = null;
+  /** A push that names a tab waits for that workspace to arrive from its server, then opens the tab. */
+  const DEEP_TAB_WAIT_MS = 30_000;
+  let pendingDeepTab: { key: string; tab: string } | null = null;
+  let pendingDeepTimer: ReturnType<typeof setTimeout> | undefined;
+  function clearPendingDeepTab() {
+    if (pendingDeepTimer) clearTimeout(pendingDeepTimer);
+    pendingDeepTimer = undefined;
+    pendingDeepTab = null;
+  }
+  function holdPendingDeepTab(key: string, tab: string) {
+    clearPendingDeepTab();
+    pendingDeepTab = { key, tab };
+    pendingDeepTimer = setTimeout(() => {
+      pendingDeepTimer = undefined;
+      if (pendingDeepTab?.key !== key || pendingDeepTab.tab !== tab) return;
+      pendingDeepTab = null;
+      showToast('The workspace from that notification did not open. Open it from Workspaces.', 'error');
+    }, DEEP_TAB_WAIT_MS);
+  }
+  $: if (pendingDeepTab && hub.findWorkspace(pendingDeepTab.key)) {
+    const p = pendingDeepTab;
+    clearPendingDeepTab();
+    void openWaiting(p.key, p.tab);
+  }
+  // Leaving Home for another top-level page or the servers list abandons the deep link instead of opening it later.
+  $: if (pendingDeepTab && (serversPage || $destination === 'settings' || $destination === 'activity')) clearPendingDeepTab();
+  onDestroy(clearPendingDeepTab);
   function openDecision(key: string) {
     focusKey = key;
     navigate('home');
@@ -632,9 +660,9 @@
 
   /** Opens a workspace that needs you on the window the need is in: the tab's window (the agent window used last), not
    *  whichever one tmux has current. Chosen before the attach, so the terminal comes up on it. */
-  async function openWaiting(key: string) {
+  async function openWaiting(key: string, tabWanted?: string) {
     const workspace = hub.findWorkspace(key);
-    const tab = workspace?.tabs ? liveTab(workspace.tabs, loadActiveTab(key), workspace.focus)?.id : null;
+    const tab = tabWanted ?? (workspace?.tabs ? liveTab(workspace.tabs, loadActiveTab(key), workspace.focus)?.id : null);
     if (!tab && workspace && needsYou($allAgents[key]) && backendOf(workspace) === 'tmux') {
       // An older server has windows, not tabs.
       const index = windowToOpen($allWindows[key]);
@@ -824,7 +852,25 @@
   }
 
   function sendWorkspace(m: import('./lib/protocol').ClientMessage) {
-    if ('workspace' in m && m.workspace) hub.sendToWorkspace(m.workspace, m);
+    if (!('workspace' in m) || !m.workspace) return;
+    let out = m;
+    // An answer from Home or the inbox belongs to the tab that asked; the workspace answer would otherwise be
+    // ambiguous when several tabs of one workspace are open (decision 0149).
+    if (m.type === 'answer' && !m.tab) {
+      const s = hub.findWorkspace(m.workspace);
+      const states = s ? Object.values($allTabStates).filter((t) => t.workspace === s.id) : [];
+      // An older server has no per-tab states: keep its workspace-level answer. With tabs, an answer is only sent
+      // when the prompt id still names the tab that asked; another waiting tab is never guessed.
+      if (states.length) {
+        const tab = tabForPrompt(states, m.prompt_id);
+        if (!tab) {
+          showToast('That question is no longer waiting. Open the tab that asked.', 'error');
+          return;
+        }
+        out = { ...m, tab };
+      }
+    }
+    hub.sendToWorkspace(m.workspace, out);
   }
 
   /** A name given on this device wins over the server's own (the hub keeps a saved name when it connects). */
@@ -999,7 +1045,16 @@
       const pair = parsePairLink(window.location.hash);
       const focus = parseFocusLink(window.location.hash);
       if (focus) {
-        if (user) openDecision(focus); else sessionStorage.setItem('termenbox_pending_focus', focus);
+        const tab = parseFocusTab(window.location.hash);
+        if (user) {
+          if (tab) {
+            if (hub.findWorkspace(focus)) void openWaiting(focus, tab);
+            else holdPendingDeepTab(focus, tab);
+          } else openDecision(focus);
+        } else {
+          sessionStorage.setItem('termenbox_pending_focus', focus);
+          if (tab) sessionStorage.setItem('termenbox_pending_focus_tab', tab);
+        }
         return;
       }
       if (!claim && !serverId && !pair) return;
@@ -1037,10 +1092,12 @@
       window.history.replaceState({}, '', window.location.pathname);
     }
 
-    // A push's deep link (#/home?focus=...), kept across the GitHub login redirect like the links below.
+    // A push's deep link (#/home?focus=...&tab=...), kept across the GitHub login redirect like the links below.
     const focus = parseFocusLink(window.location.hash);
     if (focus) {
       sessionStorage.setItem('termenbox_pending_focus', focus);
+      const tab = parseFocusTab(window.location.hash);
+      if (tab) sessionStorage.setItem('termenbox_pending_focus_tab', tab);
       window.history.replaceState({}, '', window.location.pathname);
     }
 
@@ -1059,7 +1116,10 @@
     const pendingFocus = sessionStorage.getItem('termenbox_pending_focus');
     if (pendingFocus) {
       sessionStorage.removeItem('termenbox_pending_focus');
-      openDecision(pendingFocus);
+      const pendingTab = sessionStorage.getItem('termenbox_pending_focus_tab');
+      sessionStorage.removeItem('termenbox_pending_focus_tab');
+      if (pendingTab) holdPendingDeepTab(pendingFocus, pendingTab);
+      else openDecision(pendingFocus);
     }
 
     loadServers();
@@ -1100,7 +1160,7 @@
       </div>
     </div>
   {:else}
-    <AppFrame current={$destination} onnavigate={go} servers={$hubServers} workspaces={$allWorkspaces} agents={$allAgents} {activeKey} chrome={servers.length > 0} inWorkspace={!!activeKey && !away} {keyboardOpen}
+    <AppFrame current={$destination} onnavigate={go} servers={$hubServers} workspaces={$allWorkspaces} agents={$allAgents} tabStates={$allTabStates} {activeKey} chrome={servers.length > 0} inWorkspace={!!activeKey && !away} {keyboardOpen}
       canCreate={canCreate} bind:wide bind:helpOpen onopen={attach} onserver={openServer} onrename={renameWorkspace} oncloseworkspace={askCloseWorkspace} onaction={runAction} onshortcut={handleShortcut}
       onback={() => { showWorkspaceList(); sheetHeight = 'half'; }}>
     {#if $destination === 'workspaces' || servers.length === 0}
@@ -1136,7 +1196,7 @@
       {#if serversPage || servers.length === 0}
         <ServerList {servers} states={$hubServers} counts={workspaceCounts} onpause={(id) => { hub.pause(id); }} onresume={(id) => hub.resume(id)} onretry={(id) => hub.retry(id)} onadd={() => { addPrefill = null; addStart = 'install'; showAddServer = true; }} onscan={() => { addPrefill = null; addStart = 'scan'; showAddServer = true; }} onremove={removeServer} onshare={shareServer} onrename={renameServer} onupdate={(id) => hub.updateServer(id)} />
       {:else if $destination === 'home'}
-        <Home workspaces={$allWorkspaces} agents={$allAgents} servers={$hubServers} {now} {lastKey} {focusKey} offer={hookOffer} onhook={homeHook} onopen={openWaiting} onservers={leaveServer} onnew={newWorkspace}
+        <Home workspaces={$allWorkspaces} agents={$allAgents} servers={$hubServers} tabStates={$allTabStates} {now} {lastKey} {focusKey} offer={hookOffer} onhook={homeHook} onopen={openWaiting} onservers={leaveServer} onnew={newWorkspace}
           onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })}
           onreply={(key, text) => sendWorkspace({ type: 'reply', workspace: key, text })} />
       {:else if $destination === 'activity'}
@@ -1147,7 +1207,7 @@
         <div class="workspace" class:mobile={narrow}>
           <div class="terminal-pane">
             {#if !activeKey || listPage}
-              <WorkspaceGroups workspaces={$allWorkspaces} agents={$allAgents} {now} unhealthy={unhealthyServers} onopen={attach} onnew={newWorkspace}
+              <WorkspaceGroups workspaces={$allWorkspaces} agents={$allAgents} {now} unhealthy={unhealthyServers} tabStates={$allTabStates} onopen={attach} onnew={newWorkspace}
                 onactions={tabsAnywhere ? undefined : (key) => { actionConfirm = false; actionKey = key; }}
                 onrename={(key) => { const w = hub.findWorkspace(key); if (w) askRenameWorkspace(w); }}
                 onmove={tabsAnywhere ? (key, index) => hub.moveWorkspace(key, index) : undefined} />
@@ -1205,7 +1265,7 @@
   {#if inboxOpen}<InboxSheet items={$inbox} {now} agents={$allAgents} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} onreply={(key, text) => sendWorkspace({ type: 'reply', workspace: key, text })} onopen={openWaiting} onhome={() => go('home')} onread={() => inbox.update(markAllRead)} onclear={() => inbox.set([])} onclose={() => { inboxOpen = false; inbox.update(markAllRead); }} />{/if}
   {#if actionWorkspace}<WorkspaceActions workspace={actionWorkspace} canClose={['tmux', 'acp'].includes(backendOf(actionWorkspace))} confirmFirst={actionConfirm} onrename={(name) => renameWorkspace(actionWorkspace.key, name)} placement={placementOf($allWorkspaces, actionWorkspace.key)} onmove={(to) => moveWorkspace($allWorkspaces, actionWorkspace.key, to)} ondetach={() => detach(actionWorkspace.key)} oncloseworkspace={() => closeWorkspace(actionWorkspace.key)} onclose={() => actionKey = null} />{/if}
   {#if tabMenuOpen}
-    <TabMenu groups={tabMenuGroups} activeKey={activeKey} activeTab={activeTabId} onopen={openTab}
+    <TabMenu groups={tabMenuGroups} activeKey={activeKey} activeTab={activeTabId} states={$allTabStates} cacheTtlMs={$settings.cacheTtlMs} onopen={openTab}
       onrename={canTab ? askRenameTab : undefined}
       onclosetab={canTab ? (key, tab) => hub.closeTab(key, tab.id) : undefined}
       onmove={canTab ? moveTab : undefined}

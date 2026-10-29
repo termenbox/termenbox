@@ -114,6 +114,7 @@ export type ServerMessage =
   | { type: 'snapshot'; workspace: string; text: string; hash: string; unchanged?: boolean }
   | { type: 'window_list'; workspace: string; windows: WindowInfo[]; representative?: number | null }
   | { type: 'agent_snapshot'; states: WorkspaceAgentState[] }
+  | { type: 'tab_states'; states: TabAgentState[] }
   | { type: 'agent_events'; events: AgentEvent[] }
   | { type: 'activity'; workspaces: WorkspaceActivity[] }
   | { type: 'attention'; items: Attention[] }
@@ -329,6 +330,25 @@ export interface WorkspaceAgentState {
   waiting_since?: number;
 }
 
+/** The prompt one tab waits on (decision 0149); the choices are labels, the keys stay on the server. */
+export interface TabPrompt {
+  id: string;
+  kind: string;
+  choices: string[];
+}
+
+/** What one tab's agent does now; the workspace-level state remains the aggregate. */
+export interface TabAgentState {
+  workspace: string;
+  tab: string;
+  state: AgentState;
+  agent?: string;
+  ts: number;
+  waiting_since?: number;
+  last_response_at?: number;
+  prompt?: TabPrompt;
+}
+
 /** Decision 0095: what an agent does now. Unknown values are treated as `unknown`. */
 export type Activity = 'working' | 'blocked' | 'idle' | 'unknown';
 
@@ -355,6 +375,8 @@ export interface WorkspaceActivity {
 export interface Attention {
   id: string;
   workspace: string;
+  /** The tab that asked, when a hook proved it (decision 0149); older servers send none. */
+  tab?: string;
   kind: AttentionKind;
   raised_at: number;
   task?: Task;

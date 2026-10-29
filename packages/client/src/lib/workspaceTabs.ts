@@ -1,7 +1,7 @@
 // Tabs of a workspace (decision 0149): the server sends them in order, the device remembers which one it opened last,
 // and the workspace row shows the aggregate of what its agents do. Pure functions, so the rules are testable without a
 // browser; text from an agent or the owner is never turned into markup here.
-import type { AgentState, TabInfo } from './protocol';
+import type { AgentState, TabAgentState, TabInfo } from './protocol';
 import type { WorkspaceAgent } from './agents';
 import type { HubWorkspace } from './hub';
 import type { FleetState } from './ds/states';
@@ -28,9 +28,25 @@ export function liveTab(tabs: TabInfo[] | undefined, wanted: string | null | und
 export const tabStateKey = (workspaceKey: string, tabId: string) => `${workspaceKey}/${tabId}`;
 
 /**
+ * The tab that owns a prompt. An answer is sent only when the prompt id still names one tab; a workspace answer is
+ * never guessed from a tab that merely happens to be waiting (decision 0149).
+ */
+export function tabForPrompt(states: TabAgentState[], promptId: string): string | null {
+  return states.find((t) => t.prompt?.id === promptId)?.tab ?? null;
+}
+
+/** `hub.tabStates` for one workspace, in the shape `aggregateStatus` reads. */
+export function tabAgentStates(workspaceKey: string, states: Record<string, TabAgentState> = {}): Record<string, AgentState> {
+  const prefix = `${workspaceKey}/`;
+  const out: Record<string, AgentState> = {};
+  for (const [key, state] of Object.entries(states)) if (key.startsWith(prefix)) out[key] = state.state;
+  return out;
+}
+
+/**
  * The workspace's status from its tabs: Needs you → Error → Working only when every agent tab works → Idle →
  * Done/Unknown. Terminal tabs with no agent state are ignored; a workspace of shells is Idle. Without per-tab states
- * (until PR4) the workspace's own agent state answers.
+ * (an older server, or before the first `tab_states`) the workspace's own agent state answers.
  */
 export function aggregateStatus(
   workspaceKey: string,

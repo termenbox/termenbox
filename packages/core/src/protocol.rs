@@ -654,6 +654,10 @@ pub enum ServerMessage {
         #[serde(default)]
         representative: Option<u32>,
     },
+    /// The state of every tab; pushed on a change (decision 0149).
+    TabStates {
+        states: Vec<crate::events::TabAgentState>,
+    },
     /// Latest agent state per workspace; answers `agent_sync`.
     AgentSnapshot {
         states: Vec<crate::events::WorkspaceAgentState>,

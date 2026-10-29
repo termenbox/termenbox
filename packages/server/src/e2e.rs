@@ -13,6 +13,7 @@ use str0m::config::Fingerprint;
 use str0m::ice::IceCreds;
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, Input, Output, Rtc};
+use termenbox_core::events::{Confidence, EventKind, Source};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -110,7 +111,8 @@ async fn fixture_full(history_runs: usize, limits: rtc::Limits) -> Fixture {
     let claim = auth.claim_token().unwrap().unwrap();
     let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_flag = stopped.clone();
-    let mut hub = crate::events::EventHub::new([9; 32]);
+    let mut hub = crate::events::EventHub::new([9; 32])
+        .with_tab_status(Arc::new(crate::tabstatus::TabStatus::default()));
     if history_runs > 0 {
         let now = crate::events::now_ms();
         let lines: String = (0..history_runs as u64)
@@ -1195,9 +1197,56 @@ async fn tabs_follow_the_registry(kind: Kind) {
     let attached = c.recv_type("workspace_attached").await;
     assert_eq!(attached["tab"], second, "{attached}");
 
+    // A prompt on a tab that is about to close must not survive the close: no attention/push target and no
+    // stale tab_states entry.
+    let status = f.hub.tab_status().expect("the test hub tracks tabs");
+    status.set_pane("%e2e-close", &id, &first);
+    f.hub
+        .ingest_as_tab(
+            &id,
+            &f.hub.token(&id),
+            &id,
+            Source::Hook,
+            Confidence::High,
+            vec![
+                EventKind::State {
+                    state: termenbox_core::events::AgentState::NeedsInput,
+                },
+                EventKind::Prompt {
+                    id: "e2e-close-prompt".into(),
+                    prompt_kind: "yes_no".into(),
+                    choices: vec!["Yes".into(), "No".into()],
+                    decision: None,
+                },
+            ],
+            Some(&first),
+        )
+        .unwrap();
+    assert!(
+        f.hub
+            .attention_items()
+            .iter()
+            .any(|a| a.tab.as_deref() == Some(first.as_str())),
+        "the pending attention names the tab being closed"
+    );
+
     c.send(json!({"type":"close_tab","workspace":id.clone(),"tab":first.clone()}))
         .await;
     let list = c.recv_type("workspaces").await;
+    assert!(
+        f.hub
+            .attention_items()
+            .iter()
+            .all(|a| a.tab.as_deref() != Some(first.as_str())),
+        "closing a tab leaves no attention for it"
+    );
+    assert!(
+        status
+            .snapshot()
+            .iter()
+            .all(|s| !(s.workspace == id && s.tab == first)),
+        "closing a tab leaves no prompt or state for it"
+    );
     let left = workspace(&list);
     assert_eq!(left["tabs"].as_array().unwrap().len(), 1, "{left}");
 

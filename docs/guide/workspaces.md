@@ -2,13 +2,24 @@
 
 Back to the [README](../../README.md).
 
-## Workspaces, tabs and windows
+## Workspaces and tabs
 
-- **Tabs.** Each running workspace is a tab at the top, showing the folder and the agent of the window it speaks for; workspaces from every saved server share one strip. Several workspaces in the same folder are told apart by name. Tap an inactive tab to open it (its last screen shows at once, then the live one), tap the active tab for its windows, long-press for actions.
-- **Windows.** The dropdown of the active tab lists the tmux windows of the workspace: switch to one, close it (a running program or the last window asks first), or open a new one with **+ New window** in the folder of the current window.
-- **Detach or close.** Detach hides the tab and keeps the workspace running; Close workspace asks first and ends it.
-- **Needs you.** When an agent waits for an answer, a banner names the workspace and offers its choices without changing the tab you are on.
+A **workspace** is a server-owned record: a name, a directory and the tabs inside it. A **tab** is one process window of that workspace: a tmux window in this stage, running a shell, an agent TUI or any command. The workspace is never empty; its first tab is created with it, and deleting the last tab leaves a fresh shell tab instead.
+
+- **Desktop.** The sidebar lists workspaces; the tab strip at the top of an open workspace lists its tabs. `+` creates another tab in the same workspace, not another workspace. A pencil renames the tab; the server keeps the order, labels and focus for every device.
+- **Phone.** One plaque names the current tab; tap it for the tab list. There is no separate Workspaces sheet in an open workspace. Swipe or tap a row to switch tabs; the ⋮ menu renames, reorders or deletes a tab (deleting asks first).
+- **New tab.** Choose Shell, Claude Code, Codex, Copilot, OpenCode, Gemini, Kilo, Aider, Goose, Amp, Qwen or Cursor. Its directory is relative to the workspace and may not leave it (`..`, an absolute path or a symlink escape is refused).
+- **Six agent tabs.** A workspace holds at most six agent tabs; shell tabs do not count and can still be added. A seventh agent tab is refused with a message to close one first.
+- **Status.** Each tab shows what its agent does now: **Needs you**, **Working**, **Error**, **Done**, **Idle** or **No status**. The workspace row follows **Needs you → Error → Working (only when every agent tab works) → Idle → Done/Unknown**. A shell tab has no agent status and is ignored.
+- **Recent and cache.** The tab menu filters by **Recent** (last reply first) or **Cache expiring** (a Claude Code prompt cache in its last minute). These filters belong to the tab menu, not the Workspaces page.
+- **Detach or close.** On a server without tabs, Detach still hides the workspace and keeps it running. In the tab model, closing a workspace asks first and ends it and all its tabs. A finished or failed tab is acknowledged only when that tab is visible.
+- **Restore.** When the tmux server is gone, the workspace record remains, marked dormant. Opening it recreates its tabs as shells with the same labels and order; the work inside them is gone.
+- **Needs you.** When an agent waits for an answer, the banner names the workspace and offers its choices; the answer goes to the tab that asked, even when another tab of the same workspace is in front. A push deep link opens that tab, not just the workspace.
 - **Servers.** The Servers screen lists the saved servers; Add Server shows the install command for a container or for host mode and waits for the server to appear.
+
+An older server (protocol 1) keeps the previous one-tab-per-workspace UI: the top strip, the Workspaces button and the windows dropdown. The two paths share the same terminal and event stream; only a server that advertises `auth_ok.tabs` uses the new one.
+
+ACP remains a first-class backend. The New workspace sheet still creates an ACP workspace with the Terminal/Agent view choice; it is shown as a single-agent workspace with one tab until R75 folds its window host into the tab model (decision 0149). The ACP view itself is unchanged.
 
 These behaviours are tested in a real browser (`packages/client/e2e/`), including two real server processes with real tmux. The browser runs emulate a phone; the soft keyboard, safe areas and gestures on a real iPhone are checked by hand with `docs/skills/mobile-ui-device-check.md`.
 
