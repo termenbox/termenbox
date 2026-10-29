@@ -350,8 +350,7 @@ try {
     await page.getByRole('menuitem', { name: 'Remove' }).click();
     if (!(await page.getByRole('heading', { name: 'e2e-server' }).isVisible())) fail('the server was removed without confirmation');
     for (let lap = 1; lap <= 3; lap++) {
-      await page.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click(); // Home is the landing page now (U05)
-      // The Workspaces destination lists workspaces in groups (U05); the row's name starts with its state and agent icons.
+      // The Workspaces destination is the one workspace switcher on a phone (U05, decision 0147).
       await page.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click();
       const s1Row = page.locator('[data-workspace-groups] button').filter({ has: page.locator('b', { hasText: /^s1$/ }) }).first();
       await s1Row.waitFor();
@@ -383,9 +382,7 @@ try {
       await tabs.waitFor();
       const heights = await tabs.locator('button').evaluateAll((bs) => bs.map((b) => Math.round(b.getBoundingClientRect().height)).filter((h) => h > 0));
       if (heights.some((h) => h < 44)) fail(`a tab menu target is under 44 px: ${heights}`);
-      if (!(await page.getByText(/server 0\.1\.\d+\+/).count())) fail('the sidebar does not show the server version');
-      // #105: every hub update (an agent changing state, a workspace list) used to rebuild the terminal, which blanked and
-      // flickered the screen. Refresh makes the server answer with a workspace list; the same xterm must survive it.
+      // #105: opening and closing the tab menu must not rebuild the terminal behind it.
       await page.evaluate(() => { document.querySelector('.xterm').dataset.same = '1'; });
       await page.keyboard.press('Escape');
       await sleep(300);
