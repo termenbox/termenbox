@@ -187,7 +187,8 @@ impl WorkspaceManager {
     pub fn with_requests(mut self, dir: std::path::PathBuf) -> Self {
         if let Some((id, age)) = crate::requests::pending_update(&dir) {
             let now = std::time::Instant::now();
-            self.update_gate.lock().unwrap().pending = Some((id, now.checked_sub(age).unwrap_or(now)));
+            self.update_gate.lock().unwrap().pending =
+                Some((id, now.checked_sub(age).unwrap_or(now)));
         }
         self.requests_dir = Some(dir);
         self
@@ -232,6 +233,20 @@ impl WorkspaceManager {
         let id = crate::requests::leave_update_now(dir)?;
         gate.pending = Some((id.clone(), std::time::Instant::now()));
         Ok(id)
+    }
+
+    fn finish_update(&self, id: &str) {
+        let mut gate = self.update_gate.lock().unwrap();
+        if gate
+            .pending
+            .as_ref()
+            .is_some_and(|(pending, _)| pending == id)
+        {
+            gate.pending = None;
+            if let Some(state) = self.requests_dir.as_deref().and_then(std::path::Path::parent) {
+                let _ = std::fs::remove_file(state.join("update-progress.json"));
+            }
+        }
     }
 
     /// Serves the agent event stream (plan v6) to every connection.
@@ -537,13 +552,11 @@ impl WorkspaceManager {
                     if let (Some(dir), Some((id, at))) = (&self.requests_dir, &update_pending) {
                         let result = crate::requests::update_result(dir, id);
                         let done = result.is_some() || at.elapsed() >= UPDATE_DEADLINE;
-                        let error = result.and_then(|r| r.error).or_else(|| {
-                            (at.elapsed() >= UPDATE_DEADLINE).then(|| "The helper did not report an update result in time. Check its service logs.".to_string())
-                        });
+                        let error = update_result_error(result, at.elapsed() >= UPDATE_DEADLINE);
                         if let Some(error) = error {
                             if !send(&link.tx, &ServerMessage::Error { message: format!("Server update: {error}") }).await { break; }
                         }
-                        if done { update_pending = None; }
+                        if done { self.finish_update(id); update_pending = None; }
                     }
                     if let Some(msg) = update_change(&mut update_sent, self.update_available()) {
                         if !send(&link.tx, &msg).await { break; }
@@ -780,7 +793,9 @@ impl WorkspaceManager {
                     .is_some_and(|o| o.provider == identity.provider && o.id == identity.id);
                 let Some(dir) = self.requests_dir.as_deref().filter(|_| is_owner) else {
                     info!(target: "audit", event = "update_refused", provider = %identity.provider, account_id = %identity.id);
-                    return Err(anyhow::anyhow!("Server update: Only the owner can update this server"));
+                    return Err(anyhow::anyhow!(
+                        "Server update: Only the owner can update this server"
+                    ));
                 };
                 self.request_update(dir).map_err(|_| {
                     anyhow::anyhow!("Server update: Could not contact the update helper.")
@@ -1619,6 +1634,19 @@ fn update_change(sent: &mut String, now: String) -> Option<ServerMessage> {
     }
     sent.clone_from(&now);
     Some(ServerMessage::UpdateStatus { available: now })
+}
+
+fn update_result_error(
+    result: Option<crate::requests::UpdateResult>,
+    expired: bool,
+) -> Option<String> {
+    match result {
+        Some(result) => result.error,
+        None if expired => {
+            Some("The helper did not report an update result in time. Check its service logs.".into())
+        }
+        None => None,
+    }
 }
 
 fn status_message(c: crate::events::StatusChange) -> ServerMessage {
@@ -2496,7 +2524,16 @@ mod propagation_tests {
             },
         )
         .unwrap();
-        assert_ne!(first.request_update(&dir).unwrap(), id);
+        let retry = first.request_update(&dir).unwrap();
+        assert_ne!(retry, id);
+        first.finish_update(&id);
+        let restored = manager();
+        let pending = restored.update_gate.lock().unwrap().pending.clone();
+        assert_eq!(pending.map(|(id, _)| id), Some(retry.clone()));
+        first.finish_update(&retry);
+        assert!(first.update_gate.lock().unwrap().pending.is_none());
+        assert!(manager().update_gate.lock().unwrap().pending.is_none());
+        assert!(!root.join("update-progress.json").exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2804,6 +2841,17 @@ mod scrollback_tests {
 #[cfg(test)]
 mod update_change_tests {
     use super::*;
+
+    #[test]
+    fn a_reported_success_is_not_replaced_with_a_deadline_error() {
+        let result = crate::requests::UpdateResult {
+            id: "request".into(),
+            error: None,
+        };
+        assert_eq!(update_result_error(Some(result), true), None);
+        assert_eq!(update_result_error(None, false), None);
+        assert!(update_result_error(None, true).is_some());
+    }
 
     #[test]
     fn a_connection_is_told_once_when_the_recorded_release_changes_or_clears() {

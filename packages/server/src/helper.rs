@@ -111,7 +111,9 @@ fn outcome_error(outcome: &Outcome) -> Option<&'static str> {
         Outcome::Held => Some("Updates are on hold in update.toml."),
         Outcome::Frozen => Some("Updates are frozen by the signed release manifest."),
         Outcome::OtherChannel => Some("The release is outside this server's update channel."),
-        Outcome::RolledBack { .. } => Some("The update failed its health check and was rolled back."),
+        Outcome::RolledBack { .. } => {
+            Some("The update failed its health check and was rolled back.")
+        }
         Outcome::Available { .. } => Some("The release was checked but not installed."),
     }
 }
@@ -121,7 +123,9 @@ async fn update(setup: &Setup, trigger: Trigger, id: Option<&str>) -> Result<i32
     if let Some(id) = id {
         let error = match &result {
             Ok(outcome) => outcome_error(outcome),
-            Err(_) => Some("The update could not finish. Check the helper service logs on this server."),
+            Err(_) => {
+                Some("The update could not finish. Check the helper service logs on this server.")
+            }
         };
         if let Some(dir) = setup.requests_dir.parent() {
             crate::requests::write_json(

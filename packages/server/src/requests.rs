@@ -355,10 +355,7 @@ mod tests {
         let root = dir();
         let d = root.join("requests");
         let id = leave_update_now(&d).unwrap();
-        assert_eq!(
-            take_requests(&d),
-            vec![Request::UpdateNow { id: Some(id) }]
-        );
+        assert_eq!(take_requests(&d), vec![Request::UpdateNow { id: Some(id) }]);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -406,7 +403,10 @@ mod tests {
         let status = d.join("update-status.json");
         let base = serde_json::json!({"available":"0.2.0", "current":"0.1.0", "checked_at":now_secs(), "mode":"notify"});
         for (key, value) in [
-            ("checked_at", serde_json::json!(now_secs().saturating_sub(3601))),
+            (
+                "checked_at",
+                serde_json::json!(now_secs().saturating_sub(3601)),
+            ),
             ("checked_at", serde_json::json!(now_secs() + 60)),
             ("available", serde_json::json!("0.1.0+other")),
             ("available", serde_json::json!("0.0.9")),
