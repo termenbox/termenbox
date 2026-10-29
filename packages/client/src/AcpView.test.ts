@@ -167,7 +167,7 @@ describe('starting an ACP workspace', () => {
     expect(both).not.toContain('Agent view');
     expect(both).not.toContain('Manager');
     expect(both).toContain('Codex');
-    expect(both).toContain('Cursor');
+    expect(both).toContain('data-testid="agents-more"');
     const acpOnly = sheet(server(['acp'], ['claude', 'kilo']));
     expect(acpOnly).not.toContain('data-testid="view"');
     expect(acpOnly).toContain('runs no terminals');

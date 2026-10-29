@@ -2,7 +2,7 @@
 // can hold anything the user typed.
 export const SNAPSHOT_CAP = 20;
 
-/** A workspace without a tab keeps its old key; a tab gets its own preview (decision 0147). */
+/** A workspace without a tab keeps its old key; a tab gets its own preview (decision 0149). */
 const withTab = (key: string, tab?: string | null) => (tab ? `${key}/${tab}` : key);
 
 export class SnapshotStore {

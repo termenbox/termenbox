@@ -1,0 +1,61 @@
+{
+  "id": "V35",
+  "title": "Queue policy: an unanswered held call waits, then expires after T_call",
+  "covers": [
+    "G1",
+    "I13"
+  ],
+  "config": {
+    "detached_calls": "queue",
+    "t_detach": 100,
+    "t_call": 50
+  },
+  "session": {
+    "session_id": "sess-35",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "tool_call",
+      "key": "k1",
+      "tool": "shell:ls",
+      "permission": "read:docs"
+    },
+    {
+      "do": "reattach"
+    },
+    {
+      "do": "advance",
+      "seconds": 60
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "TOOL_CALL_QUEUED",
+      "RESUME_STARTED",
+      "RESUME_VERIFIED",
+      "TOOL_CALL_EXPIRED"
+    ],
+    "cell": [
+      "Att",
+      "None"
+    ],
+    "scope_version": 0,
+    "queue": [],
+    "forwarded": [],
+    "last_event_payload": {
+      "reason": "call_ttl"
+    }
+  }
+}

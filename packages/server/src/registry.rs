@@ -1,4 +1,4 @@
-//! The server-owned record of workspaces and their tabs (decision 0147). tmux keeps the processes; this module keeps
+//! The server-owned record of workspaces and their tabs (decision 0149). tmux keeps the processes; this module keeps
 //! what every device must agree on: which tabs exist, their labels, their order and the tab a new device opens.
 //!
 //! The record is authoritative for tmux and command workspaces. ACP workspaces stay in the ACP backend's own state and
@@ -24,7 +24,7 @@ use crate::pty::Attachment;
 
 const VERSION: u32 = 1;
 
-/// The most agent tabs one workspace may hold (decision 0147). It is per workspace, not per server; shell tabs do not
+/// The most agent tabs one workspace may hold (decision 0149). It is per workspace, not per server; shell tabs do not
 /// count, and ACP sessions keep their own `max_sessions` cap. The default matches that cap's default of six.
 pub const MAX_AGENT_TABS: usize = 6;
 
@@ -286,7 +286,7 @@ impl Registry {
         let chosen = backend_kind
             .map(str::to_string)
             .or_else(|| {
-                // New workspaces are tmux whenever the server runs tmux (decision 0147), whatever the order the
+                // New workspaces are tmux whenever the server runs tmux (decision 0149), whatever the order the
                 // owner configured the managers in.
                 kinds
                     .iter()
@@ -709,7 +709,7 @@ impl Registry {
         Ok((tab, attachment))
     }
 
-    /// Recreates the tmux session and every tab as a shell when it is dormant (decision 0147).
+    /// Recreates the tmux session and every tab as a shell when it is dormant (decision 0149).
     async fn ensure_windows(
         &self,
         backend: &dyn WorkspaceBackend,

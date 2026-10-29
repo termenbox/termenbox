@@ -1,5 +1,5 @@
 ---
-id: 0147-a-workspace-is-a-server-record-and-each-tab-is-a-tmux-window
+id: 0149-a-workspace-is-a-server-record-and-each-tab-is-a-tmux-window
 title: A workspace is a server record and each tab is a tmux window
 status: active
 date: 2026-10-28

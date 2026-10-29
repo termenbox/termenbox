@@ -10,7 +10,7 @@ The paper's reference bridge (`bridge-contract` 0.5.0, Rust, standalone) models 
 
 ### 1. Vendor the crate — [x]
 Check: `cargo test -p bridge-contract`
-Copy to `packages/bridge-contract/` with the 20 shared vectors; local changes are listed in `VENDOR.md`. Workspace member; `hmac`, `serde_json`, `sha2` shared with the workspace. Done: all 20 vectors pass here.
+Copy to `packages/bridge-contract/` with the 20 shared vectors; local changes are listed in `VENDOR.md`. Workspace member; `serde_json`, `sha2` shared with the workspace. Done: all 20 vectors pass here.
 
 ### 2. Governor seam in core — [x]
 Check: `cargo test -p termenbox-core governance`
@@ -22,5 +22,5 @@ Superseded by `bridge-contract-acp-integration.md` (review of the ACP interactio
 ## Caveats
 
 - The crate and the Python reference share an author; passing the vectors shows consistency of one reading, not independent confirmation (see `packages/bridge-contract/README.md`).
-- Proof of possession in the crate is an HMAC stand-in for a signature. Production use should use Ed25519 (already a `termenbox-core` dependency); that is an upstream change with a new vector.
+- Proof of possession in the crate is an Ed25519 signature and its registry holds public keys only (crate 0.6.0). `Bridge::attach` still takes a `ClientKey`, which carries the signing key; the Governor passes it through, so the server must not hold a client's real signing key once wiring starts (upstream change: attach by public key).
 - The case study (D.2) needs real logs from step 5; none exist yet.
