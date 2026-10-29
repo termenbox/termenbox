@@ -1,4 +1,5 @@
 // Renders one New workspace dialog walkthrough as a captioned MP4 (H.264) and a GIF poster.
+//   node e2e/video/render.mjs --list [--json]   prints the case ids (or their metadata)
 //   node e2e/video/render.mjs --case recent-folder|other-agent|browse-folder|type-path --profile phone|desktop --out DIR
 // phone is 390 x 844 at DPR 2 with touch; desktop is 1280 x 800. The page is the built client (pnpm run e2e:build) against the
 // scripted server and its fake home, recorded with Playwright and converted with ffmpeg. A case whose final assertion fails
@@ -12,10 +13,15 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const arg = (name) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : undefined; };
+if (process.argv.includes('--list')) {
+  const rows = Object.entries(cases).map(([id, c]) => ({ id, title: c.title, group: c.group, page: c.page, inputs: c.inputs }));
+  console.log(process.argv.includes('--json') ? JSON.stringify(rows, null, 2) : rows.map((c) => c.id).join('\n'));
+  process.exit(0);
+}
 const caseName = arg('case');
 const profile = arg('profile') ?? 'phone';
 const out = resolve(arg('out') ?? 'videos');
-if (!cases[caseName]) { console.error(`--case must be one of ${Object.keys(cases).join(', ')}`); process.exit(2); }
+if (!cases[caseName]) { console.error(`--case must be one of:\n${Object.keys(cases).join('\n')}`); process.exit(2); }
 if (!['phone', 'desktop'].includes(profile)) { console.error('--profile must be phone or desktop'); process.exit(2); }
 
 const phone = profile === 'phone';

@@ -29,9 +29,20 @@ async function create({ h, dialog, server }) {
   return server.of('new_workspace').at(-1);
 }
 
+/** Source paths the dialog walkthroughs depend on (hashed by inputs-hash.mjs, DECISION-0149). */
+const dialogInputs = [
+  'packages/client/src/NewWorkspaceSheet.svelte',
+  'packages/client/src/FolderPicker.svelte',
+  'packages/client/e2e/video/**',
+];
+
 export const cases = {
   /** One tap on a folder used before. */
   'recent-folder': {
+    title: 'One tap on a recent folder',
+    group: 'dialog',
+    page: 'docs/guide/workspaces.md',
+    inputs: dialogInputs,
     // A returning user: the server's home was remembered from an earlier listing, so folders show as ~/…
     storage: { termenbox_server_homes: JSON.stringify({ one: HOME }), termenbox_recent_dirs: JSON.stringify({ one: [`${HOME}/code/termenbox`, `${HOME}/code/app`] }) },
     async run(c) {
@@ -49,6 +60,10 @@ export const cases = {
 
   /** An agent that is not one of the three tiles. */
   'other-agent': {
+    title: 'Choose an agent that is not a tile',
+    group: 'dialog',
+    page: 'docs/guide/workspaces.md',
+    inputs: dialogInputs,
     storage: {},
     async run(c) {
       const { h, q, dialog } = c;
@@ -72,6 +87,10 @@ export const cases = {
 
   /** Walk the server's folders. */
   'browse-folder': {
+    title: "Browse the server's folders",
+    group: 'dialog',
+    page: 'docs/guide/workspaces.md',
+    inputs: dialogInputs,
     storage: {},
     async run(c) {
       const { h, q } = c;
@@ -94,6 +113,10 @@ export const cases = {
 
   /** Paste or type a path. */
   'type-path': {
+    title: 'Type or paste a path',
+    group: 'dialog',
+    page: 'docs/guide/workspaces.md',
+    inputs: dialogInputs,
     storage: {},
     async run(c) {
       const { h, q } = c;

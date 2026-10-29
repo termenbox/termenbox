@@ -10,11 +10,12 @@ Goal: the documentation videos and stills come from one recorder, are reviewed b
 
 Legend: `[ ]` pending, `[~]` in progress, `[x]` done, `[!]` blocked, `[>]` moved.
 
-### 1.1 Case catalog metadata and `--list` — [ ]
+### 1.1 Case catalog metadata and `--list` — [x]
 Class: implement · Needs: none · Check: `scripts/dev.sh --full sh -c 'cd packages/client && node e2e/video/render.mjs --list --json | node -e "const l=JSON.parse(require(\"fs\").readFileSync(0,\"utf8\"));if(l.length<4||l.some(c=>!c.id||!c.title||!c.group||!c.page||!(c.inputs&&c.inputs.length)))process.exit(1)"'`
 Context: `packages/client/e2e/video/cases.mjs` exports `cases`, an object keyed by case id (`recent-folder`, `other-agent`, `browse-folder`, `type-path`); each has `storage` and `async run(c)`. `render.mjs` takes `--case`, `--profile phone|desktop`, `--out`. DECISION-0149 gives each case an id, title, group (`dialog|core|daily|agent|diagnostics`), the docs page that embeds it, and the source paths its video depends on.
 Do: add to each case `title`, `group`, `page` (for the four dialog cases `docs/guide/workspaces.md`), and `inputs` (globs such as `packages/client/src/NewWorkspaceSheet.svelte`, `packages/client/src/FolderPicker.svelte`, `packages/client/e2e/video/**`). Teach `render.mjs` `--list` (one id per line) and `--list --json` (the metadata). Unknown `--case` ids exit non-zero with the list.
 Done-when: the Check exits 0 and `node e2e/video/render.mjs --list` prints the four ids.
+Progress: done 2026-10-29 on branch feat/docs-media-recorder; Check run with host node (no container), exits 0.
 
 ### 1.2 Input hash and `render.json` — [ ]
 Class: implement · Needs: 1.1 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && node e2e/video/inputs-hash.mjs --self-test'`
