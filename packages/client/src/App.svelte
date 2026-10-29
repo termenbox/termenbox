@@ -644,6 +644,8 @@
     clearPendingDeepTab();
     void openWaiting(p.key, p.tab);
   }
+  // Leaving Home for another top-level page or the servers list abandons the deep link instead of opening it later.
+  $: if (pendingDeepTab && (serversPage || $destination === 'settings' || $destination === 'activity')) clearPendingDeepTab();
   onDestroy(clearPendingDeepTab);
   function openDecision(key: string) {
     focusKey = key;
