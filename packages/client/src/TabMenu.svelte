@@ -189,7 +189,7 @@
   .who span { color: var(--fg-muted); font-size: 0.8rem; }
   .close { min-height: 44px; min-width: 44px; padding: 0; }
   .filters { display: flex; gap: 4px; padding: 6px 8px 0; }
-  .filters button { min-height: 32px; padding: 0 10px; font-size: 0.8rem; }
+  .filters button { min-height: 44px; padding: 0 10px; font-size: 0.8rem; }
   .filters button[aria-pressed='true'] { border-color: var(--accent); color: var(--accent); }
   .list { overflow-y: auto; padding: 4px; }
   .state { flex: 0 0 auto; padding: 2px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--fg-muted); font-size: 0.7rem; white-space: nowrap; }
