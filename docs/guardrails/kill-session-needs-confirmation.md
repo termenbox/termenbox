@@ -3,7 +3,7 @@ id: kill-session-needs-confirmation
 title: Killing a workspace or an agent tab needs confirmation
 status: active
 governed-by: 0082
-grounded-in: [0082, 0147]
+grounded-in: [0082, 0149]
 derivation-note: Killing ends a running agent and cannot be undone, and phone taps are imprecise; a tab is a process now, so it needs the same rule a workspace has.
 tags: [client, protocol]
 ---

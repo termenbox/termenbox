@@ -1,0 +1,59 @@
+{
+  "id": "V34",
+  "title": "Queue policy: a call away is held, and forwarded only once re-attached and answered",
+  "covers": [
+    "G1",
+    "I14"
+  ],
+  "config": {
+    "detached_calls": "queue"
+  },
+  "session": {
+    "session_id": "sess-34",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "tool_call",
+      "key": "k1",
+      "tool": "shell:ls",
+      "permission": "read:docs"
+    },
+    {
+      "do": "reattach"
+    },
+    {
+      "do": "answer",
+      "key": "k1"
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "TOOL_CALL_QUEUED",
+      "RESUME_STARTED",
+      "RESUME_VERIFIED",
+      "TOOL_CALL_ANSWERED",
+      "TOOL_CALL_DRAINED"
+    ],
+    "cell": [
+      "Att",
+      "None"
+    ],
+    "scope_version": 0,
+    "queue": [],
+    "forwarded": [
+      "k1"
+    ]
+  }
+}

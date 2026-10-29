@@ -23,6 +23,8 @@ export type ClientMessage =
   /** Sets the name shown for a workspace; an empty name clears it. The workspace's id does not change. */
   | { type: 'rename_workspace'; workspace: string; name: string }
   | { type: 'list_workspaces' }
+  /** Decision 0147: the directories inside `path` (the server user's home when absent), owner only; answered with `dir_listing` or `dir_error`. */
+  | { type: 'list_dir'; path?: string; prefix?: string; hidden?: boolean }
   /** U14: the server's in-memory health samples; the answer is `health_history`. Older servers do not answer. */
   | { type: 'health_history' }
   | { type: 'new_workspace'; name: string; backend?: string; dir?: string; template?: string }
@@ -89,6 +91,10 @@ export type ServerMessage =
   | { type: 'candidates'; bundle: string }
   | { type: 'auth_ok'; protocol?: number; control_channel?: boolean; channels?: string[]; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string; acp_agents?: string[]; update_available?: string }
   | { type: 'workspaces'; workspaces: WorkspaceInfo[] }
+  /** The answer to `list_dir`: directory names only, at most 500 (`truncated` says more matched). `parent` is absent at `home`. */
+  | { type: 'dir_listing'; path: string; parent?: string | null; entries: DirEntry[]; truncated?: boolean; home: string }
+  /** `list_dir` was refused or failed; `reason` is a short sentence to show. */
+  | { type: 'dir_error'; reason: string }
   | { type: 'workspace_attached'; workspace_id: string }
   | { type: 'output'; data: string }
   /** Never on the wire as JSON: terminal bytes from the `term` lane, as `Connection` hands them to listeners. */
@@ -252,6 +258,9 @@ export interface TimelineMessage {
   files?: string[];
   last_message?: string;
 }
+
+/** One directory in a `dir_listing`: a name only, never a path. */
+export interface DirEntry { name: string; symlink?: boolean; hidden?: boolean }
 
 export interface WorkspaceInfo {
   id: string;

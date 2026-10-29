@@ -63,3 +63,5 @@ a-phone-check-names-its-platform,"A phone check names the platform it ran on, an
 | control-never-waits-behind-bulk | Control messages never wait behind bulk traffic | 0139 | 0096,0139 | active |
 | relay-credentials-are-owner-scoped-minted-after-auth-and-capped | Relay and signaling resources belong to the owner's account, credentials are minted only after authentication, and relayed bytes are capped | 0141 | 0140,0058 | active |
 | a-fault-in-one-session-never-stops-the-server | A fault in one session never stops the server, and a death always leaves a record | 0142,0143 | 0142,0143 | active |
+| listdir-is-owner-only-home-confined-and-directories-only | Directory listing for the folder picker is owner-only, confined to the home directory, and returns directories only | 0147 | 0140,0058,audit-logging-no-secrets | active |
+| ux-scenarios-assert-a-state-before-they-capture-it | A UX scenario asserts the state it claims to show before it records or screenshots it | 0135 | 0135,0056,0148 | active |

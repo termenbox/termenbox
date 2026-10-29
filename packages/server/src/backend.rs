@@ -109,7 +109,7 @@ pub trait WorkspaceBackend: Send + Sync {
         Err(anyhow!("this workspace manager has no windows"))
     }
 
-    // ---- Tabs (decision 0147). A manager with no windows refuses all of these.
+    // ---- Tabs (decision 0149). A manager with no windows refuses all of these.
 
     /// Creates a workspace and its first tab, returning the id the manager chose and the first window.
     async fn create_workspace(

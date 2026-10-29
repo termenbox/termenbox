@@ -1,6 +1,6 @@
 {
   "id": "V19",
-  "title": "Recovery fails on a broken hash chain",
+  "title": "Recovery on a broken hash chain quarantines the session",
   "covers": [
     "I5",
     "I12",
@@ -33,15 +33,13 @@
       "ATTACHED",
       "DETACHMENT",
       "RESUME_PREPARED",
-      "RECOVERY_FAILED",
-      "TERMINATION"
+      "RECOVERY_FAILED"
     ],
     "cell": [
-      "Terminated"
+      "Det",
+      "None"
     ],
-    "scope_version": 0,
-    "last_event_payload": {
-      "reason": "recovery_fail"
-    }
+    "quarantined": true,
+    "scope_version": 0
   }
 }

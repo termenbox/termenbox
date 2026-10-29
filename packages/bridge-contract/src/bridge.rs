@@ -42,6 +42,8 @@ struct Queued {
     shown_hash: String,
     /// (approve, hash the client displayed)
     answer: Option<(bool, String)>,
+    /// Queued with no escalation pending (G1 `Queue`): waits for its answer.
+    held: bool,
 }
 
 /// Per-session state. It is derived from the log only (see `apply`).
@@ -58,10 +60,17 @@ struct Session {
     cell: Cell,
     detach_deadline: Option<f64>,
     human_deadline: Option<f64>,
+    /// Start of the current away interval, and the closed intervals so far.
+    det_since: Option<f64>,
+    det_total: f64,
+    /// A failed chain verification froze the session (cell unchanged).
+    quarantined: bool,
     record: Option<Event>,
     queue: Vec<Queued>,
     used_keys: HashSet<String>,
     approval_until: f64,
+    /// Drained calls whose delivery the runtime has not acknowledged: key -> tool.
+    unacked: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -76,11 +85,15 @@ pub struct Bridge {
     clock: Arc<dyn Clock>,
     verifier: Arc<dyn Verifier>,
     cfg: Config,
+    /// Latest committed timestamp (A6).
+    floor: f64,
     sessions: BTreeMap<String, Session>,
     /// Volatile: void after a restart.
     nonces: BTreeMap<String, VecDeque<NonceRec>>,
     /// Calls handed to the agent runtime: (session, key, call).
     pub forwarded: Vec<(String, String, String)>,
+    /// Calls this instance has forwarded: (session, key).
+    sent: HashSet<(String, String)>,
     /// Instructions to revert an observed widening: (session, scope to revert to).
     pub revert_requests: Vec<(String, Vec<String>)>,
 }
@@ -110,17 +123,26 @@ impl Bridge {
             clock,
             verifier,
             cfg,
+            floor: 0.0,
             sessions: BTreeMap::new(),
             nonces: BTreeMap::new(),
             forwarded: vec![],
+            sent: HashSet::new(),
             revert_requests: vec![],
         })
+    }
+
+    /// The host clock, never earlier than the last committed timestamp: a
+    /// clock that went backwards across a restart counts as no time
+    /// elapsed (A6).
+    fn now(&self) -> f64 {
+        self.clock.now().max(self.floor)
     }
 
     // ---- commit / apply: the only way a cell changes ---------------------
 
     fn commit(&mut self, sid: &str, items: Vec<Item>) -> Result<Vec<Event>> {
-        let ts = self.clock.now();
+        let ts = self.now();
         let log = self.storage.read_log(sid)?;
         let mut prev = log.last().map(Event::hash).unwrap_or_default();
         let mut seq = log.len() as u64;
@@ -146,6 +168,7 @@ impl Bridge {
     }
 
     fn apply(&mut self, ev: &Event) {
+        self.floor = self.floor.max(ev.timestamp);
         let p = &ev.payload;
         if ev.kind == Kind::ATTACHED {
             let key = p["client_key_id"].as_str().unwrap_or("").to_string();
@@ -167,10 +190,14 @@ impl Bridge {
                     },
                     detach_deadline: None,
                     human_deadline: None,
+                    det_since: None,
+                    det_total: 0.0,
+                    quarantined: false,
                     record: None,
                     queue: vec![],
                     used_keys: HashSet::new(),
                     approval_until: 0.0,
+                    unacked: BTreeMap::new(),
                 },
             );
             return;
@@ -191,6 +218,9 @@ impl Bridge {
                 s.conn.remove(&key_id);
             }
             Kind::DETACHMENT => {
+                if s.cell.att != Attachment::Det {
+                    s.det_since = Some(ev.timestamp); // a restart while away continues the interval
+                }
                 s.cell.att = Attachment::Det;
                 s.conn.clear();
                 s.resuming = None;
@@ -202,7 +232,11 @@ impl Bridge {
                 s.resuming = Some(key_id);
                 s.resume_from = p["seq"].as_i64().unwrap_or(0);
                 s.detach_deadline = None;
+                if let Some(since) = s.det_since.take() {
+                    s.det_total += ev.timestamp - since;
+                }
             }
+            Kind::RESUME_FAILED | Kind::RECOVERY_FAILED => s.quarantined = true,
             Kind::RESUME_VERIFIED => {
                 s.cell.att = Attachment::Att;
                 s.conn = s.resuming.take().into_iter().collect();
@@ -232,6 +266,7 @@ impl Bridge {
                     expires_at: p["expires_at"].as_f64().unwrap_or(0.0),
                     shown_hash: p["shown_hash"].as_str().unwrap_or("").to_string(),
                     answer: None,
+                    held: p["held"].as_bool().unwrap_or(false),
                 });
             }
             Kind::TOOL_CALL_ANSWERED => {
@@ -247,6 +282,15 @@ impl Bridge {
                 let key = p["key"].as_str().unwrap_or("");
                 s.queue.retain(|c| c.key != key);
                 s.used_keys.insert(key.to_string());
+                if ev.kind == Kind::TOOL_CALL_DRAINED {
+                    s.unacked.insert(
+                        key.to_string(),
+                        p["tool"].as_str().unwrap_or("").to_string(),
+                    );
+                }
+            }
+            Kind::TOOL_CALL_DELIVERED | Kind::TOOL_CALL_COMPLETED => {
+                s.unacked.remove(p["key"].as_str().unwrap_or(""));
             }
             Kind::TERMINATION => s.cell.life = Life::Terminated,
             // Audit-only events do not move the cell.
@@ -261,7 +305,7 @@ impl Bridge {
         if self.sessions.contains_key(sid) || !self.storage.read_log(sid)?.is_empty() {
             return Err(BridgeError::new("session already exists (I6)"));
         }
-        self.storage.register_key(&key.key_id, &key.secret)?;
+        self.storage.register_key(&key.key_id, &key.public_key())?;
         self.commit(
             sid,
             vec![(
@@ -321,6 +365,9 @@ impl Bridge {
         if terminated(self) {
             return Err(BridgeError::new("session is TERMINATED (I6)"));
         }
+        if self.sessions[sid].quarantined {
+            return Err(BridgeError::new("session is QUARANTINED"));
+        }
         self.check_timers(sid)?;
         if terminated(self) {
             return Err(BridgeError::new("session is TERMINATED (I6)"));
@@ -358,7 +405,7 @@ impl Bridge {
             }
             let default = json!({"tool": tool, "permission": permission});
             let shown_hash = content_hash(content.unwrap_or(&default));
-            let expires_at = self.clock.now() + self.cfg.t_call;
+            let expires_at = self.now() + self.cfg.t_call;
             self.commit(
                 sid,
                 vec![(
@@ -377,7 +424,114 @@ impl Bridge {
             ));
             return Ok(ToolOutcome::Forwarded);
         }
-        Err(BridgeError::new("tool call not allowed in this cell"))
+        self.detached_call(sid, &s, tool, key, permission, content)
+    }
+
+    /// G1: a call with no escalation pending while no client is attached.
+    /// `Refuse` (default) errors; `Queue` holds the call for an answer after
+    /// re-attach; `Forward` forwards an allowlisted, in-scope call at once,
+    /// recorded as queued, answered and drained in one durable batch.
+    fn detached_call(
+        &mut self,
+        sid: &str,
+        s: &Session,
+        tool: &str,
+        key: Option<&str>,
+        permission: Option<&str>,
+        content: Option<&Value>,
+    ) -> Result<ToolOutcome> {
+        let policy = self.cfg.detached_calls;
+        let in_scope = permission.is_none_or(|p| s.scope.iter().any(|x| x == p));
+        let allowed = permission.is_some_and(|p| self.cfg.detached_allow.contains(p));
+        if policy == DetachedCalls::Refuse
+            || !in_scope
+            || (policy == DetachedCalls::Forward && !allowed)
+        {
+            return Err(BridgeError::new(
+                "tool call not allowed in this cell (detached_calls policy)",
+            ));
+        }
+        let key = key
+            .map(String::from)
+            .unwrap_or_else(|| format!("tc-{:04}", s.used_keys.len() + 1));
+        if s.used_keys.contains(&key) {
+            return Ok(ToolOutcome::Duplicate);
+        }
+        if s.queue.len() >= self.cfg.q_max {
+            self.commit(
+                sid,
+                vec![(
+                    Kind::TOOL_CALL_REJECTED,
+                    json!({"key": key, "tool": tool, "reason": "queue_full"}),
+                )],
+            )?;
+            return Ok(ToolOutcome::Rejected);
+        }
+        let default = json!({"tool": tool, "permission": permission});
+        let shown_hash = content_hash(content.unwrap_or(&default));
+        let expires_at = self.now() + self.cfg.t_call;
+        let queued = (
+            Kind::TOOL_CALL_QUEUED,
+            json!({"key": key, "tool": tool, "permission": permission, "shown_hash": shown_hash,
+                   "held": true, "expires_at": expires_at}),
+        );
+        if policy == DetachedCalls::Queue {
+            self.commit(sid, vec![queued])?;
+            return Ok(ToolOutcome::Queued);
+        }
+        self.commit(
+            sid,
+            vec![
+                queued,
+                (
+                    Kind::TOOL_CALL_ANSWERED,
+                    json!({"key": key, "shown_hash": shown_hash, "decision": "approve",
+                           "source": "operator_policy"}),
+                ),
+                (
+                    Kind::TOOL_CALL_DRAINED,
+                    json!({"key": key, "tool": tool, "shown_hash": shown_hash,
+                           "authority_hash": authority_hash(&s.principal, &s.scope, &s.lineage)}),
+                ),
+            ],
+        )?;
+        self.send(sid, &key, tool); // only after the batch is durable (I12)
+        Ok(ToolOutcome::Forwarded)
+    }
+
+    fn send(&mut self, sid: &str, key: &str, tool: &str) {
+        self.sent.insert((sid.to_string(), key.to_string()));
+        self.forwarded
+            .push((sid.to_string(), key.to_string(), tool.to_string()));
+    }
+
+    /// The runtime acknowledges that it received a forwarded call
+    /// (`TOOL_CALL_DELIVERED`). Until then a restart forwards it again.
+    pub fn delivered(&mut self, sid: &str, key: &str) -> Result<()> {
+        let s = self.enter(sid)?;
+        if !s.unacked.contains_key(key) {
+            return Err(BridgeError::new(format!(
+                "no forwarded call {key:?} awaits delivery"
+            )));
+        }
+        self.commit(sid, vec![(Kind::TOOL_CALL_DELIVERED, json!({"key": key}))])
+            .map(|_| ())
+    }
+
+    /// The runtime reports that a call finished (`TOOL_CALL_COMPLETED`).
+    pub fn completed(&mut self, sid: &str, key: &str, result_hash: &str) -> Result<()> {
+        let s = self.enter(sid)?;
+        if !s.unacked.contains_key(key) && !s.used_keys.contains(key) {
+            return Err(BridgeError::new(format!("no call {key:?} to complete")));
+        }
+        self.commit(
+            sid,
+            vec![(
+                Kind::TOOL_CALL_COMPLETED,
+                json!({"key": key, "result_hash": result_hash}),
+            )],
+        )
+        .map(|_| ())
     }
 
     /// h(content shown) as the bridge recorded it: what a faithful client
@@ -418,6 +572,7 @@ impl Bridge {
         if entry.answer.is_some() {
             return Err(BridgeError::new("call already answered (I14)"));
         }
+        let held = entry.held;
         self.commit(
             sid,
             vec![(
@@ -426,6 +581,9 @@ impl Bridge {
                        "decision": if approve { "approve" } else { "deny" }}),
             )],
         )?;
+        if held {
+            self.drain(sid)?; // no-op unless back in (Att, None)
+        }
         Ok(())
     }
 
@@ -435,20 +593,21 @@ impl Bridge {
         if !(s.cell.att == Attachment::Att
             && s.cell.human == Human::None
             && s.cell.life == Life::Active
-            && !s.queue.is_empty())
+            && !s.quarantined)
         {
             return Ok(());
         }
-        let now = self.clock.now();
+        let now = self.now();
         let ah = authority_hash(&s.principal, &s.scope, &s.lineage);
         let items: Vec<Item> = s
             .queue
             .iter()
+            .filter(|c| !(c.held && c.answer.is_none() && now < c.expires_at)) // a held call waits for its answer
             .map(|c| {
                 let base = |reason: &str| json!({"key": c.key, "tool": c.tool, "reason": reason});
                 if now >= c.expires_at {
                     (Kind::TOOL_CALL_EXPIRED, base("call_ttl"))
-                } else if now >= s.approval_until {
+                } else if now >= s.approval_until && !c.held {
                     (Kind::TOOL_CALL_EXPIRED, base("approval_ttl"))
                 } else if c.permission.as_ref().is_some_and(|p| !s.scope.contains(p)) {
                     (Kind::TOOL_CALL_REJECTED, base("scope"))
@@ -468,14 +627,27 @@ impl Bridge {
                 }
             })
             .collect();
-        let batch = self.commit(sid, items)?;
-        for ev in batch.iter().filter(|e| e.kind == Kind::TOOL_CALL_DRAINED) {
-            // forwarded only after the DRAINED events are durable (I12)
-            self.forwarded.push((
-                sid.to_string(),
-                ev.str_field("key").unwrap_or("").to_string(),
-                ev.str_field("tool").unwrap_or("").to_string(),
-            ));
+        if !items.is_empty() {
+            let batch = self.commit(sid, items)?;
+            for ev in batch.iter().filter(|e| e.kind == Kind::TOOL_CALL_DRAINED) {
+                // forwarded only after the DRAINED events are durable (I12)
+                let (key, tool) = (
+                    ev.str_field("key").unwrap_or("").to_string(),
+                    ev.str_field("tool").unwrap_or("").to_string(),
+                );
+                self.send(sid, &key, &tool);
+            }
+        }
+        // A drained call whose delivery was never acknowledged (a crash in
+        // between) is forwarded again, with the same key, by this instance.
+        let again: Vec<(String, String)> = self.sessions[sid]
+            .unacked
+            .iter()
+            .filter(|(k, _)| !self.sent.contains(&(sid.to_string(), (*k).clone())))
+            .map(|(k, t)| (k.clone(), t.clone()))
+            .collect();
+        for (key, tool) in again {
+            self.send(sid, &key, &tool);
         }
         Ok(())
     }
@@ -564,7 +736,7 @@ impl Bridge {
             sid,
             vec![(
                 Kind::HUMAN_RESOLVED,
-                json!({"valid_until": self.clock.now() + self.cfg.t_approve}),
+                json!({"valid_until": self.now() + self.cfg.t_approve}),
             )],
         )?;
         self.drain(sid)
@@ -585,13 +757,16 @@ impl Bridge {
 
     fn check_timers(&mut self, sid: &str) -> Result<()> {
         let s = self.sessions[sid].clone();
-        if s.cell.life == Life::Terminated {
+        if s.cell.life == Life::Terminated || s.quarantined {
             return Ok(());
         }
-        let now = self.clock.now();
+        let now = self.now();
         let detach = s.cell.att == Attachment::Det && s.detach_deadline.is_some_and(|d| now >= d);
+        let total = s.cell.att == Attachment::Det
+            && s.det_since
+                .is_some_and(|since| s.det_total + (now - since) >= self.cfg.t_total);
         let human = s.cell.human == Human::Pend && s.human_deadline.is_some_and(|d| now >= d);
-        let items: Vec<Item> = match (detach, human) {
+        let items: Vec<Item> = match (detach || total, human) {
             (true, true) => vec![
                 (Kind::HUMAN_TIMEOUT, json!({"reason": "human_timeout"})),
                 (Kind::DETACH_TIMEOUT, json!({"reason": "detach_timeout"})),
@@ -604,10 +779,17 @@ impl Bridge {
                 (Kind::HUMAN_TIMEOUT, json!({"reason": "human_timeout"})),
                 (Kind::TERMINATION, json!({"reason": "human_timeout"})),
             ],
-            (true, false) => vec![
-                (Kind::DETACH_TIMEOUT, json!({"reason": "detach_timeout"})),
-                (Kind::TERMINATION, json!({"reason": "detach_timeout"})),
-            ],
+            (true, false) => {
+                let reason = if detach {
+                    "detach_timeout"
+                } else {
+                    "detach_total_timeout"
+                };
+                vec![
+                    (Kind::DETACH_TIMEOUT, json!({"reason": reason})),
+                    (Kind::TERMINATION, json!({"reason": reason})),
+                ]
+            }
             (false, false) => s
                 .queue
                 .iter()
@@ -636,16 +818,18 @@ impl Bridge {
             Some(s) if s.cell.life == Life::Terminated => {
                 return Err(BridgeError::new("session is TERMINATED (I6)"))
             }
+            Some(s) if s.quarantined => return Err(BridgeError::new("session is QUARANTINED")),
             _ => {}
         }
         let mut raw = [0u8; 16];
         getrandom::getrandom(&mut raw)
             .map_err(|e| BridgeError::new(format!("no randomness: {e}")))?;
         let nonce = hex::encode(raw);
+        let issued = self.now();
         let book = self.nonces.entry(sid.to_string()).or_default();
         book.push_back(NonceRec {
             nonce: nonce.clone(),
-            issued: self.clock.now(),
+            issued,
             used: false,
         });
         while book.len() > NONCE_RECORDS {
@@ -731,7 +915,7 @@ impl Bridge {
         if !ok {
             return Ok(Some("bad_signature")); // I11c
         }
-        let now = self.clock.now();
+        let now = self.now();
         let t_nonce = self.cfg.t_nonce;
         let Some(rec) = self
             .nonces
@@ -777,13 +961,7 @@ impl Bridge {
             return Err(BridgeError::new("complete_resume requires Att=Res"));
         }
         if let Err(e) = self.verify_chain(sid) {
-            self.commit(
-                sid,
-                vec![
-                    (Kind::RESUME_FAILED, json!({"reason": "chain"})),
-                    (Kind::TERMINATION, json!({"reason": "resume_fail"})),
-                ],
-            )?;
+            self.quarantine(sid, Kind::RESUME_FAILED, json!({"reason": "chain"}));
             return Err(e);
         }
         self.commit(sid, vec![(Kind::RESUME_VERIFIED, json!({}))])?;
@@ -879,13 +1057,28 @@ impl Bridge {
         }
     }
 
+    /// Freeze a session whose log cannot be vouched for. The failure is
+    /// recorded if the bridge can still append; otherwise the session is
+    /// frozen in memory only and recovery finds it again.
+    fn quarantine(&mut self, sid: &str, kind: Kind, payload: Value) {
+        if self.commit(sid, vec![(kind, payload)]).is_err() {
+            if let Some(s) = self.sessions.get_mut(sid) {
+                s.quarantined = true;
+            }
+        }
+    }
+
+    pub fn is_quarantined(&self, sid: &str) -> bool {
+        self.sessions[sid].quarantined
+    }
+
     // ---- restart and recovery (Section 5.5) ---------------------------------
 
     /// Rebuild every session from the durable log. All transports died with
     /// the process, so each active session comes back detached with an empty
     /// client set and a fresh resume record; nonces are void. A session
     /// whose chain does not verify, or whose key registry is missing a key
-    /// the log refers to, is terminated with RECOVERY_FAILED.
+    /// the log refers to, is quarantined with RECOVERY_FAILED.
     pub fn recover(
         storage: Arc<dyn Storage>,
         clock: Arc<dyn Clock>,
@@ -900,8 +1093,8 @@ impl Bridge {
             for ev in &log {
                 b.apply(ev);
             }
-            if b.sessions[&sid].cell.life == Life::Terminated {
-                continue;
+            if b.sessions[&sid].cell.life == Life::Terminated || b.sessions[&sid].quarantined {
+                continue; // quarantine survives a restart
             }
             let mut check: Result<()> = Ok(());
             for k in &b.sessions[&sid].keys {
@@ -912,13 +1105,11 @@ impl Bridge {
             }
             let ok = check.and_then(|_| b.verify_chain(&sid));
             if let Err(e) = ok {
-                b.commit(
+                b.quarantine(
                     &sid,
-                    vec![
-                        (Kind::RECOVERY_FAILED, json!({"reason": e.to_string()})),
-                        (Kind::TERMINATION, json!({"reason": "recovery_fail"})),
-                    ],
-                )?;
+                    Kind::RECOVERY_FAILED,
+                    json!({"reason": e.to_string()}),
+                );
                 continue;
             }
             let s = b.sessions[&sid].clone();

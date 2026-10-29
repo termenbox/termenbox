@@ -16,3 +16,5 @@ Use when a feature needs a short user-facing video. The video is rendered from a
 4. **Check the output**: an MP4 (H.264, recorded at 2x) and a GIF poster. Watch it once: taps are visible, captions do not cover the control being tapped, nothing flickers, and the run has no console error.
 5. **Label it**: say in the description that it is a rendered walkthrough of the app on scripted data, not a recording of a real device or a real agent.
 6. **Publish** only on the owner's word; publishing to the site is a separate step (R73 leaves it out).
+
+**New workspace dialog (until the `ux` workflow exists).** Its videos come from `.github/workflows/dialog-videos.yaml`, dispatch only, recorded by `packages/client/e2e/video/`. Dispatch: `gh workflow run dialog-videos.yaml -f case=all -f profile=both` (add `--ref <branch>` for an unmerged branch). Download: `gh run download <run> -n dialog-videos`. Locally: `node e2e/video/render.mjs --case <case> --profile phone|desktop --out <dir>` in `packages/client` (needs ffmpeg).

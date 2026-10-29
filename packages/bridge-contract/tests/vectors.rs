@@ -48,21 +48,40 @@ struct Runner {
 }
 
 fn config_of(v: &Value) -> Result<Config> {
-    let mut c = (Config::default().t_detach, None, None, 900.0, 60.0, 64usize);
+    let mut c = (
+        Config::default().t_detach,
+        None,
+        None,
+        None,
+        900.0,
+        60.0,
+        64usize,
+    );
+    let (mut policy, mut allow) = (DetachedCalls::Refuse, Vec::<String>::new());
     if let Some(m) = v.as_object() {
         for (k, x) in m {
             match k.as_str() {
                 "t_detach" => c.0 = x.as_f64().unwrap(),
                 "t_human" => c.1 = Some(x.as_f64().unwrap()),
                 "t_call" => c.2 = Some(x.as_f64().unwrap()),
-                "t_approve" => c.3 = x.as_f64().unwrap(),
-                "t_nonce" => c.4 = x.as_f64().unwrap(),
-                "q_max" => c.5 = x.as_u64().unwrap() as usize,
+                "t_total" => c.3 = Some(x.as_f64().unwrap()),
+                "t_approve" => c.4 = x.as_f64().unwrap(),
+                "t_nonce" => c.5 = x.as_f64().unwrap(),
+                "q_max" => c.6 = x.as_u64().unwrap() as usize,
+                "detached_calls" => {
+                    policy = match x.as_str().unwrap() {
+                        "refuse" => DetachedCalls::Refuse,
+                        "queue" => DetachedCalls::Queue,
+                        "forward" => DetachedCalls::Forward,
+                        other => panic!("unknown detached_calls {other}"),
+                    }
+                }
+                "detached_allow" => allow = strings(x),
                 other => panic!("unknown config key {other}"),
             }
         }
     }
-    Config::new(c.0, c.1, c.2, c.3, c.4, c.5)
+    Ok(Config::new(c.0, c.1, c.2, c.3, c.4, c.5, c.6)?.with_detached_calls(policy, allow))
 }
 
 fn strings(v: &Value) -> Vec<String> {
@@ -73,8 +92,9 @@ fn strings(v: &Value) -> Vec<String> {
         .collect()
 }
 
-fn secret_of(key_id: &str) -> Vec<u8> {
-    format!("client-secret-{key_id}-0123456789abcdef").into_bytes()
+fn secret_of(key_id: &str) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(format!("client-seed-{key_id}")).into()
 }
 
 impl Runner {
@@ -87,7 +107,7 @@ impl Runner {
         let mut bridge = Bridge::new(
             storage.clone(),
             clock.clone(),
-            Arc::new(HmacVerifier),
+            Arc::new(Ed25519Verifier),
             cfg.clone(),
         )?;
         let sid = s["session_id"].as_str().unwrap().to_string();
@@ -212,6 +232,12 @@ impl Runner {
                     a.get("content"),
                 )
                 .map(|_| ()),
+            "delivered" => self.bridge.delivered(&sid, a["key"].as_str().unwrap()),
+            "completed" => self.bridge.completed(
+                &sid,
+                a["key"].as_str().unwrap(),
+                a["result_hash"].as_str().unwrap_or(""),
+            ),
             "narrow" => self
                 .bridge
                 .narrow_authority_scope(&sid, &strings(&a["scope"])),
@@ -233,7 +259,8 @@ impl Runner {
                     .cloned()
                     .unwrap_or_else(|| self.first.clone());
                 let key = ClientKey::new(&c, &secret_of(&c));
-                self.bridge.add_client_key(&sid, &via, &c, &key.secret)?;
+                self.bridge
+                    .add_client_key(&sid, &via, &c, &key.public_key())?;
                 self.keys.insert(c.clone(), key);
                 self.sync(&c);
                 Ok(())
@@ -268,7 +295,7 @@ impl Runner {
                 self.bridge = Bridge::recover(
                     self.storage.clone(),
                     self.clock.clone(),
-                    Arc::new(HmacVerifier),
+                    Arc::new(Ed25519Verifier),
                     self.cfg.clone(),
                 )?;
                 Ok(())
@@ -349,6 +376,14 @@ fn run_vector(vec: &Value, storage: Arc<dyn TestStorage>) -> Vec<String> {
         got.sort();
         if got != strings(c) {
             fails.push(format!("clients {got:?} != {c}"));
+        }
+    }
+    if let Some(q) = expect.get("quarantined") {
+        if r.bridge.is_quarantined(&r.sid) != q.as_bool().unwrap() {
+            fails.push(format!(
+                "quarantined {} != {q}",
+                r.bridge.is_quarantined(&r.sid)
+            ));
         }
     }
     if let Some(n) = expect.get("reverts") {
@@ -434,7 +469,7 @@ fn bridge_and_collaborators_are_send_and_sync() {
     send_sync::<common::FileStorage>();
     send_sync::<FakeClock>();
     send_sync::<SystemClock>();
-    send_sync::<HmacVerifier>();
+    send_sync::<Ed25519Verifier>();
     send_sync::<Config>();
 }
 
@@ -446,7 +481,7 @@ fn a_shared_bridge_serves_sessions_from_several_threads() {
         Bridge::new(
             storage.clone(),
             FakeClock::new(0.0),
-            Arc::new(HmacVerifier),
+            Arc::new(Ed25519Verifier),
             Config::default(),
         )
         .unwrap(),
@@ -456,7 +491,7 @@ fn a_shared_bridge_serves_sessions_from_several_threads() {
             let bridge = bridge.clone();
             std::thread::spawn(move || {
                 let sid = format!("s{i}");
-                let key = ClientKey::new("ck", format!("secret-{i}").as_bytes());
+                let key = ClientKey::new("ck", &[i as u8; 32]);
                 let id = SessionIdentity {
                     session_id: sid.clone(),
                     principal_id: "p".into(),
@@ -485,26 +520,32 @@ fn a_shared_bridge_serves_sessions_from_several_threads() {
 #[test]
 fn default_config_satisfies_the_timer_bounds() {
     let c = Config::default();
-    assert!(c.t_call <= c.t_human && c.t_human <= c.t_detach);
-    assert_eq!((c.t_detach, c.t_human, c.t_call), (1800.0, 1800.0, 1800.0));
+    assert!(c.t_call <= c.t_human && c.t_detach <= c.t_total);
+    assert_eq!(
+        (c.t_detach, c.t_human, c.t_call, c.t_total),
+        (1800.0, 1800.0, 1800.0, 7200.0)
+    );
     let p = Config::persistent();
     assert_eq!(
         (p.t_detach, p.t_human, p.t_call),
         (604_800.0, 604_800.0, 604_800.0)
     );
-    assert!(Config::new(1800.0, Some(3600.0), None, 900.0, 60.0, 64).is_err());
-    assert!(Config::new(1800.0, Some(600.0), Some(900.0), 900.0, 60.0, 64).is_err());
+    assert_eq!(p.t_total, 28.0 * 86_400.0);
+    // T_human may exceed T_detach; T_call may not exceed T_human; T_total >= T_detach.
+    assert!(Config::new(1800.0, Some(3600.0), None, None, 900.0, 60.0, 64).is_ok());
+    assert!(Config::new(1800.0, Some(600.0), Some(900.0), None, 900.0, 60.0, 64).is_err());
+    assert!(Config::new(1800.0, None, None, Some(900.0), 900.0, 60.0, 64).is_err());
 }
 
 #[test]
 fn failed_append_changes_nothing() {
     let clock = FakeClock::new(0.0);
     let storage = MemStorage::new();
-    let key = ClientKey::new("ck", b"s");
+    let key = ClientKey::new("ck", &[7u8; 32]);
     let mut b = Bridge::new(
         storage.clone(),
         clock,
-        Arc::new(HmacVerifier),
+        Arc::new(Ed25519Verifier),
         Config::default(),
     )
     .unwrap();
@@ -520,4 +561,28 @@ fn failed_append_changes_nothing() {
     assert!(b.client_disconnect("s", None, "x").is_err());
     assert_eq!(b.cell_of("s"), cell);
     assert_eq!(b.events("s").len(), 1);
+}
+
+#[test]
+fn registry_holds_public_keys_only() {
+    let seed = [9u8; 32];
+    let key = ClientKey::new("ck", &seed);
+    let storage = MemStorage::new();
+    let mut b = Bridge::new(
+        storage.clone(),
+        FakeClock::new(0.0),
+        Arc::new(Ed25519Verifier),
+        Config::default(),
+    )
+    .unwrap();
+    let id = SessionIdentity {
+        session_id: "s".into(),
+        principal_id: "p".into(),
+        authority_scope: vec!["a".into()],
+        task_lineage: vec![],
+    };
+    b.attach(&id, &key).unwrap();
+    let stored = storage.key_material("ck").unwrap().unwrap();
+    assert_eq!(stored, key.public_key());
+    assert_ne!(stored, seed.to_vec());
 }
