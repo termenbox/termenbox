@@ -359,6 +359,23 @@ set_release_env() { # <unit file>...
   done
 }
 
+# Older timer units inherited the system requests directory even in a user install. Migrate existing units as well
+# as generating correct new ones. Preserve every other argument and back up/journal the replacement before writing.
+migrate_helper_requests() { # <unit file>...
+  for _helper_unit in "$@"; do
+    [ -f "$_helper_unit" ] || continue
+    _helper_next="$TMP/requests-$(basename "$_helper_unit")"
+    awk -v requests="$STATE/requests" '
+      /^ExecStart=.* --root-helper (update|requests)( |$)/ && !/ --requests-dir(=|[ \t])/ { $0 = $0 " --requests-dir " requests }
+      { print }
+    ' "$_helper_unit" > "$_helper_next" || die "could not prepare helper unit migration"
+    if ! cmp -s "$_helper_unit" "$_helper_next"; then
+      put_file "$_helper_next" "$_helper_unit" 0644
+      _added=1
+    fi
+  done
+}
+
 # One line about the policy, for the summary of what will be installed.
 update_policy_note() {
   case "$UPDATE_MODE" in
@@ -515,7 +532,7 @@ Description=Termenbox updater
 [Service]
 Type=oneshot
 Environment=TERMENBOX_RELEASE_URL=$RELEASE_URL
-ExecStart=$BIN --root-helper update --journal-dir $JOURNAL"
+ExecStart=$BIN --root-helper update --journal-dir $JOURNAL --requests-dir $STATE/requests"
   add_unit termenbox-update.timer "[Unit]
 Description=Check for a new Termenbox release every day
 
@@ -541,6 +558,7 @@ PathExistsGlob=$STATE/requests/*.json
 
 [Install]
 WantedBy=multi-user.target"
+  migrate_helper_requests /etc/systemd/system/termenbox-update.service /etc/systemd/system/termenbox-request.service
   if [ -n "$_added" ]; then
     systemctl daemon-reload
     systemctl enable --now termenbox-update.timer termenbox-request.path >/dev/null 2>&1 || die "could not start the updater; see: systemctl status termenbox-update.timer"
@@ -1051,7 +1069,7 @@ Description=Termenbox updater
 Type=oneshot
 Environment=TERMENBOX_RELEASE_URL=$RELEASE_URL
 Environment=TERMENBOX_BINARY=$BIN
-ExecStart=$BIN --root-helper update --user-helper --journal-dir $JOURNAL"
+ExecStart=$BIN --root-helper update --user-helper --journal-dir $JOURNAL --requests-dir $STATE/requests"
   add_user_unit termenbox-update.timer "[Unit]
 Description=Check for a new Termenbox release every day
 
@@ -1078,6 +1096,7 @@ PathExistsGlob=$STATE/requests/*.json
 
 [Install]
 WantedBy=default.target"
+  migrate_helper_requests "$UNIT_DIR/termenbox-update.service" "$UNIT_DIR/termenbox-request.service"
   if [ -n "$_added" ]; then
     systemctl --user daemon-reload
     systemctl --user enable --now termenbox-update.timer termenbox-request.path >/dev/null 2>&1 || die "could not start the updater; see: systemctl --user status termenbox-update.timer"

@@ -24,13 +24,72 @@ function setup(target?: (server: ServerListItem, refresh: boolean) => Promise<Ta
   const connections: Fake[] = [];
   const ready: boolean[] = [];
   const fatal: string[] = [];
-  const hub = new ServerHub({ target, onFatal: (id, reason) => fatal.push(`${id}: ${reason}`), credentials: async () => ({ cert: 'c', sign: async () => 's' }), onReady: (_id, _msg, reconnect) => ready.push(reconnect), factory: (opts) => {
+  const messages: ServerMessage[] = [];
+  const hub = new ServerHub({ target, onMessage: (_id, msg) => messages.push(msg), onFatal: (id, reason) => fatal.push(`${id}: ${reason}`), credentials: async () => ({ cert: 'c', sign: async () => 's' }), onReady: (_id, _msg, reconnect) => ready.push(reconnect), factory: (opts) => {
     const c = new Fake(opts); connections.push(c); return c;
   } });
-  return { hub, connections, ready, fatal };
+  return { hub, connections, ready, fatal, messages };
 }
 
 describe('ServerHub', () => {
+  const auth = (version: string, available = '0.1.54'): Extract<ServerMessage, { type: 'auth_ok' }> => ({ type: 'auth_ok', user: 'u', server_name: 'host', version, update_available: available });
+
+  it('sends one update, ignores unrelated errors and waits across reconnects with the same or an older release', () => {
+    const { hub, connections } = setup(); hub.start([server('a'), server('b')]);
+    const c = connections[0]; c.opts.onState('connected'); c.opts.onReady(auth('0.1.53+abc'), false);
+    hub.updateServer('a'); hub.updateServer('a'); hub.updateServer('b');
+    expect(c.sent.filter(m => m.type === 'update_server')).toHaveLength(1);
+    expect(connections[1].sent.filter(m => m.type === 'update_server')).toHaveLength(0);
+    c.emit({ type: 'error', message: 'Unknown directory' });
+    c.opts.onState('reconnecting');
+    c.opts.onState('connected'); c.opts.onReady(auth('0.1.53+different-build'), true);
+    expect(get(hub.servers)[0].updating).toBe(true);
+    c.opts.onReady(auth('0.1.52'), true);
+    expect(get(hub.servers)[0].updating).toBe(true);
+    c.emit({ type: 'error', message: 'Server update: The update was rolled back.' });
+    expect(get(hub.servers)[0].updating).toBe(false);
+    hub.close();
+  });
+
+  it.each([
+    ['0.1.54-beta.9', '0.1.54-beta.10'],
+    ['0.1.54-beta.10', '0.1.54'],
+    ['0.1.54-nightly.20261029', '0.1.54-nightly.20261030'],
+  ])('recognizes a newer release from %s to %s', (from, to) => {
+    const { hub, connections } = setup(); hub.start([server('a')]);
+    const c = connections[0]; c.opts.onState('connected'); c.opts.onReady(auth(from, to), false);
+    hub.updateServer('a'); c.opts.onReady(auth(to, ''), true);
+    expect(get(hub.servers)[0].updating).toBe(false);
+    hub.close();
+  });
+
+  it('expires an unconfirmed update even while disconnected and never lets its timer end a later attempt', () => {
+    vi.useFakeTimers();
+    const { hub, connections, messages } = setup();
+    try {
+      hub.start([server('a')]); const c = connections[0];
+      c.opts.onState('connected'); c.opts.onReady(auth('0.1.53'), false);
+      hub.updateServer('a'); vi.advanceTimersByTime(590_000);
+      c.emit({ type: 'error', message: 'Server update: failed' });
+      hub.updateServer('a'); vi.advanceTimersByTime(10_000);
+      expect(get(hub.servers)[0].updating).toBe(true);
+      c.opts.onState('unreachable'); vi.advanceTimersByTime(590_000);
+      expect(get(hub.servers)[0].updating).toBe(false);
+      expect(messages).toContainEqual(expect.objectContaining({ type: 'error', message: expect.stringContaining('No newer running version') }));
+      c.opts.onState('connected'); hub.updateServer('a'); hub.remove('a');
+      const n = messages.length; vi.advanceTimersByTime(600_000);
+      expect(messages).toHaveLength(n);
+    } finally { hub.close(); vi.useRealTimers(); }
+  });
+
+  it('does not update without a notice and cancels an attempt when the user pauses the server', () => {
+    const { hub, connections } = setup(); hub.start([server('a')]);
+    const c = connections[0]; c.ready(); hub.updateServer('a');
+    expect(c.sent.some(m => m.type === 'update_server')).toBe(false);
+    c.opts.onReady(auth('0.1.53'), false); hub.updateServer('a'); hub.pause('a');
+    expect(get(hub.servers)[0]).toMatchObject({ state: 'paused', updating: false });
+    hub.close();
+  });
   it('reports a newer release and asks the server to install it, until it comes back', () => {
     const { hub, connections } = setup(); hub.start([server('a')]);
     const c = connections[0];

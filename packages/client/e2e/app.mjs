@@ -6,6 +6,7 @@ import { launch, contextOptions } from './browser.mjs';
 import { createServer } from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
+import { ScriptedServer, startApp } from './app-lib.mjs';
 
 const dist = join(import.meta.dirname, '../dist');
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.png': 'image/png' };
@@ -94,6 +95,58 @@ for (const [name, opts] of [['phone 360', { viewport: { width: 360, height: 740 
  check(errors.length === 0, `${name}: page errors: ${errors.slice(0, 3).join(' | ')}`);
  console.log(`ok  ${name}: the whole app moves between all four destinations, the Servers page and the palette`);
  await ctx.close();
+}
+// The actual Servers page and hub: a status notice, cancelled confirmation, failed helper and successful reconnect.
+class UpdateServer extends ScriptedServer {
+ version = '0.1.53+old';
+ available = '';
+ handle(ws, m) {
+   if (m.type === 'auth') {
+     this.received.push(m);
+     this.send(ws, { type: 'auth_ok', protocol: 2, tabs: true, user: 'tester', server_name: 'one', version: this.version, update_available: this.available, backends: ['tmux'] });
+     this.send(ws, { type: 'workspaces', workspaces: this.workspaces() });
+     this.send(ws, this.snapshot());
+   } else if (m.type === 'update_server') {
+     this.received.push(m);
+     this.send(ws, { type: 'update_requested', available: this.available });
+   } else super.handle(ws, m);
+ }
+}
+for (const [label, viewport] of [['phone', { width: 390, height: 844 }], ['desktop', { width: 1280, height: 800 }]]) {
+ const server = new UpdateServer();
+ const t = await startApp({ origin, browser }, { viewport, server });
+ const page = t.page;
+ try {
+   await t.open();
+   await page.getByRole('navigation', { name: 'Main' }).locator('[data-destination=settings]').click();
+   await page.getByRole('button', { name: /^Servers/ }).first().click();
+   await page.getByTestId('server-version').filter({ hasText: 'v0.1.53' }).waitFor();
+   check(await page.getByTestId('server-update').count() === 0, `${label}: up-to-date server offers an update`);
+   server.available = '0.1.54'; server.broadcast({ type: 'update_status', available: server.available });
+   const update = page.getByTestId('server-update');
+   await update.waitFor();
+   page.once('dialog', d => d.dismiss()); await update.click();
+   check(server.of('update_server').length === 0, `${label}: cancelled confirmation sent an update`);
+   page.once('dialog', d => d.accept()); await update.click();
+   await page.getByTestId('server-updating').waitFor();
+   check(server.of('update_server').length === 1, `${label}: expected one update request`);
+   check(await update.count() === 0, `${label}: update can be clicked again while pending`);
+   server.broadcast({ type: 'error', message: 'An unrelated folder request failed' });
+   await page.getByText('An unrelated folder request failed', { exact: true }).first().waitFor();
+   check(await page.getByTestId('server-updating').count() === 1, `${label}: unrelated error ended the update`);
+   server.broadcast({ type: 'error', message: 'Server update: The update failed and was rolled back.' });
+   await page.getByTestId('server-updating').waitFor({ state: 'hidden' });
+   await update.waitFor();
+   page.once('dialog', d => d.accept()); await update.click();
+   await page.getByTestId('server-updating').waitFor();
+   server.version = '0.1.54+new'; server.available = '';
+   for (const ws of server.sockets) ws.close();
+   await page.getByTestId('server-version').filter({ hasText: 'v0.1.54' }).waitFor({ timeout: 30_000 });
+   check(await page.getByTestId('server-updating').count() === 0, `${label}: newer version still says Updating`);
+   check(await update.count() === 0, `${label}: newer version still offers the installed update`);
+   check(server.of('update_server').length === 2, `${label}: retry was duplicated or lost`);
+ } catch (e) { t.fail(String(e)); }
+ if (!(await t.end())) failed = true;
 }
 await browser.close();
 srv.close();

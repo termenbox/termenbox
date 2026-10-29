@@ -39,6 +39,8 @@ export interface HubServer {
 }
 export interface HubWorkspace extends WorkspaceInfo { serverId: string; key: string; serverName: string }
 interface Entry extends HubServer {
+  updateFrom?: string;
+  updateTimer?: ReturnType<typeof setTimeout>;
   connection: HubConnection | null;
   unsubscribe?: () => void;
   workspaces: WorkspaceInfo[];
@@ -61,6 +63,24 @@ interface Options {
 
 export const serverKey = (server: ServerListItem) => server.server_id || server.server_url;
 export const workspaceKey = (serverId: string, sessionId: string) => `${serverId}/${sessionId}`;
+
+/** Release SemVer precedence; build metadata never proves that a newer release was installed. */
+function newerRelease(next: string, previous: string): boolean {
+  const parse = (v: string) => /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(v);
+  const a = parse(next), b = parse(previous);
+  if (!a || !b) return false;
+  for (let i = 1; i <= 3; i++) { if (+a[i] !== +b[i]) return +a[i] > +b[i]; }
+  if (!a[4] || !b[4]) return !!b[4] && !a[4];
+  const left = a[4].split('.'), right = b[4].split('.');
+  for (let i = 0; i < Math.max(left.length, right.length); i++) {
+    if (left[i] === undefined || right[i] === undefined) return right[i] === undefined;
+    if (left[i] === right[i]) continue;
+    const an = /^\d+$/.test(left[i]), bn = /^\d+$/.test(right[i]);
+    if (an && bn) return left[i].length !== right[i].length ? left[i].length > right[i].length : left[i] > right[i];
+    return an !== bn ? !an : left[i] > right[i];
+  }
+  return false;
+}
 
 /** A usable selection wins; otherwise the owner chooses among available peers. */
 export function workspaceDestinations(servers: HubServer[], selected?: HubServer): HubServer[] {
@@ -156,11 +176,28 @@ export class ServerHub {
   /** Asks the server to install its newer release; the card shows "Updating" until the server comes back. */
   updateServer(id: string) {
     const e = this.entries.get(id);
-    if (!e || e.state !== 'connected') return;
-    e.updating = true; this.publishServers();
-    this.send(id, { type: 'update_server' });
-    // An updater that finds nothing newer restarts nothing: the card must not say "Updating" for good.
-    setTimeout(() => { if (e.updating && e.state === 'connected') { e.updating = false; this.publishServers(); } }, 120_000);
+    if (!e || e.state !== 'connected' || e.updating || !e.updateAvailable) return;
+    this.beginUpdate(e);
+    try { this.send(id, { type: 'update_server' }); }
+    catch { this.finishUpdate(e, 'Server update: The request could not be sent.'); }
+  }
+  private beginUpdate(e: Entry) {
+    if (e.updating) return;
+    e.updateFrom = e.version.split('+')[0];
+    e.updating = true;
+    // This also expires while disconnected. Removing/pausing a server cancels it; an old timer cannot end a retry.
+    const timer = setTimeout(() => {
+      if (this.entries.get(e.id) === e && e.updateTimer === timer) {
+        this.finishUpdate(e, 'Server update: No newer running version was confirmed. Reconnect and check the helper service on this server.');
+      }
+    }, 600_000);
+    e.updateTimer = timer;
+    this.publishServers();
+  }
+  private finishUpdate(e: Entry, error?: string) {
+    clearTimeout(e.updateTimer); e.updateTimer = undefined; e.updateFrom = undefined;
+    e.updating = false; this.publishServers();
+    if (error) this.opts.onMessage?.(e.id, { type: 'error', message: error });
   }
   findWorkspace(key: string): HubWorkspace | undefined {
     for (const e of this.entries.values()) {
@@ -171,12 +208,14 @@ export class ServerHub {
   }
   pause(id: string) {
     const e = this.entries.get(id); if (!e || e.state === 'paused') return;
+    this.finishUpdate(e);
     this.disconnect(e); e.state = 'paused'; e.reason = 'Paused by you'; this.publish();
   }
   resume(id: string) { const e = this.entries.get(id); if (e?.state === 'paused') this.connect(e); }
   retry(id: string) { const e = this.entries.get(id); if (e && e.state !== 'paused') { this.disconnect(e); this.connect(e); } }
   remove(id: string) {
     const e = this.entries.get(id); if (!e) return;
+    clearTimeout(e.updateTimer);
     this.disconnect(e); this.entries.delete(id); this.publish();
   }
   close() { for (const id of [...this.entries.keys()]) this.remove(id); }
@@ -210,7 +249,9 @@ export class ServerHub {
         e.everReady = true;
         const { claim, ...saved } = e.server;
         e.server = { ...saved, server_name: saved.server_name || msg.server_name };
-        e.version = msg.version ?? ''; e.updateAvailable = msg.update_available ?? ''; e.updating = false; e.backends = msg.backends ?? []; e.tabs = !!msg.tabs; e.acpAgents = msg.acp_agents ?? [];
+        e.version = msg.version ?? ''; e.updateAvailable = msg.update_available ?? '';
+        if (e.updating && newerRelease(e.version, e.updateFrom ?? '')) this.finishUpdate(e);
+        e.backends = msg.backends ?? []; e.tabs = !!msg.tabs; e.acpAgents = msg.acp_agents ?? [];
         e.controlMode = !!msg.control_mode; e.tmuxVersion = msg.tmux_version ?? ''; e.prefix = msg.prefix ?? '';
         this.publish(); this.opts.onSaved?.(e.server);
         connection.send({ type: 'list_workspaces' });
@@ -246,8 +287,8 @@ export class ServerHub {
         if (result.gap) connection.send({ type: 'agent_sync', after: syncRequest(e.agents) });
       }
       if (msg.type === 'update_status') { e.updateAvailable = msg.available ?? ''; this.publishServers(); }
-      if (msg.type === 'update_requested') { e.updating = true; this.publishServers(); }
-      if (msg.type === 'error' && e.updating) { e.updating = false; this.publishServers(); }
+      if (msg.type === 'update_requested') this.beginUpdate(e);
+      if (msg.type === 'error' && e.updating && (msg.message.startsWith('Server update:') || msg.message === 'Only the owner can update this server')) this.finishUpdate(e);
       if (msg.type === 'candidates') void this.acceptBundle(e, msg.bundle, current);
       if (msg.type === 'server_health') { const { type: _, ...h } = msg; e.health = h; this.publishServers(); }
       if (changed) this.publish();
