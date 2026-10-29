@@ -265,6 +265,7 @@ async fn watch(hub: WindowHub, runner: Runner, prefix: String, name: String) {
     let mut lines = BufReader::new(stdout).lines();
     let mut dirty = true;
     let mut next_allowed = Instant::now();
+    let mut failures = 0u8;
     loop {
         tokio::select! {
             line = lines.next_line() => match line {
@@ -275,8 +276,21 @@ async fn watch(hub: WindowHub, runner: Runner, prefix: String, name: String) {
                 dirty = false;
                 next_allowed = Instant::now() + REFRESH_EVERY;
                 match read_windows(&runner, &name).await {
-                    Ok(states) => { hub.publish(&key, &states); }
-                    Err(_) => break,
+                    // An empty list means the pane is not there yet; publishing it would hide the workspace.
+                    Ok(states) if states.is_empty() => {
+                        failures += 1;
+                        if failures > 10 { break; }
+                        dirty = true;
+                        next_allowed = Instant::now() + Duration::from_millis(200);
+                    }
+                    Ok(states) => { failures = 0; hub.publish(&key, &states); }
+                    // The session may still be starting: ask again shortly instead of losing the watch.
+                    Err(_) => {
+                        failures += 1;
+                        if failures > 10 { break; }
+                        dirty = true;
+                        next_allowed = Instant::now() + Duration::from_millis(200);
+                    }
                 }
             }
         }

@@ -11,15 +11,25 @@ export type ClientMessage =
   | { type: 'diagnostics_bundle' }
   | { type: 'uninstall'; confirm_name: string; delete_user?: boolean; remove_tmux?: boolean; kill_workspaces?: boolean }
   | { type: 'agent_sync'; after: Record<string, number> }
-  | { type: 'peek'; workspace: string; hash?: string }
+  | { type: 'peek'; workspace: string; tab?: string; hash?: string }
   | { type: 'scrollback'; workspace: string }
-  | { type: 'answer'; workspace: string; prompt_id: string; seq: number; choice: number }
+  | { type: 'answer'; workspace: string; tab?: string; prompt_id: string; seq: number; choice: number }
   | { type: 'reply'; workspace: string; text: string }
   | { type: 'windows'; workspace: string }
   | { type: 'select_window'; workspace: string; index: number }
   | { type: 'new_window'; workspace: string }
   | { type: 'close_window'; workspace: string; index: number }
   | { type: 'close_workspace'; workspace: string }
+  /** Opens a tab in a workspace; the first tab comes with the workspace. */
+  | { type: 'new_tab'; workspace: string; template: string; label?: string; dir?: string }
+  /** Renames a tab; its id, process and tmux window stay. */
+  | { type: 'rename_tab'; workspace: string; tab: string; label: string }
+  /** Kills a tab and removes it; removing the last one leaves a shell tab behind. */
+  | { type: 'close_tab'; workspace: string; tab: string }
+  | { type: 'move_tab'; workspace: string; tab: string; index: number }
+  /** Makes a tab the default a new device opens; it never switches another device's screen. */
+  | { type: 'focus_tab'; workspace: string; tab: string }
+  | { type: 'move_workspace'; workspace: string; index: number }
   /** Sets the name shown for a workspace; an empty name clears it. The workspace's id does not change. */
   | { type: 'rename_workspace'; workspace: string; name: string }
   | { type: 'list_workspaces' }
@@ -29,7 +39,7 @@ export type ClientMessage =
   | { type: 'health_history' }
   | { type: 'new_workspace'; name: string; backend?: string; dir?: string; template?: string }
   | { type: 'ping' }
-  | { type: 'attach'; workspace_id: string }
+  | { type: 'attach'; workspace_id: string; tab?: string }
   | { type: 'detach' }
   | { type: 'input'; data: string }
   | { type: 'resize'; cols: number; rows: number }
@@ -37,7 +47,7 @@ export type ClientMessage =
   | { type: 'push_subscribe'; endpoint: string; p256dh: string; auth: string }
   | { type: 'push_unsubscribe'; endpoint: string }
   /** The workspace this device shows in the foreground now, or null (hidden, or on the list): no push for it. */
-  | { type: 'foreground'; workspace: string | null }
+  | { type: 'foreground'; workspace: string | null; tab?: string | null }
   | { type: 'ack'; attention_id: string }
   | { type: 'dismiss'; attention_id: string }
   /** Decision 0103: asks for the workspace view (cleaned tail, parsed prompt, tier); `hash` is the one already held. */
@@ -89,13 +99,13 @@ export type ServerMessage =
   | { type: 'uninstall_done'; mode: string }
   /** Decision 0123: the server's signed candidate bundle, pushed after `auth_ok`; verify it before use (lib/bundle.ts). */
   | { type: 'candidates'; bundle: string }
-  | { type: 'auth_ok'; protocol?: number; control_channel?: boolean; channels?: string[]; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string; acp_agents?: string[]; update_available?: string }
+  | { type: 'auth_ok'; protocol?: number; control_channel?: boolean; channels?: string[]; tabs?: boolean; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string; acp_agents?: string[]; update_available?: string }
   | { type: 'workspaces'; workspaces: WorkspaceInfo[] }
   /** The answer to `list_dir`: directory names only, at most 500 (`truncated` says more matched). `parent` is absent at `home`. */
   | { type: 'dir_listing'; path: string; parent?: string | null; entries: DirEntry[]; truncated?: boolean; home: string }
   /** `list_dir` was refused or failed; `reason` is a short sentence to show. */
   | { type: 'dir_error'; reason: string }
-  | { type: 'workspace_attached'; workspace_id: string }
+  | { type: 'workspace_attached'; workspace_id: string; tab?: string | null }
   | { type: 'output'; data: string }
   /** Never on the wire as JSON: terminal bytes from the `term` lane, as `Connection` hands them to listeners. */
   | { type: 'term'; bytes: Uint8Array }
@@ -265,9 +275,30 @@ export interface DirEntry { name: string; symlink?: boolean; hidden?: boolean }
 export interface WorkspaceInfo {
   id: string;
   name: string;
-  agent: 'tmux' | 'codex' | null;
+  agent: string | null;
   /** The workspace manager it lives in; set when the server runs more than one (`tmux`). */
   backend?: string;
+  /** The workspace's absolute directory; empty when the backend does not know one. */
+  dir?: string;
+  /** The server's own order of workspaces. */
+  order?: number;
+  /** The tab a new device opens; absent falls back to the first. */
+  focus?: string;
+  /** The process tabs in order; absent from a server that predates tabs. */
+  tabs?: TabInfo[];
+}
+
+/** One process tab of a workspace (decision 0149); `window` is the tmux window it runs in. */
+export interface TabInfo {
+  id: string;
+  label: string;
+  /** The template it started from (`shell`, `claude`, ...). */
+  kind: string;
+  /** A directory inside the workspace, relative to it; empty means the workspace directory. */
+  dir: string;
+  order: number;
+  /** Absent while the workspace is dormant or the backend has no windows. */
+  window?: string | null;
 }
 
 /** One window of a multiplexer workspace, as the windows dropdown lists it. */
@@ -389,5 +420,6 @@ export interface ServerListItem {
  *  server's copy is `ClientMessage::is_control`; a test checks the two lists agree. */
 export const CONTROL_TYPES: ReadonlySet<string> = new Set([
   'acp_interrupt', 'acp_answer', 'acp_prompt', 'acp_mode', 'answer', 'workspace_answer', 'detach', 'close_workspace',
-  'rename_workspace', 'new_workspace', 'new_window', 'close_window', 'select_window', 'resize', 'foreground',
+  'rename_workspace', 'new_workspace', 'new_window', 'close_window', 'select_window', 'new_tab', 'rename_tab',
+  'close_tab', 'move_tab', 'focus_tab', 'move_workspace', 'resize', 'foreground',
 ]);

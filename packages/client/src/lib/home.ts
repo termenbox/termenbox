@@ -6,6 +6,7 @@ import { bannerChoices } from './notify';
 import type { HubWorkspace } from './hub';
 import type { AttentionKind } from './protocol';
 import type { FleetState } from './ds/states';
+import { aggregateStatus } from './workspaceTabs';
 
 export type QueueKind = Exclude<AttentionKind, 'unknown'>;
 
@@ -26,6 +27,10 @@ export interface Row {
   prompt?: NonNullable<WorkspaceAgent['prompt']>;
   /** The question of a needs_input, when the server sent one. */
   question?: string;
+  /** The tab the answer belongs to (the server's focus); absent on a server without tabs. */
+  tab?: string;
+  /** How many tabs the workspace holds. */
+  tabs?: number;
   /** The server this workspace runs on says it is unhealthy (U14). */
   unhealthy?: boolean;
 }
@@ -52,11 +57,13 @@ export function rowOf(s: HubWorkspace, a: WorkspaceAgent | undefined, unhealthy 
   const kind = kindOf(a);
   return {
     key: s.key, name: s.name, serverId: s.serverId, serverName: s.serverName, agent: a?.agent,
-    state: fleetState(a), kind,
+    state: aggregateStatus(s.key, s, a), kind,
     since: kind ? a?.attention?.raised_at ?? a?.waitingSince ?? a?.ts : undefined,
     title: a?.attention?.task?.title ?? a?.task?.title,
     prompt: kind === 'needs_input' ? a?.prompt : undefined,
     question: kind === 'needs_input' ? a?.attention?.prompt : undefined,
+    tab: s.focus,
+    tabs: s.tabs?.length,
     unhealthy: unhealthy || undefined,
   };
 }
@@ -89,7 +96,7 @@ export type FleetCounts = Record<'needs-you' | 'working' | 'failed' | 'finished'
 export function fleetCounts(workspaces: HubWorkspace[], agents: AgentMap): FleetCounts {
   const c: FleetCounts = { 'needs-you': 0, working: 0, failed: 0, finished: 0 };
   for (const s of workspaces) {
-    const st = fleetState(agents[s.key]);
+    const st = aggregateStatus(s.key, s, agents[s.key]);
     if (st !== 'idle') c[st]++;
   }
   return c;
