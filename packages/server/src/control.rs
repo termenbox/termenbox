@@ -13,7 +13,7 @@ use tokio::sync::broadcast;
 use tokio::time::Instant;
 
 use crate::adapters;
-use crate::backend::{valid_name, Runner};
+use crate::backend::{valid_target, Runner};
 
 /// Subscriptions (`refresh-client -B`) and `ignore-size` need tmux 3.2.
 pub const MIN_TMUX: (u32, u32) = (3, 2);
@@ -49,13 +49,17 @@ pub fn version_label(out: &str) -> String {
     out.trim().trim_start_matches("tmux").trim().to_string()
 }
 
-pub const PANE_FORMAT: &str = "#{window_index}|#{window_active}|#{window_activity}|#{pane_active}|#{pane_current_command}|#{pane_current_path}|#{window_name}";
+pub const PANE_FORMAT: &str = "#{window_index}|#{window_id}|#{@termenbox_tab}|#{@termenbox_label}|#{window_active}|#{window_activity}|#{pane_active}|#{pane_current_command}|#{pane_current_path}|#{window_name}";
 
-/// One window plus the output time the representative rule needs (not sent to clients).
+/// One window plus what the registry and the representative rule need (not sent to clients as such).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowState {
     pub info: WindowInfo,
     pub activity: u64,
+    /// tmux's stable window id (`@12`), not the index.
+    pub window_id: String,
+    /// The registry tab this window carries (`@termenbox_tab`), empty for a window nobody registered.
+    pub tab: String,
 }
 
 /// Window and path names come from the machine's shell and can hold anything: control characters are dropped
@@ -68,25 +72,32 @@ fn clean(s: &str, max: usize) -> String {
 pub fn parse_windows(out: &str) -> Vec<WindowState> {
     let mut by_index: HashMap<u32, (WindowState, bool)> = HashMap::new();
     for line in out.lines() {
-        let f: Vec<&str> = line.splitn(7, '|').collect();
-        if f.len() < 7 {
+        let f: Vec<&str> = line.splitn(10, '|').collect();
+        if f.len() < 10 {
             continue;
         }
-        let (Ok(index), Ok(activity)) = (f[0].parse::<u32>(), f[2].parse::<u64>()) else {
+        let (Ok(index), Ok(activity)) = (f[0].parse::<u32>(), f[5].parse::<u64>()) else {
             continue;
         };
-        let pane_active = f[3] == "1";
-        let command = clean(f[4], 64);
+        let pane_active = f[6] == "1";
+        let command = clean(f[7], 64);
+        let label = clean(f[3], 64);
         let state = WindowState {
             info: WindowInfo {
                 index,
-                name: clean(f[6], 64),
+                name: if label.is_empty() {
+                    clean(f[9], 64)
+                } else {
+                    label
+                },
                 agent: adapters::agent_name(&command).map(String::from),
                 command,
-                path: clean(f[5], 256),
-                active: f[1] == "1",
+                path: clean(f[8], 256),
+                active: f[4] == "1",
             },
             activity,
+            window_id: clean(f[1], 32),
+            tab: clean(f[2], 32),
         };
         match by_index.get(&index) {
             Some((_, true)) => {}
@@ -126,6 +137,10 @@ pub struct WindowUpdate {
     pub workspace: String,
     pub windows: Vec<WindowInfo>,
     pub representative: Option<u32>,
+    /// The tmux window id of each entry in `windows`, in the same order.
+    pub window_ids: Vec<String>,
+    /// The registry tab id of each entry in `windows`, in the same order.
+    pub tab_ids: Vec<String>,
 }
 
 /// The latest windows of every tmux workspace, and a stream of changes.
@@ -155,6 +170,8 @@ impl WindowHub {
             workspace: workspace.to_string(),
             windows: states.iter().map(|w| w.info.clone()).collect(),
             representative: representative(states),
+            window_ids: states.iter().map(|w| w.window_id.clone()).collect(),
+            tab_ids: states.iter().map(|w| w.tab.clone()).collect(),
         };
         let mut workspaces = self.workspaces.lock().unwrap();
         if workspaces.get(workspace) == Some(&update) {
@@ -203,7 +220,7 @@ pub fn is_trigger(line: &str) -> bool {
 
 /// `list-panes -s` of one workspace, parsed; an error means the workspace is gone.
 pub async fn read_windows(runner: &Runner, name: &str) -> Result<Vec<WindowState>> {
-    if !valid_name(name) {
+    if !valid_target(name) {
         return Err(anyhow!("Unknown workspace"));
     }
     let args = [
@@ -248,6 +265,7 @@ async fn watch(hub: WindowHub, runner: Runner, prefix: String, name: String) {
     let mut lines = BufReader::new(stdout).lines();
     let mut dirty = true;
     let mut next_allowed = Instant::now();
+    let mut failures = 0u8;
     loop {
         tokio::select! {
             line = lines.next_line() => match line {
@@ -258,8 +276,21 @@ async fn watch(hub: WindowHub, runner: Runner, prefix: String, name: String) {
                 dirty = false;
                 next_allowed = Instant::now() + REFRESH_EVERY;
                 match read_windows(&runner, &name).await {
-                    Ok(states) => { hub.publish(&key, &states); }
-                    Err(_) => break,
+                    // An empty list means the pane is not there yet; publishing it would hide the workspace.
+                    Ok(states) if states.is_empty() => {
+                        failures += 1;
+                        if failures > 10 { break; }
+                        dirty = true;
+                        next_allowed = Instant::now() + Duration::from_millis(200);
+                    }
+                    Ok(states) => { failures = 0; hub.publish(&key, &states); }
+                    // The session may still be starting: ask again shortly instead of losing the watch.
+                    Err(_) => {
+                        failures += 1;
+                        if failures > 10 { break; }
+                        dirty = true;
+                        next_allowed = Instant::now() + Duration::from_millis(200);
+                    }
                 }
             }
         }
@@ -278,7 +309,7 @@ pub fn spawn(hub: WindowHub, runner: Runner, prefix: String) {
             let names: Vec<String> = match runner.run("tmux", &args).await {
                 Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
                     .lines()
-                    .filter(|n| valid_name(n))
+                    .filter(|n| valid_target(n))
                     .map(String::from)
                     .collect(),
                 _ => vec![],
@@ -317,7 +348,7 @@ mod tests {
         path: &str,
         name: &str,
     ) -> String {
-        format!("{index}|{active}|{activity}|{pane_active}|{cmd}|{path}|{name}")
+        format!("{index}|@{index}|||{active}|{activity}|{pane_active}|{cmd}|{path}|{name}")
     }
 
     #[test]
@@ -444,7 +475,11 @@ mod tests {
         {
             return;
         }
-        let dir = std::env::temp_dir().join(format!("tm-ctl-{}", std::process::id()));
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("tm-ctl-{nanos}"));
         std::fs::create_dir_all(&dir).unwrap();
         let tmpdir = dir.to_string_lossy().into_owned();
         let runner =
@@ -472,7 +507,7 @@ mod tests {
             rx: &mut broadcast::Receiver<WindowUpdate>,
             want: impl Fn(&WindowUpdate) -> bool,
         ) -> WindowUpdate {
-            tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::time::timeout(Duration::from_secs(30), async {
                 loop {
                     let u = rx.recv().await.unwrap();
                     if want(&u) {

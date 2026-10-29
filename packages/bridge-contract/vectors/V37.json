@@ -1,0 +1,55 @@
+{
+  "id": "V37",
+  "title": "Forward policy: while an escalation is pending a call is queued, not forwarded",
+  "covers": [
+    "G1",
+    "I2"
+  ],
+  "config": {
+    "detached_calls": "forward",
+    "detached_allow": [
+      "read:docs"
+    ]
+  },
+  "session": {
+    "session_id": "sess-37",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "escalate"
+    },
+    {
+      "do": "tool_call",
+      "key": "k1",
+      "tool": "shell:ls",
+      "permission": "read:docs"
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "HUMAN_PENDING",
+      "TOOL_CALL_QUEUED"
+    ],
+    "cell": [
+      "Det",
+      "Pend"
+    ],
+    "scope_version": 0,
+    "queue": [
+      "k1"
+    ],
+    "forwarded": []
+  }
+}

@@ -5,7 +5,7 @@
  */
 type FocusDoc = { activeElement: unknown; body: unknown; querySelector?: (selector: string) => unknown };
 
-export function rememberFocus(doc: FocusDoc = document): () => void {
+export function rememberFocus(doc: FocusDoc = typeof document === 'undefined' ? { activeElement: null, body: null } : document): () => void {
   const previous = (backToTerminal(doc) ?? doc.activeElement) as { isConnected: boolean; focus: (o?: { preventScroll: boolean }) => void } | null;
   return () => {
     if (previous && previous !== doc.body && previous.isConnected) previous.focus({ preventScroll: true });

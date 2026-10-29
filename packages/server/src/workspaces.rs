@@ -4,16 +4,17 @@ use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use tracing::{debug, info};
 
-use termenbox_core::protocol::{ClientMessage, ServerMessage};
+use termenbox_core::protocol::{ClientMessage, ServerMessage, WindowInfo};
 
 use std::sync::Arc;
 
 use crate::backend::{RunMode, WorkspaceBackend};
-use crate::control::WindowHub;
+use crate::control::{WindowHub, WindowState, WindowUpdate};
 use crate::events::EventHub;
 use crate::health::HealthCollector;
 use crate::link::{Inbound, Link, LinkTx};
 use crate::pty::Attachment;
+use crate::registry::Registry;
 
 /// Clients ping every 5 s, so a minute of silence means the peer is gone.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -90,6 +91,7 @@ fn events_messages(
 #[derive(Clone)]
 pub struct WorkspaceManager {
     backend: Arc<dyn WorkspaceBackend>,
+    registry: Arc<Registry>,
     mode: RunMode,
     server_name: String,
     /// Called after an uninstall has wiped the configuration and told the client; stops the process.
@@ -119,9 +121,10 @@ pub struct WorkspaceManager {
 }
 
 impl WorkspaceManager {
-    pub fn new(backend: Arc<dyn WorkspaceBackend>, mode: RunMode) -> Self {
+    pub fn new(backend: Arc<dyn WorkspaceBackend>, mode: RunMode, registry: Arc<Registry>) -> Self {
         Self {
             backend,
+            registry,
             mode,
             server_name: String::new(),
             on_uninstalled: Arc::new(|| {}),
@@ -287,6 +290,23 @@ impl WorkspaceManager {
         let idle = tokio::time::sleep(IDLE_TIMEOUT);
         tokio::pin!(idle);
         let mut agent_rx = self.events.as_ref().map(|h| h.subscribe());
+        let tab_status = self.events.as_ref().and_then(|h| h.tab_status());
+        let mut tab_rev = 0;
+        let mut tab_tick = tokio::time::interval(std::time::Duration::from_millis(500));
+        tab_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        if let Some(status) = &tab_status {
+            tab_rev = status.rev();
+            if !send(
+                &link.tx,
+                &ServerMessage::TabStates {
+                    states: status.snapshot(),
+                },
+            )
+            .await
+            {
+                return Ok(());
+            }
+        }
         let mut window_rx = self.windows.as_ref().map(|h| h.subscribe());
         let mut status_rx = self.events.as_ref().map(|h| h.subscribe_status());
         let mut list_rx = self.list_changed.subscribe();
@@ -337,7 +357,7 @@ impl WorkspaceManager {
                         }
                         continue;
                     };
-                    if let (true, ClientMessage::Attach { workspace_id }) = (self.mode.is_host(), &client_msg) {
+                    if let (true, ClientMessage::Attach { workspace_id, .. }) = (self.mode.is_host(), &client_msg) {
                         // Who got a shell on the host and as whom; never what they typed.
                         info!(target: "audit", event = "host_session", provider = %identity.provider, account_id = %identity.id, login = %identity.login, run_as = %self.mode.label(), session = %workspace_id);
                     }
@@ -367,7 +387,7 @@ impl WorkspaceManager {
                             // The attach client exited: workspace killed, or detached from inside.
                             attachment = None;
                             if !send(&link.tx, &ServerMessage::Error { message: "Workspace ended".into() }).await { break; }
-                            let workspaces = self.backend.list().await.unwrap_or_default();
+                            let workspaces = self.registry.list(self.backend.as_ref()).await.unwrap_or_default();
                             if !send(&link.tx, &ServerMessage::Workspaces { workspaces }).await { break; }
                         }
                     }
@@ -390,19 +410,28 @@ impl WorkspaceManager {
                         if !send(&link.tx, &m).await { return Ok(()); }
                     }
                 }
+                _ = tab_tick.tick(), if tab_status.is_some() => {
+                    if let Some(status) = &tab_status {
+                        let rev = status.rev();
+                        if rev != tab_rev {
+                            tab_rev = rev;
+                            if !send(&link.tx, &ServerMessage::TabStates { states: status.snapshot() }).await { break; }
+                        }
+                    }
+                }
                 from = next_list_change(&mut list_rx) => {
                     // Another connection changed the list of workspaces: this one's client gets the new one.
                     if from == Some(conn) { continue; }
-                    let workspaces = self.backend.list().await.unwrap_or_default();
+                    let workspaces = self.registry.list(self.backend.as_ref()).await.unwrap_or_default();
                     if !send(&link.tx, &ServerMessage::Workspaces { workspaces }).await { break; }
                 }
                 update = next_window(&mut window_rx) => {
                     let msg = match update {
-                        Some(u) => window_message(u),
+                        Some(u) => self.window_update_message(&u),
                         None => {
                             // Fell behind: send everything again.
                             for u in self.windows.as_ref().map(|h| h.all()).unwrap_or_default() {
-                                if !send(&link.tx, &window_message(u)).await { return Ok(()); }
+                                if !send(&link.tx, &self.window_update_message(&u)).await { return Ok(()); }
                             }
                             continue;
                         }
@@ -534,6 +563,100 @@ impl WorkspaceManager {
                 items: hub.attention_items(),
             },
         ]
+    }
+
+    /// One tab by its position in the server's order, for an old client's window message.
+    fn tab_at(&self, workspace: &str, index: u32) -> Option<String> {
+        self.registry
+            .tabs(workspace)
+            .get(index as usize)
+            .map(|t| t.id.clone())
+    }
+
+    /// The `window_list` an old client reads: the registry's tabs in order, with the live command and path of the
+    /// tmux window each one carries. A workspace with no record falls back to the live list.
+    fn window_list_for(&self, workspace: &str, live: &[WindowState]) -> ServerMessage {
+        let Some(record) = self.registry.record(workspace) else {
+            return ServerMessage::WindowList {
+                workspace: workspace.to_string(),
+                representative: crate::control::representative(live),
+                windows: live.iter().map(|w| w.info.clone()).collect(),
+            };
+        };
+        let mut tabs = record.tabs.clone();
+        tabs.sort_by_key(|t| t.order);
+        let focus = record.focus.clone();
+        let windows: Vec<WindowInfo> = tabs
+            .iter()
+            .map(|t| {
+                let observed = t
+                    .window
+                    .as_deref()
+                    .and_then(|id| live.iter().find(|w| w.window_id == id));
+                WindowInfo {
+                    index: t.order,
+                    name: t.label.as_str().to_string(),
+                    command: observed
+                        .map(|w| w.info.command.clone())
+                        .unwrap_or_else(|| t.kind.clone()),
+                    path: observed
+                        .map(|w| w.info.path.clone())
+                        .unwrap_or_else(|| tab_path(&record.dir, &t.dir)),
+                    active: focus.as_deref() == Some(t.id.as_str()),
+                    agent: (t.kind != "shell").then(|| t.kind.clone()),
+                }
+            })
+            .collect();
+        ServerMessage::WindowList {
+            workspace: workspace.to_string(),
+            representative: tabs
+                .iter()
+                .position(|t| focus.as_deref() == Some(t.id.as_str()))
+                .map(|i| i as u32)
+                .or_else(|| windows.first().map(|w| w.index)),
+            windows,
+        }
+    }
+
+    /// A control-mode update mapped through the registry, so the old window menu keeps the server's order.
+    fn window_update_message(&self, update: &WindowUpdate) -> ServerMessage {
+        let Some(record) = self.registry.record(&update.workspace) else {
+            return window_message(update.clone());
+        };
+        let mut tabs = record.tabs.clone();
+        tabs.sort_by_key(|t| t.order);
+        let focus = record.focus.clone();
+        let windows: Vec<WindowInfo> = tabs
+            .iter()
+            .map(|t| {
+                let at = t
+                    .window
+                    .as_deref()
+                    .and_then(|id| update.window_ids.iter().position(|w| w == id));
+                let observed = at.and_then(|i| update.windows.get(i));
+                WindowInfo {
+                    index: t.order,
+                    name: t.label.as_str().to_string(),
+                    command: observed
+                        .map(|w| w.command.clone())
+                        .unwrap_or_else(|| t.kind.clone()),
+                    path: observed
+                        .map(|w| w.path.clone())
+                        .unwrap_or_else(|| tab_path(&record.dir, &t.dir)),
+                    active: focus.as_deref() == Some(t.id.as_str()),
+                    agent: (t.kind != "shell").then(|| t.kind.clone()),
+                }
+            })
+            .collect();
+        ServerMessage::WindowList {
+            workspace: update.workspace.clone(),
+            representative: tabs
+                .iter()
+                .position(|t| focus.as_deref() == Some(t.id.as_str()))
+                .map(|i| i as u32)
+                .or_else(|| windows.first().map(|w| w.index)),
+            windows,
+        }
     }
 
     #[allow(clippy::too_many_arguments)] // one connection's state, passed explicitly
@@ -751,9 +874,9 @@ impl WorkspaceManager {
                     .await?;
                 }
             }
-            ClientMessage::Foreground { workspace } => {
+            ClientMessage::Foreground { workspace, tab } => {
                 if let Some(p) = &self.push {
-                    p.set_foreground(conn, workspace);
+                    p.set_foreground_tab(conn, workspace, tab);
                 }
             }
             ClientMessage::Ack { attention_id } | ClientMessage::Dismiss { attention_id } => {
@@ -763,6 +886,7 @@ impl WorkspaceManager {
             }
             ClientMessage::Answer {
                 workspace,
+                tab,
                 prompt_id,
                 seq,
                 choice,
@@ -771,10 +895,19 @@ impl WorkspaceManager {
                     .events
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("Answers are not available"))?;
-                answer(
+                let window = if self.registry.has(&workspace) {
+                    self.registry
+                        .tab_window(self.backend.as_ref(), &workspace, tab.as_deref())
+                        .await?
+                } else {
+                    None
+                };
+                answer_tab(
                     self.backend.as_ref(),
                     hub,
                     &workspace,
+                    window.as_deref(),
+                    tab.as_deref(),
                     &prompt_id,
                     seq,
                     choice,
@@ -813,59 +946,181 @@ impl WorkspaceManager {
                 }
                 // A tab speaks for one window of its workspace: send them all along with the agent states.
                 for u in self.windows.as_ref().map(|h| h.all()).unwrap_or_default() {
-                    send_r(tx, &window_message(u)).await?;
+                    send_r(tx, &self.window_update_message(&u)).await?;
                 }
             }
             ClientMessage::Windows { workspace } => {
-                let windows = self.backend.windows(&workspace).await?;
-                send_r(
-                    tx,
-                    &ServerMessage::WindowList {
-                        workspace,
-                        representative: crate::control::representative(&windows),
-                        windows: windows.into_iter().map(|w| w.info).collect(),
-                    },
-                )
-                .await?;
+                // Adopt a window the owner made in tmux directly before answering, so it is not invisible.
+                let _ = self.registry.list(self.backend.as_ref()).await;
+                let live = self.backend.windows(&workspace).await.unwrap_or_default();
+                send_r(tx, &self.window_list_for(&workspace, &live)).await?;
             }
             ClientMessage::SelectWindow { workspace, index } => {
-                self.backend.select_window(&workspace, index).await?;
+                if let Some(tab) = self.tab_at(&workspace, index) {
+                    self.registry
+                        .focus_tab(self.backend.as_ref(), &workspace, &tab)
+                        .await?;
+                } else {
+                    self.backend.select_window(&workspace, index).await?;
+                }
             }
             ClientMessage::NewWindow { workspace } => {
                 info!(target: "audit", event = "new_window", provider = %identity.provider, account_id = %identity.id, session = %workspace);
-                self.backend.new_window(&workspace).await?;
+                if self.registry.has(&workspace) {
+                    self.registry
+                        .new_tab(self.backend.as_ref(), &workspace, "shell", "", "")
+                        .await?;
+                    let workspaces = self.registry.list(self.backend.as_ref()).await?;
+                    send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
+                    let _ = self.list_changed.send(conn);
+                } else {
+                    self.backend.new_window(&workspace).await?;
+                }
             }
             ClientMessage::CloseWindow { workspace, index } => {
                 info!(target: "audit", event = "close_window", provider = %identity.provider, account_id = %identity.id, session = %workspace, window = index);
-                self.backend.kill_window(&workspace, index).await?;
-                // Closing the last window ends the workspace: the lists follow.
-                let workspaces = self.backend.list().await?;
+                if let Some(tab) = self.tab_at(&workspace, index) {
+                    self.registry
+                        .close_tab(self.backend.as_ref(), &workspace, &tab)
+                        .await?;
+                    if let Some(events) = &self.events {
+                        events.forget_tab(&workspace, &tab);
+                    }
+                } else {
+                    self.backend.kill_window(&workspace, index).await?;
+                }
+                let workspaces = self.registry.list(self.backend.as_ref()).await?;
                 send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
                 let _ = self.list_changed.send(conn);
             }
             ClientMessage::CloseWorkspace { workspace } => {
-                info!(target: "audit", event = "close_session", provider = %identity.provider, account_id = %identity.id, login = %identity.login, session = %workspace);
-                self.backend.kill(&workspace).await?;
-                let workspaces = self.backend.list().await?;
+                info!(target: "audit", event = "close_workspace", provider = %identity.provider, account_id = %identity.id, login = %identity.login, session = %workspace);
+                // Drop this connection's tmux client first: a live client can keep kill-session waiting.
+                *attachment = None;
+                self.registry
+                    .close_workspace(self.backend.as_ref(), &workspace)
+                    .await?;
+                let workspaces = self.registry.list(self.backend.as_ref()).await?;
                 send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
                 let _ = self.list_changed.send(conn);
             }
             ClientMessage::RenameWorkspace { workspace, name } => {
                 info!(target: "audit", event = "rename_workspace", provider = %identity.provider, account_id = %identity.id, session = %workspace);
-                self.backend.rename(&workspace, &name).await?;
-                let workspaces = self.backend.list().await?;
+                self.registry
+                    .rename_workspace(self.backend.as_ref(), &workspace, &name)
+                    .await?;
+                let workspaces = self.registry.list(self.backend.as_ref()).await?;
                 send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
                 let _ = self.list_changed.send(conn);
             }
-            ClientMessage::Peek { workspace, hash } => {
+            ClientMessage::NewTab {
+                workspace,
+                template,
+                label,
+                dir,
+            } => {
+                info!(target: "audit", event = "new_tab", provider = %identity.provider, account_id = %identity.id, session = %workspace);
+                self.registry
+                    .new_tab(self.backend.as_ref(), &workspace, &template, &label, &dir)
+                    .await?;
+                let workspaces = self.registry.list(self.backend.as_ref()).await?;
+                send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
+                let _ = self.list_changed.send(conn);
+            }
+            ClientMessage::RenameTab {
+                workspace,
+                tab,
+                label,
+            } => {
+                info!(target: "audit", event = "rename_tab", provider = %identity.provider, account_id = %identity.id, session = %workspace, tab = %tab);
+                self.registry
+                    .rename_tab(self.backend.as_ref(), &workspace, &tab, &label)
+                    .await?;
+                let workspaces = self.registry.list(self.backend.as_ref()).await?;
+                send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
+                let _ = self.list_changed.send(conn);
+            }
+            ClientMessage::CloseTab { workspace, tab } => {
+                info!(target: "audit", event = "close_tab", provider = %identity.provider, account_id = %identity.id, session = %workspace, tab = %tab);
+                self.registry
+                    .close_tab(self.backend.as_ref(), &workspace, &tab)
+                    .await?;
+                if let Some(events) = &self.events {
+                    events.forget_tab(&workspace, &tab);
+                }
+                let workspaces = self.registry.list(self.backend.as_ref()).await?;
+                send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
+                let _ = self.list_changed.send(conn);
+            }
+            ClientMessage::MoveTab {
+                workspace,
+                tab,
+                index,
+            } => {
+                self.registry.move_tab(&workspace, &tab, index).await?;
+                let workspaces = self.registry.list(self.backend.as_ref()).await?;
+                send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
+                let _ = self.list_changed.send(conn);
+            }
+            ClientMessage::FocusTab { workspace, tab } => {
+                self.registry
+                    .focus_tab(self.backend.as_ref(), &workspace, &tab)
+                    .await?;
+                let workspaces = self.registry.list(self.backend.as_ref()).await?;
+                send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
+                let _ = self.list_changed.send(conn);
+            }
+            ClientMessage::MoveWorkspace { workspace, index } => {
+                self.registry.move_workspace(&workspace, index).await?;
+                let workspaces = self.registry.list(self.backend.as_ref()).await?;
+                send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
+                let _ = self.list_changed.send(conn);
+            }
+            ClientMessage::ListDir {
+                path,
+                prefix,
+                hidden,
+            } => {
+                let is_owner = auth
+                    .owner()
+                    .is_some_and(|o| o.provider == identity.provider && o.id == identity.id);
+                info!(target: "audit", event = "list_dir", provider = %identity.provider, account_id = %identity.id, owner = is_owner, path_hash = %crate::listdir::path_hash(path.as_deref()));
+                let reply = crate::listdir::answer(
+                    is_owner,
+                    crate::listdir::server_home(),
+                    path,
+                    prefix,
+                    hidden,
+                )
+                .await;
+                send_r(tx, &reply).await?;
+            }
+            ClientMessage::Peek {
+                workspace,
+                tab,
+                hash,
+            } => {
                 // Only a counter in the audit log: what is on the screen is never logged.
                 audit_peek(&identity.provider, &identity.id, &workspace);
-                let window = self
-                    .windows
-                    .as_ref()
-                    .and_then(|h| h.representative(&workspace));
-                let reply =
-                    peek_window(self.backend.as_ref(), &workspace, hash.as_deref(), window).await;
+                let reply = if self.registry.has(&workspace) {
+                    let window = self
+                        .registry
+                        .tab_window(self.backend.as_ref(), &workspace, tab.as_deref())
+                        .await?;
+                    peek_tab(
+                        self.backend.as_ref(),
+                        &workspace,
+                        hash.as_deref(),
+                        window.as_deref(),
+                    )
+                    .await
+                } else {
+                    let window = self
+                        .windows
+                        .as_ref()
+                        .and_then(|h| h.representative(&workspace));
+                    peek_window(self.backend.as_ref(), &workspace, hash.as_deref(), window).await
+                };
                 send_r(tx, &reply).await?;
             }
             ClientMessage::Scrollback { workspace } => {
@@ -1072,7 +1327,7 @@ impl WorkspaceManager {
             }
             ClientMessage::Unknown => {}
             ClientMessage::ListWorkspaces => {
-                let workspaces = self.backend.list().await?;
+                let workspaces = self.registry.list(self.backend.as_ref()).await?;
                 send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
             }
             ClientMessage::NewWorkspace {
@@ -1081,30 +1336,60 @@ impl WorkspaceManager {
                 dir,
                 template,
             } => {
-                self.backend
-                    .create_with(
+                self.registry
+                    .create_workspace(
+                        self.backend.as_ref(),
                         &name,
                         backend.as_deref(),
                         dir.as_deref(),
-                        template.as_deref(),
+                        template.as_deref().unwrap_or("shell"),
                     )
                     .await?;
-                let workspaces = self.backend.list().await?;
+                let workspaces = self.registry.list(self.backend.as_ref()).await?;
                 send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
                 let _ = self.list_changed.send(conn);
             }
-            ClientMessage::Attach { workspace_id } => {
+            ClientMessage::Attach { workspace_id, tab } => {
                 *attachment = None; // detach the previous one first
-                                    // Land in the window the tab showed, unless somebody else is looking at the workspace.
-                if let Some(index) = self
-                    .windows
-                    .as_ref()
-                    .and_then(|h| h.representative(&workspace_id))
-                {
-                    let _ = self.backend.focus_window(&workspace_id, index).await;
+                if self.registry.has(&workspace_id) {
+                    let (attached, att) = self
+                        .registry
+                        .attach(
+                            self.backend.as_ref(),
+                            &workspace_id,
+                            tab.as_deref(),
+                            *cols,
+                            *rows,
+                        )
+                        .await?;
+                    *attachment = Some(att);
+                    send_r(
+                        tx,
+                        &ServerMessage::WorkspaceAttached {
+                            workspace_id,
+                            tab: Some(attached),
+                        },
+                    )
+                    .await?;
+                } else {
+                    // A workspace with no tabs (an ACP one): the old path, with no tab to name.
+                    if let Some(index) = self
+                        .windows
+                        .as_ref()
+                        .and_then(|h| h.representative(&workspace_id))
+                    {
+                        let _ = self.backend.focus_window(&workspace_id, index).await;
+                    }
+                    *attachment = Some(self.backend.attach(&workspace_id, *cols, *rows)?);
+                    send_r(
+                        tx,
+                        &ServerMessage::WorkspaceAttached {
+                            workspace_id,
+                            tab: None,
+                        },
+                    )
+                    .await?;
                 }
-                *attachment = Some(self.backend.attach(&workspace_id, *cols, *rows)?);
-                send_r(tx, &ServerMessage::WorkspaceAttached { workspace_id }).await?;
             }
             ClientMessage::Detach => {
                 *attachment = None;
@@ -1128,6 +1413,14 @@ impl WorkspaceManager {
         }
         Ok(())
     }
+}
+
+/// A tab's directory as clients see it: the workspace directory plus the relative part.
+fn tab_path(root: &str, relative: &str) -> String {
+    if relative.is_empty() {
+        return root.to_string();
+    }
+    format!("{}/{}", root.trim_end_matches('/'), relative)
 }
 
 async fn send(tx: &LinkTx, msg: &ServerMessage) -> bool {
@@ -1402,6 +1695,55 @@ pub async fn peek_window(
     }
 }
 
+/// `peek` of one tab, by the tmux window it runs in.
+pub async fn peek_tab(
+    backend: &dyn WorkspaceBackend,
+    workspace: &str,
+    known: Option<&str>,
+    window: Option<&str>,
+) -> ServerMessage {
+    use sha2::{Digest, Sha256};
+    let none = || ServerMessage::Snapshot {
+        workspace: workspace.to_string(),
+        text: String::new(),
+        hash: String::new(),
+        unchanged: false,
+    };
+    let captured = match window {
+        Some(window) => backend.capture_tab_styled(workspace, window).await,
+        None => backend.capture_styled(workspace).await,
+    };
+    let Ok(raw) = captured else {
+        return none();
+    };
+    let mut text = raw.trim_end().to_string();
+    if text.len() > SNAPSHOT_MAX {
+        let mut cut = text.len() - SNAPSHOT_MAX;
+        while !text.is_char_boundary(cut) {
+            cut += 1;
+        }
+        text = text[cut..].to_string();
+    }
+    let hash: String = Sha256::digest(text.as_bytes())[..8]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    if known == Some(hash.as_str()) {
+        return ServerMessage::Snapshot {
+            workspace: workspace.to_string(),
+            text: String::new(),
+            hash,
+            unchanged: true,
+        };
+    }
+    ServerMessage::Snapshot {
+        workspace: workspace.to_string(),
+        text,
+        hash,
+        unchanged: false,
+    }
+}
+
 const PROMPT_CHANGED: &str = "That prompt changed";
 
 /// The agent the event layer found in a workspace, if any.
@@ -1505,6 +1847,7 @@ pub async fn session_answer(
 /// A one-tap answer (plan v8, K.4). It acts only on the prompt the user saw: the workspace's current prompt, with
 /// the same id and event number, confirmed by the agent's own hook (`confidence=high`), and still on the pane.
 /// The keys are the ones the screen's own choice list defines, never text from the client.
+#[allow(dead_code)] // the tests answer without a tab; the handler uses answer_tab
 pub async fn answer(
     backend: &dyn WorkspaceBackend,
     hub: &EventHub,
@@ -1513,7 +1856,40 @@ pub async fn answer(
     seq: u64,
     choice: u8,
 ) -> Result<()> {
+    answer_tab(backend, hub, workspace, None, None, prompt_id, seq, choice).await
+}
+
+/// [answer] for one tab; the keys go to that tab's pane instead of the workspace's current one.
+#[allow(clippy::too_many_arguments)]
+pub async fn answer_tab(
+    backend: &dyn WorkspaceBackend,
+    hub: &EventHub,
+    workspace: &str,
+    window: Option<&str>,
+    tab: Option<&str>,
+    prompt_id: &str,
+    seq: u64,
+    choice: u8,
+) -> Result<()> {
     use termenbox_core::events::{Confidence, EventKind};
+    // A tab carries its own hook-confirmed prompt: another tab's later prompt must not invalidate it. The keys still
+    // come from this tab's screen, and the id still names the question the user saw.
+    if let (Some(window), Some(tab)) = (window, tab) {
+        if let Some(prompt) = hub.tab_prompt(workspace, tab) {
+            if prompt.id != prompt_id {
+                return Err(anyhow::anyhow!(PROMPT_CHANGED));
+            }
+            let screen = backend.capture_tab_styled(workspace, window).await?;
+            let info = crate::adapters::parse_prompt(&screen)
+                .filter(|i| prompt_id.ends_with(&crate::agentwatch::hex8(&i.question)))
+                .ok_or_else(|| anyhow::anyhow!(PROMPT_CHANGED))?;
+            let (_, keys) = info
+                .choices
+                .get(choice as usize)
+                .ok_or_else(|| anyhow::anyhow!("No such choice"))?;
+            return backend.send_text_to_window(workspace, window, keys).await;
+        }
+    }
     let current = hub
         .current_prompt(workspace)
         .ok_or_else(|| anyhow::anyhow!(PROMPT_CHANGED))?;
@@ -1544,7 +1920,10 @@ pub async fn answer(
             "This prompt is not confirmed by the agent; open the terminal to answer"
         ));
     }
-    let screen = backend.capture(workspace).await?;
+    let screen = match window {
+        Some(window) => backend.capture_tab_styled(workspace, window).await?,
+        None => backend.capture(workspace).await?,
+    };
     let info = crate::adapters::parse_prompt(&screen)
         .filter(|i| id.ends_with(&crate::agentwatch::hex8(&i.question)))
         .ok_or_else(|| anyhow::anyhow!(PROMPT_CHANGED))?;
@@ -1552,7 +1931,10 @@ pub async fn answer(
         .choices
         .get(choice as usize)
         .ok_or_else(|| anyhow::anyhow!("No such choice"))?;
-    backend.send_text(workspace, keys).await
+    match window {
+        Some(window) => backend.send_text_to_window(workspace, window, keys).await,
+        None => backend.send_text(workspace, keys).await,
+    }
 }
 
 #[cfg(test)]
@@ -1993,6 +2375,7 @@ mod propagation_tests {
                 name: self.0.lock().unwrap().clone().into(),
                 agent: None,
                 backend: None,
+                ..Default::default()
             }])
         }
         async fn create(&self, _: &str) -> Result<()> {
@@ -2032,6 +2415,7 @@ mod propagation_tests {
         let mgr = WorkspaceManager::new(
             Arc::new(Names(Mutex::new("first".into()))),
             RunMode::Container,
+            Arc::new(crate::registry::Registry::memory()),
         );
         let id = Identity {
             provider: "github".into(),
@@ -2102,7 +2486,12 @@ mod propagation_tests {
             crashed: true,
         };
         let told = first_messages(
-            WorkspaceManager::new(backend(), RunMode::Container).with_previous_exit(Some(message)),
+            WorkspaceManager::new(
+                backend(),
+                RunMode::Container,
+                Arc::new(crate::registry::Registry::memory()),
+            )
+            .with_previous_exit(Some(message)),
         )
         .await;
         let line = told
@@ -2118,7 +2507,12 @@ mod propagation_tests {
             ),
             (Some(1234), Some(2), Some(true))
         );
-        let quiet = first_messages(WorkspaceManager::new(backend(), RunMode::Container)).await;
+        let quiet = first_messages(WorkspaceManager::new(
+            backend(),
+            RunMode::Container,
+            Arc::new(crate::registry::Registry::memory()),
+        ))
+        .await;
         assert!(
             quiet.iter().all(|m| !m.contains("previous_exit")),
             "{quiet:?}"
@@ -2147,6 +2541,7 @@ mod propagation_tests {
         let mgr = WorkspaceManager::new(
             Arc::new(Names(Mutex::new("first".into()))),
             RunMode::Container,
+            Arc::new(crate::registry::Registry::memory()),
         );
         let (link, mut end) = crate::link::pair(None, None);
         let me = owner(who);

@@ -1,4 +1,4 @@
-//! Bridge Contract bridge (paper revision -05).
+//! Bridge Contract bridge.
 //!
 //! The session cell is a point of the product machine
 //! `Attachment x Human x Lifecycle`, derived from a client set. Every

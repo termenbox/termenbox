@@ -27,11 +27,21 @@ export const routeHash = (d: Destination) => `#/${d}`;
 
 /** A push's deep link (U11): `#/home?focus=<workspace key>`, the key percent-encoded. The key, or null for any other hash. */
 export function parseFocusLink(hash: string): string | null {
-  const m = /^#\/home\?focus=([^&]+)$/.exec(hash);
+  const m = /^#\/home\?focus=([^&]+)(?:&tab=[^&]+)?$/.exec(hash);
   if (!m) return null;
   try {
     const key = decodeURIComponent(m[1]);
     return key.length <= 256 ? key : null;
+  } catch { return null; }
+}
+
+/** The tab a push deep link names (`&tab=<id>`), or null when it names only the workspace. */
+export function parseFocusTab(hash: string): string | null {
+  const m = /^#\/home\?focus=[^&]+&tab=([^&]+)$/.exec(hash);
+  if (!m) return null;
+  try {
+    const tab = decodeURIComponent(m[1]);
+    return tab.length <= 128 ? tab : null;
   } catch { return null; }
 }
 

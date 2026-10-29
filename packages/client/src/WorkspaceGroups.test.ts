@@ -5,7 +5,7 @@ import type { HubWorkspace } from './lib/hub';
 import type { AgentMap, WorkspaceAgent } from './lib/agents';
 
 // Server-side render of the Workspaces list; dragging, the arrow keys and the touch targets are measured in e2e/reorder.mjs.
-const ws = (serverId: string, id: string): HubWorkspace => ({ id, name: id, agent: null, serverId, serverName: `Host ${serverId}`, key: `${serverId}/${id}` });
+const ws = (serverId: string, id: string, tabs = 0): HubWorkspace => ({ id, name: id, agent: null, serverId, serverName: `Host ${serverId}`, key: `${serverId}/${id}`, tabs: Array.from({ length: tabs }, (_, i) => ({ id: `t${i + 1}`, label: `t${i + 1}`, kind: 'shell', dir: '', order: i })) });
 const agent = (state: WorkspaceAgent['state']): WorkspaceAgent => ({ state, seq: 1, ts: 0, stale: false });
 const html = (workspaces: HubWorkspace[], agents: AgentMap = {}, extra: Record<string, unknown> = {}) => render(WorkspaceGroups, { props: { workspaces, agents, now: 1000, onopen() {}, onnew() {}, ...extra } }).body;
 const names = (out: string) => [...out.matchAll(/<b[^>]*>([^<]*)<\/b>/g)].map((m) => m[1]);
@@ -29,6 +29,15 @@ describe('the Workspaces list', () => {
     expect(count(out, 'data-testid="workspace-actions"')).toBe(2);
     expect(out).toContain('Reorder one');
     expect(out).toContain('Actions for two');
+  });
+
+  it('offers a pencil only when a rename handler is given, and counts the tabs', () => {
+    const out = html([ws('s', 'two', 2)], {}, { onrename() {} });
+    expect(count(out, 'data-testid="workspace-rename"')).toBe(1);
+    expect(out).toContain('Rename two');
+    expect(out).toContain('2 tabs');
+    expect(html([ws('s', 'two', 1)], {}, { onrename() {} })).toContain('1 tab');
+    expect(html([ws('s', 'two', 2)])).not.toContain('workspace-rename');
   });
 
   it('has no handle for a server\'s only workspace, and no actions button without a handler', () => {

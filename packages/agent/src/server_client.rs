@@ -136,14 +136,16 @@ impl ServerClient {
             | ServerMessage::UninstallDone { .. }
             | ServerMessage::UpdateRequested { .. }
             | ServerMessage::UpdateStatus { .. }
-            | ServerMessage::Candidates { .. } => {}
+            | ServerMessage::Candidates { .. }
+            | ServerMessage::DirListing { .. }
+            | ServerMessage::DirError { .. } => {}
             ServerMessage::Workspaces { workspaces } => {
                 info!("Received {} workspaces", workspaces.len());
                 for workspace in workspaces {
                     debug!("Workspace: {} ({})", workspace.name, workspace.id);
                 }
             }
-            ServerMessage::WorkspaceAttached { workspace_id } => {
+            ServerMessage::WorkspaceAttached { workspace_id, .. } => {
                 info!("Attached to workspace: {}", workspace_id);
                 *current_workspace = Some(workspace_id.clone());
 
@@ -183,6 +185,7 @@ impl ServerClient {
             | ServerMessage::PreviousExit { .. }
             | ServerMessage::DiagnosticsBundle { .. }
             | ServerMessage::ClaimPreview { .. }
+            | ServerMessage::TabStates { .. }
             | ServerMessage::Unknown => {}
             ServerMessage::Error { message } => {
                 info!("Server error: {}", message);

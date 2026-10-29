@@ -2,6 +2,7 @@
   import { EmptyState, QueueItem } from './lib/ds';
   import type { AgentMap } from './lib/agents';
   import type { HubWorkspace } from './lib/hub';
+  import type { TabAgentState } from './lib/protocol';
   import { ageText } from './lib/cards';
   import { workspaceGroups, type Row } from './lib/home';
   import { moveWorkspace, movedText } from './lib/order';
@@ -12,9 +13,9 @@
    * uses. Each row has a handle to drag it (the only part that does not scroll) and a button for the actions menu, where
    * rename and "Move up / Move down" work without dragging.
    */
-  let { workspaces, agents, now, onopen, onnew, onactions, unhealthy }: { workspaces: HubWorkspace[]; agents: AgentMap; now: number; /** Ids of the servers that say they are unhealthy (U14). */ unhealthy?: ReadonlySet<string>; onopen: (key: string) => void; onnew: (serverId?: string) => void; onactions?: (key: string) => void } = $props();
-  const groups = $derived(workspaceGroups(workspaces, agents, unhealthy));
-  const meta = (r: Row) => [r.serverName, r.since ? `waiting ${ageText(r.since, now)}` : ''].filter(Boolean).join(' · ');
+  let { workspaces, agents, now, onopen, onnew, onactions, onrename, onmove, unhealthy, tabStates = {} }: { workspaces: HubWorkspace[]; agents: AgentMap; now: number; /** Ids of the servers that say they are unhealthy (U14). */ unhealthy?: ReadonlySet<string>; tabStates?: Record<string, TabAgentState>; onopen: (key: string) => void; onnew: (serverId?: string) => void; onactions?: (key: string) => void; /** The pencil: rename the workspace where it is shown. */ onrename?: (key: string, name: string) => void; /** The server's own order when the server serves tabs. */ onmove?: (key: string, index: number) => void } = $props();
+  const groups = $derived(workspaceGroups(workspaces, agents, unhealthy, tabStates));
+  const meta = (r: Row) => [r.serverName, r.tabs ? `${r.tabs} ${r.tabs === 1 ? 'tab' : 'tabs'}` : '', r.since ? `waiting ${ageText(r.since, now)}` : ''].filter(Boolean).join(' · ');
 
   let scroller: HTMLElement | undefined = $state();
   let drag: DragView | null = $state(null);
@@ -23,6 +24,19 @@
     scroller: () => scroller,
     onview: (v) => (drag = v),
     ondrop: (key, target) => {
+      const targetWorkspace = workspaces.find((s) => s.key === target.key);
+      if (onmove && targetWorkspace) {
+        const mine = workspaces.filter((s) => s.serverId === targetWorkspace.serverId).map((s) => s.key);
+        const from = mine.indexOf(key);
+        const rest = mine.filter((k) => k !== key);
+        const at = rest.indexOf(target.key);
+        if (from >= 0 && at >= 0) {
+          const index = at + (target.side === 'after' ? 1 : 0);
+          onmove(key, index);
+          announcement = `${workspaces.find((s) => s.key === key)?.name ?? ''} moved to position ${index + 1} of ${mine.length}`;
+        }
+        return;
+      }
       const p = moveWorkspace(workspaces, key, target.side === 'before' ? { before: target.key } : { after: target.key });
       if (p) announcement = movedText(workspaces.find((s) => s.key === key)?.name ?? '', p);
     },
@@ -53,6 +67,11 @@
               </button>
             {/if}
             <QueueItem class="min-w-0 flex-1" name={r.name} summary={r.title} meta={meta(r)} state={r.state} agent={r.agent} unhealthy={r.unhealthy} onclick={() => onopen(r.key)} />
+            {#if onrename}
+              <button type="button" class="rename" data-testid="workspace-rename" aria-label={`Rename ${r.name}`} title="Rename" onclick={() => onrename(r.key, r.name)}>
+                <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m11.5 2.5 2 2L6 12l-2.7.7L4 10z" /></svg>
+              </button>
+            {/if}
             {#if onactions}
               <button type="button" class="more" data-testid="workspace-actions" aria-label={`Actions for ${r.name}: rename, move, detach`} onclick={() => onactions(r.key)}>
                 <svg viewBox="0 0 16 4" width="16" height="4" aria-hidden="true" fill="currentColor"><circle cx="2" cy="2" r="1.6" /><circle cx="8" cy="2" r="1.6" /><circle cx="14" cy="2" r="1.6" /></svg>
@@ -71,7 +90,8 @@
 
 <style>
   /* 44px targets. Only the handle takes the finger away from scrolling. */
-  .grip, .more { flex: 0 0 44px; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: transparent; color: var(--fg-muted, currentColor); border: 0; padding: 0; }
+  .grip, .more, .rename { flex: 0 0 44px; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: transparent; color: var(--fg-muted, currentColor); border: 0; padding: 0; }
+  .rename { color: var(--fg-muted, currentColor); }
   .grip { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; cursor: grab; }
   .dragging { z-index: 3; opacity: 0.95; filter: drop-shadow(0 4px 10px #0006); }
   .dragging .grip { cursor: grabbing; }

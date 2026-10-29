@@ -253,7 +253,19 @@ fn body(
 /// What a notification says: the workspace, the kind, the time, and a deep link. Nothing an agent wrote.
 /// Builds the JSON push body. `session` is the display name (e.g., "work"), `workspace_key` is the
 /// qualified key the client uses to find the workspace (e.g., "a/tmux:work").
+#[allow(dead_code)]
 pub fn payload(workspace: &str, kind: AttentionKind, at: u64, workspace_key: &str) -> Vec<u8> {
+    payload_for(workspace, kind, at, workspace_key, None)
+}
+
+/// Like `payload`, with the tab that asked. The deep link opens that tab, not just the workspace (decision 0149).
+pub fn payload_for(
+    workspace: &str,
+    kind: AttentionKind,
+    at: u64,
+    workspace_key: &str,
+    tab: Option<&str>,
+) -> Vec<u8> {
     let kind = match kind {
         AttentionKind::NeedsInput => "needs_input",
         AttentionKind::FinishedUnseen => "finished",
@@ -264,7 +276,12 @@ pub fn payload(workspace: &str, kind: AttentionKind, at: u64, workspace_key: &st
     let focus =
         percent_encoding::utf8_percent_encode(workspace_key, percent_encoding::NON_ALPHANUMERIC)
             .to_string();
-    let deep_link = format!("/#/home?focus={}", focus);
+    let mut deep_link = format!("/#/home?focus={}", focus);
+    if let Some(tab) = tab.filter(|t| !t.is_empty()) {
+        let tab = percent_encoding::utf8_percent_encode(tab, percent_encoding::NON_ALPHANUMERIC)
+            .to_string();
+        deep_link.push_str(&format!("&tab={tab}"));
+    }
     serde_json::json!({"session": workspace, "kind": kind, "at": at, "tag": workspace, "deep_link": deep_link})
         .to_string()
         .into_bytes()
@@ -286,7 +303,7 @@ pub struct Push {
     vapid: Option<Vapid>,
     subs: Mutex<Vec<Subscription>>,
     path: PathBuf,
-    foreground: Mutex<HashMap<u64, String>>,
+    foreground: Mutex<HashMap<u64, (String, Option<String>)>>,
     client: reqwest::Client,
     /// Tests post to a local fake service; production only to the browser vendors' hosts.
     allow_any_endpoint: bool,
@@ -486,19 +503,31 @@ impl Push {
 
     /// A connection says which workspace it shows in the foreground, or none.
     pub fn set_foreground(&self, conn: u64, workspace: Option<String>) {
+        self.set_foreground_tab(conn, workspace, None);
+    }
+
+    /// The foreground workspace and, when the client names it, the visible tab (decision 0149).
+    pub fn set_foreground_tab(&self, conn: u64, workspace: Option<String>, tab: Option<String>) {
         let mut fg = self.foreground.lock().unwrap();
         match workspace {
-            Some(s) => fg.insert(conn, s),
+            Some(s) => fg.insert(conn, (s, tab)),
             None => fg.remove(&conn),
         };
     }
 
+    #[allow(dead_code)]
     fn shown(&self, workspace: &str) -> bool {
+        self.shown_tab(workspace, None)
+    }
+
+    /// Whether a device already shows the item: the same workspace is enough when the item names no tab, and the
+    /// same visible tab when it does.
+    fn shown_tab(&self, workspace: &str, tab: Option<&str>) -> bool {
         self.foreground
             .lock()
             .unwrap()
             .values()
-            .any(|s| s == workspace)
+            .any(|(s, visible)| s == workspace && (tab.is_none() || visible.as_deref() == tab))
     }
 
     async fn send_one(&self, sub: &Subscription, body: &[u8], topic: &str) -> Sent {
@@ -535,11 +564,27 @@ impl Push {
 
     /// Sends to every device; a dead subscription is removed. Returns how many accepted it.
     pub async fn notify(&self, workspace: &str, kind: AttentionKind, at: u64) -> usize {
+        self.notify_tab(workspace, kind, at, None).await
+    }
+
+    /// A notification for one tab of a workspace; a tab that asks twice replaces only its own earlier message.
+    pub async fn notify_tab(
+        &self,
+        workspace: &str,
+        kind: AttentionKind,
+        at: u64,
+        tab: Option<&str>,
+    ) -> usize {
         let name = display_name(workspace);
         let focus_key = self.focus_key(workspace);
-        let body = payload(name, kind, at, &focus_key);
-        // The service keeps one waiting message per topic: a newer one for the workspace replaces the older.
-        let topic = B64.encode(&Sha256::digest(workspace.as_bytes())[..16]);
+        let body = payload_for(name, kind, at, &focus_key, tab);
+        // The service keeps one waiting message per topic: a newer one for the workspace (or its tab) replaces
+        // the older.
+        let topic_seed = match tab.filter(|t| !t.is_empty()) {
+            Some(tab) => format!("{workspace}/{tab}"),
+            None => workspace.to_string(),
+        };
+        let topic = B64.encode(&Sha256::digest(topic_seed.as_bytes())[..16]);
         let subs = self.subs.lock().unwrap().clone();
         let mut ok = 0;
         for s in subs {
@@ -603,8 +648,9 @@ async fn climb(push: Arc<Push>, hub: EventHub, it: Attention) {
             return; // answered or acknowledged, on any device
         }
         let agent = hub.agent(&it.workspace).unwrap_or_default();
-        if !push.shown(&it.workspace) && !push.suppressed(&agent, now_ms()) {
-            push.notify(&it.workspace, it.kind, it.raised_at).await;
+        if !push.shown_tab(&it.workspace, it.tab.as_deref()) && !push.suppressed(&agent, now_ms()) {
+            push.notify_tab(&it.workspace, it.kind, it.raised_at, it.tab.as_deref())
+                .await;
         }
         if !ladder {
             return;
@@ -705,6 +751,21 @@ mod tests {
         assert_eq!(v["tag"], "api-refactor");
         assert_eq!(v["deep_link"], "/#/home?focus=api%2Drefactor");
         assert_eq!(display_name("tmux:work"), "work");
+    }
+
+    #[test]
+    fn a_tab_push_links_to_that_tab_and_keeps_no_agent_text() {
+        let p = String::from_utf8(payload_for(
+            "work",
+            AttentionKind::NeedsInput,
+            5,
+            "a/tmux:work",
+            Some("t2"),
+        ))
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&p).unwrap();
+        assert_eq!(v["deep_link"], "/#/home?focus=a%2Ftmux%3Awork&tab=t2");
+        assert_eq!(v["session"], "work");
     }
 
     #[test]

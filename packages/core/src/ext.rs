@@ -13,7 +13,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// The version of the termenbox protocol: ACP v1 core plus this registry. A change to a core shape bumps it.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 /// The namespace; also the `_meta` key of the capability object that holds the offer.
 pub const NAMESPACE: &str = "termenbox.dev";
 /// Prefix of an extension's `_meta` key.

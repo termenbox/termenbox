@@ -1,0 +1,67 @@
+{
+  "id": "V42",
+  "title": "A request refused as resume_in_progress spends its nonce",
+  "covers": [
+    "I9",
+    "I11"
+  ],
+  "session": {
+    "session_id": "sess-42",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "challenge",
+      "as": "n2"
+    },
+    {
+      "do": "reattach",
+      "complete": false
+    },
+    {
+      "do": "reattach",
+      "nonce": "n2",
+      "error": true
+    },
+    {
+      "do": "complete_resume"
+    },
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "reattach",
+      "nonce": "n2",
+      "error": true
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "RESUME_STARTED",
+      "RESUME_REJECTED",
+      "RESUME_VERIFIED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "RESUME_REJECTED"
+    ],
+    "cell": [
+      "Det",
+      "None"
+    ],
+    "scope_version": 0,
+    "last_event_payload": {
+      "reason": "nonce_used"
+    }
+  }
+}

@@ -224,6 +224,9 @@ pub enum ClientMessage {
     /// still the workspace's current one, reliable (hook-confirmed) and still on the pane (plan v8, K.4).
     Answer {
         workspace: String,
+        /// The tab the prompt was read from; absent means the focused tab (an older client).
+        #[serde(default)]
+        tab: Option<String>,
         prompt_id: String,
         seq: u64,
         choice: u8,
@@ -237,6 +240,9 @@ pub enum ClientMessage {
     /// client already holds: the server answers `unchanged` instead of sending the same text again.
     Peek {
         workspace: String,
+        /// The tab whose screen is wanted; absent means the focused tab.
+        #[serde(default)]
+        tab: Option<String>,
         #[serde(default)]
         hash: Option<String>,
     },
@@ -264,6 +270,45 @@ pub enum ClientMessage {
         workspace: String,
         index: u32,
     },
+    /// Opens a tab in a workspace. The first tab of a new workspace is created with the workspace.
+    NewTab {
+        workspace: String,
+        /// The template the tab starts from (`shell`, `claude`, ...).
+        template: String,
+        /// What the tab is called; the server generates one when empty.
+        #[serde(default)]
+        label: String,
+        /// A directory inside the workspace, relative to it; empty means the workspace directory.
+        #[serde(default)]
+        dir: String,
+    },
+    /// Renames a tab. Its id, process and tmux window stay as they are.
+    RenameTab {
+        workspace: String,
+        tab: String,
+        label: String,
+    },
+    /// Kills a tab's process and removes it. Removing the last tab leaves a shell tab behind.
+    CloseTab {
+        workspace: String,
+        tab: String,
+    },
+    /// Moves a tab to `index` among the workspace's tabs.
+    MoveTab {
+        workspace: String,
+        tab: String,
+        index: u32,
+    },
+    /// Makes a tab the workspace's default one (a new device opens it). It never switches another device's screen.
+    FocusTab {
+        workspace: String,
+        tab: String,
+    },
+    /// Moves a workspace to `index` in the server's own order.
+    MoveWorkspace {
+        workspace: String,
+        index: u32,
+    },
     /// Ends the workspace and everything in it (the client has asked the user first). Different from `Detach`,
     /// which only stops streaming and leaves the workspace running.
     CloseWorkspace {
@@ -276,6 +321,18 @@ pub enum ClientMessage {
         name: String,
     },
     ListWorkspaces,
+    /// Asks for the directories directly inside `path` (the server user's `$HOME` when absent), for the folder
+    /// picker (decision 0147). Owner only, confined to `$HOME`; answered with `dir_listing` or `dir_error`.
+    ListDir {
+        #[serde(default)]
+        path: Option<String>,
+        /// Keeps only names that start with it, case-insensitively.
+        #[serde(default)]
+        prefix: Option<String>,
+        /// Includes names that start with a dot.
+        #[serde(default)]
+        hidden: bool,
+    },
     NewWorkspace {
         name: String,
         /// Which workspace manager to create it in (`tmux`, `command`); the first one when absent.
@@ -291,6 +348,9 @@ pub enum ClientMessage {
     Ping,
     Attach {
         workspace_id: String,
+        /// The tab to attach to; absent means the workspace's focused tab (an older client).
+        #[serde(default)]
+        tab: Option<String>,
     },
     /// Stop streaming the current pane while keeping authentication and agent events alive.
     Detach,
@@ -323,6 +383,9 @@ pub enum ClientMessage {
     Foreground {
         #[serde(default)]
         workspace: Option<String>,
+        /// The tab in front on this device; absent means the workspace is in front without one tab.
+        #[serde(default)]
+        tab: Option<String>,
     },
     /// A device shows this workspace in the foreground: clears its `finished_unseen` and `failed` items, never
     /// a `needs_input` (decision 0095).
@@ -432,6 +495,12 @@ impl ClientMessage {
                 | ClientMessage::NewWindow { .. }
                 | ClientMessage::CloseWindow { .. }
                 | ClientMessage::SelectWindow { .. }
+                | ClientMessage::NewTab { .. }
+                | ClientMessage::RenameTab { .. }
+                | ClientMessage::CloseTab { .. }
+                | ClientMessage::MoveTab { .. }
+                | ClientMessage::FocusTab { .. }
+                | ClientMessage::MoveWorkspace { .. }
                 | ClientMessage::Resize { .. }
                 | ClientMessage::Foreground { .. }
         )
@@ -502,6 +571,9 @@ pub enum ServerMessage {
         /// The lanes this connection uses besides JSON (`term`); absent means the single pipe.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         channels: Vec<String>,
+        /// The server serves workspace tabs and the tab messages (`protocol` 2 and later).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        tabs: bool,
         server_name: String,
         /// `container` or `host:<user>`; absent from older servers.
         #[serde(default)]
@@ -532,8 +604,26 @@ pub enum ServerMessage {
     Workspaces {
         workspaces: Vec<WorkspaceInfo>,
     },
+    /// Answer to `list_dir`: the directories inside `path`, never files (decision 0147). `parent` is absent at
+    /// `home`; `truncated` says more than `DIR_LISTING_MAX` matched.
+    DirListing {
+        path: String,
+        #[serde(default)]
+        parent: Option<String>,
+        entries: Vec<DirEntry>,
+        #[serde(default)]
+        truncated: bool,
+        home: String,
+    },
+    /// `list_dir` was refused or failed; `reason` is a short sentence for the user.
+    DirError {
+        reason: String,
+    },
     WorkspaceAttached {
         workspace_id: String,
+        /// The tab the terminal is attached to; absent from an older server.
+        #[serde(default)]
+        tab: Option<String>,
     },
     Output {
         data: String,
@@ -563,6 +653,10 @@ pub enum ServerMessage {
         /// Its command and path name the tab and its agent gives the icon.
         #[serde(default)]
         representative: Option<u32>,
+    },
+    /// The state of every tab; pushed on a change (decision 0149).
+    TabStates {
+        states: Vec<crate::events::TabAgentState>,
     },
     /// Latest agent state per workspace; answers `agent_sync`.
     AgentSnapshot {
@@ -812,6 +906,20 @@ pub enum AcpBody {
     Unknown,
 }
 
+/// The most directories one `dir_listing` carries.
+pub const DIR_LISTING_MAX: usize = 500;
+
+/// One directory in a `dir_listing`: a name only, never a path, size or time.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct DirEntry {
+    pub name: String,
+    /// A symbolic link to a directory; the server did not follow it out of `$HOME`.
+    #[serde(default)]
+    pub symlink: bool,
+    #[serde(default)]
+    pub hidden: bool,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct AcpDiff {
     pub path: String,
@@ -1031,7 +1139,7 @@ pub struct WindowInfo {
 /// The name an owner gave a workspace. It is on the wire as a plain string, but `Debug` and `Display` print `[name]`,
 /// so a `{:?}` of a `WorkspaceInfo`, a `format!` or a panic message cannot carry it into a log or a diagnostics bundle.
 /// The text is reached only by `as_str`, which a reader of the diff can see.
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
 #[serde(transparent)]
 pub struct Label(String);
 
@@ -1065,6 +1173,22 @@ impl std::fmt::Display for Label {
     }
 }
 
+/// One process tab of a workspace (decision 0149). `window` is the tmux window it runs in; absent while the workspace
+/// is dormant (its tmux server is gone) or for a backend with no windows.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct TabInfo {
+    pub id: String,
+    pub label: Label,
+    /// The template it started from (`shell`, `claude`, ...).
+    pub kind: String,
+    /// A directory inside the workspace, relative to it; empty means the workspace directory.
+    #[serde(default)]
+    pub dir: String,
+    pub order: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceInfo {
     pub id: String,
@@ -1073,6 +1197,33 @@ pub struct WorkspaceInfo {
     /// The workspace manager it lives in (`tmux`, `command`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
+    /// The workspace's absolute directory; empty when the backend does not know one.
+    #[serde(default)]
+    pub dir: String,
+    /// The server's own order of workspaces.
+    #[serde(default)]
+    pub order: u32,
+    /// The tab a new device opens; absent falls back to the first tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<String>,
+    /// The tabs in order. Empty from a server that predates tabs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tabs: Vec<TabInfo>,
+}
+
+impl Default for WorkspaceInfo {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: Label::default(),
+            agent: None,
+            backend: None,
+            dir: String::new(),
+            order: 0,
+            focus: None,
+            tabs: Vec::new(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -1196,6 +1347,7 @@ mod tests {
             protocol: 1,
             user: "u".into(),
             channels: vec![],
+            tabs: false,
             server_name: "s".into(),
             mode: "container".into(),
             version: "0.1.0+dev".into(),
@@ -1299,6 +1451,7 @@ mod tests {
         assert_eq!(v["after"]["a"], 4);
         let v = serde_json::to_value(ClientMessage::Answer {
             workspace: "s".into(),
+            tab: None,
             prompt_id: "1-ab".into(),
             seq: 3,
             choice: 1,
@@ -1324,6 +1477,7 @@ mod tests {
         );
         let v = serde_json::to_value(ClientMessage::Peek {
             workspace: "s".into(),
+            tab: None,
             hash: None,
         })
         .unwrap();
@@ -1373,6 +1527,7 @@ mod tests {
         assert_eq!(v["type"], "dismiss");
         let v = serde_json::to_value(ServerMessage::WorkspaceAttached {
             workspace_id: "x".into(),
+            tab: None,
         })
         .unwrap();
         assert_eq!(v["type"], "workspace_attached");
@@ -1519,6 +1674,7 @@ mod tests {
                 name: "main".into(),
                 agent: Some("tmux".into()),
                 backend: None,
+                ..Default::default()
             }],
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -1694,6 +1850,7 @@ mod label_tests {
             name: "client-x deploy".into(),
             agent: None,
             backend: None,
+            ..Default::default()
         };
         let json = serde_json::to_string(&w).unwrap();
         assert!(json.contains(r#""name":"client-x deploy""#), "{json}");

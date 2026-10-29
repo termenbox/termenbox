@@ -1,0 +1,63 @@
+{
+  "id": "V41",
+  "title": "An approval given while the client is away lapses after T_approve if the client returns later",
+  "covers": [
+    "I13",
+    "I14"
+  ],
+  "session": {
+    "session_id": "sess-41",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "escalate"
+    },
+    {
+      "do": "tool_call",
+      "tool": "shell:git push",
+      "key": "k1"
+    },
+    {
+      "do": "resolve"
+    },
+    {
+      "do": "advance",
+      "seconds": 901
+    },
+    {
+      "do": "reattach"
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "HUMAN_PENDING",
+      "TOOL_CALL_QUEUED",
+      "TOOL_CALL_ANSWERED",
+      "HUMAN_RESOLVED",
+      "RESUME_STARTED",
+      "RESUME_VERIFIED",
+      "TOOL_CALL_EXPIRED"
+    ],
+    "cell": [
+      "Att",
+      "None"
+    ],
+    "scope_version": 0,
+    "forwarded": [],
+    "last_event_payload": {
+      "reason": "approval_ttl"
+    }
+  }
+}

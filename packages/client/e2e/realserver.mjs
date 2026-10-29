@@ -174,7 +174,7 @@ async function runContext(browser, label) {
     const open = async (workspace) => {
       if (phone) {
         await tap(bottom.locator('[data-destination=workspaces]'));
-        await tap(page.locator(`[role=tab][aria-label*="${workspace}"]`).first());
+        await tap(page.locator('[data-workspace-groups] button').filter({ has: page.locator('b', { hasText: new RegExp(`^${workspace}$`) }) }).first());
       } else {
         await sidebar.locator(`[data-key$="/${workspace}"], [data-key$=":${workspace}"]`).click();
       }

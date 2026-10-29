@@ -60,14 +60,20 @@ const saved = (serverId: string) => {
   return v;
 };
 
-/** The workspaces in the user's order. A server that lists workspaces is the truth about which exist: the others are pruned. */
-export function orderWorkspaces<T extends { key: string; serverId: string }>(workspaces: T[]): T[] {
-  const out = applyOrder(workspaces, saved);
-  for (const id of new Set(workspaces.map((w) => w.serverId))) {
-    const here = new Set(workspaces.filter((w) => w.serverId === id).map((w) => w.key));
-    const kept = saved(id).filter((k) => here.has(k));
-    if (kept.length !== saved(id).length) { cache.set(id, kept); saveOrder(id, kept); }
-  }
+/** The workspaces in the order shown. The server's own order wins when it sent one (decision 0149); an older server
+ *  falls back to the device-local order. A server that lists workspaces is the truth about which exist: the others are
+ *  pruned from the local copy. */
+export function orderWorkspaces<T extends { key: string; serverId: string; order?: number }>(workspaces: T[]): T[] {
+  const out = [...new Set(workspaces.map((w) => w.serverId))].flatMap((id) => {
+    const mine = workspaces.filter((w) => w.serverId === id);
+    if (mine.length && mine.every((w) => typeof w.order === 'number')) {
+      return [...mine].sort((a, b) => (a.order! - b.order!) || a.key.localeCompare(b.key));
+    }
+    const kept = new Set(mine.map((w) => w.key));
+    const local = saved(id).filter((k) => kept.has(k));
+    if (local.length !== saved(id).length) { cache.set(id, local); saveOrder(id, local); }
+    return applyOrder(mine, saved);
+  });
   return out;
 }
 

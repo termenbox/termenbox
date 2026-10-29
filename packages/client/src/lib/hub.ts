@@ -1,7 +1,7 @@
 import { derived, writable } from 'svelte/store';
 import { Connection, type ConnectionOptions, type ConnState } from './connection';
 import { applyActivity, applyAttention, applyEvents, applySnapshot, syncRequest, type AgentMap } from './agents';
-import type { ClientMessage, ServerHealth, ServerListItem, ServerMessage, WorkspaceInfo } from './protocol';
+import type { ClientMessage, ServerHealth, ServerListItem, ServerMessage, TabAgentState, WorkspaceInfo } from './protocol';
 import type { Target } from './transport';
 import { storedBundle, type PathFailure } from './paths';
 import { BundleRejected, decodeBundle, verifyBundle } from './bundle';
@@ -21,6 +21,8 @@ export interface HubServer {
   /** The owner asked this server to update; it restarts when done, and the reconnect brings the new version. */
   updating?: boolean;
   backends: string[];
+  /** The server serves workspace tabs and the tab messages. */
+  tabs?: boolean;
   /** The agents the owner allows as ACP workspaces (T0); empty when the server runs none. */
   acpAgents: string[];
   /** Live window updates run (tmux 3.2+); false shows a notice in the server's status. */
@@ -42,6 +44,7 @@ interface Entry extends HubServer {
   workspaces: WorkspaceInfo[];
   agents: AgentMap;
   windows: WindowMap;
+  tabStates: Record<string, TabAgentState>;
   refresh: boolean;
   everReady: boolean;
 }
@@ -80,6 +83,7 @@ export class ServerHub {
   readonly allWorkspaces = writable<HubWorkspace[]>([]);
   readonly agents = writable<AgentMap>({});
   readonly windows = writable<WindowMap>({});
+  readonly tabStates = writable<Record<string, TabAgentState>>({});
   readonly connectedCount = derived(this.servers, servers => servers.filter(s => s.state === 'connected').length);
   readonly overLimit = derived(this.connectedCount, count => count > 6);
 
@@ -100,8 +104,8 @@ export class ServerHub {
       else this.publish();
       return;
     }
-    const entry: Entry = { id, server, state: 'connecting', reason: '', version: '', updateAvailable: '', updating: false, backends: [], acpAgents: [], controlMode: false, tmuxVersion: '', prefix: '', connection: null, path: '', failures: [],
-      workspaces: [], agents: {}, windows: {}, refresh: !server.record && !server.bundle && !!server.server_id, everReady: false };
+    const entry: Entry = { id, server, state: 'connecting', reason: '', version: '', updateAvailable: '', updating: false, backends: [], tabs: false, acpAgents: [], controlMode: false, tmuxVersion: '', prefix: '', connection: null, path: '', failures: [],
+      workspaces: [], agents: {}, windows: {}, tabStates: {}, refresh: !server.record && !server.bundle && !!server.server_id, everReady: false };
     this.entries.set(id, entry);
     this.connect(entry);
   }
@@ -109,6 +113,28 @@ export class ServerHub {
   /** This device's last round trip to a server, from its heartbeat; null before the first one. */
   rtt(id: string): number | null { return this.entries.get(id)?.connection?.rtt ?? null; }
   send(id: string, message: ClientMessage) { this.connection(id)?.send(message); }
+  /** A tab message for the workspace a device shows: the wire carries the server-local workspace id. */
+  sendTab(key: string, message: ClientMessage) { this.sendToWorkspace(key, message); }
+  newTab(key: string, template: string, label = '', dir = '') {
+    this.sendToWorkspace(key, { type: 'new_tab', workspace: key, template, label, dir });
+  }
+  renameTab(key: string, tab: string, label: string) {
+    this.sendToWorkspace(key, { type: 'rename_tab', workspace: key, tab, label });
+  }
+  closeTab(key: string, tab: string) {
+    this.sendToWorkspace(key, { type: 'close_tab', workspace: key, tab });
+  }
+  moveTab(key: string, tab: string, index: number) {
+    this.sendToWorkspace(key, { type: 'move_tab', workspace: key, tab, index });
+  }
+  focusTab(key: string, tab: string) {
+    this.sendToWorkspace(key, { type: 'focus_tab', workspace: key, tab });
+  }
+  /** The server's own order; every device follows the broadcast. */
+  moveWorkspace(key: string, index: number) {
+    const found = this.findWorkspace(key);
+    if (found) this.send(found.serverId, { type: 'move_workspace', workspace: found.id, index });
+  }
   /** Global keys stay in the UI; the wire always carries the original server-local workspace id. */
   sendToWorkspace(key: string, message: ClientMessage) {
     const workspace = this.findWorkspace(key);
@@ -184,7 +210,7 @@ export class ServerHub {
         e.everReady = true;
         const { claim, ...saved } = e.server;
         e.server = { ...saved, server_name: saved.server_name || msg.server_name };
-        e.version = msg.version ?? ''; e.updateAvailable = msg.update_available ?? ''; e.updating = false; e.backends = msg.backends ?? []; e.acpAgents = msg.acp_agents ?? [];
+        e.version = msg.version ?? ''; e.updateAvailable = msg.update_available ?? ''; e.updating = false; e.backends = msg.backends ?? []; e.tabs = !!msg.tabs; e.acpAgents = msg.acp_agents ?? [];
         e.controlMode = !!msg.control_mode; e.tmuxVersion = msg.tmux_version ?? ''; e.prefix = msg.prefix ?? '';
         this.publish(); this.opts.onSaved?.(e.server);
         connection.send({ type: 'list_workspaces' });
@@ -208,9 +234,10 @@ export class ServerHub {
     e.connection = connection;
     e.unsubscribe = connection.subscribe(msg => {
       if (!current()) return;
-      const changed = msg.type === 'workspaces' || msg.type === 'agent_snapshot' || msg.type === 'agent_events' || msg.type === 'window_list' || msg.type === 'activity' || msg.type === 'attention';
+      const changed = msg.type === 'workspaces' || msg.type === 'agent_snapshot' || msg.type === 'agent_events' || msg.type === 'window_list' || msg.type === 'activity' || msg.type === 'attention' || msg.type === 'tab_states';
       if (msg.type === 'workspaces') { e.workspaces = msg.workspaces; e.windows = forgetWindows(e.windows, msg.workspaces.map(s => s.id)); }
       if (msg.type === 'window_list') e.windows = applyWindowList(e.windows, msg);
+      if (msg.type === 'tab_states') e.tabStates = Object.fromEntries(msg.states.map(s => [`${s.workspace}/${s.tab}`, s]));
       if (msg.type === 'agent_snapshot') e.agents = applySnapshot(e.agents, msg.states);
       if (msg.type === 'activity') e.agents = applyActivity(e.agents, msg.workspaces, Date.now());
       if (msg.type === 'attention') e.agents = applyAttention(e.agents, msg.items);
@@ -251,7 +278,7 @@ export class ServerHub {
   }
   /** The server list alone: a health sample every 10 s per server must not rebuild the workspace, agent and window stores. */
   private publishServers(entries = [...this.entries.values()]) {
-    this.servers.set(entries.map(({ id, server, state, reason, version, updateAvailable, updating, backends, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures }) => ({ id, server, state, reason, version, updateAvailable, updating, backends, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures })));
+    this.servers.set(entries.map(({ id, server, state, reason, version, updateAvailable, updating, backends, tabs, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures }) => ({ id, server, state, reason, version, updateAvailable, updating, backends, tabs, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures })));
   }
   private publish() {
     const entries = [...this.entries.values()];
@@ -260,5 +287,6 @@ export class ServerHub {
       serverId: e.id, serverName: e.server.server_name || 'Server', key: workspaceKey(e.id, s.id) })))));
     this.agents.set(Object.fromEntries(entries.filter(e => e.state !== 'paused').flatMap(e => Object.entries(e.agents).map(([id, a]) => [workspaceKey(e.id, id), a]))));
     this.windows.set(Object.fromEntries(entries.filter(e => e.state !== 'paused').flatMap(e => Object.entries(e.windows).map(([id, w]) => [workspaceKey(e.id, id), w]))));
+    this.tabStates.set(Object.fromEntries(entries.filter(e => e.state !== 'paused').flatMap(e => Object.values(e.tabStates).map(s => [`${workspaceKey(e.id, s.workspace)}/${s.tab}`, s]))));
   }
 }

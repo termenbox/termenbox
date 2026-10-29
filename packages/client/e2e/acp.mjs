@@ -153,19 +153,9 @@ try {
   // From Home or the list a workspace opens by its row; from another open workspace by its tab, else from the Workspaces sheet
   // (after Refresh: a workspace made on another device is listed when asked for).
   const openWorkspace = async (p, name) => {
-    const tab = p.locator(`[role=tab][data-key$="/${ids[name]}"]`);
-    const inWorkspace = (await p.locator('.xterm, [data-testid=acp-view]').count()) > 0;
-    if (inWorkspace) await tab.waitFor({ timeout: 8000 }).catch(() => {});
-    if (await tab.count()) await tab.click();
-    else if (inWorkspace) {
-      const sheet = p.locator('.workspace-sheet');
-      if ((await sheet.getAttribute('data-height')) === 'closed') await p.locator('button.workspaces-button').click();
-      await sheet.getByRole('button', { name: 'Refresh' }).click();
-      await sheet.locator('button.open, button.plain').filter({ hasText: new RegExp(`(^|\\s)${name}\\s`) }).first().click();
-    } else {
-      await p.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click();
-      await p.locator('[data-workspace-groups] button').filter({ has: p.locator('b', { hasText: new RegExp(`^${name}$`) }) }).first().click({ timeout: 20000 });
-    }
+    // The Workspaces destination is the one workspace switcher on a phone now; the tab plaque switches tabs inside one.
+    await p.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click();
+    await p.locator('[data-workspace-groups] button').filter({ has: p.locator('b', { hasText: new RegExp(`^${name}$`) }) }).first().click({ timeout: 20000 });
     await p.locator(`[data-testid=acp-view][data-workspace$="/${ids[name]}"]`).waitFor({ timeout: 20000 });
   };
   const prompt = (p) => p.locator('textarea[aria-label=Prompt]');
@@ -232,7 +222,9 @@ try {
   await page.locator('[data-kind=permission][data-state=answered]').filter({ hasText: 'Rejected · No' }).waitFor({ timeout: 15000 });
   await idle(page);
   check(logged().filter((m) => m.id >= 9000 && m.result?.outcome?.optionId === 'reject').length === 1, 'the agent did not receive exactly the rejecting option id');
-  check((await page.locator('[data-kind=tool][data-status=failed]').count()) === 1, 'the refused write is not shown as failed');
+  const failedTool = page.locator('[data-kind=tool][data-status=failed]');
+  await failedTool.waitFor({ timeout: 15000 });
+  check((await failedTool.count()) === 1, 'the refused write is not shown as failed');
   await say(page, 'shell ls /etc');
   await inline.waitFor({ timeout: 15000 });
   const shellText = await inline.innerText();

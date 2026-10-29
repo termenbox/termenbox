@@ -41,6 +41,7 @@ mod journal;
 mod layout;
 mod legacy;
 mod link;
+mod listdir;
 mod locale;
 mod logging;
 mod netutil;
@@ -52,11 +53,13 @@ mod pty;
 mod push;
 mod reach;
 mod reducer;
+mod registry;
 mod release;
 mod requests;
 mod rtc;
 mod signal;
 mod stun;
+mod tabstatus;
 mod terminfo;
 mod tmuxconf;
 mod transcript;
@@ -806,6 +809,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     let mut hub = events::EventHub::load_or_create(&args.config_dir)?;
+    hub = hub.with_tab_status(Arc::new(tabstatus::TabStatus::default()));
     if let Some(history) = &history {
         hub = hub.with_history(history.clone());
     }
@@ -899,6 +903,9 @@ async fn main() -> anyhow::Result<()> {
         build_backend(&args, &kinds[0], &mode, env, "")?
     };
     info!("Workspace backend: {}", backend.name());
+    let registry = Arc::new(registry::Registry::load(
+        args.config_dir.join("workspaces.json"),
+    ));
     // Server health (U14): sampled every 10 s into memory; the data directory is the disk it reports.
     let health = Arc::new(HealthCollector::new());
     health.spawn(args.config_dir.clone());
@@ -920,10 +927,11 @@ async fn main() -> anyhow::Result<()> {
         auth,
         workspaces: Arc::new(
             if control_on {
-                WorkspaceManager::new(backend, mode.clone())
+                WorkspaceManager::new(backend, mode.clone(), registry)
                     .with_windows(window_hub.clone(), tmux_version.clone())
             } else {
-                WorkspaceManager::new(backend, mode.clone()).with_tmux_version(tmux_version.clone())
+                WorkspaceManager::new(backend, mode.clone(), registry)
+                    .with_tmux_version(tmux_version.clone())
             }
             .with_prefix(tmux_prefix.clone())
             .with_push(push.clone())

@@ -24,7 +24,8 @@
     <Dialog.Content
       class={cn(
         'absolute overflow-y-auto border-border bg-bg-secondary p-4',
-        side === 'bottom' ? 'inset-x-0 bottom-0 max-h-[85%] rounded-t-2xl border-t' : 'inset-y-0 right-0 w-[min(100%,360px)] border-l',
+        side === 'bottom' ? 'inset-x-0 bottom-0 max-h-[85%] rounded-t-2xl border-t' :
+        'inset-y-0 right-0 w-[min(100%,360px)] border-l',
         className,
       )}
     >
