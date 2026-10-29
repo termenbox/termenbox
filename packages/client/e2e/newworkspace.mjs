@@ -216,8 +216,9 @@ for (const [width, height] of only ? [only] : WIDTHS) {
     await see(dialog.getByText('That name is taken.'), 'the taken-name reason');
     if (!(await dialog.getByRole('button', { name: 'Create' }).isDisabled())) throw new Error(at('Create is enabled with a taken name'));
     await rules('create disabled, name taken');
-    await dialog.getByLabel('Name').fill('bad name!');
-    await see(dialog.getByText(/Use letters, digits/), 'the invalid-name reason');
+    // `|` is the list separator the server refuses; a space and punctuation are valid label text (0146/0149).
+    await dialog.getByLabel('Name').fill('bad|name');
+    await see(dialog.getByText(/Use one line of at most 64 characters, without \|/), 'the invalid-name reason');
     await rules('create disabled, invalid name');
     await page.keyboard.press('Escape');
     await dialog.waitFor({ state: 'detached', timeout: 5000 });

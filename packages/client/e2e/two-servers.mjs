@@ -333,7 +333,9 @@ try {
   await stripTabs.filter({ hasText: 'Shell' }).click();
   await page.waitForFunction(() => document.querySelector('[data-testid=tab-strip] [role=tab][aria-selected=true]')?.textContent?.includes('Shell'));
   // The current tab opens the same menu; delete the tab there and leave the workspace alone.
-  await stripTabs.filter({ hasText: 'Shell' }).click();
+  const currentTabButton = page.locator('[data-testid=tab-strip] [role=tab][aria-selected=true]');
+  await currentTabButton.waitFor();
+  await currentTabButton.click();
   await menu().waitFor();
   await menu().getByRole('button', { name: 'Actions for Shell', exact: true }).click();
   await menu().getByRole('button', { name: 'Delete', exact: true }).click();
@@ -344,12 +346,13 @@ try {
   ok('the desktop strip and its + act on the current workspace’s tabs, not on workspaces');
 
   // 9. Back on the phone, Close workspace still asks and ends only that workspace.
+  // Capture the ids before the close: removing the tab/workspace can finish before the next tmux query.
+  const [apiId, infraId] = [idOf(a, 'api'), idOf(b, 'infra')];
   await page.setViewportSize({ width: 390, height: 800 });
   await plaque().waitFor();
   await openMenu();
   await menu().getByRole('button', { name: 'Close workspace', exact: true }).click();
   await menu().getByRole('button', { name: 'Close workspace', exact: true }).click();
-  const [apiId, infraId] = [idOf(a, 'api'), idOf(b, 'infra')];
   await waitFor(() => !sessionsOf(a).includes(apiId), 'api to end');
   if (!sessionsOf(b).includes(infraId)) fail('the other server lost its workspace');
   ok('Close workspace asks and ends only that workspace, leaving the other server alone');
