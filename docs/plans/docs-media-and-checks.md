@@ -24,11 +24,12 @@ Do: create `packages/client/e2e/video/inputs-hash.mjs` exporting `hashInputs(cas
 Done-when: the Check passes and a local render of `recent-folder` leaves a `.render.json` whose `hash` matches `hashInputs`.
 Progress: done 2026-10-29; self-test passes and a host render of recent-folder/phone left a render.json whose hash equals hashInputs (host node 24, vite builds, no container).
 
-### 1.3 Pace and caption knobs — [ ]‖
+### 1.3 Pace and caption knobs — [x]‖
 Class: implement · Needs: 1.1 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && node --test e2e/video/knobs.test.mjs'`
 Context: the `/regen` command accepts `pace=slow|normal` and `caption=off` (DECISION-0149); `lib.mjs` `humanPage` holds the human-pacing constants (move steps 18 to 30, settle 120 to 350 ms, keys 55 to 140 ms, pauses 600 to 1200 ms).
 Do: add `--pace slow|normal` (slow multiplies every delay by 1.6, default normal) and `--no-caption` (captions still drive the placement logic but are not drawn) to `render.mjs`, passed to `humanPage`; export the multiplier logic as a pure function with a test in `e2e/video/knobs.test.mjs` (normal leaves values unchanged, slow scales, an unknown value is rejected).
 Done-when: the Check passes and `render.mjs --case recent-folder --profile phone --pace slow` produces a longer video than the default.
+Progress: done 2026-10-29; knobs.test.mjs passes (host node); recent-folder/phone is 19.6 s at normal and 26.9 s with --pace slow. --no-caption draws nothing but keeps the same timing.
 
 ### 1.4 Stills at marked steps — [ ]‖
 Class: implement · Needs: 1.1 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && pnpm run e2e:build && node e2e/video/render.mjs --case recent-folder --profile phone --out /tmp/stills && test $(ls /tmp/stills/recent-folder-phone-*.png | wc -l) -ge 2'`

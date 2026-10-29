@@ -1,11 +1,12 @@
 // Renders one New workspace dialog walkthrough as a captioned MP4 (H.264) and a GIF poster.
 //   node e2e/video/render.mjs --list [--json]   prints the case ids (or their metadata)
+//   --pace slow|normal (slow stretches every delay by 1.6) and --no-caption (nothing drawn) go with --case
 //   node e2e/video/render.mjs --case recent-folder|other-agent|browse-folder|type-path --profile phone|desktop --out DIR
 // phone is 390 x 844 at DPR 2 with touch; desktop is 1280 x 800. The page is the built client (pnpm run e2e:build) against the
 // scripted server and its fake home, recorded with Playwright and converted with ffmpeg. A case whose final assertion fails
 // exits non-zero and leaves no file in DIR. The video says it is a rendered walkthrough on scripted data, not a real device.
 import { startShared, startApp } from '../app-lib.mjs';
-import { humanPage, overlayScript, sleep } from './lib.mjs';
+import { humanPage, overlayScript, paceFactor, sleep } from './lib.mjs';
 import { cases } from './cases.mjs';
 import { appVersion, hashInputs } from './inputs-hash.mjs';
 import { spawnSync } from 'node:child_process';
@@ -21,8 +22,11 @@ if (process.argv.includes('--list')) {
 }
 const caseName = arg('case');
 const profile = arg('profile') ?? 'phone';
+const pace = arg('pace') ?? 'normal';
+const captions = !process.argv.includes('--no-caption');
 const out = resolve(arg('out') ?? 'videos');
 if (!cases[caseName]) { console.error(`--case must be one of:\n${Object.keys(cases).join('\n')}`); process.exit(2); }
+try { paceFactor(pace); } catch (e) { console.error(e.message); process.exit(2); }
 if (!['phone', 'desktop'].includes(profile)) { console.error('--profile must be phone or desktop'); process.exit(2); }
 
 const phone = profile === 'phone';
@@ -43,7 +47,7 @@ try {
   await t.open();
   await sleep(800);
   ready = (Date.now() - started) / 1000;
-  const h = humanPage(t.page, profile);
+  const h = humanPage(t.page, profile, { pace, caption: captions });
   await h.say('A rendered walkthrough on scripted data, not a real device');
   const dialog = t.page.locator('dialog[aria-label="New workspace"]');
   await cases[caseName].run({ h, page: t.page, dialog, q: (id) => dialog.locator(`[data-testid="${id}"]`), server: t.server });
@@ -77,5 +81,5 @@ run([...trim, '-i', webm, '-vf', `fps=10,scale=${gifWidth}:-1:flags=lanczos,spli
 rmSync(work, { recursive: true, force: true });
 // What the review ledger and the staleness check read (DECISION-0149): the hash says which inputs this video was made from.
 const meta = join(out, `${base}.render.json`);
-writeFileSync(meta, JSON.stringify({ case: caseName, profile, hash: await hashInputs(caseName), version: appVersion(), run: process.env.GITHUB_RUN_ID ?? null, renderedAt: new Date().toISOString(), files: [`${base}.mp4`, `${base}.gif`] }, null, 2) + '\n');
+writeFileSync(meta, JSON.stringify({ case: caseName, profile, pace, captions, hash: await hashInputs(caseName), version: appVersion(), run: process.env.GITHUB_RUN_ID ?? null, renderedAt: new Date().toISOString(), files: [`${base}.mp4`, `${base}.gif`] }, null, 2) + '\n');
 console.log(`ok  ${base}: ${mp4}, ${gif}`);

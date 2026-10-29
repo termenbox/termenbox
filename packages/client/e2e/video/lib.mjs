@@ -5,6 +5,13 @@ const rand = (lo, hi) => lo + Math.random() * (hi - lo);
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2);
 
+/** The multiplier for every human delay: `normal` leaves them as they are, `slow` stretches them (the /regen pace=slow knob). */
+export const paceFactor = (pace = 'normal') => {
+  if (pace === 'normal') return 1;
+  if (pace === 'slow') return 1.6;
+  throw new Error(`pace must be slow or normal, not ${JSON.stringify(pace)}`);
+};
+
 /** Runs in every page: the pointer and the caption live in the top layer (a popover), so they paint above a modal <dialog>. */
 export const overlayScript = (phone) => {
   const mount = () => {
@@ -58,8 +65,13 @@ export const overlayScript = (phone) => {
   };
 };
 
-/** Wraps `page` with human-paced actions. `profile` is 'phone' (touch) or 'desktop' (mouse). */
-export function humanPage(page, profile) {
+/**
+ * Wraps `page` with human-paced actions. `profile` is 'phone' (touch) or 'desktop' (mouse). `pace` is 'normal' or 'slow';
+ * `caption: false` keeps the caption placement logic but draws nothing.
+ */
+export function humanPage(page, profile, { pace = 'normal', caption: drawCaptions = true } = {}) {
+  const k = paceFactor(pace);
+  const wait = (ms) => sleep(ms * k);
   const phone = profile === 'phone';
   const vp = page.viewportSize();
   let at = { x: vp.width * 0.5, y: vp.height * 0.85 };
@@ -69,13 +81,14 @@ export function humanPage(page, profile) {
     page, phone,
     top: () => page.evaluate(() => window.__humanTop?.()),
     /** A reader's pause after something changed. */
-    pause: (ms = rand(600, 1200)) => sleep(ms),
+    pause: (ms = rand(600, 1200)) => wait(ms),
     /** Shows `text`; it sits on the side of the screen away from `avoid`, the control about to be used. */
     async caption(text, avoid) {
       if (avoid) {
         const b = await avoid.boundingBox();
         if (b) bottomBar = b.y + b.height / 2 < vp.height * 0.6;
       }
+      if (!drawCaptions) return;
       await h.top();
       await page.evaluate(([t, top]) => window.__humanCaption?.(t, top), [text, !bottomBar]);
     },
@@ -94,10 +107,10 @@ export function humanPage(page, profile) {
         const x = from.x + (to.x - from.x) * k, y = from.y + (to.y - from.y) * k;
         if (!phone) await page.mouse.move(x, y);
         await page.evaluate(([px, py]) => window.__humanMove?.(px, py), [x, y]);
-        await sleep(rand(10, 22));
+        await wait(rand(10, 22));
       }
       at = to;
-      await sleep(rand(120, 350));
+      await wait(rand(120, 350));
       return to;
     },
     /** Points at `locator`, then presses it (a touch on a phone, a click on desktop) and waits for the screen to settle. */
@@ -114,14 +127,14 @@ export function humanPage(page, profile) {
     async type(locator, text) {
       await h.tap(locator);
       await locator.fill('');
-      for (const ch of text) { await page.keyboard.type(ch); await sleep(rand(55, 140)); }
+      for (const ch of text) { await page.keyboard.type(ch); await wait(rand(55, 140)); }
       await h.pause();
     },
     /** Sets the caption for the next move, shows it, and holds it long enough to read. */
     async say(text, locator) {
       h.pending = text;
       await h.caption(text, locator);
-      await sleep(Math.min(1800, 500 + text.length * 35));
+      await wait(Math.min(1800, 500 + text.length * 35));
     },
   };
   return h;
