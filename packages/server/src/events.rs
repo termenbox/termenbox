@@ -1055,6 +1055,14 @@ impl EventHub {
         let _ = self.status_tx.send(StatusChange::Attention(snapshot));
     }
 
+    /// A closed tab must not keep its prompt or a pending attention that a push could still follow.
+    pub fn forget_tab(&self, workspace: &str, tab: &str) {
+        if let Some(status) = &self.tab_status {
+            status.forget_tab(workspace, tab);
+        }
+        self.clear_where(workspace, |a| a.tab.as_deref() == Some(tab));
+    }
+
     fn clear_where(&self, workspace: &str, pred: impl Fn(&Attention) -> bool) {
         let mut list = self.attention.lock().unwrap();
         let before = list.len();
@@ -1948,7 +1956,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn a_hook_event_keeps_the_tab_on_the_attention_it_raises() {
         let h = hub();
         h.push_tab(
@@ -1979,6 +1986,41 @@ mod tests {
         assert_eq!(h.attention_items()[0].tab, None);
     }
 
+    #[test]
+    fn forgetting_a_tab_drops_its_attention_and_prompt() {
+        let status = Arc::new(TabStatus::default());
+        let h = EventHub::new([7; 32]).with_tab_status(status.clone());
+        status.set_pane("%1", "w", "t2");
+        status.apply_pane(
+            "%1",
+            "w",
+            &[EventKind::Prompt {
+                id: "p1".into(),
+                prompt_kind: "yes_no".into(),
+                choices: vec!["Yes".into(), "No".into()],
+                decision: None,
+            }],
+            1_000,
+        );
+        h.push_tab(
+            "w",
+            Source::Hook,
+            Confidence::High,
+            state(AgentState::NeedsInput),
+            1_000,
+            Some("t2"),
+        );
+        assert_eq!(h.attention_items()[0].tab.as_deref(), Some("t2"));
+        assert!(status.prompt("w", "t2").is_some());
+
+        h.forget_tab("w", "t2");
+
+        assert!(h.attention_items().is_empty(), "a closed tab keeps no attention");
+        assert!(status.prompt("w", "t2").is_none(), "a closed tab keeps no prompt");
+        assert!(status.snapshot().is_empty(), "a closed tab keeps no state");
+    }
+
+    #[test]
     fn forgetting_a_workspace_drops_its_attention() {
         let h = hub();
         h.push(

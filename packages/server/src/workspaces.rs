@@ -983,6 +983,9 @@ impl WorkspaceManager {
                     self.registry
                         .close_tab(self.backend.as_ref(), &workspace, &tab)
                         .await?;
+                    if let Some(events) = &self.events {
+                        events.forget_tab(&workspace, &tab);
+                    }
                 } else {
                     self.backend.kill_window(&workspace, index).await?;
                 }
@@ -1042,6 +1045,9 @@ impl WorkspaceManager {
                 self.registry
                     .close_tab(self.backend.as_ref(), &workspace, &tab)
                     .await?;
+                if let Some(events) = &self.events {
+                    events.forget_tab(&workspace, &tab);
+                }
                 let workspaces = self.registry.list(self.backend.as_ref()).await?;
                 send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
                 let _ = self.list_changed.send(conn);

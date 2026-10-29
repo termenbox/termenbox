@@ -47,12 +47,11 @@ impl TabStatus {
         agent: Option<&str>,
         now: u64,
     ) {
-        if let Some(entry) = self
-            .states
-            .lock()
-            .unwrap()
-            .get_mut(&(workspace.to_string(), tab.to_string()))
-        {
+        if tab.is_empty() {
+            return;
+        }
+        let mut states = self.states.lock().unwrap();
+        if let Some(entry) = states.get_mut(&(workspace.to_string(), tab.to_string())) {
             // Quiet output must not erase a hook's answer, failure or finished state; a new turn (Working) may.
             if matches!(
                 entry.state,
@@ -65,7 +64,7 @@ impl TabStatus {
                 return;
             }
         }
-        self.set_state(workspace, tab, state, agent, now);
+        self.apply_state(&mut states, workspace, tab, state, agent, now);
     }
 
     /// The state the scan saw for one tab; `agent` is the process name it recognised.
@@ -81,18 +80,36 @@ impl TabStatus {
             return;
         }
         let mut states = self.states.lock().unwrap();
+        self.apply_state(&mut states, workspace, tab, state, agent, now);
+    }
+
+    fn new_state(workspace: &str, tab: &str, now: u64) -> TabAgentState {
+        TabAgentState {
+            workspace: workspace.to_string(),
+            tab: tab.to_string(),
+            state: AgentState::Unknown,
+            agent: None,
+            ts: now,
+            waiting_since: None,
+            last_response_at: None,
+            prompt: None,
+        }
+    }
+
+    /// Applies one state while the caller already holds the state lock. This keeps a scan or hook from taking
+    /// the same mutex twice and keeps the hot path to one short critical section.
+    fn apply_state(
+        &self,
+        states: &mut HashMap<(String, String), TabAgentState>,
+        workspace: &str,
+        tab: &str,
+        state: AgentState,
+        agent: Option<&str>,
+        now: u64,
+    ) {
         let entry = states
             .entry((workspace.to_string(), tab.to_string()))
-            .or_insert_with(|| TabAgentState {
-                workspace: workspace.to_string(),
-                tab: tab.to_string(),
-                state: AgentState::Unknown,
-                agent: None,
-                ts: now,
-                waiting_since: None,
-                last_response_at: None,
-                prompt: None,
-            });
+            .or_insert_with(|| Self::new_state(workspace, tab, now));
         let was_working = entry.state == AgentState::Working;
         if let Some(agent) = agent {
             entry.agent = Some(agent.to_string());
@@ -140,7 +157,10 @@ impl TabStatus {
         let ws = workspace.to_string();
         for kind in kinds {
             match kind {
-                EventKind::State { state } => self.set_state(&ws, &tab, *state, None, now),
+                EventKind::State { state } => {
+                    let mut states = self.states.lock().unwrap();
+                    self.apply_state(&mut states, &ws, &tab, *state, None, now);
+                }
                 EventKind::Prompt {
                     id,
                     prompt_kind,
@@ -148,17 +168,18 @@ impl TabStatus {
                     ..
                 } => {
                     let mut states = self.states.lock().unwrap();
-                    if let Some(entry) = states.get_mut(&(ws.clone(), tab.clone())) {
-                        entry.prompt = Some(TabPrompt {
-                            id: id.clone(),
-                            kind: prompt_kind.clone(),
-                            choices: choices.clone(),
-                        });
-                        entry.state = AgentState::NeedsInput;
-                        entry.ts = now;
-                        entry.waiting_since = Some(entry.waiting_since.unwrap_or(now));
-                        self.rev.fetch_add(1, Ordering::Relaxed);
-                    }
+                    let entry = states
+                        .entry((ws.clone(), tab.clone()))
+                        .or_insert_with(|| Self::new_state(&ws, &tab, now));
+                    entry.prompt = Some(TabPrompt {
+                        id: id.clone(),
+                        kind: prompt_kind.clone(),
+                        choices: choices.clone(),
+                    });
+                    entry.state = AgentState::NeedsInput;
+                    entry.ts = now;
+                    entry.waiting_since = Some(entry.waiting_since.unwrap_or(now));
+                    self.rev.fetch_add(1, Ordering::Relaxed);
                 }
                 EventKind::Message { .. } => {
                     let mut states = self.states.lock().unwrap();
@@ -180,6 +201,22 @@ impl TabStatus {
             .get(&(workspace.to_string(), tab.to_string()))
             .filter(|s| s.state == AgentState::NeedsInput)
             .and_then(|s| s.prompt.clone())
+    }
+
+    /// Drops one tab immediately: a close must not leave its prompt or state until the next scan.
+    pub fn forget_tab(&self, workspace: &str, tab: &str) {
+        let mut states = self.states.lock().unwrap();
+        let removed = states
+            .remove(&(workspace.to_string(), tab.to_string()))
+            .is_some();
+        drop(states);
+        self.panes
+            .lock()
+            .unwrap()
+            .retain(|_, (w, t)| !(w == workspace && t == tab));
+        if removed {
+            self.rev.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Drops tabs whose window the scan no longer sees (closed, or a dormant workspace gone from tmux).
@@ -261,6 +298,40 @@ mod tests {
         assert!(status.snapshot()[0].prompt.is_some());
         status.set_state("w", "t1", AgentState::Working, Some("claude"), 40);
         assert!(status.snapshot()[0].prompt.is_none());
+    }
+
+    #[test]
+    fn mapping_a_pane_does_not_advance_the_state_revision() {
+        let status = TabStatus::default();
+        let rev = status.rev();
+        status.set_pane("%1", "w", "t1");
+        assert_eq!(status.rev(), rev, "a tab movement must not push tab_states");
+        status.set_state("w", "t1", AgentState::Working, Some("claude"), 10);
+        assert!(status.rev() > rev, "a real state change still does");
+    }
+
+    #[test]
+    fn forgetting_a_tab_drops_its_prompt_state_and_pane_mapping() {
+        let status = TabStatus::default();
+        status.set_pane("%1", "w", "t1");
+        status.apply_pane(
+            "%1",
+            "w",
+            &[EventKind::Prompt {
+                id: "p".into(),
+                prompt_kind: "yes_no".into(),
+                choices: vec!["Yes".into(), "No".into()],
+                decision: None,
+            }],
+            20,
+        );
+        assert!(status.prompt("w", "t1").is_some());
+        let rev = status.rev();
+        status.forget_tab("w", "t1");
+        assert!(status.prompt("w", "t1").is_none());
+        assert!(status.snapshot().is_empty());
+        assert!(status.tab_for_pane("%1").is_none());
+        assert!(status.rev() > rev);
     }
 
     #[test]
