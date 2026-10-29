@@ -41,7 +41,7 @@ github-token-stays-in-browser,"The GitHub token never goes to a server","securit
 releases-are-signed,"Releases, bundled tools and the installer are signed and verified","security, supply-chain",active
 host-changes-are-journaled,"Host changes are journaled and revertible","safety, deployment",active
 soft-keyboard-never-hides-input,"The soft keyboard never hides the key row or terminal input","client, mobile, ios",active
-kill-session-needs-confirmation,"Killing a session needs confirmation","client, protocol",active
+kill-session-needs-confirmation,"Killing a workspace or an agent tab needs confirmation","client, protocol",active
 connections-warn-never-drop,"Connections are limited by warning, never by dropping","client, mobile, performance",active
 remote-uninstall-is-deliberate-and-scoped,"Remote uninstall is owner-only, confirmed, fresh and scoped","security, deployment, client",active
 usage-stays-on-device,"Usage and tier data stay on the device","client, privacy",active

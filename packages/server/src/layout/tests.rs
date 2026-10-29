@@ -88,6 +88,8 @@ impl WorkspaceBackend for FakeManager {
                     active: *active,
                 },
                 activity: 0,
+                window_id: format!("@{index}"),
+                tab: String::new(),
             })
             .collect())
     }

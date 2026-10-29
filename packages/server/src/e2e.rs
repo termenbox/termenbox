@@ -138,6 +138,7 @@ async fn fixture_full(history_runs: usize, limits: rtc::Limits) -> Fixture {
             WorkspaceManager::new(
                 Arc::new(crate::backend::TmuxBackend::default().with_events(env)),
                 crate::backend::RunMode::Container,
+                Arc::new(crate::registry::Registry::memory()),
             )
             .with_events(hub.clone())
             .with_uninstall(
@@ -715,6 +716,20 @@ fn id_of(msg: &Value, label: &str) -> String {
         .to_string()
 }
 
+async fn wait_workspace_gone(c: &mut Conn, id: &str) -> Value {
+    for _ in 0..50 {
+        c.send(json!({"type":"list_workspaces"})).await;
+        let list = c.recv_type("workspaces").await;
+        if !list["workspaces"]
+            .as_array()
+            .is_some_and(|all| all.iter().any(|w| w["id"] == id))
+        {
+            return list;
+        }
+    }
+    panic!("the workspace {id} is still listed");
+}
+
 impl Drop for KillOnDrop {
     /// Holds the label the test typed: the session is named by the server, so it is found by its label.
     fn drop(&mut self) {
@@ -1096,6 +1111,118 @@ async fn windows_close_window_and_close_workspace_go_through_the_handlers(kind: 
     c.recv_type("error").await;
 }
 
+/// A protocol-2 client creates a workspace with its first tab, then adds, renames, focuses, attaches to and removes
+/// tabs; removing the last one leaves a shell behind.
+async fn tabs_follow_the_registry(kind: Kind) {
+    if std::process::Command::new("tmux")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        eprintln!("tmux not installed; skipping");
+        return;
+    }
+    let f = fixture().await;
+    let label = format!("tb{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let _cleanup = KillOnDrop(label.clone());
+    let alice = f.who(1, "alice");
+    let mut c = Conn::open(kind, &f).await;
+    c.login_speaking(
+        &f.server_id,
+        &alice,
+        &alice.cert,
+        &f.claim,
+        false,
+        Some(termenbox_core::ext::PROTOCOL_VERSION),
+    )
+    .await;
+    let ok = c.recv_type("auth_ok").await;
+    assert_eq!(ok["tabs"], true, "{ok}");
+
+    let mut made = Value::Null;
+    for attempt in 0..3 {
+        c.send(json!({"type":"new_workspace","name":label})).await;
+        let reply = c.recv_any(&["workspaces", "error"]).await;
+        if reply["type"] == "workspaces" {
+            made = reply;
+            break;
+        }
+        assert!(attempt < 2, "tmux would not start a workspace: {reply}");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    let id = id_of(&made, &label);
+    let workspace = |list: &Value| -> Value {
+        list["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["id"] == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("the workspace is listed: {list}"))
+    };
+    let one = workspace(&made);
+    let tabs = one["tabs"].as_array().unwrap();
+    assert_eq!(tabs.len(), 1, "{one}");
+    let first = tabs[0]["id"].as_str().unwrap().to_string();
+    assert!(tabs[0]["window"].is_string(), "{one}");
+
+    c.send(
+        json!({"type":"new_tab","workspace":id.clone(),"template":"shell","label":"Logs","dir":""}),
+    )
+    .await;
+    let list = c.recv_type("workspaces").await;
+    let two = workspace(&list);
+    let tabs = two["tabs"].as_array().unwrap();
+    assert_eq!(tabs.len(), 2, "{two}");
+    let second = tabs[1]["id"].as_str().unwrap().to_string();
+    assert_eq!(tabs[1]["label"], "Logs", "{two}");
+
+    c.send(
+        json!({"type":"rename_tab","workspace":id.clone(),"tab":second.clone(),"label":"Build"}),
+    )
+    .await;
+    let list = c.recv_type("workspaces").await;
+    let renamed = workspace(&list);
+    assert_eq!(renamed["tabs"][1]["label"], "Build", "{renamed}");
+
+    c.send(json!({"type":"focus_tab","workspace":id.clone(),"tab":second.clone()}))
+        .await;
+    let list = c.recv_type("workspaces").await;
+    assert_eq!(workspace(&list)["focus"], second, "{list}");
+
+    c.send(json!({"type":"attach","workspace_id":id.clone(),"tab":second.clone()}))
+        .await;
+    let attached = c.recv_type("workspace_attached").await;
+    assert_eq!(attached["tab"], second, "{attached}");
+
+    c.send(json!({"type":"close_tab","workspace":id.clone(),"tab":first.clone()}))
+        .await;
+    let list = c.recv_type("workspaces").await;
+    let left = workspace(&list);
+    assert_eq!(left["tabs"].as_array().unwrap().len(), 1, "{left}");
+
+    // The last tab is replaced by a fresh shell tab, so the workspace never becomes empty.
+    c.send(json!({"type":"close_tab","workspace":id.clone(),"tab":second.clone()}))
+        .await;
+    let list = c.recv_type("workspaces").await;
+    let replaced = workspace(&list);
+    let tabs = replaced["tabs"].as_array().unwrap();
+    assert_eq!(tabs.len(), 1, "{replaced}");
+    assert_ne!(tabs[0]["id"], second, "{replaced}");
+    assert!(tabs[0]["window"].is_string(), "{replaced}");
+
+    c.send_control(json!({"type":"close_workspace","workspace":id.clone(),"req":99}))
+        .await;
+    loop {
+        let v = c.recv().await.expect("closed");
+        if v["type"] == "control_ack" && v["req"] == 99 {
+            assert_eq!(v["ok"], true, "{v}");
+            break;
+        }
+    }
+    wait_workspace_gone(&mut c, &id).await;
+}
+
 /// A client that asks for lanes gets `channels` in `auth_ok`, sends keystrokes and reads output as raw bytes on
 /// the `term` lane, and an Attention raised during a flood of output still arrives within a second. A client that
 /// does not ask is told nothing about lanes and keeps getting base64 JSON output.
@@ -1405,7 +1532,10 @@ async fn a_client_that_announces_the_protocol_speaks_the_workspace_vocabulary(ki
         )
         .await;
         let ok = c.recv_type("auth_ok").await;
-        assert_eq!(ok["protocol"], termenbox_core::ext::PROTOCOL_VERSION);
+        assert_eq!(
+            ok["protocol"],
+            announced.min(termenbox_core::ext::PROTOCOL_VERSION)
+        );
         c.send(json!({"type":"close_workspace","workspace":"no-such-workspace"}))
             .await;
         c.recv_type("error").await;
@@ -1593,6 +1723,7 @@ over_both_transports!(
     agent_events_flow_from_a_workspace_tool_to_the_client,
     a_burst_of_input_messages_does_not_drop_the_connection,
     peek_shows_a_workspace_screen_without_attaching,
+    tabs_follow_the_registry,
     session_view_reads_the_screen_and_unknown_messages_are_ignored,
     windows_close_window_and_close_workspace_go_through_the_handlers,
     terminal_bytes_use_their_own_lane_and_status_is_not_held_up_by_output,

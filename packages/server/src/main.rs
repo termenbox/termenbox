@@ -53,6 +53,7 @@ mod pty;
 mod push;
 mod reach;
 mod reducer;
+mod registry;
 mod release;
 mod requests;
 mod rtc;
@@ -900,6 +901,9 @@ async fn main() -> anyhow::Result<()> {
         build_backend(&args, &kinds[0], &mode, env, "")?
     };
     info!("Workspace backend: {}", backend.name());
+    let registry = Arc::new(registry::Registry::load(
+        args.config_dir.join("workspaces.json"),
+    ));
     // Server health (U14): sampled every 10 s into memory; the data directory is the disk it reports.
     let health = Arc::new(HealthCollector::new());
     health.spawn(args.config_dir.clone());
@@ -921,10 +925,11 @@ async fn main() -> anyhow::Result<()> {
         auth,
         workspaces: Arc::new(
             if control_on {
-                WorkspaceManager::new(backend, mode.clone())
+                WorkspaceManager::new(backend, mode.clone(), registry)
                     .with_windows(window_hub.clone(), tmux_version.clone())
             } else {
-                WorkspaceManager::new(backend, mode.clone()).with_tmux_version(tmux_version.clone())
+                WorkspaceManager::new(backend, mode.clone(), registry)
+                    .with_tmux_version(tmux_version.clone())
             }
             .with_prefix(tmux_prefix.clone())
             .with_push(push.clone())

@@ -69,6 +69,7 @@ lint
 - **Directory**: signed records (Pages Functions + D1) map server key -> address/fingerprint (DECISION-0056)
 - **Auth**: GitHub OAuth; one owner per server, claimed with a one-time secret (DECISION-0053)
 - **Workspaces**: server owns tmux/PTY via a WorkspaceBackend trait (DECISION-0054); reconnect = re-attach
+- **Tabs**: a workspace is a server record of terminal tabs, each a tmux window in this stage; ACP stays a first-class backend and a new ACP workspace is a single-agent workspace until R75 (DECISION-0149)
 - **Client**: Svelte 5 + xterm.js WebGL; hosted or self-hosted (DECISION-0052)
 - **Wrappers**: optional Capacitor (iOS/Android) + `@capacitor-community/electron` (desktop); one Svelte build, PWA first-class (DECISION-0140)
 - **Deployment**: Docker image (ghcr.io), one command from the client; 512MB RAM, 1 vCPU (FACT-0001)
