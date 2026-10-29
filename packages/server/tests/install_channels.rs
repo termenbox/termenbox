@@ -289,7 +289,10 @@ fn an_existing_user_install_migrates_its_timer_without_losing_custom_arguments_a
     assert_eq!(migrated.matches("--requests-dir").count(), 1);
     assert!(migrated.contains(&requests));
     let logged = std::fs::read_to_string(&log).unwrap();
-    assert!(logged.contains("--journal-record file_replaced"), "{logged}");
+    assert!(
+        logged.contains("--journal-record file_replaced"),
+        "{logged}"
+    );
     let backups = r.home.join(".local/state/termenbox/backups");
     assert!(std::fs::read_dir(&backups)
         .unwrap()
