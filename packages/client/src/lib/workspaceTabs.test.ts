@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { AgentState, TabInfo } from './protocol';
+import type { AgentState, TabAgentState, TabInfo } from './protocol';
 import type { WorkspaceAgent } from './agents';
 import {
   aggregateStatus,
   focusedTab,
   liveTab,
+  tabForPrompt,
   loadActiveTab,
   moveTab,
   relativeDirProblem,
@@ -18,6 +19,19 @@ const tab = (id: string, order: number, kind = 'shell'): TabInfo => ({ id, label
 const workspace = (tabs: TabInfo[]) => ({ tabs });
 const agent = (state: WorkspaceAgent['state'], extra: Partial<WorkspaceAgent> = {}): WorkspaceAgent =>
   ({ state, seq: 1, stale: false, ts: 1, ...extra });
+
+describe('routing an answer to the tab that asked', () => {
+  const state = (tab: string, promptId: string): TabAgentState => ({
+    workspace: 'w', tab, state: 'needs_input', ts: 1,
+    prompt: { id: promptId, kind: 'yes_no', choices: ['Yes', 'No'] },
+  });
+  it('uses the prompt id and never another tab that happens to be waiting', () => {
+    const states = [state('t1', 'p1'), state('t2', 'p2')];
+    expect(tabForPrompt(states, 'p2')).toBe('t2');
+    expect(tabForPrompt(states, 'gone')).toBeNull();
+    expect(tabForPrompt([state('t1', 'p1')], 'gone')).toBeNull();
+  });
+});
 
 describe('the workspace aggregate', () => {
   it('follows the server states: needs you, error, all working, idle, done, and a shell-only workspace', () => {

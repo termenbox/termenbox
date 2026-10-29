@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
   import Terminal from './Terminal.svelte';
   import ServerList from './ServerList.svelte';
   import AddServerModal from './AddServerModal.svelte';
@@ -22,7 +22,7 @@
   import { SnapshotStore } from './lib/snapshots';
   import { serverAtLeast, NEW_WINDOW_VERSION } from './lib/serverVersion';
   import { loadHidden, needsYou, openTabs, saveHidden } from './lib/tabs';
-  import { focusedTab, liveTab, loadActiveTab, saveActiveTab, tabOrder } from './lib/workspaceTabs';
+  import { focusedTab, liveTab, loadActiveTab, saveActiveTab, tabForPrompt, tabOrder } from './lib/workspaceTabs';
   import { windowToOpen } from './lib/windows';
   import { installAudioUnlock, onAudioRunning, playChime } from './lib/bell';
   import { announce, waitingList, createAttention, createNotifier, createAlerter } from './lib/notify';
@@ -621,12 +621,30 @@
   /** A push opened the app on a decision (U11): Home shows that workspace's card first, whether or not its server is connected yet. */
   let focusKey: string | null = null;
   /** A push that names a tab waits for that workspace to arrive from its server, then opens the tab. */
+  const DEEP_TAB_WAIT_MS = 30_000;
   let pendingDeepTab: { key: string; tab: string } | null = null;
+  let pendingDeepTimer: ReturnType<typeof setTimeout> | undefined;
+  function clearPendingDeepTab() {
+    if (pendingDeepTimer) clearTimeout(pendingDeepTimer);
+    pendingDeepTimer = undefined;
+    pendingDeepTab = null;
+  }
+  function holdPendingDeepTab(key: string, tab: string) {
+    clearPendingDeepTab();
+    pendingDeepTab = { key, tab };
+    pendingDeepTimer = setTimeout(() => {
+      pendingDeepTimer = undefined;
+      if (pendingDeepTab?.key !== key || pendingDeepTab.tab !== tab) return;
+      pendingDeepTab = null;
+      showToast('The workspace from that notification did not open. Open it from Workspaces.', 'error');
+    }, DEEP_TAB_WAIT_MS);
+  }
   $: if (pendingDeepTab && hub.findWorkspace(pendingDeepTab.key)) {
     const p = pendingDeepTab;
-    pendingDeepTab = null;
+    clearPendingDeepTab();
     void openWaiting(p.key, p.tab);
   }
+  onDestroy(clearPendingDeepTab);
   function openDecision(key: string) {
     focusKey = key;
     navigate('home');
@@ -839,8 +857,16 @@
     if (m.type === 'answer' && !m.tab) {
       const s = hub.findWorkspace(m.workspace);
       const states = s ? Object.values($allTabStates).filter((t) => t.workspace === s.id) : [];
-      const asking = states.find((t) => t.prompt?.id === m.prompt_id) ?? states.find((t) => t.state === 'needs_input');
-      if (asking) out = { ...m, tab: asking.tab };
+      // An older server has no per-tab states: keep its workspace-level answer. With tabs, an answer is only sent
+      // when the prompt id still names the tab that asked; another waiting tab is never guessed.
+      if (states.length) {
+        const tab = tabForPrompt(states, m.prompt_id);
+        if (!tab) {
+          showToast('That question is no longer waiting. Open the tab that asked.', 'error');
+          return;
+        }
+        out = { ...m, tab };
+      }
     }
     hub.sendToWorkspace(m.workspace, out);
   }
@@ -1021,7 +1047,7 @@
         if (user) {
           if (tab) {
             if (hub.findWorkspace(focus)) void openWaiting(focus, tab);
-            else pendingDeepTab = { key: focus, tab };
+            else holdPendingDeepTab(focus, tab);
           } else openDecision(focus);
         } else {
           sessionStorage.setItem('termenbox_pending_focus', focus);
@@ -1090,7 +1116,7 @@
       sessionStorage.removeItem('termenbox_pending_focus');
       const pendingTab = sessionStorage.getItem('termenbox_pending_focus_tab');
       sessionStorage.removeItem('termenbox_pending_focus_tab');
-      if (pendingTab) pendingDeepTab = { key: pendingFocus, tab: pendingTab };
+      if (pendingTab) holdPendingDeepTab(pendingFocus, pendingTab);
       else openDecision(pendingFocus);
     }
 

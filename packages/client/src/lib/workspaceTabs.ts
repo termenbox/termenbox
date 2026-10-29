@@ -27,6 +27,14 @@ export function liveTab(tabs: TabInfo[] | undefined, wanted: string | null | und
 /** The per-tab state key; PR4 fills the map, the aggregate already understands an empty one. */
 export const tabStateKey = (workspaceKey: string, tabId: string) => `${workspaceKey}/${tabId}`;
 
+/**
+ * The tab that owns a prompt. An answer is sent only when the prompt id still names one tab; a workspace answer is
+ * never guessed from a tab that merely happens to be waiting (decision 0149).
+ */
+export function tabForPrompt(states: TabAgentState[], promptId: string): string | null {
+  return states.find((t) => t.prompt?.id === promptId)?.tab ?? null;
+}
+
 /** `hub.tabStates` for one workspace, in the shape `aggregateStatus` reads. */
 export function tabAgentStates(workspaceKey: string, states: Record<string, TabAgentState> = {}): Record<string, AgentState> {
   const prefix = `${workspaceKey}/`;
