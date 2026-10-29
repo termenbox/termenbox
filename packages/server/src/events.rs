@@ -2015,8 +2015,14 @@ mod tests {
 
         h.forget_tab("w", "t2");
 
-        assert!(h.attention_items().is_empty(), "a closed tab keeps no attention");
-        assert!(status.prompt("w", "t2").is_none(), "a closed tab keeps no prompt");
+        assert!(
+            h.attention_items().is_empty(),
+            "a closed tab keeps no attention"
+        );
+        assert!(
+            status.prompt("w", "t2").is_none(),
+            "a closed tab keeps no prompt"
+        );
         assert!(status.snapshot().is_empty(), "a closed tab keeps no state");
     }
 

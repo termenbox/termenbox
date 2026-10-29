@@ -13,10 +13,10 @@ use str0m::config::Fingerprint;
 use str0m::ice::IceCreds;
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, Input, Output, Rtc};
+use termenbox_core::events::{Confidence, EventKind, Source};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use termenbox_core::events::{Confidence, EventKind, Source};
 
 use crate::auth::AuthState;
 use crate::cert::testing::{now, Device, Signer};
