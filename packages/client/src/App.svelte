@@ -1207,7 +1207,9 @@
     <NewTabSheet workspace={newTabFor} oncreate={createTab} onclose={() => (newTabFor = null)} />
   {/if}
   {#if renameTarget}
-    <RenameDialog title={renameTarget.title} field={renameTarget.field} value={renameTarget.value} onsave={saveRename} onclose={() => (renameTarget = null)} />
+    {#key `${renameTarget.kind}:${renameTarget.key}:${renameTarget.tab ?? ''}`}
+      <RenameDialog title={renameTarget.title} field={renameTarget.field} value={renameTarget.value} onsave={saveRename} onclose={() => (renameTarget = null)} />
+    {/key}
   {/if}
   {#if menuWorkspace && menuKey}
     <WindowMenu workspace={menuWorkspace} data={$allWindows[menuWorkspace.key]} supported={backendOf(menuWorkspace) === 'tmux'}
