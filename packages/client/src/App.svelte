@@ -16,9 +16,13 @@
   import WindowMenu from './WindowMenu.svelte';
   import NeedsYouBanner from './NeedsYouBanner.svelte';
   import NewWorkspaceSheet from './NewWorkspaceSheet.svelte';
+  import NewTabSheet from './NewTabSheet.svelte';
+  import RenameDialog from './RenameDialog.svelte';
+  import TabMenu from './TabMenu.svelte';
   import { SnapshotStore } from './lib/snapshots';
   import { serverAtLeast, NEW_WINDOW_VERSION } from './lib/serverVersion';
   import { loadHidden, needsYou, openTabs, saveHidden } from './lib/tabs';
+  import { focusedTab, liveTab, loadActiveTab, saveActiveTab, tabOrder } from './lib/workspaceTabs';
   import { windowToOpen } from './lib/windows';
   import { installAudioUnlock, onAudioRunning, playChime } from './lib/bell';
   import { announce, waitingList, createAttention, createNotifier, createAlerter } from './lib/notify';
@@ -28,7 +32,7 @@
   import type { ServerListItem } from './lib/protocol';
   import { parseClaim, parseServerLink, serverCode, serverLink } from './lib/onboard';
   import { sendServerLink } from './lib/share';
-  import { ServerHub, newWorkspaceTargets, serverKey, workspaceDestinations, workspaceKey, type HubServer } from './lib/hub';
+  import { ServerHub, newWorkspaceTargets, serverKey, workspaceDestinations, workspaceKey, type HubServer, type HubWorkspace } from './lib/hub';
   import { lookup } from './lib/directory';
   import { linksToAccount, mergePaired, parsePairLink, type PairLink } from './lib/pair';
   import { storedBundle } from './lib/paths';
@@ -159,7 +163,7 @@
       const key = activeKey;
       // Retry and Resume replace the connection: mount its terminal before accepting a repaint.
       void tick().then(() => {
-        if (!away && id === activeServerId && key === activeKey) showWorkspace(key);
+        if (!away && id === activeServerId && key === activeKey) showWorkspace(key, activeTabId ?? undefined);
       });
     },
     onDrop: (_id, reason, upMs) => noteError(`connection lost after ${Math.round(upMs / 1000)} s: ${reason}`),
@@ -167,10 +171,10 @@
     onMessage: (_id, msg) => {
       const id = _id;
       if (msg.type === 'snapshot') snapshots.apply(workspaceKey(_id, msg.workspace), msg);
-      else if (msg.type === 'workspace_attached') preview = null;
+      else if (msg.type === 'workspace_attached') { preview = null; if (id === activeServerId && msg.workspace_id === activeWorkspaceId && msg.tab) { activeTab = msg.tab; saveActiveTab(workspaceKey(id, msg.workspace_id), msg.tab); } }
       else if (msg.type === 'workspace_view') { if (id === activeServerId && msg.workspace === activeWorkspaceId) heldView = mergeView(heldView, msg); }
       else if (msg.type === 'acp_view') acpStreams.update(m => applyAcp(m, workspaceKey(_id, msg.workspace), msg.workspace, msg));
-      else if (msg.type === 'workspaces') { openPending(_id, msg.workspaces); acpStreams.update(m => forgetAcp(m, `${_id}/`, new Set(msg.workspaces.map(x => workspaceKey(_id, x.id))))); }
+      else if (msg.type === 'workspaces') { openPending(_id, msg.workspaces); openPendingTab(_id, msg.workspaces); syncActiveTab(_id, msg.workspaces); acpStreams.update(m => forgetAcp(m, `${_id}/`, new Set(msg.workspaces.map(x => workspaceKey(_id, x.id))))); }
       else if (msg.type === 'attention') inbox.update(l => mergeAttention(l, _id, msg.items, s => workspaceKey(_id, s), s => hub.findWorkspace(workspaceKey(_id, s))?.name ?? s));
       else if (msg.type === 'history') historyMap = answered(historyMap, _id, msg);
       else if (msg.type === 'health_history') healthMap = answeredHealth(healthMap, _id, msg);
@@ -281,6 +285,9 @@
   const overLimit = hub.overLimit;
   $: selected = $hubServers.find(s => s.id === activeServerId);
   $: selectedServer = selected?.server ?? null;
+  $: tabsAnywhere = $hubServers.some((s) => s.tabs);
+  /** Use the tab UI for a server that serves tabs; an older server keeps the old strip and Workspaces button. */
+  $: tabsCapable = !!selected?.tabs || (!activeKey && tabsAnywhere);
   /** Whether a server can take a new workspace now: the sidebar, the palette and the strip hide their create action rather than offering a toast that says no. */
   $: canCreate = workspaceDestinations($hubServers, selected).length > 0;
   $: workspaces = $allWorkspaces.map(s => ({ ...s, id: s.key }));
@@ -299,6 +306,14 @@
   let now = Date.now();
   let hidden = loadHidden();
   let menuKey: string | null = null;
+  /** The tab this device opened in the workspace; the server's focus is the fallback for a new device. */
+  let activeTab: string | null = null;
+  let tabMenuOpen = false;
+  let tabMenuAll = false;
+  let newTabFor: HubWorkspace | null = null;
+  let renameTarget: { kind: 'workspace' | 'tab'; key: string; tab?: string; title: string; field: string; value: string } | null = null;
+  /** A tab the user just asked for, opened once the server lists it with its id. */
+  let pendingTab: { serverId: string; workspaceId: string; before: string[] } | null = null;
   let actionConfirm = false;
   let showNew = false;
   let pendingOpen: { serverId: string; name: string; before: string[] } | null = null;
@@ -358,13 +373,15 @@
   // An ACP workspace (T0) has no terminal: opening it shows its stream (decision 0111). The stream is per connection, so it
   // is asked for again whenever the workspace is shown, and dropped from the server when it is not.
   $: activeIsAcp = !!activeWorkspace && backendOf(activeWorkspace) === 'acp';
+  /** A legacy ACP workspace has one agent tab and no tab actions (decision 0147). */
+  $: canTab = !!activeWorkspace && backendOf(activeWorkspace) === 'tmux';
   let acpServer: string | null = null;
   function closeAcp() {
     if (acpServer) hub.send(acpServer, { type: 'acp_close' });
     acpServer = null;
   }
   /** Shows a workspace: an ACP workspace opens its stream, any other attaches its terminal. */
-  function showWorkspace(key: string) {
+  function showWorkspace(key: string, tab?: string) {
     const s = hub.findWorkspace(key);
     if (!s) return;
     if (backendOf(s) === 'acp') {
@@ -375,7 +392,7 @@
       hub.sendToWorkspace(key, openMessage(key, $acpStreams[key]));
     } else {
       closeAcp();
-      hub.sendToWorkspace(key, { type: 'attach', workspace_id: key });
+      hub.sendToWorkspace(key, { type: 'attach', workspace_id: key, tab });
     }
   }
   const sendAcp = (m: import('./lib/protocol').ClientMessage) => { if (activeKey) hub.sendToWorkspace(activeKey, m); };
@@ -426,6 +443,17 @@
   $: warmCaches = $allWorkspaces.flatMap(s => { const a = $allAgents[s.key]; const r = a?.agent === 'claude' ? cacheRemaining(a, now, $settings.cacheTtlMs) : null; return r !== null && r > 0 ? [{ key: s.key, name: s.name, server: s.serverName, remainingMs: r }] : []; }).sort((a, b) => a.remainingMs - b.remainingMs);
   $: expiring = new Set($allWorkspaces.filter(s => expiringSoon(cacheRemaining($allAgents[s.key], now, $settings.cacheTtlMs))).map(s => s.key));
   $: activeWorkspace = $allWorkspaces.find(s => s.key === activeKey);
+  $: activeTabs = activeWorkspace?.tabs ?? [];
+  $: activeTabId = activeWorkspace?.tabs
+    ? (liveTab(activeWorkspace.tabs, activeTab, activeWorkspace.focus)?.id ?? null)
+    : null;
+  $: tabMenuGroups = (tabMenuAll ? $allWorkspaces.filter((w) => (w.tabs?.length ?? 0) > 0) : (activeWorkspace ? [activeWorkspace] : []))
+    .map((w) => ({
+      workspace: w,
+      tabs: w.tabs ?? [],
+      // A legacy ACP workspace has one agent tab and no tab actions.
+      editable: (w.backend ?? $hubServers.find((s) => s.id === w.serverId)?.backends[0] ?? '') === 'tmux',
+    }));
   $: profile = backendOf(activeWorkspace) === 'tmux' ? 'tmux' as const : 'shell' as const;
   $: link = selected ? { ok: connState === 'connected', text: connState === 'connected' ? quality || 'connected' : connState } : null;
   $: if (hidden.size) { const live = new Set($allWorkspaces.map(s => s.key)); if ([...hidden].some(k => !live.has(k)) && $allWorkspaces.length) { hidden = new Set([...hidden].filter(k => live.has(k))); saveHidden(hidden); } }
@@ -597,12 +625,16 @@
    *  whichever one tmux has current. Chosen before the attach, so the terminal comes up on it. */
   async function openWaiting(key: string) {
     const workspace = hub.findWorkspace(key);
-    const index = workspace && needsYou($allAgents[key]) && backendOf(workspace) === 'tmux' ? windowToOpen($allWindows[key]) : null;
-    if (index !== null) hub.sendToWorkspace(key, { type: 'select_window', workspace: key, index });
-    await attach(key);
+    const tab = workspace?.tabs ? liveTab(workspace.tabs, loadActiveTab(key), workspace.focus)?.id : null;
+    if (!tab && workspace && needsYou($allAgents[key]) && backendOf(workspace) === 'tmux') {
+      // An older server has windows, not tabs.
+      const index = windowToOpen($allWindows[key]);
+      if (index !== null) hub.sendToWorkspace(key, { type: 'select_window', workspace: key, index });
+    }
+    await attach(key, tab ?? undefined);
   }
 
-  async function attach(key: string) {
+  async function attach(key: string, tab?: string) {
     const workspace = hub.findWorkspace(key);
     if (!workspace) return;
     if ($hubServers.find(s => s.id === workspace.serverId)?.state !== 'connected') {
@@ -618,14 +650,26 @@
     serversPage = false;
     listPage = false;
     navigate('workspaces');
+    const chosen = tab ?? (workspace.tabs ? liveTab(workspace.tabs, loadActiveTab(key), workspace.focus)?.id : null);
     preview = key === activeKey ? null : snapshots.text(key);
     activeKey = key;
     activeServerId = workspace.serverId;
+    activeTab = chosen ?? null;
+    if (chosen) saveActiveTab(key, chosen);
     localStorage.setItem(LAST_KEY, key);
     lastKey = key;
     // Mount the receiving terminal before attach can produce a repaint on another server.
     await tick();
-    if (activeKey === key) showWorkspace(key);
+    if (activeKey === key) showWorkspace(key, chosen ?? undefined);
+  }
+
+  /** Opens one tab of the open workspace; a tab of another workspace opens that workspace first. */
+  function openTab(key: string, tab: string) {
+    if (key !== activeKey) { void attach(key, tab); return; }
+    activeTab = tab;
+    saveActiveTab(key, tab);
+    preview = null;
+    showWorkspace(key, tab);
   }
 
   /** Opens a window and shows it. The workspace is attached first when it is not the open one: attaching lands on the
@@ -639,7 +683,9 @@
   /** Fetches a workspace's screen while the finger is still going down on its tab or card (decision 0084). */
   function peek(key: string) {
     if (key === activeKey) return;
-    hub.sendToWorkspace(key, { type: 'peek', workspace: key, hash: snapshots.hash(key) });
+    const workspace = hub.findWorkspace(key);
+    const tab = workspace?.tabs ? liveTab(workspace.tabs, loadActiveTab(key), workspace.focus)?.id : undefined;
+    hub.sendToWorkspace(key, { type: 'peek', workspace: key, tab, hash: snapshots.hash(key) });
   }
 
   /** Detach: the tab closes and the stream stops; the workspace keeps running and stays in the Workspaces sheet. */
@@ -650,7 +696,7 @@
     hidden = new Set(hidden).add(key); saveHidden(hidden);
     if (key === activeKey) {
       if (activeServerId) hub.send(activeServerId, { type: 'detach' });
-      activeKey = null; activeServerId = null; preview = null;
+      activeKey = null; activeServerId = null; activeTab = null; preview = null;
       sheetHeight = 'half';
     }
   }
@@ -661,7 +707,7 @@
     forget(key);
     if (key === activeKey) closeAcp();
     hub.sendToWorkspace(key, { type: 'close_workspace', workspace: key });
-    if (key === activeKey) { activeKey = null; activeServerId = null; preview = null; sheetHeight = 'half'; }
+    if (key === activeKey) { activeKey = null; activeServerId = null; activeTab = null; preview = null; sheetHeight = 'half'; }
   }
 
   /** The name clients show; the workspace's id, and so its tabs, layout and events, stay as they were. */
@@ -681,6 +727,73 @@
     menuKey = key;
     const s = hub.findWorkspace(key);
     if (backendOf(s) !== 'acp') hub.sendToWorkspace(key, { type: 'windows', workspace: key }); // an ACP workspace has no windows
+  }
+
+  function openTabMenu() {
+    tabMenuAll = false;
+    tabMenuOpen = true;
+  }
+
+  function openPageTabs() {
+    tabMenuAll = true;
+    tabMenuOpen = true;
+  }
+
+  function newTab(workspace: HubWorkspace) {
+    newTabFor = workspace;
+  }
+
+  function createTab(req: { template: string; label: string; dir: string }) {
+    const workspace = newTabFor;
+    if (!workspace) return;
+    pendingTab = {
+      serverId: workspace.serverId,
+      workspaceId: workspace.id,
+      before: (workspace.tabs ?? []).map((t) => t.id),
+    };
+    hub.newTab(workspace.key, req.template, req.label, req.dir);
+    newTabFor = null;
+  }
+
+  function askRenameWorkspace(workspace: HubWorkspace) {
+    renameTarget = { kind: 'workspace', key: workspace.key, title: 'Rename workspace', field: 'Name', value: workspace.name };
+  }
+
+  function askRenameTab(workspaceKey: string, tab: { id: string; label: string }) {
+    renameTarget = { kind: 'tab', key: workspaceKey, tab: tab.id, title: 'Rename tab', field: 'Name', value: tab.label };
+  }
+
+  function saveRename(name: string) {
+    if (!renameTarget) return;
+    if (renameTarget.kind === 'workspace') renameWorkspace(renameTarget.key, name);
+    else hub.renameTab(renameTarget.key, renameTarget.tab!, name);
+  }
+
+  function moveTab(workspaceKey: string, tab: string, index: number) {
+    hub.moveTab(workspaceKey, tab, index);
+  }
+
+  /** A freshly created tab is focused by the server; open it once the list carries its id. */
+  function openPendingTab(serverId: string, list: import('./lib/protocol').WorkspaceInfo[]) {
+    if (!pendingTab || pendingTab.serverId !== serverId) return;
+    const workspace = list.find((w) => w.id === pendingTab!.workspaceId);
+    const made = workspace?.tabs?.find((t) => !pendingTab!.before.includes(t.id));
+    if (!made) return;
+    pendingTab = null;
+    void attach(workspaceKey(serverId, workspace!.id), made.id);
+  }
+
+  /** The visible tab was closed or moved: follow the focus the server chose, without a blank terminal. */
+  function syncActiveTab(serverId: string, list: import('./lib/protocol').WorkspaceInfo[]) {
+    if (!activeKey || !activeTab) return;
+    const workspace = list.find((w) => w.id === activeWorkspaceId);
+    if (!workspace?.tabs || workspace.tabs.some((t) => t.id === activeTab)) return;
+    const next = liveTab(workspace.tabs, null, workspace.focus)?.id ?? null;
+    activeTab = next;
+    if (next) saveActiveTab(activeKey, next);
+    if (!away && !listPage) {
+      if (next) showWorkspace(activeKey, next);
+    }
   }
 
   function createWorkspace(req: { serverId: string; backend?: string; dir?: string; template?: string; name: string }) {
@@ -716,7 +829,7 @@
     const id = serverKey(servers[index]);
     hub.remove(id);
     saveServers(servers.filter((_, i) => i !== index));
-    if (activeServerId === id) { activeKey = null; activeServerId = null; }
+    if (activeServerId === id) { activeKey = null; activeServerId = null; activeTab = null; }
   }
 
   /** `serverId` comes from a server's own "+ New" (the sheet is then locked to it); without it the sheet asks when there are several. */
@@ -737,6 +850,7 @@
     deviceCert = null;
     activeKey = null;
     activeServerId = null;
+    activeTab = null;
   }
 
   /** Back to the workspaces destination (the servers page belongs to Settings). Coming back from away re-attaches (syncAway). */
@@ -768,7 +882,7 @@
     else if (activeKey) {
       const key = activeKey;
       void tick().then(() => {
-        if (!away && activeKey === key && connState === 'connected') showWorkspace(key);
+        if (!away && activeKey === key && connState === 'connected') showWorkspace(key, activeTabId ?? undefined);
       });
     }
   }
@@ -983,6 +1097,10 @@
     {#if $destination === 'workspaces' || servers.length === 0}
     <NavigationBar workspaces={tabWorkspaces} agents={$allAgents} servers={$hubServers} windows={$allWindows} {expiring} {link} {activeKey} held={!!actionWorkspace || !!menuWorkspace || cardExpanded || sheetHeld} onopen={attach} onpeek={peek} ontabmenu={openWindowMenu} onactions={(key) => { actionConfirm = false; actionKey = key; }}
       strip={!wide || !$layout.sidebarOpen || (!!activeKey && !listPage)} onnew={wide && canCreate ? () => newWorkspace() : undefined}
+      tabsCapable={tabsCapable} workspace={activeWorkspace ?? null} tabs={activeTabs} activeTab={activeTabId} page={!activeKey || listPage} {wide}
+      ontabopen={(tab) => activeKey && openTab(activeKey, tab)}
+      ontabmenuopen={() => { if (!activeKey || listPage) openPageTabs(); else openTabMenu(); }}
+      onnewtab={wide && activeKey && !listPage && tabsCapable && canTab ? () => activeWorkspace && newTab(activeWorkspace) : undefined}
       onlink={() => link && showToast(link.text, link.ok ? 'success' : 'error')} onmenu={() => { titleTapped(); menuOpen = true; }} expanded={wide ? $layout.sidebarOpen : sheetHeight !== 'closed'} controls={wide && $layout.sidebarOpen ? 'workspace-sidebar' : undefined} onworkspaces={() => { if (wide) { toggleSidebar(); return; } crumb('workspaces sheet toggled'); showWorkspaceList(); sheetHeight = sheetHeight === 'closed' ? 'half' : 'closed'; }} />
     {/if}
     <NeedsYouBanner {waiting} {now} collapsed={keyboardOpen} onopen={openWaiting} onhome={() => go('home')} ondismiss={(key, id) => sendAttention(key, { type: 'dismiss', attention_id: id })} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} />
@@ -1020,7 +1138,10 @@
         <div class="workspace" class:mobile={narrow}>
           <div class="terminal-pane">
             {#if !activeKey || listPage}
-              <WorkspaceGroups workspaces={$allWorkspaces} agents={$allAgents} {now} unhealthy={unhealthyServers} onopen={attach} onnew={newWorkspace} onactions={(key) => { actionConfirm = false; actionKey = key; }} />
+              <WorkspaceGroups workspaces={$allWorkspaces} agents={$allAgents} {now} unhealthy={unhealthyServers} onopen={attach} onnew={newWorkspace}
+                onactions={tabsAnywhere ? undefined : (key) => { actionConfirm = false; actionKey = key; }}
+                onrename={(key) => { const w = hub.findWorkspace(key); if (w) askRenameWorkspace(w); }}
+                onmove={tabsAnywhere ? (key, index) => hub.moveWorkspace(key, index) : undefined} />
             {:else if connection && connState !== 'paused' && activeIsAcp && activeWorkspace}
               {#key activeKey}
                 <AcpView workspaceKey={activeWorkspace.key} name={activeWorkspace.name} agent={activeRow?.agent} fleet={activeRow?.state} stream={$acpStreams[activeWorkspace.key]} {connState} {now} {canShell}
@@ -1060,7 +1181,7 @@
               <div class="card" style="margin: auto;">{activeKey ? 'This server is paused. Resume it in Servers.' : 'Choose a workspace to open its terminal.'}<button class="secondary" on:click={leaveServer}>Servers</button></div>
             {/if}
           </div>
-          {#if !wide && activeKey && !listPage}
+          {#if !wide && activeKey && !listPage && !tabsCapable}
             <WorkspaceSheet workspaces={$allWorkspaces} agents={$allAgents} servers={$hubServers} windows={$allWindows} onpeek={peek} onwarm={keepWarm} {activeKey} mobile={narrow} bind:height={sheetHeight} held={!!actionWorkspace} onactions={(key) => { actionConfirm = false; actionKey = key; }}
               onexpanded={(open) => cardExpanded = open} onheld={(held) => sheetHeld = held} onopen={attach} onnew={newWorkspace} onrefresh={() => { for (const s of $hubServers) hub.send(s.id, { type: 'list_workspaces' }); }} onretry={(id) => hub.retry(id)} send={sendWorkspace} />
           {/if}
@@ -1074,6 +1195,20 @@
   {#if menuOpen && user}<MenuSheet {user} {avatar} onservers={leaveServer} onsettings={() => go('settings')} onreport={openReport} ondiagnostics={() => openDiagnostics()} onlogout={logout} onclose={() => menuOpen = false} unread={unreadCount($inbox)} oninbox={() => inboxOpen = true} />{/if}
   {#if inboxOpen}<InboxSheet items={$inbox} {now} agents={$allAgents} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} onreply={(key, text) => sendWorkspace({ type: 'reply', workspace: key, text })} onopen={openWaiting} onhome={() => go('home')} onread={() => inbox.update(markAllRead)} onclear={() => inbox.set([])} onclose={() => { inboxOpen = false; inbox.update(markAllRead); }} />{/if}
   {#if actionWorkspace}<WorkspaceActions workspace={actionWorkspace} canClose={['tmux', 'acp'].includes(backendOf(actionWorkspace))} confirmFirst={actionConfirm} onrename={(name) => renameWorkspace(actionWorkspace.key, name)} placement={placementOf($allWorkspaces, actionWorkspace.key)} onmove={(to) => moveWorkspace($allWorkspaces, actionWorkspace.key, to)} ondetach={() => detach(actionWorkspace.key)} oncloseworkspace={() => closeWorkspace(actionWorkspace.key)} onclose={() => actionKey = null} />{/if}
+  {#if tabMenuOpen}
+    <TabMenu groups={tabMenuGroups} activeKey={activeKey} activeTab={activeTabId} onopen={openTab}
+      onrename={canTab ? askRenameTab : undefined}
+      onclosetab={canTab ? (key, tab) => hub.closeTab(key, tab.id) : undefined}
+      onmove={canTab ? moveTab : undefined}
+      onnew={canTab ? (key) => { const w = hub.findWorkspace(key); if (w) newTab(w); } : undefined}
+      oncloseworkspace={(key) => closeWorkspace(key)} onclose={() => (tabMenuOpen = false)} />
+  {/if}
+  {#if newTabFor}
+    <NewTabSheet workspace={newTabFor} oncreate={createTab} onclose={() => (newTabFor = null)} />
+  {/if}
+  {#if renameTarget}
+    <RenameDialog title={renameTarget.title} field={renameTarget.field} value={renameTarget.value} onsave={saveRename} onclose={() => (renameTarget = null)} />
+  {/if}
   {#if menuWorkspace && menuKey}
     <WindowMenu workspace={menuWorkspace} data={$allWindows[menuWorkspace.key]} supported={backendOf(menuWorkspace) === 'tmux'}
       onselect={(index) => hub.sendToWorkspace(menuWorkspace.key, { type: 'select_window', workspace: menuWorkspace.key, index })}

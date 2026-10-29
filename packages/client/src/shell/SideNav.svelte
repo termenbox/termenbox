@@ -4,6 +4,7 @@
   import { HeldView, type NavGroup } from '../lib/navlist';
   import { STATES } from '../lib/ds/states';
   import AgentBadge from '../lib/ds/AgentBadge.svelte';
+  import ServerStatusIcon from '../ServerStatusIcon.svelte';
   import { cn } from '../lib/ui/utils';
 
   /**
@@ -57,7 +58,6 @@
   function rowKey(e: KeyboardEvent, key: string, name: string) {
     if (e.key === 'F2' && onrename) { e.preventDefault(); startEdit(key, name); }
   }
-  const serverWord = (s: string) => (s === 'connected' ? 'Connected' : s.charAt(0).toUpperCase() + s.slice(1));
   const needs = $derived(groups.reduce((n, g) => n + g.workspaces.filter((s) => s.state === 'needs-you').length, 0));
 </script>
 
@@ -82,9 +82,9 @@
     {/if}
     {#each shown as g (g.server.id)}
       <section aria-label={g.server.server.server_name || 'Server'} data-server={g.server.id}>
-        <button type="button" onclick={() => onserver(g.server.id)} class="mt-1 flex h-11 w-full items-center justify-between gap-2 rounded-control bg-transparent px-3 text-left">
+        <button type="button" onclick={() => onserver(g.server.id)} class="mt-1 flex h-11 w-full items-center gap-2 rounded-control bg-transparent px-3 text-left">
+          <ServerStatusIcon state={g.server.state} name={g.server.server.server_name || 'Server'} />
           <span class="truncate text-base font-semibold text-fg">{g.server.server.server_name || 'Server'}</span>
-          <span class={cn('flex shrink-0 items-center gap-1 text-xs', g.server.state === 'connected' ? 'text-ok' : 'text-soft')}><span aria-hidden="true">{g.server.state === 'connected' ? '●' : '○'}</span>{serverWord(g.server.state)}</span>
         </button>
         {#each g.workspaces as s (s.key)}
           <div data-row={s.key} class={cn('group relative flex h-11 w-full items-center rounded-control', s.key === activeKey && 'bg-raised')}>
@@ -96,10 +96,10 @@
                   class="h-11 min-w-0 flex-1 rounded-control border border-accent bg-bg px-2 text-base text-fg outline-none" />
               </div>
             {:else}
-              <button type="button" data-key={s.key} aria-current={s.key === activeKey ? 'true' : undefined} onclick={() => onopen(s.key)} ondblclick={() => startEdit(s.key, s.name)} onkeydown={(e) => rowKey(e, s.key, s.name)}
+              <button type="button" data-key={s.key} aria-current={s.key === activeKey ? 'true' : undefined} onclick={() => onopen(s.key)} onkeydown={(e) => rowKey(e, s.key, s.name)}
                 class="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-control bg-transparent pr-3 pl-6 text-left">
                 <AgentBadge agent={s.agent} state={s.state} size={20} />
-                <span class="min-w-0 flex-1 truncate text-base text-fg" role="presentation" onclick={(e) => { if (s.key === activeKey && onrename) { e.stopPropagation(); startEdit(s.key, s.name); } }}>{s.name}</span>
+                <span class="min-w-0 flex-1 truncate text-base text-fg" role="presentation">{s.name}</span>
                 <span class={cn('shrink-0 text-xs', STATES[s.state].text)}>{STATES[s.state].label}</span>
               </button>
               {#if onrename}
