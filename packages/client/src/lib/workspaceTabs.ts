@@ -1,4 +1,4 @@
-// Tabs of a workspace (decision 0147): the server sends them in order, the device remembers which one it opened last,
+// Tabs of a workspace (decision 0149): the server sends them in order, the device remembers which one it opened last,
 // and the workspace row shows the aggregate of what its agents do. Pure functions, so the rules are testable without a
 // browser; text from an agent or the owner is never turned into markup here.
 import type { AgentState, TabInfo } from './protocol';

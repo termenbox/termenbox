@@ -1,0 +1,60 @@
+{
+  "id": "V36",
+  "title": "Forward policy: an allowlisted call is forwarded away; any other is refused",
+  "covers": [
+    "G1",
+    "I12"
+  ],
+  "config": {
+    "detached_calls": "forward",
+    "detached_allow": [
+      "read:docs"
+    ]
+  },
+  "session": {
+    "session_id": "sess-36",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "tool_call",
+      "key": "k1",
+      "tool": "shell:ls",
+      "permission": "read:docs"
+    },
+    {
+      "do": "tool_call",
+      "key": "k2",
+      "tool": "shell:ls",
+      "permission": "exec:shell",
+      "error": true
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "TOOL_CALL_QUEUED",
+      "TOOL_CALL_ANSWERED",
+      "TOOL_CALL_DRAINED"
+    ],
+    "cell": [
+      "Det",
+      "None"
+    ],
+    "scope_version": 0,
+    "queue": [],
+    "forwarded": [
+      "k1"
+    ]
+  }
+}

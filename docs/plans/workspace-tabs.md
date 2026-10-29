@@ -1,6 +1,6 @@
 # Workspace tabs
 
-Decision: 0147. Supersedes the in-session model of 0101/0082 where a tab was a workspace; keeps 0138's workspace/window
+Decision: 0149. Supersedes the in-session model of 0101/0082 where a tab was a workspace; keeps 0138's workspace/window
 vocabulary, 0054's backend port and 0146's minted id with a label.
 
 ## Model

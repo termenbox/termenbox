@@ -1,0 +1,74 @@
+{
+  "id": "V43",
+  "title": "A clock that went backwards across a restart counts as no time elapsed",
+  "covers": [
+    "A6",
+    "recovery"
+  ],
+  "config": {
+    "t_detach": 1000,
+    "t_human": 1000,
+    "t_call": 1000,
+    "t_total": 1500
+  },
+  "session": {
+    "session_id": "sess-43",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "advance",
+      "seconds": 500
+    },
+    {
+      "do": "reattach"
+    },
+    {
+      "do": "disconnect"
+    },
+    {
+      "do": "restart",
+      "downtime": -1000
+    },
+    {
+      "do": "advance",
+      "seconds": 1999,
+      "then_cell": [
+        "Det",
+        "None"
+      ]
+    },
+    {
+      "do": "advance",
+      "seconds": 1
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "RESUME_STARTED",
+      "RESUME_VERIFIED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "BRIDGE_RECOVERED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "DETACH_TIMEOUT",
+      "TERMINATION"
+    ],
+    "cell": [
+      "Terminated"
+    ],
+    "scope_version": 0
+  }
+}

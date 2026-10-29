@@ -1,0 +1,61 @@
+{
+  "id": "V39",
+  "title": "A drained call that was not delivered is forwarded again after a restart, without a second drain",
+  "covers": [
+    "I12",
+    "recovery"
+  ],
+  "session": {
+    "session_id": "sess-39",
+    "principal_id": "user-alice",
+    "authority_scope": [
+      "read:docs",
+      "exec:shell"
+    ],
+    "client_key_id": "ck-1"
+  },
+  "actions": [
+    {
+      "do": "escalate"
+    },
+    {
+      "do": "tool_call",
+      "key": "k1",
+      "tool": "shell:ls",
+      "permission": "exec:shell"
+    },
+    {
+      "do": "resolve"
+    },
+    {
+      "do": "restart"
+    },
+    {
+      "do": "reattach"
+    }
+  ],
+  "expect": {
+    "events": [
+      "ATTACHED",
+      "HUMAN_PENDING",
+      "TOOL_CALL_QUEUED",
+      "TOOL_CALL_ANSWERED",
+      "HUMAN_RESOLVED",
+      "TOOL_CALL_DRAINED",
+      "BRIDGE_RECOVERED",
+      "DETACHMENT",
+      "RESUME_PREPARED",
+      "RESUME_STARTED",
+      "RESUME_VERIFIED"
+    ],
+    "cell": [
+      "Att",
+      "None"
+    ],
+    "scope_version": 0,
+    "queue": [],
+    "forwarded": [
+      "k1"
+    ]
+  }
+}

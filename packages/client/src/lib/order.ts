@@ -60,7 +60,7 @@ const saved = (serverId: string) => {
   return v;
 };
 
-/** The workspaces in the order shown. The server's own order wins when it sent one (decision 0147); an older server
+/** The workspaces in the order shown. The server's own order wins when it sent one (decision 0149); an older server
  *  falls back to the device-local order. A server that lists workspaces is the truth about which exist: the others are
  *  pruned from the local copy. */
 export function orderWorkspaces<T extends { key: string; serverId: string; order?: number }>(workspaces: T[]): T[] {
