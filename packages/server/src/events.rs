@@ -15,6 +15,7 @@ use termenbox_core::events::{
 use tokio::sync::broadcast;
 
 use crate::reducer::{Edge, Reducer, Screen};
+use crate::tabstatus::TabStatus;
 
 pub const RING: usize = 50;
 pub const MAX_SESSIONS: usize = 20;
@@ -441,6 +442,8 @@ pub struct EventHub {
     history: Option<Arc<crate::history::History>>,
     /// Where each Claude Code workspace's token counts are read from (U13).
     usage: Arc<crate::transcript::UsageTracker>,
+    /// Per-tab state (decision 0147); absent in tests that do not need it.
+    tab_status: Option<Arc<TabStatus>>,
 }
 
 impl EventHub {
@@ -458,6 +461,7 @@ impl EventHub {
             status_tx: broadcast::channel(256).0,
             history: None,
             usage: Arc::default(),
+            tab_status: None,
         }
     }
 
@@ -465,6 +469,32 @@ impl EventHub {
     pub fn with_history(mut self, history: Arc<crate::history::History>) -> Self {
         self.history = Some(history);
         self
+    }
+
+    pub fn with_tab_status(mut self, status: Arc<TabStatus>) -> Self {
+        self.tab_status = Some(status);
+        self
+    }
+
+    pub fn tab_status(&self) -> Option<Arc<TabStatus>> {
+        self.tab_status.clone()
+    }
+
+    /// The hook-confirmed prompt of one tab, for routing its answer without the workspace's latest prompt.
+    pub fn tab_prompt(
+        &self,
+        workspace: &str,
+        tab: &str,
+    ) -> Option<termenbox_core::events::TabPrompt> {
+        self.tab_status.as_ref()?.prompt(workspace, tab)
+    }
+
+    /// A hook event from one pane: the tab the pane belongs to learns the state, prompt or reply. The attention
+    /// item already carries the tab because `ingest_as_tab` fed the same tab through `settle`.
+    pub fn apply_hook_tab(&self, pane: &str, workspace: &str, kinds: &[EventKind], now: u64) {
+        if let Some(status) = &self.tab_status {
+            status.apply_pane(pane, workspace, kinds, now);
+        }
     }
 
     pub fn history(&self) -> Option<&Arc<crate::history::History>> {
@@ -630,7 +660,7 @@ impl EventHub {
             return Err(anyhow!("token does not match the workspace"));
         }
         for k in kinds {
-            self.feed(workspace, source, confidence, k, now_ms());
+            self.feed(workspace, source, confidence, k, now_ms(), None);
         }
         Ok(())
     }
@@ -646,19 +676,35 @@ impl EventHub {
         confidence: Confidence,
         kinds: Vec<EventKind>,
     ) -> Result<()> {
+        self.ingest_as_tab(declared, token, target, source, confidence, kinds, None)
+    }
+
+    /// `ingest_as` for a hook that proved its pane: the tab goes on every attention item the event raises, so
+    /// the status snapshot, a push and an ack all name it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ingest_as_tab(
+        &self,
+        declared: &str,
+        token: &str,
+        target: &str,
+        source: Source,
+        confidence: Confidence,
+        kinds: Vec<EventKind>,
+        tab: Option<&str>,
+    ) -> Result<()> {
         if !valid_event_workspace(target) || !self.token_matches(declared, token) {
             tracing::info!(target: "audit", event = "agent_event_refused", session = %declared);
             return Err(anyhow!("token does not match the workspace"));
         }
         for k in kinds {
-            self.feed(target, source, confidence, k, now_ms());
+            self.feed(target, source, confidence, k, now_ms(), tab);
         }
         Ok(())
     }
 
     /// An event from the server's own adapters (scan, screen). A repeated state is not an event.
     pub fn report(&self, workspace: &str, source: Source, confidence: Confidence, kind: EventKind) {
-        self.feed(workspace, source, confidence, kind, now_ms());
+        self.feed(workspace, source, confidence, kind, now_ms(), None);
     }
 
     /// Where an agent's own events enter: a turn or obligation edge goes through the workspace's reducer, which
@@ -670,6 +716,7 @@ impl EventHub {
         confidence: Confidence,
         kind: EventKind,
         now: u64,
+        tab: Option<&str>,
     ) {
         let kind = sanitize_kind(kind);
         let edge = if tier(source) == Some(0) {
@@ -680,12 +727,12 @@ impl EventHub {
         let Some(edge) = edge else {
             // `Turn` and `Block` are inputs only; one that maps to no edge is dropped.
             if !matches!(kind, EventKind::Turn { .. } | EventKind::Block { .. }) {
-                self.push(workspace, source, confidence, kind, now);
+                self.push_tab(workspace, source, confidence, kind, now, tab);
             }
             return;
         };
         if matches!(kind, EventKind::Tool { .. }) {
-            self.push(workspace, source, confidence, kind, now);
+            self.push_tab(workspace, source, confidence, kind, now, tab);
         }
         let next = {
             let mut reducers = self.reducers.lock().unwrap();
@@ -698,12 +745,13 @@ impl EventHub {
                 .apply(edge, now)
         };
         if let Some(state) = next {
-            self.push(
+            self.push_tab(
                 workspace,
                 source,
                 confidence,
                 EventKind::State { state },
                 now,
+                tab,
             );
         }
     }
@@ -723,12 +771,13 @@ impl EventHub {
         };
         if let Some(state) = next {
             // A reconciliation is a fact about the screen, not a finished turn: it clears a wait but raises nothing.
-            self.push(
+            self.push_tab(
                 workspace,
                 Source::Hook,
                 Confidence::Medium,
                 EventKind::State { state },
                 now,
+                None,
             );
         }
     }
@@ -749,6 +798,19 @@ impl EventHub {
         confidence: Confidence,
         kind: EventKind,
         now: u64,
+    ) {
+        self.push_tab(workspace, source, confidence, kind, now, None);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_tab(
+        &self,
+        workspace: &str,
+        source: Source,
+        confidence: Confidence,
+        kind: EventKind,
+        now: u64,
+        tab: Option<&str>,
     ) {
         let kind = sanitize_kind(kind);
         if matches!(kind, EventKind::Unknown) {
@@ -821,7 +883,7 @@ impl EventHub {
                 // The merged state may already say this because a screen guess got there first; the agent's own
                 // report still opens or ends the task.
                 self.note_history(workspace, source, confidence, &kind, now);
-                self.settle(workspace, source, confidence, &kind, prev_hook, now);
+                self.settle(workspace, source, confidence, &kind, prev_hook, now, tab);
                 return;
             }
             if confidence == Confidence::Low && !matches!(source, Source::Screen | Source::Hook) {
@@ -835,7 +897,7 @@ impl EventHub {
                         && now.saturating_sub(last.ts) < STALE_AFTER_MS
                     {
                         drop(rings);
-                        self.settle(workspace, source, confidence, &kind, prev_hook, now);
+                        self.settle(workspace, source, confidence, &kind, prev_hook, now, tab);
                         return;
                     }
                 }
@@ -880,7 +942,15 @@ impl EventHub {
         self.note_history(workspace, source, confidence, &event.kind, event.ts);
         // Counts and kinds only, never content (audit-logging-no-secrets).
         tracing::info!(target: "audit", event = "agent_event", session = %event.workspace, source = ?event.source, seq = event.seq);
-        self.settle(workspace, source, confidence, &event.kind, prev_hook, now);
+        self.settle(
+            workspace,
+            source,
+            confidence,
+            &event.kind,
+            prev_hook,
+            now,
+            tab,
+        );
         let _ = self.tx.send(event);
     }
 
@@ -894,6 +964,7 @@ impl EventHub {
         kind: &EventKind,
         prev_hook: Option<AgentState>,
         now: u64,
+        tab: Option<&str>,
     ) {
         if tier(source) == Some(0) && confidence != Confidence::Low {
             match kind {
@@ -912,7 +983,7 @@ impl EventHub {
                     };
                     // A reconciliation clears a wait but is no fact that something finished or failed.
                     if let Some(k) = raise.filter(|_| confidence == Confidence::High) {
-                        self.raise(workspace, k, source, now);
+                        self.raise(workspace, k, source, now, tab);
                     }
                 }
                 // The notification text arrives right after its `needs_input`; a T0 request names its action
@@ -944,7 +1015,14 @@ impl EventHub {
         self.refresh(now);
     }
 
-    fn raise(&self, workspace: &str, kind: AttentionKind, source: Source, now: u64) {
+    fn raise(
+        &self,
+        workspace: &str,
+        kind: AttentionKind,
+        source: Source,
+        now: u64,
+        tab: Option<&str>,
+    ) {
         let task = self
             .rings
             .lock()
@@ -961,6 +1039,7 @@ impl EventHub {
         list.push(Attention {
             id: format!("a{id}"),
             workspace: workspace.to_string(),
+            tab: tab.map(str::to_string),
             kind,
             raised_at: now,
             task,
@@ -1273,6 +1352,9 @@ struct Wire {
     /// Parent process ids of the reporter, nearest first (absent from an older hook).
     #[serde(default)]
     ancestors: Vec<u32>,
+    /// The tmux pane the hook ran in (`%12`); absent outside tmux or from an older hook.
+    #[serde(default)]
+    pane: String,
 }
 
 const MAX_LINE: u64 = 64 * 1024;
@@ -1453,17 +1535,31 @@ async fn deliver(
         let (h, s, data) = (hub.clone(), workspace.to_string(), w.data.clone());
         let _ = tokio::task::spawn_blocking(move || h.note_claude_usage(&s, &data)).await;
     }
+    let for_tab = kinds.clone();
+    let tab = hub
+        .tab_status()
+        .and_then(|status| status.tab_of(&w.pane, workspace));
     if hub
-        .ingest_as(&w.workspace, &w.token, workspace, source, confidence, kinds)
+        .ingest_as_tab(
+            &w.workspace,
+            &w.token,
+            workspace,
+            source,
+            confidence,
+            kinds,
+            tab.as_deref(),
+        )
         .is_ok()
-        && w.adapter == "claude"
     {
-        if let Some(path) = w.data.get("transcript_path").and_then(|p| p.as_str()) {
-            hub.set_transcript(workspace, path);
-        }
-        // A task this event opened takes its folder now; one it ended took it above.
-        if let Some(cwd) = w.data.get("cwd").and_then(|c| c.as_str()) {
-            hub.record_project(workspace, cwd);
+        hub.apply_hook_tab(&w.pane, workspace, &for_tab, now_ms());
+        if w.adapter == "claude" {
+            if let Some(path) = w.data.get("transcript_path").and_then(|p| p.as_str()) {
+                hub.set_transcript(workspace, path);
+            }
+            // A task this event opened takes its folder now; one it ended took it above.
+            if let Some(cwd) = w.data.get("cwd").and_then(|c| c.as_str()) {
+                hub.record_project(workspace, cwd);
+            }
         }
     }
 }
@@ -1479,19 +1575,21 @@ type Hooked = (Wire, Source, Confidence, Vec<EventKind>);
 /// goes wrong (no socket, server down, slow disk), it returns, because the agent must not be held up by us.
 pub fn run_hook(adapter: &str) {
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-    run_hook_with(
+    run_hook_at(
         adapter,
         env("TERMENBOX_SESSION"),
         env("TERMENBOX_EVENT_TOKEN"),
         env("TERMENBOX_EVENT_SOCKET"),
+        env("TMUX_PANE"),
     );
 }
 
-pub fn run_hook_with(
+pub fn run_hook_at(
     adapter: &str,
     workspace: Option<String>,
     token: Option<String>,
     socket: Option<String>,
+    pane: Option<String>,
 ) {
     use std::io::{Read, Write};
     let (Some(workspace), Some(token), Some(socket)) = (workspace, token, socket) else {
@@ -1507,7 +1605,7 @@ pub fn run_hook_with(
         let data =
             serde_json::from_str::<serde_json::Value>(&raw).unwrap_or(serde_json::Value::Null);
         let ancestors = crate::owner::own_ancestors();
-        let line = serde_json::json!({"session": workspace, "token": token, "adapter": adapter, "data": data, "ancestors": ancestors}).to_string() + "\n";
+        let line = serde_json::json!({"session": workspace, "token": token, "adapter": adapter, "data": data, "ancestors": ancestors, "pane": pane.unwrap_or_default()}).to_string() + "\n";
         if let Ok(mut s) = std::os::unix::net::UnixStream::connect(&socket) {
             let _ = s.set_write_timeout(Some(std::time::Duration::from_millis(500)));
             let _ = s.write_all(line.as_bytes());
@@ -1850,6 +1948,37 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn a_hook_event_keeps_the_tab_on_the_attention_it_raises() {
+        let h = hub();
+        h.push_tab(
+            "w",
+            Source::Hook,
+            Confidence::High,
+            state(AgentState::NeedsInput),
+            1_000,
+            Some("t2"),
+        );
+        let items = h.attention_items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].tab.as_deref(), Some("t2"));
+        h.push(
+            "w",
+            Source::Hook,
+            Confidence::High,
+            state(AgentState::Idle),
+            1_500,
+        );
+        h.push(
+            "w",
+            Source::Hook,
+            Confidence::High,
+            state(AgentState::NeedsInput),
+            2_000,
+        );
+        assert_eq!(h.attention_items()[0].tab, None);
+    }
+
     fn forgetting_a_workspace_drops_its_attention() {
         let h = hub();
         h.push(
@@ -2241,7 +2370,7 @@ mod tests {
         }
         let (src, conf, kinds) = crate::adapters::claude(&d).unwrap_or_else(|| panic!("{name}"));
         for k in kinds {
-            h.feed("s", src, conf, k, now);
+            h.feed("s", src, conf, k, now, None);
         }
     }
 
@@ -2323,6 +2452,7 @@ mod tests {
                     state: AgentState::Idle,
                 },
                 t,
+                None,
             );
             assert_eq!(now_state(&h), AgentState::NeedsInput, "at {t}");
         }
@@ -2342,6 +2472,7 @@ mod tests {
                 state: AgentState::Idle,
             },
             200_000,
+            None,
         );
         assert_eq!(now_state(&h), AgentState::Working);
     }
@@ -2437,7 +2568,8 @@ mod tests {
     #[test]
     fn two_open_requests_keep_an_acp_workspace_blocked_until_both_are_answered() {
         let h = EventHub::new([1; 32]);
-        let ev = |kind: EventKind, now: u64| h.feed("a", Source::Acp, Confidence::High, kind, now);
+        let ev =
+            |kind: EventKind, now: u64| h.feed("a", Source::Acp, Confidence::High, kind, now, None);
         let block = |key: &str, open: bool| EventKind::Block {
             key: key.into(),
             open,
@@ -2461,7 +2593,8 @@ mod tests {
     fn a_t0_request_names_its_action_on_the_open_attention_item() {
         use termenbox_core::events::{Decision, DecisionOption};
         let h = EventHub::new([1; 32]);
-        let ev = |kind: EventKind, now: u64| h.feed("a", Source::Acp, Confidence::High, kind, now);
+        let ev =
+            |kind: EventKind, now: u64| h.feed("a", Source::Acp, Confidence::High, kind, now, None);
         ev(
             EventKind::Turn {
                 open: true,
@@ -2569,7 +2702,8 @@ mod tests {
     #[test]
     fn an_acp_task_keeps_its_title() {
         let (h, _dir) = hub_with_history();
-        let acp = |kind: EventKind, now: u64| h.feed("a", Source::Acp, Confidence::High, kind, now);
+        let acp =
+            |kind: EventKind, now: u64| h.feed("a", Source::Acp, Confidence::High, kind, now, None);
         // The order the ACP workspace uses: the turn opens, then the prompt names the task.
         acp(
             EventKind::Turn {
@@ -2663,7 +2797,7 @@ mod tests {
         h.note_claude_usage_in(Some(root), "s", &data);
         let (src, conf, kinds) = crate::adapters::claude(&data).unwrap();
         for k in kinds {
-            h.feed("s", src, conf, k, now);
+            h.feed("s", src, conf, k, now, None);
         }
         if let Some(cwd) = data.get("cwd").and_then(|c| c.as_str()) {
             h.record_project("s", cwd);
@@ -2757,6 +2891,7 @@ mod tests {
                 state: AgentState::Done,
             },
             2_000,
+            None,
         );
         let runs = h.history().unwrap().query(0, u64::MAX, 20_000).runs;
         assert_eq!(runs[0].project.as_deref(), Some(name.as_str()));
@@ -2778,6 +2913,7 @@ mod tests {
                 state: AgentState::Done,
             },
             2_000,
+            None,
         );
         let runs = h.history().unwrap().query(0, u64::MAX, 20_000).runs;
         assert_eq!(runs[0].project.as_deref(), Some("termenbox"));
@@ -2809,6 +2945,7 @@ mod tests {
                     outcome: (!open).then_some(AgentState::Done),
                 },
                 now,
+                None,
             )
         };
         turn(true, 1_000);
@@ -2822,6 +2959,7 @@ mod tests {
                 cost: Some("0.25 USD".into()),
             },
             2_000,
+            None,
         );
         h.record_tokens(
             "acp",

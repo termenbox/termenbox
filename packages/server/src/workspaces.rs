@@ -290,6 +290,23 @@ impl WorkspaceManager {
         let idle = tokio::time::sleep(IDLE_TIMEOUT);
         tokio::pin!(idle);
         let mut agent_rx = self.events.as_ref().map(|h| h.subscribe());
+        let tab_status = self.events.as_ref().and_then(|h| h.tab_status());
+        let mut tab_rev = 0;
+        let mut tab_tick = tokio::time::interval(std::time::Duration::from_millis(500));
+        tab_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        if let Some(status) = &tab_status {
+            tab_rev = status.rev();
+            if !send(
+                &link.tx,
+                &ServerMessage::TabStates {
+                    states: status.snapshot(),
+                },
+            )
+            .await
+            {
+                return Ok(());
+            }
+        }
         let mut window_rx = self.windows.as_ref().map(|h| h.subscribe());
         let mut status_rx = self.events.as_ref().map(|h| h.subscribe_status());
         let mut list_rx = self.list_changed.subscribe();
@@ -391,6 +408,15 @@ impl WorkspaceManager {
                     };
                     for m in msgs {
                         if !send(&link.tx, &m).await { return Ok(()); }
+                    }
+                }
+                _ = tab_tick.tick(), if tab_status.is_some() => {
+                    if let Some(status) = &tab_status {
+                        let rev = status.rev();
+                        if rev != tab_rev {
+                            tab_rev = rev;
+                            if !send(&link.tx, &ServerMessage::TabStates { states: status.snapshot() }).await { break; }
+                        }
                     }
                 }
                 from = next_list_change(&mut list_rx) => {
@@ -848,9 +874,9 @@ impl WorkspaceManager {
                     .await?;
                 }
             }
-            ClientMessage::Foreground { workspace, tab: _ } => {
+            ClientMessage::Foreground { workspace, tab } => {
                 if let Some(p) = &self.push {
-                    p.set_foreground(conn, workspace);
+                    p.set_foreground_tab(conn, workspace, tab);
                 }
             }
             ClientMessage::Ack { attention_id } | ClientMessage::Dismiss { attention_id } => {
@@ -881,6 +907,7 @@ impl WorkspaceManager {
                     hub,
                     &workspace,
                     window.as_deref(),
+                    tab.as_deref(),
                     &prompt_id,
                     seq,
                     choice,
@@ -1823,20 +1850,40 @@ pub async fn answer(
     seq: u64,
     choice: u8,
 ) -> Result<()> {
-    answer_tab(backend, hub, workspace, None, prompt_id, seq, choice).await
+    answer_tab(backend, hub, workspace, None, None, prompt_id, seq, choice).await
 }
 
 /// [answer] for one tab; the keys go to that tab's pane instead of the workspace's current one.
+#[allow(clippy::too_many_arguments)]
 pub async fn answer_tab(
     backend: &dyn WorkspaceBackend,
     hub: &EventHub,
     workspace: &str,
     window: Option<&str>,
+    tab: Option<&str>,
     prompt_id: &str,
     seq: u64,
     choice: u8,
 ) -> Result<()> {
     use termenbox_core::events::{Confidence, EventKind};
+    // A tab carries its own hook-confirmed prompt: another tab's later prompt must not invalidate it. The keys still
+    // come from this tab's screen, and the id still names the question the user saw.
+    if let (Some(window), Some(tab)) = (window, tab) {
+        if let Some(prompt) = hub.tab_prompt(workspace, tab) {
+            if prompt.id != prompt_id {
+                return Err(anyhow::anyhow!(PROMPT_CHANGED));
+            }
+            let screen = backend.capture_tab_styled(workspace, window).await?;
+            let info = crate::adapters::parse_prompt(&screen)
+                .filter(|i| prompt_id.ends_with(&crate::agentwatch::hex8(&i.question)))
+                .ok_or_else(|| anyhow::anyhow!(PROMPT_CHANGED))?;
+            let (_, keys) = info
+                .choices
+                .get(choice as usize)
+                .ok_or_else(|| anyhow::anyhow!("No such choice"))?;
+            return backend.send_text_to_window(workspace, window, keys).await;
+        }
+    }
     let current = hub
         .current_prompt(workspace)
         .ok_or_else(|| anyhow::anyhow!(PROMPT_CHANGED))?;

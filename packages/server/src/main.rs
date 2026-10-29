@@ -59,6 +59,7 @@ mod requests;
 mod rtc;
 mod signal;
 mod stun;
+mod tabstatus;
 mod terminfo;
 mod tmuxconf;
 mod transcript;
@@ -808,6 +809,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     let mut hub = events::EventHub::load_or_create(&args.config_dir)?;
+    hub = hub.with_tab_status(Arc::new(tabstatus::TabStatus::default()));
     if let Some(history) = &history {
         hub = hub.with_history(history.clone());
     }

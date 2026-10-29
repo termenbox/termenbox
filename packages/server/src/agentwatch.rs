@@ -9,7 +9,7 @@ use termenbox_core::events::{AgentState, Confidence, EventKind, Source};
 
 use crate::adapters;
 use crate::backend::Runner;
-use crate::events::EventHub;
+use crate::events::{now_ms, EventHub};
 use crate::profile::Profiles;
 use crate::reducer::Screen;
 
@@ -94,7 +94,7 @@ pub async fn scan_tmux_once(
         "list-panes",
         "-a",
         "-F",
-        "#{session_name}|#{pane_current_command}|#{window_activity}|#{pane_id}|#{window_active}|#{pane_active}",
+        "#{session_name}|#{pane_current_command}|#{window_activity}|#{pane_id}|#{window_active}|#{pane_active}|#{@termenbox_tab}",
     ]
     .map(String::from);
     let Ok(out) = runner.run("tmux", &args).await else {
@@ -121,6 +121,24 @@ pub async fn scan_tmux_once(
     let live: HashSet<String> = panes.iter().map(|p| p.workspace.clone()).collect();
     hub.forget_except(prefix, &live.iter().cloned().collect::<Vec<_>>());
     tracker.retain(&live);
+    // The hooks name a pane (`TMUX_PANE`); this is where panes learn their tab, and every agent pane reports its
+    // own process state so a workspace with several tabs never shows one tab's work on another (decision 0147).
+    if let Some(status) = hub.tab_status() {
+        let live_tabs: HashSet<(String, String)> = panes
+            .iter()
+            .filter(|p| !p.tab.is_empty())
+            .map(|p| (p.workspace.clone(), p.tab.clone()))
+            .collect();
+        status.retain(&live_tabs);
+        for p in &panes {
+            status.set_pane(&p.pane_id, &p.workspace, &p.tab);
+            if let (Some(agent), Some(state)) =
+                (adapters::agent_name(&p.command), adapters::scan_state(p))
+            {
+                status.set_scan_state(&p.workspace, &p.tab, state, Some(agent), now_ms());
+            }
+        }
+    }
     // One agent pane speaks for a workspace, and it is the one the workspace shows (the active pane of its active
     // window), so the process, the screen and the state all come from the same pane. Without an active agent pane
     // the first one is used, as before.

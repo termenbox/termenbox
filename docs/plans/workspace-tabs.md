@@ -27,8 +27,8 @@ vocabulary, 0054's backend port and 0146's minted id with a label.
   aggregate status, path validation), per-tab snapshots, Workspaces page pencil and tab count. No new screen yet.
 - **PR3.** Top bar plaque/strip, `TabMenu` (switch, drag, rename, delete, `+ New window`, Close workspace), workspace
   creation with its first tab, `ServerStatusIcon`, deep link groundwork.
-- **PR4.** Per-tab states (`tab_states`), prompts/answers routed by tab, attention ack for the visible tab, tab-level
-  push and foreground, Cache expiring/Recent in the tab menu, guides.
+- **PR4 (this one).** Per-tab states (`tab_states`), prompts/answers routed by tab, attention ack for the visible tab,
+  tab-level push and foreground, Cache expiring/Recent in the tab menu, guides.
 
 ## Rules
 

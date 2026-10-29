@@ -174,6 +174,31 @@ pub struct WorkspaceAgentState {
     pub waiting_since: Option<u64>,
 }
 
+/// The prompt one tab waits on (decision 0147). The choices are labels only; the keys stay on the server.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct TabPrompt {
+    pub id: String,
+    pub kind: String,
+    pub choices: Vec<String>,
+}
+
+/// What one tab's agent does now. The workspace-level `WorkspaceAgentState` stays the aggregate Home and push use.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct TabAgentState {
+    pub workspace: String,
+    pub tab: String,
+    pub state: AgentState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    pub ts: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_since: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_response_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<TabPrompt>,
+}
+
 /// What an agent does now (decision 0095). `Unknown` also covers a `working` signal that went quiet for 60 s.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -209,6 +234,9 @@ pub struct Task {
 pub struct Attention {
     pub id: String,
     pub workspace: String,
+    /// The tab that asked, when a hook proved which one (decision 0147); old items and workspace-level hints have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<String>,
     pub kind: AttentionKind,
     pub raised_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -310,6 +338,7 @@ mod tests {
         let a = Attention {
             id: "a1".into(),
             workspace: "s".into(),
+            tab: None,
             kind: AttentionKind::FinishedUnseen,
             raised_at: 7,
             task: Some(Task {
