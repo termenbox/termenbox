@@ -7,9 +7,10 @@ vocabulary, 0054's backend port and 0146's minted id with a label.
 
 - A **workspace** is a server record: `id`, `name` (label), `dir`, `backend`, `order`, `focus`, `tabs`.
 - A **tab** is a process in that workspace: `id` (`t1`, `t2`, …), `label`, `kind` (`shell`, `claude`, …), `dir`
-  (relative to the workspace), `order`, and the tmux window it runs in (`@12`, absent while dormant).
-- New tabs are terminal tabs. ACP workspaces stay in the ACP backend and are shown as a legacy workspace with one
-  agent tab; the UI never creates a new ACP workspace.
+  (relative to the workspace), `order`, and the window it runs in (a tmux window in this stage, `@12`, absent while
+  dormant).
+- In this stage new tabs are terminal tabs. ACP stays a first-class backend: the UI still creates an ACP workspace,
+  shown as a single-agent workspace with one tab until R75 folds the ACP window host into this model.
 - The tmux session is created lazily with the first tab and recreated when it is gone. The record stays and its tabs
   come back as shells with the same labels and order.
 
@@ -43,5 +44,7 @@ vocabulary, 0054's backend port and 0146's minted id with a label.
 ## Tests
 
 Rust: registry with real tmux (migration, dormant recreation, last tab, order), handler e2e on both transports, old
-window aliases. Client: aggregate matrix, active-tab fallback, order and directory rules, Workspaces page. E2E: tabs on
-phone and desktop, migration, old client/new server and new client/old server.
+window aliases. Client: aggregate matrix, active-tab fallback, order and directory rules, Workspaces page. ACP: the
+New workspace sheet still creates an ACP workspace and offers the Terminal/Agent view; this stack keeps it as a
+single-agent workspace, not a tab. E2E: tabs on phone and desktop, migration, old client/new server and new
+client/old server.

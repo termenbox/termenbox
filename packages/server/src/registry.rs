@@ -2,7 +2,8 @@
 //! what every device must agree on: which tabs exist, their labels, their order and the tab a new device opens.
 //!
 //! The record is authoritative for tmux and command workspaces. ACP workspaces stay in the ACP backend's own state and
-//! are presented as a legacy workspace with one agent tab; nothing here duplicates their conversation state.
+//! are presented as a single-agent workspace with one tab; ACP is still a first-class backend (0137), and R75 folds its
+//! window host into this model without duplicating their conversation state here.
 //!
 //! Every write is atomic (a temporary file renamed over the old one). A record whose tmux server is gone stays dormant:
 //! opening it recreates the session and its tabs as shells, with the same labels and order, rather than deleting what
@@ -255,7 +256,8 @@ impl Registry {
         Ok(out)
     }
 
-    /// Creates a workspace and its first tab. A tmux workspace is recorded; ACP and command ones are not.
+    /// Creates a workspace; only tmux workspaces are recorded here. ACP and command backends remain supported and are
+    /// listed through their own state.
     pub async fn create_workspace(
         &self,
         backend: &dyn WorkspaceBackend,
