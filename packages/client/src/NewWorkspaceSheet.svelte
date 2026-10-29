@@ -28,7 +28,7 @@
     TEMPLATE_BY_ID,
     TEMPLATES,
     validDir,
-    validName,
+    validLabel,
     viewControl,
     viewStore,
     type View,
@@ -50,10 +50,10 @@
 
   let dialog: HTMLDialogElement;
   let serverId = servers.find(s => s.id === initialServerId)?.id ?? (locked ? undefined : servers.find(s => s.id === getLastServer())?.id) ?? servers[0]?.id ?? '';
+  const first = servers.find(s => s.id === serverId);
   let manager = '';
   /** The View the person picked for this agent; `view` is what applies (some agents have no choice). */
   let wanted: View = 'terminal';
-  const first = servers.find(s => s.id === serverId);
   let template = first ? defaultAgent(getSupportedTemplates(first), getRecentAgents(serverId)) : 'claude';
   let dir = '';
   let name = '';
@@ -67,18 +67,19 @@
 
   $: anyLayer = agentsOpen || dirsOpen || pickerOpen;
   $: server = servers.find(s => s.id === serverId);
-  $: supportedTemplates = server ? getSupportedTemplates(server) : TEMPLATES;
   $: recentAgents = server ? getRecentAgents(serverId) : [];
-  // With tmux and acp both on the server the choice is the View, made after the agent. An agent tmux cannot start (one the
-  // owner added) is offered too, and is always the agent view.
-  $: views = hasViews(server);
   $: managers = managerOptions(server);
   $: if (server && (!manager || !managers.includes(manager))) manager = managers[0] ?? '';
   $: acpAgents = server?.acpAgents ?? [];
-  // Only acp on the server: the agents are the ACP ones.
+  // With tmux and acp both on the server the choice is the View, made after the agent. The View shows only for an
+  // agent the server lists in `acpAgents`.
+  $: views = hasViews(server);
+  // Only acp on the server (or picked as the manager): the agents are the ACP ones.
   $: acpOnly = !!server && !views && manager === 'acp';
-  $: if (acpOnly) { if (!acpAgents.includes(template)) template = recentAgents.find(a => acpAgents.includes(a)) ?? acpAgents[0] ?? ''; }
-  else if (!supportedTemplates.some(t => t.id === template)) template = defaultAgent(supportedTemplates, recentAgents);
+  $: acpChoices = acpAgents.filter(id => TEMPLATE_BY_ID[id]).map(id => TEMPLATE_BY_ID[id]);
+  $: choices = acpOnly ? acpChoices : TEMPLATES;
+  $: if (acpOnly && !acpChoices.some(t => t.id === template)) template = recentAgents.find(a => acpChoices.some(t => t.id === a)) ?? acpChoices[0]?.id ?? '';
+  else if (!acpOnly && !choices.some(t => t.id === template)) template = defaultAgent(choices, recentAgents);
   // The remembered view for this agent on this server is loaded when either changes; a click then overrides it.
   $: wanted = loadView(viewStore(), serverId, template);
   $: control = viewControl(server, template);
@@ -86,14 +87,14 @@
   $: backend = server ? backendFor(server, manager, template, wanted) : '';
   // An ACP workspace (T0): the server starts the agent itself, in a directory, from the owner's list of agents.
   $: acp = !!server && backend === 'acp';
-  function pick(v: View) { wanted = v; saveView(viewStore(), serverId, template, v); }
+  function pickView(v: View) { wanted = v; saveView(viewStore(), serverId, template, v); }
   $: recentFolders = mergeRecentDirs(getRecentDirs(serverId), windows, `${serverId}/`);
-  $: taken = workspaces.filter(s => s.serverId === serverId).flatMap(s => [s.id, s.name]); // ids are the server's; the name is what is typed
+  $: taken = workspaces.filter(s => s.serverId === serverId).flatMap(s => [s.id, s.name]);
   $: if (!nameTouched) name = suggestName(dir, template, taken);
   // Only tmux can start in a directory or run an agent; the sheet says so for other managers instead of ignoring them.
   $: tmux = !server || server.backends.length === 0 || backend === 'tmux';
-  $: ok = !!server && validName(name) && validDir(dir) && !taken.includes(name) && (!acp || (!!template && dir !== ''));
-  $: problem = acp && !template ? 'This server allows no agent workspaces yet.' : acp && dir === '' ? 'Choose the directory the agent works in, like /home/you/project.' : !validDir(dir) ? 'The directory must be an absolute path, like /home/you/project.' : taken.includes(name) ? 'That name is taken.' : !validName(name) ? 'Use letters, digits, - and _ (up to 64).' : '';
+  $: ok = !!server && validLabel(name) && validDir(dir) && !taken.includes(name.trim()) && (!acp || (!!template && dir !== ''));
+  $: problem = acp && !template ? 'This server allows no agent workspaces yet.' : acp && dir === '' ? 'Choose the directory the agent works in, like /home/you/project.' : !validDir(dir) ? 'The directory must be an absolute path, like /home/you/project.' : taken.includes(name.trim()) ? 'That name is taken.' : !validLabel(name) ? 'Use one line of at most 64 characters, without |.' : '';
   $: home = homes[serverId] ?? getHome(serverId);
   $: agentLabel = template === 'shell' ? 'Shell' : TEMPLATE_BY_ID[template]?.label ?? template;
   $: summary = tmux || acp
@@ -111,7 +112,7 @@
     if (tmux || acp) saveRecentAgent(serverId, template);
     if ((tmux || acp) && dir) saveRecentDir(serverId, dir);
     saveLastServer(serverId);
-    oncreate({ serverId, backend: server.backends.length > 1 ? backend : undefined, name, ...((tmux || acp) && dir ? { dir } : {}), ...((tmux && template !== 'shell') || acp ? { template } : {}) });
+    oncreate({ serverId, backend: server.backends.length > 1 ? backend : undefined, name: name.trim(), ...((tmux || acp) && dir ? { dir } : {}), ...((tmux && template !== 'shell') || acp ? { template } : {}) });
     onclose();
   }
 </script>
@@ -134,14 +135,14 @@
         {/if}
         {#if tmux || acp}
           <fieldset>
-            <legend>Start with</legend>
-            <AgentRow templates={supportedTemplates} recent={recentAgents} selected={template} onselect={(id) => (template = id)} bind:moreOpen={agentsOpen} />
+            <legend>{acp ? 'Agent' : 'First tab'}</legend>
+            <AgentRow templates={choices} recent={recentAgents} selected={template} onselect={(id) => (template = id)} bind:moreOpen={agentsOpen} />
           </fieldset>
 
           {#if control === 'choose' && manager === 'tmux'}
             <div class="view" role="radiogroup" aria-label="View" data-testid="view">
-              <button type="button" role="radio" aria-checked={view === 'terminal'} class:on={view === 'terminal'} data-testid="view-terminal" on:click={() => pick('terminal')}>Terminal <small>agent's own TUI</small></button>
-              <button type="button" role="radio" aria-checked={view === 'acp'} class:on={view === 'acp'} data-testid="view-acp" on:click={() => pick('acp')}>Agent view <small>ACP</small></button>
+              <button type="button" role="radio" aria-checked={view === 'terminal'} class:on={view === 'terminal'} data-testid="view-terminal" on:click={() => pickView('terminal')}>Terminal <small>agent's own TUI</small></button>
+              <button type="button" role="radio" aria-checked={view === 'acp'} class:on={view === 'acp'} data-testid="view-acp" on:click={() => pickView('acp')}>Agent view <small>ACP</small></button>
             </div>
           {/if}
 
@@ -181,11 +182,11 @@
 
   fieldset { border: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
   fieldset legend { font-size: 0.85rem; font-weight: 500; color: var(--fg-muted); margin-bottom: 6px; }
-
   .view { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   .view button { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; text-align: left; background: var(--bg); color: var(--fg); border: 1px solid var(--border); }
   .view button.on { border-color: var(--accent); }
   .view small { color: var(--fg-muted); }
+  .note { color: var(--fg-muted); font-size: 0.85rem; }
 
   label { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.85rem; }
   label.stack { flex-direction: column; align-items: stretch; }
@@ -194,10 +195,6 @@
 
   .summary { margin: 0; font-size: 0.85rem; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .actions { display: flex; gap: 8px; justify-content: flex-end; }
-  .note { color: var(--fg-muted); font-size: 0.85rem; }
   .problem { margin: 0; color: var(--danger); font-size: 0.8rem; }
 
-  @media (max-width: 480px) {
-    .view { grid-template-columns: 1fr; }
-  }
 </style>

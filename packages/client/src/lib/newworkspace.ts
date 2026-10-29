@@ -174,6 +174,8 @@ export function suggestName(dir: string, template: string, taken: string[]): str
 
 export const validDir = (dir: string) => dir === '' || (dir.startsWith('/') && dir.length <= 512 && !/[\u0000-\u001f\u007f]/.test(dir));
 export const validName = (name: string) => /^[A-Za-z0-9_-]{1,64}$/.test(name);
+/** The server's label rule: one line, at most 64 characters, no `|`; a minted id keeps the label free of id syntax. */
+export const validLabel = (name: string) => { const t = name.trim(); return t.length > 0 && t.length <= 64 && !/[\u0000-\u001f\u007f|]/.test(t); };
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The view: how an agent runs. "Terminal" is the agent's own TUI in a tmux workspace; "Agent view" is an ACP workspace the
