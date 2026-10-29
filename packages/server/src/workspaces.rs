@@ -243,7 +243,11 @@ impl WorkspaceManager {
             .is_some_and(|(pending, _)| pending == id)
         {
             gate.pending = None;
-            if let Some(state) = self.requests_dir.as_deref().and_then(std::path::Path::parent) {
+            if let Some(state) = self
+                .requests_dir
+                .as_deref()
+                .and_then(std::path::Path::parent)
+            {
                 let _ = std::fs::remove_file(state.join("update-progress.json"));
             }
         }
@@ -1642,9 +1646,9 @@ fn update_result_error(
 ) -> Option<String> {
     match result {
         Some(result) => result.error,
-        None if expired => {
-            Some("The helper did not report an update result in time. Check its service logs.".into())
-        }
+        None if expired => Some(
+            "The helper did not report an update result in time. Check its service logs.".into(),
+        ),
         None => None,
     }
 }
