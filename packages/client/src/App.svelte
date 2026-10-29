@@ -382,7 +382,7 @@
   // An ACP workspace (T0) has no terminal: opening it shows its stream (decision 0111). The stream is per connection, so it
   // is asked for again whenever the workspace is shown, and dropped from the server when it is not.
   $: activeIsAcp = !!activeWorkspace && backendOf(activeWorkspace) === 'acp';
-  /** A legacy ACP workspace has one agent tab and no tab actions (decision 0147). */
+  /** A single-agent ACP workspace has one agent tab and no tab actions until R75 (decision 0149). */
   $: canTab = !!activeWorkspace && backendOf(activeWorkspace) === 'tmux';
   let acpServer: string | null = null;
   function closeAcp() {
@@ -460,7 +460,7 @@
     .map((w) => ({
       workspace: w,
       tabs: w.tabs ?? [],
-      // A legacy ACP workspace has one agent tab and no tab actions.
+      // A single-agent ACP workspace has one agent tab and no tab actions until R75.
       editable: (w.backend ?? $hubServers.find((s) => s.id === w.serverId)?.backends[0] ?? '') === 'tmux',
     }));
   $: profile = backendOf(activeWorkspace) === 'tmux' ? 'tmux' as const : 'shell' as const;

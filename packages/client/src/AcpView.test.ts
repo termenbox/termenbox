@@ -161,17 +161,20 @@ describe('starting an ACP workspace', () => {
   const server = (backends: string[], acpAgents: string[]): HubServer => ({ id: 'a', state: 'connected', reason: '', version: '0.1.34+dev', backends, acpAgents, controlMode: true, tmuxVersion: '3.6', prefix: 'C-b',
     server: { server_url: '', server_id: 'a', server_name: 'alpha', registered_at: 0 } as HubServer['server'] });
   const sheet = (s: HubServer) => html(NewWorkspaceSheet, { servers: [s], initialServerId: 'a', locked: true, workspaces: [], windows: {}, oncreate: () => {}, onclose: () => {} });
-  it('offers terminal templates and never a View or Manager, even when the server also runs acp', () => {
+  it('offers the Agent view for an ACP-capable agent and ACP agents on an ACP-only server', () => {
     const both = sheet(server(['tmux', 'acp'], ['claude', 'kilo']));
-    expect(both).not.toContain('data-testid="view"');
-    expect(both).not.toContain('Agent view');
+    expect(both).toContain('data-testid="view"');
+    expect(both).toContain('Agent view');
     expect(both).not.toContain('Manager');
     expect(both).toContain('Codex');
     expect(both).toContain('data-testid="agents-more"');
     const acpOnly = sheet(server(['acp'], ['claude', 'kilo']));
     expect(acpOnly).not.toContain('data-testid="view"');
-    expect(acpOnly).toContain('runs no terminals');
-    expect(sheet(server(['acp'], []))).toContain('runs no terminals');
+    expect(acpOnly).toContain('Claude Code');
+    expect(acpOnly).toContain('Kilo');
+    expect(acpOnly).not.toContain('Codex');
+    expect(acpOnly).toContain('Choose the directory');
+    expect(sheet(server(['acp'], []))).toContain('allows no agent workspaces');
   });
   it('the hub keeps the agent list the server announced', () => {
     const connections: { opts: ConnectionOptions }[] = [];

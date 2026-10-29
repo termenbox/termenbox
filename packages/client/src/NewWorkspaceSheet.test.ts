@@ -37,24 +37,56 @@ describe('the new workspace sheet', () => {
 });
 
 describe('the first tab', () => {
-  it('offers every terminal template and no Manager or View', () => {
-    const out = html({ servers: [server('a', 'alpha', ['tmux', 'acp'])] });
+  it('offers every terminal template and the View when the server also runs acp', () => {
+    const out = html({ servers: [server('a', 'alpha', ['tmux', 'acp'], ['claude', 'opencode'])] });
     expect(out).toContain('Shell');
     expect(out).toContain('Claude Code');
     expect(out).toContain('data-testid="agents-more"');
     expect(out).toMatch(/data-testid="agents-more"[\s\S]*?<small[^>]*>12</);
+    expect(out).toContain('data-testid="view"');
+    expect(out).toContain('Agent view');
     expect(out).not.toContain('Manager');
-    expect(out).not.toContain('Agent view');
-    expect(out).not.toContain('data-testid="view"');
   });
   it('marks the default template as the first tab', () => {
     const out = html({ servers: [server('a', 'alpha')] });
     expect(out).toMatch(/aria-checked="true"[^>]*>[\s\S]*?Claude Code|Claude Code[\s\S]*?aria-checked="true"/);
   });
-  it('says a server without tmux cannot start a terminal workspace', () => {
-    const out = html({ servers: [server('a', 'alpha', ['acp'])] });
-    expect(out).toContain('runs no terminals');
+  it('offers only ACP agents and requires a folder on an ACP-only server', () => {
+    const out = html({ servers: [server('a', 'alpha', ['acp'], ['claude', 'opencode'])], initialServerId: 'a', locked: true });
+    expect(out).toContain('Claude Code');
+    expect(out).toContain('OpenCode');
+    expect(out).not.toContain('Codex');
+    expect(out).toContain('Choose the directory');
+    expect(out).not.toContain('data-testid="view"');
+    expect(out).not.toContain('Manager');
     expect(out).toMatch(/<button[^>]*type="submit"[^>]*disabled/);
+  });
+  it('says an ACP-only server with no agents has nothing to start', () => {
+    expect(html({ servers: [server('a', 'alpha', ['acp'])] })).toContain('allows no agent workspaces');
+  });
+  it('keeps the Manager for command beside acp when there is no tmux', () => {
+    const out = html({ servers: [server('a', 'alpha', ['command', 'acp'], ['claude'])] });
+    expect(out).toContain('Manager');
+    expect(out).toContain('Agent workspace (ACP)');
+    expect(out).not.toContain('data-testid="view"');
+  });
+});
+
+describe('the View control', () => {
+  const both = [server('a', 'alpha', ['tmux', 'acp'], ['claude', 'opencode'])];
+  it('defaults to Terminal', () => {
+    const out = html({ servers: both });
+    expect(out).toMatch(/data-testid="view-terminal"[^>]*aria-checked="true"|aria-checked="true"[^>]*data-testid="view-terminal"/);
+  });
+  it('shows the remembered Agent view for the agent', () => {
+    vi.stubGlobal('localStorage', { getItem: (k: string) => (k === 'termenbox_new_session_view' ? '{"a/claude":"acp"}' : null), setItem: () => {} });
+    try {
+      const out = html({ servers: both });
+      expect(out).toMatch(/data-testid="view-acp"[^>]*aria-checked="true"|aria-checked="true"[^>]*data-testid="view-acp"/);
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it('is absent when the server lists no ACP form of the selected agent', () => {
+    expect(html({ servers: [server('a', 'alpha', ['tmux', 'acp'], [])] })).not.toContain('data-testid="view"');
   });
 });
 
@@ -115,9 +147,9 @@ describe('the footer', () => {
     expect(html({ servers: [server('a', 'alpha')] })).not.toContain('Server <');
     expect(html({ servers: [server('a', 'alpha'), server('b', 'beta')] })).toContain('Server <');
   });
-  it('keeps Create disabled with the reason visible for a server without tmux', () => {
+  it('keeps Create disabled with the directory reason for an ACP-only server', () => {
     const out = html({ servers: [server('a', 'alpha', ['acp'], ['claude'])], initialServerId: 'a', locked: true });
-    expect(out).toContain('runs no terminals');
+    expect(out).toContain('Choose the directory the agent works in');
     expect(out).toMatch(/<button[^>]*disabled[^>]*>Create<|<button type="submit"[^>]*disabled/);
   });
 });
