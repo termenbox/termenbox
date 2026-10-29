@@ -4,7 +4,7 @@ Back to the [README](../../README.md).
 
 ## Workspaces and tabs
 
-A **workspace** is a server-owned record: a name, a directory and the tabs inside it. A **tab** is one tmux window of that workspace: a shell, an agent TUI or any command. The workspace is never empty; its first tab is created with it, and deleting the last tab leaves a fresh shell tab instead.
+A **workspace** is a server-owned record: a name, a directory and the tabs inside it. A **tab** is one process window of that workspace: a tmux window in this stage, running a shell, an agent TUI or any command. The workspace is never empty; its first tab is created with it, and deleting the last tab leaves a fresh shell tab instead.
 
 - **Desktop.** The sidebar lists workspaces; the tab strip at the top of an open workspace lists its tabs. `+` creates another tab in the same workspace, not another workspace. A pencil renames the tab; the server keeps the order, labels and focus for every device.
 - **Phone.** One plaque names the current tab; tap it for the tab list. There is no separate Workspaces sheet in an open workspace. Swipe or tap a row to switch tabs; the ⋮ menu renames, reorders or deletes a tab (deleting asks first).
@@ -19,7 +19,7 @@ A **workspace** is a server-owned record: a name, a directory and the tabs insid
 
 An older server (protocol 1) keeps the previous one-tab-per-workspace UI: the top strip, the Workspaces button and the windows dropdown. The two paths share the same terminal and event stream; only a server that advertises `auth_ok.tabs` uses the new one.
 
-ACP workspaces created by an older server are shown as legacy workspaces with one agent tab. The ACP view itself is unchanged and remains available (decision 0147); the new-workspace sheet no longer creates ACP workspaces.
+ACP remains a first-class backend. The New workspace sheet still creates an ACP workspace with the Terminal/Agent view choice; it is shown as a single-agent workspace with one tab until R75 folds its window host into the tab model (decision 0149). The ACP view itself is unchanged.
 
 These behaviours are tested in a real browser (`packages/client/e2e/`), including two real server processes with real tmux. The browser runs emulate a phone; the soft keyboard, safe areas and gestures on a real iPhone are checked by hand with `docs/skills/mobile-ui-device-check.md`.
 
