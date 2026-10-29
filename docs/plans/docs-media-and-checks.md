@@ -17,11 +17,12 @@ Do: add to each case `title`, `group`, `page` (for the four dialog cases `docs/g
 Done-when: the Check exits 0 and `node e2e/video/render.mjs --list` prints the four ids.
 Progress: done 2026-10-29 on branch feat/docs-media-recorder; Check run with host node (no container), exits 0.
 
-### 1.2 Input hash and `render.json` — [ ]
+### 1.2 Input hash and `render.json` — [x]
 Class: implement · Needs: 1.1 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && node e2e/video/inputs-hash.mjs --self-test'`
 Context: DECISION-0149: an approved video records a hash of its inputs (the case, its declared `inputs` globs, the app version) so a later change shows it may be stale. The app version is the server crate version in `packages/server/Cargo.toml` (read it as text; do not build).
 Do: create `packages/client/e2e/video/inputs-hash.mjs` exporting `hashInputs(caseId)` (sha256 over the case's own source text in `cases.mjs`, the sorted contents of the files its globs match, and the version) and a `--self-test` that proves the hash changes when a matched file or the case text changes and not when an unmatched file does. `render.mjs` writes `<case>-<profile>.render.json` beside each video: `{case, profile, hash, version, run: process.env.GITHUB_RUN_ID ?? null, renderedAt, files}`.
 Done-when: the Check passes and a local render of `recent-folder` leaves a `.render.json` whose `hash` matches `hashInputs`.
+Progress: done 2026-10-29; self-test passes and a host render of recent-folder/phone left a render.json whose hash equals hashInputs (host node 24, vite builds, no container).
 
 ### 1.3 Pace and caption knobs — [ ]‖
 Class: implement · Needs: 1.1 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && node --test e2e/video/knobs.test.mjs'`

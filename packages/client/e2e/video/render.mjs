@@ -7,8 +7,9 @@
 import { startShared, startApp } from '../app-lib.mjs';
 import { humanPage, overlayScript, sleep } from './lib.mjs';
 import { cases } from './cases.mjs';
+import { appVersion, hashInputs } from './inputs-hash.mjs';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -74,4 +75,7 @@ run([...trim, '-i', webm, '-vf', `scale=${viewport.width * scale}:${viewport.hei
 const gifWidth = phone ? 320 : 640;
 run([...trim, '-i', webm, '-vf', `fps=10,scale=${gifWidth}:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96[p];[b][p]paletteuse=dither=bayer`, '-loop', '0', gif]);
 rmSync(work, { recursive: true, force: true });
+// What the review ledger and the staleness check read (DECISION-0149): the hash says which inputs this video was made from.
+const meta = join(out, `${base}.render.json`);
+writeFileSync(meta, JSON.stringify({ case: caseName, profile, hash: await hashInputs(caseName), version: appVersion(), run: process.env.GITHUB_RUN_ID ?? null, renderedAt: new Date().toISOString(), files: [`${base}.mp4`, `${base}.gif`] }, null, 2) + '\n');
 console.log(`ok  ${base}: ${mp4}, ${gif}`);
