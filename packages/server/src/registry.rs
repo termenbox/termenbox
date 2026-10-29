@@ -24,6 +24,10 @@ use crate::pty::Attachment;
 
 const VERSION: u32 = 1;
 
+/// The most agent tabs one workspace may hold (decision 0147). It is per workspace, not per server; shell tabs do not
+/// count, and ACP sessions keep their own `max_sessions` cap. The default matches that cap's default of six.
+pub const MAX_AGENT_TABS: usize = 6;
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct TabRecord {
     pub id: String,
@@ -71,6 +75,40 @@ struct State {
     /// the owner's order and is the same for every device.
     #[serde(default)]
     order: Vec<String>,
+    /// Agent-tab slots promised to an in-flight `new_tab`, so two concurrent creators cannot both take the last slot.
+    /// Not persisted: a restarted server has no creates in flight.
+    #[serde(skip)]
+    reserved: HashMap<String, usize>,
+}
+
+fn agent_tabs(record: &WorkspaceRecord) -> usize {
+    record.tabs.iter().filter(|t| t.kind != "shell").count()
+}
+
+fn agent_cap_error() -> anyhow::Error {
+    anyhow!(
+        "This workspace already has {MAX_AGENT_TABS} agent tabs. Close one before opening another."
+    )
+}
+
+/// Holds one agent-tab slot while `new_tab` awaits the backend, and frees it on every way out.
+struct TabSlot<'a> {
+    registry: &'a Registry,
+    workspace: String,
+}
+
+impl Drop for TabSlot<'_> {
+    fn drop(&mut self) {
+        // A panic while another lock is held must not make dropping this guard panic too.
+        if let Ok(mut state) = self.registry.state.lock() {
+            if let Some(held) = state.reserved.get_mut(&self.workspace) {
+                *held = held.saturating_sub(1);
+                if *held == 0 {
+                    state.reserved.remove(&self.workspace);
+                }
+            }
+        }
+    }
 }
 
 pub struct Registry {
@@ -321,17 +359,32 @@ impl Registry {
         if !valid_template(kind) {
             return Err(anyhow!("Unknown agent template"));
         }
+        let agent = kind != "shell";
         let (record, root) = {
-            let state = self.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap();
             let record = state
                 .workspaces
                 .iter()
                 .find(|r| r.id == workspace)
                 .cloned()
                 .ok_or_else(|| anyhow!("Unknown workspace"))?;
+            if agent {
+                // Count recorded tabs (dormant ones included) and slots other in-flight creates already reserved,
+                // so two requests cannot both pass the cap before either starts an agent.
+                let held = state.reserved.get(workspace).copied().unwrap_or(0);
+                if agent_tabs(&record) + held >= MAX_AGENT_TABS {
+                    return Err(agent_cap_error());
+                }
+                *state.reserved.entry(workspace.to_string()).or_insert(0) += 1;
+            }
             let root = record.dir.clone();
             (record, root)
         };
+        // Frees the slot when this returns, after the tab has been recorded or on any error.
+        let _slot = agent.then(|| TabSlot {
+            registry: self,
+            workspace: workspace.to_string(),
+        });
         if record.tabs.iter().any(|t| t.window.is_none())
             || backend.windows(&record.id).await.is_err()
         {

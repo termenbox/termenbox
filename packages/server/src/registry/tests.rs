@@ -1,5 +1,6 @@
 use super::*;
-use crate::backend::{Runner, TmuxBackend};
+use crate::backend::{CreatedWorkspace, Runner, TmuxBackend, WorkspaceBackend};
+use termenbox_core::protocol::WindowInfo;
 
 fn temp(name: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
@@ -184,6 +185,286 @@ async fn a_migrated_tmux_session_keeps_its_windows_as_tabs_and_comes_back_as_she
 
     stop(&tmp).await;
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// A backend that keeps window ids in memory, so the cap rules can be tested without spawning agents in tmux.
+struct Fake {
+    windows: Mutex<HashMap<String, Vec<String>>>,
+    next: Mutex<u32>,
+}
+
+impl Fake {
+    fn new() -> Self {
+        Self {
+            windows: Mutex::new(HashMap::new()),
+            next: Mutex::new(0),
+        }
+    }
+
+    fn mint(&self, workspace: &str) -> String {
+        let mut next = self.next.lock().unwrap();
+        *next += 1;
+        let window = format!("@{next}");
+        self.windows
+            .lock()
+            .unwrap()
+            .entry(workspace.to_string())
+            .or_default()
+            .push(window.clone());
+        window
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkspaceBackend for Fake {
+    fn name(&self) -> &str {
+        "fake"
+    }
+
+    fn kinds(&self) -> Vec<String> {
+        vec!["tmux".into()]
+    }
+
+    async fn list(&self) -> Result<Vec<WorkspaceInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn create(&self, _: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn attach(&self, _: &str, _: u16, _: u16) -> Result<Attachment> {
+        Err(anyhow!("no terminal"))
+    }
+
+    async fn create_workspace(
+        &self,
+        name: &str,
+        _: Option<&str>,
+        _: Option<&str>,
+        _: Option<&str>,
+        _: &TabSpec,
+    ) -> Result<CreatedWorkspace> {
+        let id = format!("ws-{name}");
+        let window = self.mint(&id);
+        Ok(CreatedWorkspace {
+            id,
+            window: Some(window),
+        })
+    }
+
+    async fn windows(&self, id: &str) -> Result<Vec<WindowState>> {
+        let windows = self
+            .windows
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| anyhow!("no session"))?;
+        Ok(windows
+            .into_iter()
+            .enumerate()
+            .map(|(i, window_id)| WindowState {
+                info: WindowInfo {
+                    index: i as u32,
+                    name: String::new(),
+                    command: String::new(),
+                    path: String::new(),
+                    active: i == 0,
+                    agent: None,
+                },
+                activity: 0,
+                window_id,
+                tab: String::new(),
+            })
+            .collect())
+    }
+
+    async fn new_tab(&self, id: &str, _: &TabSpec) -> Result<String> {
+        if !self.windows.lock().unwrap().contains_key(id) {
+            return Err(anyhow!("no session"));
+        }
+        Ok(self.mint(id))
+    }
+
+    async fn ensure_session(&self, id: &str, _: &str, _: &str, _: &TabSpec) -> Result<String> {
+        self.windows
+            .lock()
+            .unwrap()
+            .entry(id.to_string())
+            .or_default();
+        Ok(self.mint(id))
+    }
+
+    async fn focus_tab(&self, _: &str, _: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn close_tab(&self, id: &str, window: &str) -> Result<()> {
+        if let Some(windows) = self.windows.lock().unwrap().get_mut(id) {
+            windows.retain(|w| w != window);
+        }
+        Ok(())
+    }
+
+    async fn kill(&self, id: &str) -> Result<()> {
+        self.windows.lock().unwrap().remove(id);
+        Ok(())
+    }
+}
+
+async fn fake_workspace(
+    registry: &Registry,
+    backend: &Fake,
+    name: &str,
+    dir: &Path,
+    kind: &str,
+) -> String {
+    let root = dir.to_string_lossy().into_owned();
+    registry
+        .create_workspace(backend, name, None, Some(&root), kind)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn agent_tabs_are_capped_per_workspace_and_closing_one_frees_a_slot() {
+    let dir = temp("cap");
+    let backend = Fake::new();
+    let registry = Registry::memory();
+    let work = fake_workspace(&registry, &backend, "Work", &dir, "claude").await;
+
+    // The first agent tab came with the workspace; five more reach the default cap of six.
+    for _ in 0..(MAX_AGENT_TABS - 1) {
+        registry
+            .new_tab(&backend, &work, "codex", "", "")
+            .await
+            .unwrap();
+    }
+    assert_eq!(registry.tabs(&work).len(), MAX_AGENT_TABS);
+
+    let refused = registry
+        .new_tab(&backend, &work, "claude", "", "")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        refused,
+        "This workspace already has 6 agent tabs. Close one before opening another."
+    );
+
+    // The cap is per workspace: another workspace still accepts an agent tab.
+    let other = fake_workspace(&registry, &backend, "Other", &dir, "shell").await;
+    registry
+        .new_tab(&backend, &other, "claude", "", "")
+        .await
+        .unwrap();
+    assert_eq!(agent_tabs(&registry.state.lock().unwrap().workspaces[1]), 1);
+
+    // Closing an agent tab frees exactly one slot.
+    let agent = registry
+        .tabs(&work)
+        .into_iter()
+        .find(|t| t.kind != "shell")
+        .unwrap();
+    registry
+        .close_tab(&backend, &work, &agent.id)
+        .await
+        .unwrap();
+    registry
+        .new_tab(&backend, &work, "claude", "", "")
+        .await
+        .unwrap();
+    assert_eq!(
+        agent_tabs(&registry.state.lock().unwrap().workspaces[0]),
+        MAX_AGENT_TABS
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn shell_tabs_still_open_at_the_cap() {
+    let dir = temp("cap-shell");
+    let backend = Fake::new();
+    let registry = Registry::memory();
+    let work = fake_workspace(&registry, &backend, "Work", &dir, "claude").await;
+    for _ in 0..(MAX_AGENT_TABS - 1) {
+        registry
+            .new_tab(&backend, &work, "claude", "", "")
+            .await
+            .unwrap();
+    }
+
+    registry
+        .new_tab(&backend, &work, "shell", "Logs", "")
+        .await
+        .unwrap();
+    assert_eq!(registry.tabs(&work).len(), MAX_AGENT_TABS + 1);
+    assert!(registry
+        .new_tab(&backend, &work, "claude", "", "")
+        .await
+        .is_err());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_dormant_agent_tab_still_counts_toward_the_cap() {
+    let dir = temp("cap-dormant");
+    let backend = Fake::new();
+    let registry = Registry::memory();
+    let work = fake_workspace(&registry, &backend, "Work", &dir, "claude").await;
+    for _ in 0..(MAX_AGENT_TABS - 1) {
+        registry
+            .new_tab(&backend, &work, "claude", "", "")
+            .await
+            .unwrap();
+    }
+    // A tmux server that died leaves the records behind with no window id.
+    for tab in &mut registry.state.lock().unwrap().workspaces[0].tabs {
+        tab.window = None;
+    }
+
+    let refused = registry
+        .new_tab(&backend, &work, "claude", "", "")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("already has 6 agent tabs"));
+    assert_eq!(registry.tabs(&work).len(), MAX_AGENT_TABS);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn two_concurrent_agent_creates_cannot_both_take_the_last_slot() {
+    let dir = temp("cap-race");
+    let backend = Fake::new();
+    let registry = Registry::memory();
+    let work = fake_workspace(&registry, &backend, "Work", &dir, "claude").await;
+    // Five agent tabs: one slot is left for the two creators to race over.
+    for _ in 0..(MAX_AGENT_TABS - 2) {
+        registry
+            .new_tab(&backend, &work, "claude", "", "")
+            .await
+            .unwrap();
+    }
+
+    let (first, second) = tokio::join!(
+        registry.new_tab(&backend, &work, "claude", "", ""),
+        registry.new_tab(&backend, &work, "codex", "", "")
+    );
+    let created = [first.is_ok(), second.is_ok()]
+        .iter()
+        .filter(|ok| **ok)
+        .count();
+    assert_eq!(created, 1, "exactly one create takes the last slot");
+    assert_eq!(registry.tabs(&work).len(), MAX_AGENT_TABS);
+    let freed = registry.state.lock().unwrap().reserved.clone();
+    assert!(freed.is_empty(), "every reservation is released");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
