@@ -3,7 +3,8 @@
 // Usage: node e2e/two-servers.mjs   (needs a built server, a built client (pnpm build), a built harness (pnpm e2e:build) and Chrome)
 //   TERMENBOX_BIN   server binary          (default ../../target/release/termenbox-server)
 //   CHROME_PATH    Chrome/Chromium binary (default: Playwright's "chrome" channel)
-// Not covered here (checked in e2e/navigation.mjs with injected states): the tab label frozen while a finger is down.
+// A workspace is a server record and each tab is a tmux window (decision 0147): workspaces are switched from the
+// Workspaces page rows, a phone shows one tab plaque that opens the tab menu, and a wide screen shows the tab strip.
 import { launch, contextOptions, tap } from './browser.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -182,123 +183,176 @@ try {
   );
   await page.reload();
 
-  // 1. Three workspaces in one repo, each running an agent, get distinct tabs; the second server's workspace is there too.
-  await page.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click(); // the app opens on Home (U05); the strip is on Workspaces
-  const tabs = page.getByRole('tab');
-  await waitFor(async () => (await tabs.count()) === 4, 'four tabs (3 + 1 on two servers)', 30000);
-  const labels = await tabs.evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')));
-  if (new Set(labels).size !== 4) fail(`tabs are not distinct: ${JSON.stringify(labels)}`);
-  for (const name of ['api', 'web', 'docs']) if (!labels.some((l) => l.includes(name))) fail(`no tab names workspace ${name}: ${JSON.stringify(labels)}`);
-  if (!labels.some((l) => l.includes('infra') && l.includes('beta'))) fail(`the second server's tab is missing: ${JSON.stringify(labels)}`);
-  ok('three agent workspaces in one repo and one on a second server give four distinct tabs');
-
-  const tab = (name) => page.locator(`[role=tab][aria-label*="${name}"]`).first();
-  const menu = (name) => page.getByRole('dialog', { name: `Windows of ${name}` });
-  await tab('api').click();
-  await page.waitForFunction(() => document.querySelector('[role=tab][aria-selected=true]'));
-
-  // 2. New window and window close reach the real tmux.
+  const bottom = (dest) => page.locator(`[data-shell=bottom-bar] [data-destination=${dest}]`);
+  const plaque = () => page.getByTestId('tab-plaque');
+  const menu = () => page.getByRole('dialog', { name: 'Tabs' });
+  const newTabDialog = () => page.getByRole('dialog', { name: 'New tab' });
+  const rows = () => page.locator('[data-workspace-groups] [data-row]');
+  const rowFor = (name) => page.locator('[data-workspace-groups] [data-row]').filter({ hasText: name }).first();
   const windowsOf = (s, name) => s.tmux('list-windows', '-t', `=${idOf(s, name)}`, '-F', '#{window_index}').split('\n').filter(Boolean).length;
-  await tab('api').click(); // the active tab opens its windows
-  await menu('api').waitFor();
-  await menu('api').getByRole('button', { name: '+ New window' }).click();
-  await waitFor(() => windowsOf(a, 'api') === 2, 'a second tmux window');
-  // The new window must stay the one on screen: attaching again used to jump back to the agent window.
-  await sleep(1500);
-  const activeWindow = () => a.tmux('list-windows', '-t', `=${idOf(a, 'api')}`, '-F', '#{window_index} #{window_active}').split('\n').map((l) => l.split(' ')).find((l) => l[1] === '1')[0];
-  if (activeWindow() !== '1') fail(`the new window did not stay current: window ${activeWindow()} is`);
-  await tab('api').click();
-  await menu('api').waitFor();
-  await menu('api').getByText('bash', { exact: false }).first().waitFor();
-  const index = Number(a.tmux('list-windows', '-t', `=${idOf(a, 'api')}`, '-F', '#{window_index} #{window_active}').split('\n').map((l) => l.split(' ')).find((l) => l[1] === '1')[0]);
-  await menu('api').getByRole('button', { name: `Close window ${index}` }).click();
-  const confirmButton = menu('api').getByRole('button', { name: `Confirm closing window ${index}` });
-  if (await confirmButton.count()) await confirmButton.click(); // an idle shell closes at once; a busy one asks
-  await waitFor(() => windowsOf(a, 'api') === 1, 'the window to close');
-  await page.keyboard.press('Escape');
-  ok('+ New window and the per-window close act on the real tmux workspace');
+  const tabsOf = (s, name) => s.tmux('list-windows', '-t', `=${idOf(s, name)}`, '-F', '#{@termenbox_tab}|#{window_id}|#{window_index}').split('\n').filter(Boolean);
+  const sessionsOf = (s) => s.tmux('list-sessions', '-F', '#{session_name}').split('\n').filter(Boolean);
+  const openWorkspace = async (name) => {
+    await bottom('workspaces').click();
+    const row = rowFor(name);
+    await row.waitFor();
+    // The row also has the drag, rename and actions buttons either side; the one with the name opens it.
+    await row.locator('button').filter({ hasText: name }).first().click();
+    await page.waitForFunction((n) => document.querySelector('[data-testid=tab-plaque]')?.getAttribute('aria-label')?.includes(`Tabs of ${n}`), name);
+  };
+  const openMenu = async () => {
+    await tap(plaque());
+    await menu().waitFor();
+  };
+  const tabRow = (label) => menu().locator('.tab').filter({ hasText: label }).first();
+  const switchTab = async (label) => {
+    await openMenu();
+    await tabRow(label).click();
+    await menu().waitFor({ state: 'hidden' });
+    await page.waitForFunction((l) => document.querySelector('[data-testid=tab-plaque]')?.getAttribute('aria-label')?.endsWith(`: ${l}`), label);
+  };
+  const currentTab = async () => ((await plaque().getAttribute('aria-label')) ?? '').split(': ')[1] ?? '';
+  const terminalText = () => page.locator('.xterm-rows').innerText();
+  const waitTerminal = async (text) => {
+    try {
+      await page.waitForFunction((t) => document.querySelector('.xterm-rows')?.textContent?.includes(t), text, { timeout: 15000 });
+    } catch (e) {
+      console.error(`terminal did not show ${text}: ${JSON.stringify(await terminalText())}`);
+      throw e;
+    }
+  };
+
+  // 1. Workspaces are the rows on the Workspaces page, from both real servers.
+  await bottom('workspaces').click();
+  await waitFor(async () => (await rows().count()) === 4, 'four workspace rows (3 + 1 on two servers)', 30000);
+  const rowText = await rows().evaluateAll((els) => els.map((e) => e.textContent ?? ''));
+  for (const name of ['api', 'web', 'docs']) if (!rowText.some((t) => t.includes(name))) fail(`no workspace row named ${name}: ${JSON.stringify(rowText)}`);
+  if (!rowText.some((t) => t.includes('infra') && t.includes('beta'))) fail(`the second server's workspace row is missing: ${JSON.stringify(rowText)}`);
+  ok('three agent workspaces in one repo and one on a second server give four rows');
+
+  // 2. Opening a row shows one phone plaque for that workspace's tabs.
+  await openWorkspace('api');
+  if ((await plaque().count()) !== 1) fail('the phone has no single tab plaque');
+  if ((await page.locator('[data-testid=tab-strip]').count()) !== 0) fail('the desktop tab strip is on the phone');
+  const agentTab = await currentTab();
+  if (!agentTab) fail('the plaque does not name the current tab');
+  if ((await windowsOf(a, 'api')) !== 1) fail('api did not start with one tmux window');
+  ok(`a phone shows one tab plaque (${agentTab}) for the open workspace`);
 
   // 3. A workspace that needs you shows the banner without changing the tab the user is on.
-  // The label ends with the agent's status, which moves by itself; the tab is told apart by what comes before it.
-  const activeTab = async () => ((await page.locator('[role=tab][aria-selected=true]').getAttribute('aria-label')) ?? '').split(' · ').slice(0, -1).join(' · ');
-  const activeBefore = await activeTab();
-  const sendNeedsInput = (s, name) =>
-    s.tmux(
-      'new-window', '-d', '-t', `=${idOf(s, name)}:`,
-      // node instead of python3: node is guaranteed in the container and on the bare runner.
-      `node -e 'const n=require("net");const c=n.connect(process.env.TERMENBOX_EVENT_SOCKET);c.write(JSON.stringify({session:process.env.TERMENBOX_SESSION,token:process.env.TERMENBOX_EVENT_TOKEN,adapter:"claude",data:{hook_event_name:"Notification",message:"Allow rm?"}})+"\\n");c.end()'`,
-    );
-  sendNeedsInput(a, 'docs');
+  const activeBefore = await currentTab();
+  a.tmux(
+    'new-window', '-d', '-t', `=${idOf(a, 'docs')}:`,
+    // node instead of python3: node is guaranteed in the container and on the bare runner.
+    `node -e 'const n=require("net");const c=n.connect(process.env.TERMENBOX_EVENT_SOCKET);c.write(JSON.stringify({session:process.env.TERMENBOX_SESSION,token:process.env.TERMENBOX_EVENT_TOKEN,adapter:"claude",data:{hook_event_name:"Notification",message:"Allow rm?"}})+"\\n");c.end()'`,
+  );
   await page.getByRole('status').filter({ hasText: /needs you/i }).first().waitFor({ timeout: 15000 });
-  const activeAfter = await activeTab();
-  if (activeAfter !== activeBefore) fail(`the banner changed the tab: ${activeBefore} -> ${activeAfter}`);
-  ok('the needs-you banner appears without a tab change');
+  if ((await currentTab()) !== activeBefore) fail(`the banner changed the tab: ${activeBefore} -> ${await currentTab()}`);
+  ok('the needs-you banner appears without changing the current tab');
 
-  // 4. A tab switch shows the last screen of the other workspace before the live repaint.
-  await page.evaluate(() => {
-    window.__previewSeen = false;
-    new MutationObserver(() => {
-      if (document.querySelector('.screen.previewing')) window.__previewSeen = true;
-    }).observe(document.body, { subtree: true, attributes: true, childList: true });
-  });
-  // The finger goes down on the tab (the screen is fetched now, decision 0084), and lifts a moment later.
-  await tab('web').dispatchEvent('pointerdown', { pointerId: 7, pointerType: 'touch', clientX: 100, clientY: 20 });
-  await sleep(300); // under the 550 ms long press
-  await tab('web').dispatchEvent('pointerup', { pointerId: 7, pointerType: 'touch', clientX: 100, clientY: 20 });
-  await tab('web').click();
-  await page.waitForFunction(() => document.querySelector('[role=tab][aria-selected=true]')?.getAttribute('aria-label')?.includes('web'));
-  await page.waitForFunction(() => !!document.querySelector('.xterm-screen'), null, { timeout: 15000 });
-  await sleep(500);
-  if (!(await page.evaluate(() => window.__previewSeen))) fail('switching tabs never showed the preview of the other workspace');
-  else ok('a workspace switch shows a snapshot before the live repaint');
+  // 4. The tab menu creates a tab in the open workspace; the server and tmux record it.
+  const agentTabId = tabsOf(a, 'api')[0]?.split('|')[0];
+  await openMenu();
+  if (!(await menu().getByRole('button', { name: '+ New window', exact: true }).count())) fail('the tab menu has no + New window action');
+  await menu().getByRole('button', { name: '+ New window', exact: true }).click();
+  await newTabDialog().waitFor();
+  const heading = (await newTabDialog().getByRole('heading').innerText()) ?? '';
+  if (!heading.includes('New tab in api')) fail(`the new-tab dialog is not for api: ${heading}`);
+  await newTabDialog().getByRole('button', { name: 'Create', exact: true }).click();
+  await newTabDialog().waitFor({ state: 'hidden' });
+  await waitFor(() => windowsOf(a, 'api') === 2, 'a second tmux window');
+  await page.waitForFunction(() => document.querySelector('[data-testid=tab-plaque]')?.getAttribute('aria-label')?.endsWith(': Shell'));
+  const shellTab = await currentTab();
+  if (shellTab !== 'Shell') fail(`the new tab is not current: ${shellTab}`);
+  const tabOptions = tabsOf(a, 'api');
+  const tabIds = tabOptions.map((l) => l.split('|')[0]);
+  if (tabIds.length !== 2 || tabIds.some((id) => !id) || new Set(tabIds).size !== 2) fail(`tmux has no distinct @termenbox_tab for both windows: ${JSON.stringify(tabOptions)}`);
+  ok('+ New window creates a tab in the current workspace and tmux carries @termenbox_tab');
 
-  // 4b. Switching back to workspaces already visited never shows a blank screen: the saved screen is drawn in the
-  // same write that clears the terminal, and the live repaint lands on the same cells.
-  const switchTo = async (name) => {
-    await tab(name).click();
-    await page.waitForFunction((n) => document.querySelector('[role=tab][aria-selected=true]')?.getAttribute('aria-label')?.includes(n), name);
-    await sleep(700);
-  };
-  await switchTo('docs');
-  await switchTo('web'); // both workspaces have now been shown once
-  await page.evaluate(() => {
-    window.__blank = 0;
-    window.__frames = 0;
-    const tick = () => {
-      const rows = document.querySelector('.xterm-rows');
-      if (rows) {
-        window.__frames++;
-        if (!rows.textContent.trim()) window.__blank++;
-      }
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-  });
-  await switchTo('docs');
-  await switchTo('web');
-  await switchTo('docs');
-  await switchTo('web');
-  const { blank, frames } = await page.evaluate(() => ({ blank: window.__blank, frames: window.__frames }));
-  if (!frames) fail('no terminal rows to sample (the DOM renderer is not in use)');
-  else if (blank) fail(`${blank} of ${frames} frames were blank while switching between visited workspaces`);
-  else ok(`tab 1 - tab 2 - tab 1 shows no blank frame (${frames} frames sampled)`);
+  // 5. Switching tabs keeps the terminal, and each tab shows its own window.
+  const shellWindow = tabOptions
+    .map((l) => l.split('|'))
+    .find(([tab]) => tab !== agentTabId)?.[1];
+  a.tmux('send-keys', '-t', shellWindow, 'SHELL-MARK', 'Enter');
+  await switchTab(agentTab);
+  await waitTerminal('READY-api');
+  await switchTab(shellTab);
+  await waitTerminal('SHELL-MARK');
+  if ((await page.locator('.xterm-rows').count()) !== 1) fail('switching tabs left no visible terminal');
+  ok('switching tabs keeps the terminal and shows each tab’s own window');
 
-  // 5. Detach closes the tab and keeps the workspace; Close workspace confirms, then ends it.
-  await tab('web').click();
-  await menu('web').waitFor();
-  await menu('web').getByRole('button', { name: 'Detach', exact: true }).click();
-  await tab('web').waitFor({ state: 'detached' });
-  if (!a.tmux('list-sessions', '-F', '#{session_name}').split('\n').includes(idOf(a, 'web'))) fail('Detach ended the workspace');
-  await tap(tab('docs'));
-  await page.waitForFunction(() => document.querySelector('[role=tab][aria-selected=true]')?.getAttribute('aria-label')?.includes('docs'));
-  await tab('docs').click();
-  await menu('docs').waitFor();
-  const [docsId, infraId] = [idOf(a, 'docs'), idOf(b, 'infra')];
-  await menu('docs').getByRole('button', { name: 'Close workspace', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Workspace actions' }).getByRole('button', { name: 'Close workspace', exact: true }).click();
-  await waitFor(() => !a.tmux('list-sessions', '-F', '#{session_name}').split('\n').includes(docsId), 'docs to end');
-  if (!b.tmux('list-sessions', '-F', '#{session_name}').split('\n').includes(infraId)) fail('the other server lost its workspace');
-  ok('Detach keeps the workspace running; Close workspace asks and ends only that workspace');
+  // 5b. Going back to a visited tab still shows what that window held; nothing is lost across switches.
+  for (let i = 0; i < 3; i++) {
+    await switchTab(agentTab);
+    await waitTerminal('READY-api');
+    await switchTab(shellTab);
+    await waitTerminal('SHELL-MARK');
+  }
+  const settled = (await terminalText()).trim();
+  if (!settled) fail('the terminal is blank after switching between visited tabs');
+  else ok('returning to a visited tab keeps its terminal text');
+
+  // 6. Deleting a tab frees its tmux window; the workspace keeps the other one.
+  await openMenu();
+  await menu().getByRole('button', { name: `Actions for ${shellTab}`, exact: true }).click();
+  await menu().getByRole('button', { name: 'Delete', exact: true }).click();
+  await menu().getByRole('button', { name: 'Delete this tab?', exact: true }).click();
+  await waitFor(() => windowsOf(a, 'api') === 1, 'the tab to close');
+  await page.waitForFunction((l) => document.querySelector('[data-testid=tab-plaque]')?.getAttribute('aria-label')?.endsWith(`: ${l}`), agentTab);
+  await menu().getByRole('button', { name: 'Close the tab menu' }).click().catch(() => {});
+  if ((await currentTab()) !== agentTab) fail(`the remaining tab is not current: ${await currentTab()}`);
+  ok('deleting a tab closes its tmux window and keeps the workspace');
+
+  // 7. The second real server keeps its workspace across a switch; a workspace switch keeps the terminal text.
+  await openWorkspace('infra');
+  if (!sessionsOf(b).includes(idOf(b, 'infra'))) fail('the second server lost its workspace');
+  if (!(await currentTab())) fail('the second server has no tab');
+  await openWorkspace('api');
+  await waitTerminal('READY-api');
+  if (!sessionsOf(a).includes(idOf(a, 'api'))) fail('switching away ended the workspace');
+  ok('workspace switches from the Workspaces page keep both servers’ terminals');
+
+  // 8. A wide screen uses the tab strip; its + creates a tab in the current workspace, not a new workspace.
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const strip = page.locator('[data-testid=tab-strip]');
+  await strip.waitFor();
+  if (await plaque().count()) fail('the phone plaque is still shown on a wide screen');
+  const stripTabs = strip.getByRole('tab');
+  await waitFor(async () => (await stripTabs.count()) === 1, 'one tab in the strip');
+  const sessionsBefore = sessionsOf(a).length;
+  await page.getByTestId('strip-new-tab').click();
+  await newTabDialog().waitFor();
+  if (!((await newTabDialog().getByRole('heading').innerText()) ?? '').includes('New tab in api')) fail('the strip + did not open a tab for the current workspace');
+  await newTabDialog().getByRole('button', { name: 'Create', exact: true }).click();
+  await newTabDialog().waitFor({ state: 'hidden' });
+  await waitFor(async () => (await stripTabs.count()) === 2, 'two tabs in the strip');
+  if (sessionsOf(a).length !== sessionsBefore) fail('the strip + started a new workspace instead of a tab');
+  await waitFor(() => windowsOf(a, 'api') === 2, 'the strip tab in tmux');
+  await stripTabs.filter({ hasText: agentTab }).click();
+  await page.waitForFunction((l) => document.querySelector('[data-testid=tab-strip] [role=tab][aria-selected=true]')?.textContent?.includes(l), agentTab);
+  await stripTabs.filter({ hasText: 'Shell' }).click();
+  await page.waitForFunction(() => document.querySelector('[data-testid=tab-strip] [role=tab][aria-selected=true]')?.textContent?.includes('Shell'));
+  // The current tab opens the same menu; delete the tab there and leave the workspace alone.
+  await stripTabs.filter({ hasText: 'Shell' }).click();
+  await menu().waitFor();
+  await menu().getByRole('button', { name: 'Actions for Shell', exact: true }).click();
+  await menu().getByRole('button', { name: 'Delete', exact: true }).click();
+  await menu().getByRole('button', { name: 'Delete this tab?', exact: true }).click();
+  await waitFor(() => windowsOf(a, 'api') === 1, 'the strip tab to close');
+  await menu().getByRole('button', { name: 'Close the tab menu' }).click();
+  await waitFor(async () => (await stripTabs.count()) === 1, 'one tab in the strip again');
+  ok('the desktop strip and its + act on the current workspace’s tabs, not on workspaces');
+
+  // 9. Back on the phone, Close workspace still asks and ends only that workspace.
+  await page.setViewportSize({ width: 390, height: 800 });
+  await plaque().waitFor();
+  await openMenu();
+  await menu().getByRole('button', { name: 'Close workspace', exact: true }).click();
+  await menu().getByRole('button', { name: 'Close workspace', exact: true }).click();
+  const [apiId, infraId] = [idOf(a, 'api'), idOf(b, 'infra')];
+  await waitFor(() => !sessionsOf(a).includes(apiId), 'api to end');
+  if (!sessionsOf(b).includes(infraId)) fail('the other server lost its workspace');
+  ok('Close workspace asks and ends only that workspace, leaving the other server alone');
 
   if (errors.length) fail(`page errors: ${errors.join(' | ')}`);
 } catch (e) {
