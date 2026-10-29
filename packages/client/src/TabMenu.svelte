@@ -9,7 +9,7 @@
 
   interface TabGroup { workspace: HubWorkspace; tabs: TabInfo[]; editable?: boolean }
   /**
-   * Every tab of one workspace, or of every workspace from the Workspaces page (decision 0147). Rename and Delete are in
+   * Every tab of one workspace, or of every workspace from the Workspaces page (decision 0149). Rename and Delete are in
    * the row's own menu, never a one-tap on the tab; Close workspace is the only workspace action and always asks.
    */
   let { groups, activeKey = null, activeTab = null, states = {}, cacheTtlMs = 5 * 60_000, onopen, onrename, onclosetab, onmove, onnew, oncloseworkspace, onclose }: {

@@ -835,7 +835,7 @@
     if (!('workspace' in m) || !m.workspace) return;
     let out = m;
     // An answer from Home or the inbox belongs to the tab that asked; the workspace answer would otherwise be
-    // ambiguous when several tabs of one workspace are open (decision 0147).
+    // ambiguous when several tabs of one workspace are open (decision 0149).
     if (m.type === 'answer' && !m.tab) {
       const s = hub.findWorkspace(m.workspace);
       const states = s ? Object.values($allTabStates).filter((t) => t.workspace === s.id) : [];

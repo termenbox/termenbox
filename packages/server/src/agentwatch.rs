@@ -122,7 +122,7 @@ pub async fn scan_tmux_once(
     hub.forget_except(prefix, &live.iter().cloned().collect::<Vec<_>>());
     tracker.retain(&live);
     // The hooks name a pane (`TMUX_PANE`); this is where panes learn their tab, and every agent pane reports its
-    // own process state so a workspace with several tabs never shows one tab's work on another (decision 0147).
+    // own process state so a workspace with several tabs never shows one tab's work on another (decision 0149).
     if let Some(status) = hub.tab_status() {
         let live_tabs: HashSet<(String, String)> = panes
             .iter()

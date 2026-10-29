@@ -174,7 +174,7 @@ pub struct WorkspaceAgentState {
     pub waiting_since: Option<u64>,
 }
 
-/// The prompt one tab waits on (decision 0147). The choices are labels only; the keys stay on the server.
+/// The prompt one tab waits on (decision 0149). The choices are labels only; the keys stay on the server.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct TabPrompt {
     pub id: String,
@@ -234,7 +234,7 @@ pub struct Task {
 pub struct Attention {
     pub id: String,
     pub workspace: String,
-    /// The tab that asked, when a hook proved which one (decision 0147); old items and workspace-level hints have none.
+    /// The tab that asked, when a hook proved which one (decision 0149); old items and workspace-level hints have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tab: Option<String>,
     pub kind: AttentionKind,

@@ -4,7 +4,7 @@
   import type { TabInfo } from './lib/protocol';
   import type { HubWorkspace } from './lib/hub';
   /**
-   * The tabs of the open workspace (decision 0147). A phone has one plaque with the current tab; a wide screen has the
+   * The tabs of the open workspace (decision 0149). A phone has one plaque with the current tab; a wide screen has the
    * strip. Opening a tab that is not current switches to it; the current tab opens the tab menu, so a rename or delete is
    * never a one-tap on the tab itself.
    */

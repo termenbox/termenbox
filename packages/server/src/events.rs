@@ -442,7 +442,7 @@ pub struct EventHub {
     history: Option<Arc<crate::history::History>>,
     /// Where each Claude Code workspace's token counts are read from (U13).
     usage: Arc<crate::transcript::UsageTracker>,
-    /// Per-tab state (decision 0147); absent in tests that do not need it.
+    /// Per-tab state (decision 0149); absent in tests that do not need it.
     tab_status: Option<Arc<TabStatus>>,
 }
 

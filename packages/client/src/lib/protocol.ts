@@ -330,7 +330,7 @@ export interface WorkspaceAgentState {
   waiting_since?: number;
 }
 
-/** The prompt one tab waits on (decision 0147); the choices are labels, the keys stay on the server. */
+/** The prompt one tab waits on (decision 0149); the choices are labels, the keys stay on the server. */
 export interface TabPrompt {
   id: string;
   kind: string;
@@ -375,7 +375,7 @@ export interface WorkspaceActivity {
 export interface Attention {
   id: string;
   workspace: string;
-  /** The tab that asked, when a hook proved it (decision 0147); older servers send none. */
+  /** The tab that asked, when a hook proved it (decision 0149); older servers send none. */
   tab?: string;
   kind: AttentionKind;
   raised_at: number;

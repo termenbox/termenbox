@@ -654,7 +654,7 @@ pub enum ServerMessage {
         #[serde(default)]
         representative: Option<u32>,
     },
-    /// The state of every tab; pushed on a change (decision 0147).
+    /// The state of every tab; pushed on a change (decision 0149).
     TabStates {
         states: Vec<crate::events::TabAgentState>,
     },

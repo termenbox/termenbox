@@ -258,7 +258,7 @@ pub fn payload(workspace: &str, kind: AttentionKind, at: u64, workspace_key: &st
     payload_for(workspace, kind, at, workspace_key, None)
 }
 
-/// Like `payload`, with the tab that asked. The deep link opens that tab, not just the workspace (decision 0147).
+/// Like `payload`, with the tab that asked. The deep link opens that tab, not just the workspace (decision 0149).
 pub fn payload_for(
     workspace: &str,
     kind: AttentionKind,
@@ -506,7 +506,7 @@ impl Push {
         self.set_foreground_tab(conn, workspace, None);
     }
 
-    /// The foreground workspace and, when the client names it, the visible tab (decision 0147).
+    /// The foreground workspace and, when the client names it, the visible tab (decision 0149).
     pub fn set_foreground_tab(&self, conn: u64, workspace: Option<String>, tab: Option<String>) {
         let mut fg = self.foreground.lock().unwrap();
         match workspace {

@@ -1,4 +1,4 @@
-//! Per-tab agent state (decision 0147). The workspace ring stays the aggregate that Home, push and history use; this
+//! Per-tab agent state (decision 0149). The workspace ring stays the aggregate that Home, push and history use; this
 //! map adds which tab is working, waiting or failed, and the prompt that tab is waiting on.
 //!
 //! A hook carries the pane it ran in (`TMUX_PANE`); the scan maps each pane to its `@termenbox_tab`, so an event from
