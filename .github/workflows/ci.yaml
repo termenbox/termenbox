@@ -69,6 +69,45 @@ jobs:
       - name: Gate - client bundle size
         run: pnpm --filter termenbox-client run check:bundle
 
+  # The optional wrappers (decision 0140): the icon and bridge generators, the injected bridge and the Electron
+  # main process with its navigation/CSP tests. Platform builds still need their own hosts (R76 step 5); this
+  # keeps the shared native code from rotting in the meantime.
+  native:
+    name: Native wrappers (assets, bridge, electron)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Generate the icons and splash from assets/icon.svg
+        run: pnpm --filter termenbox-native run build:assets
+
+      - name: Build and typecheck the injected bridge
+        run: |
+          pnpm --filter termenbox-native run build:bridge
+          pnpm --filter termenbox-native run typecheck:bridge
+
+      # The Electron sub-project installs its own dependencies (it is outside the pnpm workspace), and only the
+      # main process is compiled here, so the Electron binary itself is not downloaded.
+      - name: Build the Electron main process and check its security rules
+        working-directory: packages/native/electron
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: |
+          npm install --no-audit --no-fund
+          npm test
+
   rust-lint:
     name: Rust (fmt, clippy)
     runs-on: ubuntu-latest

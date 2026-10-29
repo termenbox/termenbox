@@ -1,0 +1,35 @@
+{
+  "name": "termenbox-native",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Optional iOS, Android and desktop wrappers for the Termenbox client",
+  "license": "MIT",
+  "scripts": {
+    "build:client": "pnpm --filter termenbox-client run build",
+    "build:bridge": "node scripts/build-bridge.mjs",
+    "build:assets": "node scripts/build-assets.mjs",
+    "typecheck:bridge": "tsc -p bridge/tsconfig.json",
+    "sync": "node scripts/build-assets.mjs && node scripts/build-bridge.mjs && cap sync && node scripts/inject-bridge.mjs android ios",
+    "sync:android": "node scripts/build-assets.mjs && node scripts/build-bridge.mjs && cap sync android && node scripts/inject-bridge.mjs android",
+    "sync:electron": "node scripts/build-assets.mjs && cap sync @capacitor-community/electron",
+    "sync:ios": "node scripts/build-assets.mjs && node scripts/build-bridge.mjs && cap sync ios && node scripts/inject-bridge.mjs ios",
+    "open:android": "cap open android",
+    "open:electron": "cap open @capacitor-community/electron",
+    "open:ios": "cap open ios"
+  },
+  "dependencies": {
+    "@capacitor-community/electron": "5.0.1",
+    "@capacitor-community/keep-awake": "8.0.1",
+    "@capacitor/android": "8.5.3",
+    "@capacitor/app": "8.1.2",
+    "@capacitor/core": "8.5.3",
+    "@capacitor/ios": "8.5.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.3",
+    "esbuild": "^0.28.2",
+    "png-to-ico": "^3.0.2",
+    "sharp": "^0.35.5",
+    "typescript": "^5.0.0"
+  }
+}
