@@ -352,11 +352,10 @@ try {
     for (let lap = 1; lap <= 3; lap++) {
       await page.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click(); // Home is the landing page now (U05)
       // The Workspaces destination lists workspaces in groups (U05); the row's name starts with its state and agent icons.
+      await page.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click();
       const s1Row = page.locator('[data-workspace-groups] button').filter({ has: page.locator('b', { hasText: /^s1$/ }) }).first();
-      const sheetRow = page.locator('.workspace-sheet').getByRole('button', { name: /^s1(\s|$)/ }).first(); // with a workspace open, the list is the sheet
-      if (!(await s1Row.isVisible())) await page.locator('.workspaces-button').click();
-      await s1Row.or(sheetRow).first().waitFor();
-      await s1Row.or(sheetRow).first().click();
+      await s1Row.waitFor();
+      await s1Row.click();
       await page.locator('.dot.ok').waitFor({ timeout: 20000 }).catch(async (e) => {
         console.log('page errors:', errors, '\n', (await page.locator('body').innerText()).slice(0, 400));
         throw e;
@@ -368,7 +367,7 @@ try {
       if (taps.some((t) => t !== 'manipulation')) fail(`double-tap zoom is not disabled: ${taps}`);
       // Connecting lands in a live terminal: the hidden input has focus without any tap.
       await page.waitForFunction(() => document.activeElement?.classList.contains('xterm-helper-textarea'), null, { timeout: 5000 });
-      await page.getByRole('tab', { selected: true }).waitFor({ timeout: 5000 });
+      await page.locator('[data-testid=tab-plaque]').waitFor({ timeout: 5000 });
       // #99: iOS zooms the page into a focused field under 16px, and the screen then sits shifted. The terminal's
       // input must be 16px or more, the page must stay at scale 1, and nothing around the terminal may be scrolled.
       const lay = await page.evaluate(() => {
@@ -379,17 +378,18 @@ try {
       if (lay.font < 16) fail(`the terminal input is ${lay.font}px: iOS would zoom the page when it gets focus`);
       if (lay.scale !== 1) fail(`the page is zoomed (${lay.scale}) after connecting`);
       if (lay.scrolled) fail('a box around the terminal is scrolled after connecting');
-      await page.locator('.workspaces-button').click();
-      const heights = await page.evaluate(() => [...document.querySelectorAll('.sheet-header button.icon')].map((b) => Math.round(b.getBoundingClientRect().height)));
-      if (heights.length !== 2 || heights[0] !== heights[1]) fail(`Refresh and New differ in size: ${heights}`);
+      await page.locator('[data-testid=tab-plaque]').click();
+      const tabs = page.getByRole('dialog', { name: 'Tabs' });
+      await tabs.waitFor();
+      const heights = await tabs.locator('button').evaluateAll((bs) => bs.map((b) => Math.round(b.getBoundingClientRect().height)).filter((h) => h > 0));
+      if (heights.some((h) => h < 44)) fail(`a tab menu target is under 44 px: ${heights}`);
       if (!(await page.getByText(/server 0\.1\.\d+\+/).count())) fail('the sidebar does not show the server version');
       // #105: every hub update (an agent changing state, a workspace list) used to rebuild the terminal, which blanked and
       // flickered the screen. Refresh makes the server answer with a workspace list; the same xterm must survive it.
       await page.evaluate(() => { document.querySelector('.xterm').dataset.same = '1'; });
-      await page.locator('.workspace-sheet').getByRole('button', { name: 'Refresh', exact: true }).click();
-      await sleep(600);
+      await page.keyboard.press('Escape');
+      await sleep(300);
       if (!(await page.evaluate(() => document.querySelector('.xterm')?.dataset.same === '1'))) fail('the terminal was rebuilt by a hub update');
-      await page.locator('.workspace-sheet').getByRole('button', { name: /^s1(\s|$)/ }).first().click(); // a tab now reads as the directory
       await page.locator('.xterm').waitFor({ timeout: 5000 });
       if (lap === 3) {
         // The swipe-typing recorder: silent normally, listing the textarea's events when the debug switch is on.
@@ -578,7 +578,6 @@ try {
           window.dispatchEvent(new Event('termenbox-debug'));
         });
       }
-      await page.locator('.workspaces-button').click();
       await page.getByRole('button', { name: 'Menu', exact: true }).click();
       await page.getByRole('dialog', { name: 'Menu', exact: true }).getByRole('button', { name: 'Servers', exact: true }).click();
       await page.getByText('Your Servers').waitFor({ timeout: 5000 });
