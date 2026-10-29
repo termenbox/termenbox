@@ -380,6 +380,5 @@ export interface ServerListItem {
  *  server's copy is `ClientMessage::is_control`; a test checks the two lists agree. */
 export const CONTROL_TYPES: ReadonlySet<string> = new Set([
   'acp_interrupt', 'acp_answer', 'acp_prompt', 'acp_mode', 'answer', 'workspace_answer', 'detach', 'close_workspace',
-  'rename_workspace', 'new_workspace', 'new_window', 'close_window', 'select_window', 'new_tab', 'rename_tab',
-  'close_tab', 'move_tab', 'focus_tab', 'move_workspace', 'resize', 'foreground',
+  'rename_workspace', 'new_workspace', 'new_window', 'close_window', 'select_window', 'resize', 'foreground',
 ]);

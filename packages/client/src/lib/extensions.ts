@@ -2,7 +2,7 @@
 // Extensions ride in `_meta` under `termenbox.dev/<name>` or as methods `_termenbox.dev/<name>`; both sides list what
 // they implement at `initialize` and only what both list is used. Shared vectors: packages/core/testdata/extension-vectors.json.
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 1;
 export const NAMESPACE = 'termenbox.dev';
 export const METHOD_NOT_FOUND = -32601;
 const KEY_PREFIX = 'termenbox.dev/';

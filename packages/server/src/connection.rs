@@ -142,7 +142,7 @@ pub async fn run(mut link: Link, state: AppState) {
         control_channel: protocol >= 1,
         user: identity.login.clone(),
         channels: if lanes { vec!["term".into()] } else { vec![] },
-        tabs: protocol >= 2,
+        tabs: true,
         server_name: state.server_name.clone(),
         mode: state.mode.clone(),
         version: crate::version(),

@@ -483,12 +483,6 @@ impl ClientMessage {
                 | ClientMessage::NewWindow { .. }
                 | ClientMessage::CloseWindow { .. }
                 | ClientMessage::SelectWindow { .. }
-                | ClientMessage::NewTab { .. }
-                | ClientMessage::RenameTab { .. }
-                | ClientMessage::CloseTab { .. }
-                | ClientMessage::MoveTab { .. }
-                | ClientMessage::FocusTab { .. }
-                | ClientMessage::MoveWorkspace { .. }
                 | ClientMessage::Resize { .. }
                 | ClientMessage::Foreground { .. }
         )

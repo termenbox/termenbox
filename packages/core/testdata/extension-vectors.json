@@ -17,7 +17,7 @@
     }
    },
    "expect": {
-    "protocol": 2,
+    "protocol": 1,
     "versions": {
      "seq": 1,
      "tier": 1
