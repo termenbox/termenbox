@@ -185,6 +185,7 @@ impl ServerClient {
             | ServerMessage::PreviousExit { .. }
             | ServerMessage::DiagnosticsBundle { .. }
             | ServerMessage::ClaimPreview { .. }
+            | ServerMessage::TabStates { .. }
             | ServerMessage::Unknown => {}
             ServerMessage::Error { message } => {
                 info!("Server error: {}", message);
