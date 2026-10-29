@@ -231,19 +231,18 @@ impl Registry {
             return Err(anyhow!("Unknown agent template"));
         }
         let label = clean_label(name)?.ok_or_else(|| anyhow!("A workspace needs a name"))?;
-        let root = dir
-            .filter(|d| !d.is_empty())
-            .map(str::to_string)
-            .or_else(|| std::env::var("HOME").ok())
-            .unwrap_or_else(|| "/".into());
-        if !valid_dir(&root) {
-            return Err(anyhow!("The directory must be an absolute path"));
+        let explicit = dir.filter(|d| !d.is_empty()).map(str::to_string);
+        if let Some(root) = &explicit {
+            if !valid_dir(root) {
+                return Err(anyhow!("The directory must be an absolute path"));
+            }
         }
         let first = TabSpec {
             id: "t1".into(),
             label: tab_label(kind),
             kind: kind.into(),
-            dir: root.clone(),
+            // A workspace without a directory starts where tmux starts; the real path is read back below.
+            dir: explicit.clone().unwrap_or_default(),
         };
         let kinds = backend.kinds();
         let chosen = backend_kind
@@ -262,7 +261,7 @@ impl Registry {
             .create_workspace(
                 &label,
                 Some(chosen.as_str()),
-                Some(&root),
+                explicit.as_deref(),
                 Some(kind),
                 &first,
             )
@@ -270,6 +269,15 @@ impl Registry {
         if chosen != "tmux" {
             return Ok(made.id);
         }
+        // tmux chose the working directory (the user's home in host mode, for instance): keep what it used.
+        let root = match explicit {
+            Some(root) => root,
+            None => backend
+                .windows(&made.id)
+                .await
+                .map(|w| dir_of(&w))
+                .unwrap_or_else(|_| std::env::var("HOME").unwrap_or_else(|_| "/".into())),
+        };
         let mut state = self.state.lock().unwrap();
         let record = WorkspaceRecord {
             id: made.id.clone(),
