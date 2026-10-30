@@ -38,7 +38,8 @@ export class ScriptedServer {
   tree = new FakeTree();
   states = { s1: 'needs_input', s2: 'needs_input', s3: 'idle' };
   names = { s1: 'build', s2: 'deploy', s3: 'shell' };
-  constructor() {
+  constructor({ tabs = false } = {}) {
+    this.tabs = tabs;
     this.views.set('s1', this.view('s1', { prompt: CLAUDE_PROMPT, tail: ['$ npm test', 'waiting for permission'] }));
     this.views.set('s2', this.view('s2', { prompt: { ...CLAUDE_PROMPT, id: 'p2' }, tail: ['deploying'] }));
     this.views.set('s3', this.view('s3', { tail: ['$'] }));
@@ -46,7 +47,11 @@ export class ScriptedServer {
   view(workspace, extra) {
     return { type: 'workspace_view', workspace: workspace, tier: 't1', agent: 'claude', tail: [], hash: `h${Math.random().toString(36).slice(2)}`, task: 'Fix the login test', ...extra };
   }
-  workspaces() { return Object.keys(this.names).map((id) => ({ id, name: this.names[id], agent: null })); }
+  /** A tab-capable server (decision 0149) sends `tabs: true` and a tab per workspace; every other scenario keeps the old strip. */
+  workspaces() {
+    return Object.keys(this.names).map((id, order) => ({ id, name: this.names[id], agent: null,
+      ...(this.tabs ? { dir: `/home/u/${id}`, order, focus: 't0', tabs: [{ id: 't0', label: 'shell', kind: 'shell', dir: '', order: 0, window: '@1' }] } : {}) }));
+  }
   snapshot() {
     return { type: 'agent_snapshot', states: Object.keys(this.names).map((workspace) => ({ workspace: workspace, state: this.states[workspace], seq: 1, ts: Date.now(), stale: false, agent: 'claude', waiting_since: this.states[workspace] === 'needs_input' ? Date.now() - (workspace === 's2' ? 90000 : 30000) : undefined })) };
   }
@@ -60,7 +65,7 @@ export class ScriptedServer {
     switch (m.type) {
       case 'hello': this.send(ws, { type: 'challenge', nonce: 'nonce', server_id: 'one' }); break;
       case 'auth':
-        this.send(ws, { type: 'auth_ok', protocol: 1, user: 'tester', server_name: 'one', version: '0.1.31', backends: ['tmux'], control_mode: true, prefix: 'C-b' });
+        this.send(ws, { type: 'auth_ok', protocol: 1, user: 'tester', server_name: 'one', version: '0.1.31', backends: ['tmux'], control_mode: true, prefix: 'C-b', tabs: this.tabs });
         this.send(ws, { type: 'workspaces', workspaces: this.workspaces() });
         this.send(ws, this.snapshot());
         break;

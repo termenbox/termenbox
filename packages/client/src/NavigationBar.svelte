@@ -71,7 +71,7 @@
   .menu-button, .workspaces-button, .new-tab, .sidebar-toggle, .page-tabs { min-height: 44px; min-width: 44px; flex-shrink: 0; touch-action: manipulation; }
   .menu-button { padding: 0 12px; }
   .new-tab, .new-workspace { min-height: 44px; min-width: 44px; flex-shrink: 0; padding: 0 8px; font-size: 1.35rem; line-height: 1; touch-action: manipulation; }
-  .sidebar-toggle { padding: 0; display: flex; align-items: center; justify-content: center; }
+  .sidebar-toggle { margin-left: auto; padding: 0; display: flex; align-items: center; justify-content: center; }
   .page-tabs { display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; }
   .page-tabs .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chevron { color: var(--fg-muted); font-size: 0.7rem; }
