@@ -23,7 +23,6 @@
     moreOpen?: boolean;
   } = $props();
 
-  let expanded = $state(false);
   const CHIPS = 3;
   const others = $derived(recents.filter(r => r !== value));
   const chips = $derived(others.slice(0, CHIPS));
@@ -31,7 +30,7 @@
     const parts = p.split('/').filter(Boolean);
     return parts.length <= 2 ? p : parts.slice(-2).join('/');
   };
-  const options = $derived(recents.map(p => ({ value: p, label: shortOf(p), description: displayPath(p, home, 60) })));
+  const options = $derived(recents.map(p => ({ value: p, label: shortOf(p), description: displayPath(p, home, 0) })));
 </script>
 
 <div class="flex flex-col gap-2" data-testid="folder-field">
@@ -51,13 +50,12 @@
       class="field"
       class:empty={!value}
       aria-label="Folder"
-      aria-expanded={value ? expanded : undefined}
       title={value}
       data-testid="folder-value"
-      onclick={() => (expanded = !expanded)}
+      onclick={onbrowse}
     >
       {#if value}
-        <span class:wrap={expanded}>{expanded ? value : displayPath(value, home, 48)}</span>
+        <span>{displayPath(value, home, 0)}</span>
       {:else}
         <span>Choose a folder{required ? '' : ' (optional)'}</span>
       {/if}
@@ -81,9 +79,8 @@
 <style>
   .chip { min-height: 44px; max-width: 100%; padding: 0 14px; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 22px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chip.more { background: transparent; color: var(--fg-muted); }
-  .field { flex: 1; min-width: 0; min-height: 48px; padding: 0 12px; text-align: left; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; font-family: ui-monospace, monospace; font-size: 0.9rem; }
+  .field { flex: 1; min-width: 0; min-height: 48px; padding: 8px 12px; text-align: left; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; font-family: ui-monospace, monospace; font-size: 0.9rem; }
   .field.empty { color: var(--fg-muted); font-family: inherit; }
-  .field span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .field span.wrap { white-space: normal; overflow-wrap: anywhere; padding: 10px 0; }
+  .field span { display: block; min-width: 0; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
   .change { flex: none; min-height: 48px; padding: 0 16px; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; }
 </style>

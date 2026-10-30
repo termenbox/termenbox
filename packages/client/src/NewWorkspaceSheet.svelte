@@ -98,7 +98,7 @@
   $: home = homes[serverId] ?? getHome(serverId);
   $: agentLabel = template === 'shell' ? 'Shell' : TEMPLATE_BY_ID[template]?.label ?? template;
   $: summary = tmux || acp
-    ? `${agentLabel} ${dir ? `in ${displayPath(dir, home, 36)}` : 'in the default folder'}`
+    ? `${agentLabel} ${dir ? `in ${displayPath(dir, home, 0)}` : 'in the default folder'}`
     : `${backend} workspace`;
 
   // The picker learns the home folder from the first listing, which the field then uses to show `~/…`.
@@ -193,7 +193,7 @@
   input, button { min-height: 44px; min-width: 44px; }
   input { width: 100%; }
 
-  .summary { margin: 0; font-size: 0.85rem; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .summary { margin: 0; min-width: 0; font-size: 0.85rem; color: var(--fg-muted); white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
   .actions { display: flex; gap: 8px; justify-content: flex-end; }
   .problem { margin: 0; color: var(--danger); font-size: 0.8rem; }
 

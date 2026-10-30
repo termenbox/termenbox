@@ -170,10 +170,11 @@ for (const [width, height] of only ? [only] : WIDTHS) {
     await tap(q('folder-change'));
     await go(long);
     await see(q('picker-outside'), 'the outside-home notice');
+    await text(q('picker-select'), /segment-/, 'the full long path in the picker footer');
     await tap(q('picker-select'));
     await gone(q('folder-picker'), 'the picker after Select');
-    await text(q('folder-value'), /…/, 'the truncated long path');
-    await text(q('summary'), /…/, 'the truncated summary');
+    await text(q('folder-value'), /segment-/, 'the full long path');
+    await text(q('summary'), /segment-/, 'the full long path in the summary');
     await rules('long path');
 
     // Create: recents are written now, not before; the request carries the folder.

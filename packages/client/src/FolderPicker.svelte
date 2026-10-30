@@ -22,6 +22,7 @@
   let slowTimer: ReturnType<typeof setTimeout> | undefined;
   let filterTimer: ReturnType<typeof setTimeout> | undefined;
   let rowsEl: HTMLElement | undefined = $state();
+  let pathEl: HTMLTextAreaElement | undefined = $state();
 
   // Start where the field already points (it may be outside home: then the path bar just shows it), else at home.
   let started = false;
@@ -33,6 +34,14 @@
     void browser.open(value && value.startsWith('/') ? value : undefined).then(() => { if (browser.state.status === 'error' && value) void browser.toHome(); });
   });
   $effect(() => { typed = view.path; });
+  // The typed path may be longer than the sheet. Let it grow with its content, then scroll only after
+  // a sensible height so the form's other controls stay reachable.
+  $effect(() => {
+    typed;
+    if (!pathEl) return;
+    pathEl.style.height = 'auto';
+    pathEl.style.height = `${Math.min(160, pathEl.scrollHeight)}px`;
+  });
   $effect(() => {
     clearTimeout(slowTimer);
     slow = false;
@@ -46,6 +55,12 @@
   const selection = $derived(view.status === 'ready' && view.path ? view.path : null);
 
   function go() { typedError = browser.go(typed) ?? ''; }
+  function pathKey(e: KeyboardEvent) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      go();
+    }
+  }
   function choose() {
     const p = browser.selection;
     if (!p) return;
@@ -74,8 +89,10 @@
 <DialogLayer bind:open title="Choose folder" {onclose}>
   <div data-testid="folder-picker">
     <form class="mb-2 flex gap-2" onsubmit={(e) => { e.preventDefault(); go(); }}>
-      <input
-        class="min-h-12 min-w-0 flex-1 rounded-control border border-line bg-sunken px-3 text-base text-fg outline-none focus:border-accent focus:ring-2 focus:ring-accent/40"
+      <textarea
+        bind:this={pathEl}
+        class="min-h-12 min-w-0 flex-1 resize-none overflow-y-auto rounded-control border border-line bg-sunken px-3 py-3 text-base text-fg outline-none focus:border-accent focus:ring-2 focus:ring-accent/40 [overflow-wrap:anywhere]"
+        rows="1"
         bind:value={typed}
         aria-label="Path"
         data-testid="picker-path"
@@ -85,7 +102,8 @@
         spellcheck="false"
         aria-invalid={typedError ? 'true' : undefined}
         aria-describedby={typedError ? 'picker-path-error' : undefined}
-      />
+        onkeydown={pathKey}
+      ></textarea>
       <button type="submit" class="act" data-testid="picker-go">Go</button>
     </form>
     {#if typedError}<p id="picker-path-error" class="mb-2 text-sm text-danger" role="alert" data-testid="picker-path-error">{typedError}</p>{/if}
@@ -136,7 +154,7 @@
             <li>
               <button type="button" class="row" data-dir={e.name} onclick={() => browser.enter(e.name)}>
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true" class="flex-none text-soft"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>
-                <span class="min-w-0 flex-1 truncate">{e.name}</span>
+                <span class="min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere]">{e.name}</span>
                 {#if e.symlink}<small class="text-soft">link</small>{/if}
               </button>
             </li>
@@ -150,7 +168,7 @@
   {#snippet footer()}
     <button type="button" class="select" data-testid="picker-select" disabled={!selection || view.status !== 'ready'} onclick={choose}>
       <span class="label">Select this folder</span>
-      <span class="path" title={selection ?? ''}>{selection ? displayPath(selection, view.home, 40) : ''}</span>
+      <span class="path" title={selection ?? ''}>{selection ? displayPath(selection, view.home, 0) : ''}</span>
     </button>
   {/snippet}
 </DialogLayer>
@@ -159,7 +177,7 @@
   .act { flex: none; min-height: 48px; min-width: 48px; padding: 0 14px; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; }
   .act:disabled { opacity: 0.5; }
   .trail { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
-  .crumb { min-height: 44px; min-width: 44px; padding: 0 8px; background: transparent; border: none; color: var(--accent); max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .crumb { min-height: 44px; min-width: 44px; max-width: 100%; padding: 4px 8px; white-space: normal; overflow-wrap: anywhere; word-break: break-word; background: transparent; border: none; color: var(--accent); }
   .crumb[aria-current] { color: var(--fg); font-weight: 600; }
   .row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 48px; padding: 0 12px; text-align: left; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; }
   .skeleton { height: 48px; border-radius: 8px; background: var(--border); opacity: 0.4; animation: pulse 1s ease-in-out infinite alternate; }
@@ -167,5 +185,5 @@
   @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
   .select { display: flex; flex-direction: column; align-items: center; width: 100%; min-height: 48px; padding: 6px 12px; background: var(--accent); color: var(--bg); border: none; border-radius: 8px; font-weight: 600; }
   .select:disabled { opacity: 0.5; }
-  .select .path { font-size: 0.8rem; font-weight: 400; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .select .path { max-width: 100%; font-size: 0.8rem; font-weight: 400; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
 </style>
