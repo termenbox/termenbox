@@ -28,7 +28,7 @@
   }
 </script>
 
-<dialog bind:this={dialog} aria-label="New tab" oncancel={(e) => { e.preventDefault(); onclose(); }} onclick={(e) => { if (e.target === dialog) onclose(); }}>
+<dialog class="modal-sheet" bind:this={dialog} aria-label="New tab" oncancel={(e) => { e.preventDefault(); onclose(); }} onclick={(e) => { if (e.target === dialog) onclose(); }}>
   <form onsubmit={(e) => { e.preventDefault(); create(); }}>
     <h2>New tab in {workspace.name}</h2>
     <div class="templates" role="radiogroup" aria-label="Start with">
@@ -50,16 +50,16 @@
 </dialog>
 
 <style>
-  dialog { margin: auto auto 0; width: min(100%, 460px); max-height: calc(var(--app-height, 100dvh) - 16px); overflow-y: auto; padding: 0; border: 1px solid var(--border); border-radius: 16px 16px 0 0; background: var(--bg-secondary); color: var(--fg); }
+  dialog { width: min(calc(var(--app-width) - 16px), 460px); padding: 0; border: 1px solid var(--border); border-radius: 16px 16px 0 0; background: var(--bg-secondary); color: var(--fg); }
   dialog::backdrop { background: #0008; }
-  form { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  form { min-width: 0; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
   h2 { margin: 0; font-size: 1.05rem; overflow-wrap: anywhere; }
-  .templates { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; }
-  .templates button { display: flex; align-items: center; gap: 8px; min-height: 48px; text-align: left; background: var(--bg); color: var(--fg); border: 1px solid var(--border); }
+  .templates { min-width: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; }
+  .templates button { min-width: 0; display: flex; align-items: center; gap: 8px; min-height: 48px; text-align: left; white-space: normal; overflow-wrap: anywhere; background: var(--bg); color: var(--fg); border: 1px solid var(--border); }
   .templates button.on { border-color: var(--accent); }
-  label.stack { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; }
-  input { width: 100%; min-height: 44px; font-size: 16px; }
-  .actions { display: flex; gap: 8px; justify-content: flex-end; }
+  label.stack { min-width: 0; display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; }
+  input { width: 100%; min-width: 0; min-height: 44px; font-size: 16px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
   .actions button { min-height: 44px; min-width: 44px; }
-  .problem { color: var(--danger); font-size: 0.8rem; margin: 0; }
+  .problem { color: var(--danger); font-size: 0.8rem; margin: 0; overflow-wrap: anywhere; }
 </style>

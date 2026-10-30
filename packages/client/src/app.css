@@ -76,6 +76,14 @@
   :root {
     /* Under the status bar, the Dynamic Island and the microphone/camera indicator: nothing may be drawn there. */
     --safe-top: env(safe-area-inset-top, 0px);
+    /* The visible box, written by AppShell from visualViewport. Dialogs live in the top layer, so they
+       cannot inherit the shell's padding and use these values instead. */
+    --app-top: 0px;
+    --app-left: 0px;
+    --app-width: 100%;
+    --app-height: 100dvh;
+    --app-bottom: 0px;
+    --sheet-gap: max(8px, env(safe-area-inset-bottom, 0px));
     /* Names used by code written before U02; the skin sets the real values (skins.css). */
     --bg-secondary: var(--panel);
     --fg: var(--text);
@@ -169,6 +177,23 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 24px;
+  }
+
+  /* A bottom sheet in the visual viewport. Native <dialog> lives in the top layer, outside the shell, so it
+     must use the measured visual box instead of the layout viewport and the keyboard inset. */
+  dialog.modal-sheet {
+    position: fixed;
+    top: auto;
+    left: var(--app-left);
+    right: var(--app-left);
+    bottom: calc(var(--app-bottom) + var(--sheet-gap));
+    margin: 0 auto;
+    max-height: calc(var(--app-height) - var(--safe-top) - var(--sheet-gap));
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   /* iOS zooms the page when a field under 16px gets focus. */

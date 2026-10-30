@@ -14,7 +14,13 @@
   function measure() {
     const vv = window.visualViewport;
     box = viewportBox(vv, window);
-    document.documentElement.style.setProperty('--app-height', `${box.height}px`);
+    const root = document.documentElement.style;
+    root.setProperty('--app-height', `${box.height}px`);
+    root.setProperty('--app-top', `${box.top}px`);
+    root.setProperty('--app-left', `${box.left}px`);
+    root.setProperty('--app-width', `${box.width}px`);
+    // The visual viewport may sit above the layout viewport's bottom when the soft keyboard is open.
+    root.setProperty('--app-bottom', `${Math.max(0, window.innerHeight - box.top - box.height)}px`);
     if (box.keyboard) {
       // The Fn keyboard takes the system keyboard's place at the same height.
       const kb = Math.round(Math.min(340, Math.max(240, window.innerHeight - box.height - box.top)));

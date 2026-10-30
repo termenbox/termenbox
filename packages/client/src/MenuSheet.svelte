@@ -23,7 +23,7 @@
   function choose(action: () => void) { onclose(); action(); }
 </script>
 
-<dialog bind:this={dialog} aria-label="Menu" on:cancel|preventDefault={onclose} on:click={(e) => { if (e.target === dialog) onclose(); }}>
+<dialog class="modal-sheet" bind:this={dialog} aria-label="Menu" on:cancel|preventDefault={onclose} on:click={(e) => { if (e.target === dialog) onclose(); }}>
   <div class="menu">
     <div class="row"><h2>Termenbox</h2><button class="secondary" aria-label="Close menu" on:click={onclose}>×</button></div>
     <button class="secondary" on:click={() => choose(onservers)}>Servers</button>
@@ -38,15 +38,17 @@
 </dialog>
 
 <style>
-  dialog { margin: auto auto 0; width: min(100%, 420px); max-height: calc(var(--app-height, 100dvh) - 16px); overflow-y: auto; padding: 0; border: 1px solid var(--border); border-radius: 16px 16px 0 0; background: var(--bg-secondary); color: var(--fg); }
+  dialog { width: min(calc(var(--app-width) - 16px), 420px); padding: 0; border: 1px solid var(--border); border-radius: 16px 16px 0 0; background: var(--bg-secondary); color: var(--fg); }
   dialog::backdrop { background: #0008; }
-  .menu { padding: 16px; display: flex; flex-direction: column; gap: 8px; }
-  .row { display: flex; justify-content: space-between; align-items: center; }
-  button { min-height: 44px; min-width: 44px; }
+  .menu { min-width: 0; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .row h2 { min-width: 0; overflow-wrap: anywhere; }
+  button { min-height: 44px; min-width: 44px; white-space: normal; }
   .check { display: flex; align-items: center; gap: 8px; min-height: 44px; }
   button { text-align: left; }
   label { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  p { font-size: 0.8rem; color: var(--fg-muted); }
+  p { font-size: 0.8rem; color: var(--fg-muted); overflow-wrap: anywhere; }
   .account { display: flex; align-items: center; gap: 8px; padding: 8px; }
+  .account span { min-width: 0; overflow-wrap: anywhere; }
   img { border-radius: 50%; }
 </style>
