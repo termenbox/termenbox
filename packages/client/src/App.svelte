@@ -22,7 +22,7 @@
   import { SnapshotStore } from './lib/snapshots';
   import { serverAtLeast, NEW_WINDOW_VERSION } from './lib/serverVersion';
   import { loadHidden, needsYou, openTabs, saveHidden } from './lib/tabs';
-  import { focusedTab, followFocus, liveTab, loadActiveTab, saveActiveTab, tabForPrompt, tabOrder } from './lib/workspaceTabs';
+  import { focusedTab, liveTab, loadActiveTab, saveActiveTab, tabForPrompt, tabMove, tabOrder } from './lib/workspaceTabs';
   import { windowToOpen } from './lib/windows';
   import { installAudioUnlock, onAudioRunning, playChime } from './lib/bell';
   import { announce, waitingList, createAttention, createNotifier, createAlerter } from './lib/notify';
@@ -827,30 +827,19 @@
     if (!activeKey || !activeTab || serverId !== activeServerId) return;
     const workspace = list.find((w) => workspaceKey(serverId, w.id) === activeKey);
     if (!workspace?.tabs) return;
-    if (!workspace.tabs.some((t) => t.id === activeTab)) {
-      const next = liveTab(workspace.tabs, null, workspace.focus)?.id ?? null;
-      activeTab = next;
-      if (next) saveActiveTab(activeKey, next);
-      if (!away && !listPage) {
-        if (next) showWorkspace(activeKey, next);
-      }
-      return;
-    }
     // tmux has one current window per session, and a device showing the workspace follows it. Only a control-mode
-    // server reports it (an older one keeps its old behaviour); the terminal already shows the new window, so this
-    // moves the tab strip without attaching again. A list that still carries the focus this device already saw is
-    // not a move: ignoring it keeps a tap on a tab from flickering back while the attach is in flight.
+    // server reports it (an older one keeps its old behaviour); the terminal already shows the new window, so a
+    // moved focus changes the tab strip without attaching again.
     const key = workspaceKey(serverId, workspace.id);
     const focus = workspace.focus ?? null;
-    const before = seenFocus?.key === key ? seenFocus.focus : focus;
+    const seen = seenFocus?.key === key ? seenFocus.focus : undefined;
     seenFocus = { key, focus };
-    if (before === focus) return;
-    if (!$hubServers.find((s) => s.id === serverId)?.controlMode) return;
-    const moved = followFocus(workspace.tabs, activeTab, focus);
-    if (moved) {
-      activeTab = moved;
-      saveActiveTab(activeKey, moved);
-    }
+    const controlMode = !!$hubServers.find((s) => s.id === serverId)?.controlMode;
+    const move = tabMove(workspace.tabs, activeTab, focus, seen, controlMode);
+    if (!move) return;
+    activeTab = move.tab;
+    if (move.tab) saveActiveTab(activeKey, move.tab);
+    if (move.kind === 'closed' && move.tab && !away && !listPage) showWorkspace(activeKey, move.tab);
   }
 
   function createWorkspace(req: { serverId: string; backend?: string; dir?: string; template?: string; name: string }) {

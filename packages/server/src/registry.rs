@@ -229,31 +229,17 @@ impl Registry {
         for record in &mut state.workspaces {
             record.order = positions.get(&record.id).copied().unwrap_or(record.order);
         }
-        let order = state.order.clone();
-        let records = state.workspaces.clone();
         self.save(&state);
-        drop(state);
+        Ok(assemble(&state, &infos, &kinds))
+    }
 
-        let mut out: Vec<WorkspaceInfo> = Vec::new();
-        let mut seen = HashSet::new();
-        for info in &infos {
-            seen.insert(info.id.clone());
-            if kind_of(&kinds, info) == "tmux" {
-                if let Some(record) = records.iter().find(|r| r.id == info.id) {
-                    out.push(record_info(record, info.backend.clone(), &order));
-                    continue;
-                }
-            }
-            out.push(synthetic_info(info, &order));
-        }
-        // A dormant record has no backend entry any more; it stays until the owner closes it.
-        for record in &records {
-            if !seen.contains(&record.id) {
-                out.push(record_info(record, record.backend.clone(), &order));
-            }
-        }
-        out.sort_by(|a, b| a.order.cmp(&b.order).then(a.id.cmp(&b.id)));
-        Ok(out)
+    /// The list as the registry already knows it, without asking every tmux session for its windows: for a message
+    /// that only moved the focus. The tabs and windows are recorded; the next full `list` reconciles.
+    pub async fn list_light(&self, backend: &dyn WorkspaceBackend) -> Result<Vec<WorkspaceInfo>> {
+        let infos = backend.list().await?;
+        let kinds = backend.kinds();
+        let state = self.state.lock().unwrap();
+        Ok(assemble(&state, &infos, &kinds))
     }
 
     /// Creates a workspace; only tmux workspaces are recorded here. ACP and command backends remain supported and are
@@ -951,6 +937,31 @@ fn kind_of(kinds: &[String], info: &WorkspaceInfo) -> String {
         .clone()
         .or_else(|| kinds.first().cloned())
         .unwrap_or_default()
+}
+
+/// The workspaces a client sees: the live ones with the registry's record where there is one, then the dormant
+/// records no backend lists any more. Shared by the full `list` and the light one.
+fn assemble(state: &State, infos: &[WorkspaceInfo], kinds: &[String]) -> Vec<WorkspaceInfo> {
+    let mut out: Vec<WorkspaceInfo> = Vec::new();
+    let mut seen = HashSet::new();
+    for info in infos {
+        seen.insert(info.id.clone());
+        if kind_of(kinds, info) == "tmux" {
+            if let Some(record) = state.workspaces.iter().find(|r| r.id == info.id) {
+                out.push(record_info(record, info.backend.clone(), &state.order));
+                continue;
+            }
+        }
+        out.push(synthetic_info(info, &state.order));
+    }
+    // A dormant record has no backend entry any more; it stays until the owner closes it.
+    for record in &state.workspaces {
+        if !seen.contains(&record.id) {
+            out.push(record_info(record, record.backend.clone(), &state.order));
+        }
+    }
+    out.sort_by(|a, b| a.order.cmp(&b.order).then(a.id.cmp(&b.id)));
+    out
 }
 
 fn record_info(

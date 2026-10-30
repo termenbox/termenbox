@@ -11,6 +11,7 @@ import {
   moveTab,
   relativeDirProblem,
   saveActiveTab,
+  tabMove,
   tabOrder,
   tabStateKey,
   uniqueTabLabel,
@@ -78,6 +79,21 @@ describe('the tabs a device opens', () => {
     expect(followFocus(tabs, 't3', 'gone')).toBeNull();
     expect(followFocus(tabs, 't3', null)).toBeNull();
     expect(followFocus([], 't1', 't2')).toBeNull();
+  });
+  it('moves the strip only when a control-mode focus changed since the last list', () => {
+    // The tab this device showed is gone: the caller opens the tab the server chose.
+    expect(tabMove(tabs, 'gone', 't2', 't1', true)).toEqual({ kind: 'closed', tab: 't2' });
+    // The first list for the workspace never moves the strip.
+    expect(tabMove(tabs, 't1', 't3', undefined, true)).toBeNull();
+    // A repeated focus is not a move, and a server without control mode keeps the device's tab.
+    expect(tabMove(tabs, 't1', 't3', 't3', true)).toBeNull();
+    expect(tabMove(tabs, 't1', 't3', 't1', false)).toBeNull();
+    // tmux's current window moved to another live tab.
+    expect(tabMove(tabs, 't1', 't3', 't1', true)).toEqual({ kind: 'follow', tab: 't3' });
+    // A focus that names no live tab, or no focus at all, changes nothing.
+    expect(tabMove(tabs, 't1', 'gone', 't1', true)).toBeNull();
+    expect(tabMove(tabs, 't1', null, null, true)).toBeNull();
+    expect(tabMove(tabs, null, 't3', 't1', true)).toBeNull();
   });
   it('remembers the last tab per workspace on this device', () => {
     const map = new Map<string, string>();

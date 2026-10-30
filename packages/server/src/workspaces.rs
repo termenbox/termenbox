@@ -496,22 +496,23 @@ impl WorkspaceManager {
                     }
                 }
                 from = next_list_change(&mut list_rx) => {
-                    // Another connection changed the list of workspaces: this one's client gets the new one.
+                    // Another connection changed the list of workspaces: this one's client gets the new one. The
+                    // records are already written, so the light list is enough and saves a tmux call per workspace.
                     if from == Some(conn) { continue; }
-                    let workspaces = self.registry.list(self.backend.as_ref()).await.unwrap_or_default();
+                    let workspaces = self.registry.list_light(self.backend.as_ref()).await.unwrap_or_default();
                     if !send(&link.tx, &ServerMessage::Workspaces { workspaces }).await { break; }
                 }
                 update = next_window(&mut window_rx) => {
                     let msg = match update {
                         Some(u) => {
                             // tmux moved its current window: the tab strip follows before the menu is mapped.
-                            if !self.send_followed(conn, std::slice::from_ref(&u), &link.tx).await { break; }
+                            if !self.announce_focus(conn, std::slice::from_ref(&u), &link.tx).await { break; }
                             self.window_update_message(&u)
                         }
                         None => {
                             // Fell behind: send everything again.
                             let updates = self.windows.as_ref().map(|h| h.all()).unwrap_or_default();
-                            if !self.send_followed(conn, &updates, &link.tx).await { return Ok(()); }
+                            if !self.announce_focus(conn, &updates, &link.tx).await { return Ok(()); }
                             for u in &updates {
                                 if !send(&link.tx, &self.window_update_message(u)).await { return Ok(()); }
                             }
@@ -671,29 +672,33 @@ impl WorkspaceManager {
             .map(|t| t.id.clone())
     }
 
-    /// The focus follows tmux's current window: the tab that window carries is the one every device shows and a new
-    /// device opens. The tab strip reads it from the list, so a moved focus is `Some(fresh list)` for this
-    /// connection to send and for every other connection to be told.
-    async fn follow_tmux(&self, updates: &[WindowUpdate]) -> Result<Option<Vec<WorkspaceInfo>>> {
+    /// Persists tmux's current window as the workspace focus: the tab that window carries is the one every device
+    /// shows and a new device opens. True when the focus moved.
+    fn observe_tmux(&self, updates: &[WindowUpdate]) -> bool {
         let mut moved = false;
         for update in updates {
             if let Some(tab) = update.active_tab() {
                 moved |= self.registry.observe_focus(&update.workspace, tab);
             }
         }
-        if !moved {
+        moved
+    }
+
+    /// A moved focus is `Some(fresh list)` for this connection to send and for every other connection to be told.
+    /// The light list is enough: the tabs are known, and the next full list reconciles the sessions.
+    async fn follow_tmux(&self, updates: &[WindowUpdate]) -> Result<Option<Vec<WorkspaceInfo>>> {
+        if !self.observe_tmux(updates) {
             return Ok(None);
         }
-        Ok(Some(self.registry.list(self.backend.as_ref()).await?))
+        Ok(Some(self.registry.list_light(self.backend.as_ref()).await?))
     }
 
     /// Sends the fresh list to this connection and pings the others when tmux moved the focus. False when the
-    /// connection is gone.
-    async fn send_followed(&self, conn: u64, updates: &[WindowUpdate], tx: &LinkTx) -> bool {
+    /// connection is gone; a list that cannot be read leaves the focus for the next list change to tell.
+    async fn announce_focus(&self, conn: u64, updates: &[WindowUpdate], tx: &LinkTx) -> bool {
         let workspaces = match self.follow_tmux(updates).await {
             Ok(Some(workspaces)) => workspaces,
             Ok(None) => return true,
-            // The focus is kept; the next list change tells the clients about it.
             Err(e) => {
                 debug!("the focus moved but the workspace list could not be read: {e}");
                 return true;
@@ -1084,7 +1089,7 @@ impl WorkspaceManager {
                 // A tab speaks for one window of its workspace: send them all along with the agent states, and
                 // follow tmux's current window first so a new device opens the tab it has active.
                 let updates = self.windows.as_ref().map(|h| h.all()).unwrap_or_default();
-                if !self.send_followed(conn, &updates, tx).await {
+                if !self.announce_focus(conn, &updates, tx).await {
                     return Ok(());
                 }
                 for u in &updates {
@@ -1469,6 +1474,10 @@ impl WorkspaceManager {
             }
             ClientMessage::Unknown => {}
             ClientMessage::ListWorkspaces => {
+                // tmux may have moved its current window while no client was connected: the first list must
+                // already show the tab tmux has active, not the focus a previous connection left.
+                let updates = self.windows.as_ref().map(|h| h.all()).unwrap_or_default();
+                self.observe_tmux(&updates);
                 let workspaces = self.registry.list(self.backend.as_ref()).await?;
                 send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
             }
@@ -3018,8 +3027,25 @@ mod follow_tests {
     use crate::backend::{CreatedWorkspace, TabSpec};
     use termenbox_core::protocol::WorkspaceInfo;
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     /// One tmux workspace with two tabs; its current window is the second one.
-    struct TwoTabs;
+    struct TwoTabs {
+        /// How often a full list asked the session for its windows; a light list asks none.
+        windows_calls: AtomicUsize,
+    }
+
+    impl TwoTabs {
+        fn new() -> Self {
+            Self {
+                windows_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn windows_calls(&self) -> usize {
+            self.windows_calls.load(Ordering::SeqCst)
+        }
+    }
 
     #[async_trait::async_trait]
     impl WorkspaceBackend for TwoTabs {
@@ -3070,6 +3096,7 @@ mod follow_tests {
             Ok(())
         }
         async fn windows(&self, _: &str) -> Result<Vec<WindowState>> {
+            self.windows_calls.fetch_add(1, Ordering::SeqCst);
             let window = |index, id: &str, active| WindowState {
                 info: WindowInfo {
                     index,
@@ -3109,7 +3136,7 @@ mod follow_tests {
     /// tab active and representative. A repeat is not news.
     #[tokio::test]
     async fn the_current_window_moves_the_focus_and_the_active_tab() {
-        let backend = Arc::new(TwoTabs);
+        let backend = Arc::new(TwoTabs::new());
         let registry = Arc::new(Registry::memory());
         let manager = WorkspaceManager::new(backend.clone(), RunMode::Container, registry.clone());
         let id = registry
@@ -3121,6 +3148,7 @@ mod follow_tests {
             .await
             .unwrap();
         let first = registry.record(&id).unwrap().tabs[0].id.clone();
+        backend.windows_calls.store(0, Ordering::SeqCst);
 
         // tmux went back to its first window; the update names the tab that window carries.
         let moved = update(&id, &first, &second.id, true);
@@ -3130,6 +3158,11 @@ mod follow_tests {
             .unwrap()
             .expect("the focus moved");
         assert_eq!(list[0].focus.as_deref(), Some(first.as_str()));
+        assert_eq!(
+            backend.windows_calls(),
+            0,
+            "the light list does not ask every session for its windows"
+        );
         assert_eq!(
             registry.record(&id).unwrap().focus.as_deref(),
             Some(first.as_str())
@@ -3159,5 +3192,50 @@ mod follow_tests {
             .unwrap()
             .expect("the focus moved back");
         assert_eq!(list[0].focus.as_deref(), Some(second.id.as_str()));
+    }
+
+    /// A moved focus reaches this connection and pings the others exactly once: a repeated window is not news.
+    #[tokio::test]
+    async fn a_moved_focus_is_sent_once_and_pings_the_other_connections() {
+        let backend = Arc::new(TwoTabs::new());
+        let registry = Arc::new(Registry::memory());
+        let manager = WorkspaceManager::new(backend.clone(), RunMode::Container, registry.clone());
+        let id = registry
+            .create_workspace(backend.as_ref(), "Work", None, None, "shell")
+            .await
+            .unwrap();
+        let second = registry
+            .new_tab(backend.as_ref(), &id, "shell", "Logs", "")
+            .await
+            .unwrap();
+        let first = registry.record(&id).unwrap().tabs[0].id.clone();
+        let moved = update(&id, &first, &second.id, true);
+
+        let (link, mut end) = crate::link::pair(None, None);
+        let mut pings = manager.list_changed.subscribe();
+        assert!(
+            manager
+                .announce_focus(7, std::slice::from_ref(&moved), &link.tx)
+                .await
+        );
+
+        let text = tokio::time::timeout(Duration::from_secs(1), end.from_workspace.recv())
+            .await
+            .expect("the list is sent")
+            .unwrap();
+        let ServerMessage::Workspaces { workspaces } = serde_json::from_str(&text).unwrap() else {
+            panic!("{text}")
+        };
+        assert_eq!(workspaces[0].focus.as_deref(), Some(first.as_str()));
+        assert_eq!(pings.try_recv().unwrap(), 7);
+
+        // The same current window again is not news: no list, no ping.
+        assert!(
+            manager
+                .announce_focus(7, std::slice::from_ref(&moved), &link.tx)
+                .await
+        );
+        assert!(end.from_workspace.try_recv().is_err());
+        assert!(pings.try_recv().is_err());
     }
 }

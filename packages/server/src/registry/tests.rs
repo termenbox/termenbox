@@ -353,6 +353,26 @@ async fn tmux_current_window_becomes_the_focus_but_only_for_a_known_tab() {
 }
 
 #[tokio::test]
+async fn a_light_list_keeps_the_records_and_their_focus_without_asking_for_windows() {
+    let dir = temp("light-list");
+    let backend = Fake::new();
+    let registry = Registry::memory();
+    let work = fake_workspace(&registry, &backend, "Work", &dir, "claude").await;
+    registry
+        .new_tab(&backend, &work, "shell", "Logs", "")
+        .await
+        .unwrap();
+
+    let full = registry.list(&backend).await.unwrap();
+    let light = registry.list_light(&backend).await.unwrap();
+    assert_eq!(light.len(), full.len());
+    assert_eq!(light[0].id, full[0].id);
+    assert_eq!(light[0].focus, full[0].focus);
+    assert_eq!(light[0].tabs.len(), full[0].tabs.len());
+    assert_eq!(light[0].tabs[1].label, full[0].tabs[1].label);
+}
+
+#[tokio::test]
 async fn agent_tabs_are_capped_per_workspace_and_closing_one_frees_a_slot() {
     let dir = temp("cap");
     let backend = Fake::new();
