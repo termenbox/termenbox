@@ -363,7 +363,8 @@ try {
       const s1Row = page.locator('[data-workspace-groups] button').filter({ has: page.locator('b', { hasText: /^s1$/ }) }).first();
       await s1Row.waitFor();
       await s1Row.click();
-      await page.locator('.dot.ok').waitFor({ timeout: 20000 }).catch(async (e) => {
+      // The focused terminal input is the live-connection signal now that the top bar has no connection dot.
+      await page.waitForFunction(() => document.activeElement?.classList.contains('xterm-helper-textarea'), null, { timeout: 20000 }).catch(async (e) => {
         console.log('page errors:', errors, '\n', (await page.locator('body').innerText()).slice(0, 400));
         throw e;
       });
