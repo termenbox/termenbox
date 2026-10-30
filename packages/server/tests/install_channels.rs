@@ -212,6 +212,14 @@ fn channel_beta_writes_the_beta_config_and_units_and_parses_a_prerelease() {
     let line = format!("Environment=TERMENBOX_RELEASE_URL={}", r.release_url());
     for unit in ["termenbox-update.service", "termenbox-request.service"] {
         assert!(r.unit(unit).contains(&line), "{unit}:\n{}", r.unit(unit));
+        assert!(
+            r.unit(unit).contains(&format!(
+                "--requests-dir {}/.config/termenbox/requests",
+                r.home.display()
+            )),
+            "{unit}:\n{}",
+            r.unit(unit)
+        );
     }
     // The server comes back from any exit, and ten failed starts in five minutes end in a visible failed state.
     let server = r.unit("termenbox.service");
@@ -226,6 +234,78 @@ fn channel_beta_writes_the_beta_config_and_units_and_parses_a_prerelease() {
     // downloaded from the manifest's address (assets/), which release_url + name would not find
     assert!(r.installed());
     assert!(!r.release.join("termenbox-server-x86_64-linux").exists());
+}
+
+#[test]
+fn an_existing_user_install_migrates_its_timer_without_losing_custom_arguments_and_is_idempotent() {
+    let Some(r) = run("migrate-requests", &beta(&["host-me", "--channel", "beta"])) else {
+        return;
+    };
+    assert!(r.out.status.success(), "{}", r.stderr());
+    let unit = r.home.join(".config/systemd/user/termenbox-update.service");
+    let requests = format!(
+        " --requests-dir {}/.config/termenbox/requests",
+        r.home.display()
+    );
+    let original = r
+        .unit("termenbox-update.service")
+        .replace(&requests, "")
+        .replace("--user-helper", "--user-helper --custom-preserved");
+    std::fs::write(&unit, &original).unwrap();
+    // The stub server records journal requests, so the real installer's migration must journal before replacing.
+    let log = r.home.join("journal-calls");
+    write_exe(
+        &r.home.join(".local/bin/termenbox-server"),
+        &format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$*\" in *--register*) echo 'https://app.test/#/pair/PAYLOAD' ;; esac\n", log.display()),
+    );
+    let root = r.home.parent().unwrap();
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../client/installer/install.sh");
+    let rerun = || {
+        Command::new("sh")
+            .arg(&script)
+            .arg("host-me")
+            .env_clear()
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", root.join("stubs").display()),
+            )
+            .env("HOME", &r.home)
+            .env("XDG_RUNTIME_DIR", root.join("run"))
+            .env("TERMENBOX_CLAIM", "-")
+            .env("TERMENBOX_CLIENT_URL", "https://app.test")
+            .env("TERMENBOX_SKIP_LINGER", "1")
+            .env("TERMENBOX_SKIP_FIREWALL", "1")
+            .output()
+            .unwrap()
+    };
+    let out = rerun();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let migrated = r.unit("termenbox-update.service");
+    assert!(migrated.contains("--custom-preserved"));
+    assert_eq!(migrated.matches("--requests-dir").count(), 1);
+    assert!(migrated.contains(&requests));
+    let logged = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        logged.contains("--journal-record file_replaced"),
+        "{logged}"
+    );
+    let backups = r.home.join(".local/state/termenbox/backups");
+    assert!(std::fs::read_dir(&backups)
+        .unwrap()
+        .flatten()
+        .any(|p| std::fs::read_to_string(p.path()).ok().as_deref() == Some(original.as_str())));
+    let out = rerun();
+    assert!(out.status.success());
+    assert_eq!(r.unit("termenbox-update.service"), migrated);
+    let after = std::fs::read_to_string(log).unwrap();
+    assert_eq!(
+        after.matches("--journal-record file_replaced").count(),
+        logged.matches("--journal-record file_replaced").count()
+    );
 }
 
 #[test]
