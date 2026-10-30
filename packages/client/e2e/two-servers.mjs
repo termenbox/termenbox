@@ -155,7 +155,14 @@ try {
   const ctx = await browser.newContext(contextOptions({ viewport: { width: 390, height: 800 }, hasTouch: true, isMobile: true }));
   const page = await ctx.newPage();
   const errors = [];
-  page.on('pageerror', (e) => errors.push(e.message));
+  // Closing a workspace disposes its terminal; xterm 5.3 can then throw from a queued renderer frame (the same
+  // teardown throw Terminal.svelte guards). It fires on some runners only, so ignore that one library error and
+  // keep the gate for errors from this app.
+  const xtermTeardown = /^Cannot read properties of undefined \(reading 'dimensions'\)$/;
+  page.on('pageerror', (e) => {
+    if (xtermTeardown.test(e.message)) return;
+    errors.push(e.message);
+  });
   await page.goto(`http://127.0.0.1:${appPort}/`);
   const deviceKey = await page.evaluate(async () => {
     const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
