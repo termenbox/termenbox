@@ -20,8 +20,6 @@
   export let onactions: (key: string) => void;
   export let windows: WindowMap = {};
   export let expiring: Set<string> = new Set();
-  export let link: { ok: boolean; text: string } | null = null;
-  export let onlink: () => void = () => {};
   export let onmenu: () => void;
   export let ontabmenu: (key: string) => void = () => {};
   export let onpeek: (key: string) => void = () => {};
@@ -57,7 +55,6 @@
     <TabStrip {workspaces} {agents} {servers} {activeKey} {held} {windows} {expiring} {onopen} {onactions} onmenu={ontabmenu} {onpeek} />
     {#if onnew}<button class="secondary new-workspace" data-testid="strip-new" aria-label="New workspace" title="New workspace" onclick={onnew}>+</button>{/if}
   {:else}<span class="spacer" data-shell="strip-hidden"></span>{/if}
-  {#if link}<button class="secondary link" aria-label={`Connection: ${link.text}`} title={link.text} onclick={onlink}><span class="dot" class:ok={link.ok}></span></button>{/if}
   {#if tabsCapable && wide}
     <button class="secondary sidebar-toggle" aria-label="Sidebar" title="Sidebar" onclick={onworkspaces}>
       <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2.5" y="3.5" width="15" height="13" rx="2" /><path d="M7.5 3.5v13" /></svg>
@@ -76,9 +73,6 @@
   .page-tabs .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chevron { color: var(--fg-muted); font-size: 0.7rem; }
   .spacer { flex: 1 1 0; min-width: 0; }
-  .link { padding: 0 10px; }
-  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--danger); }
-  .dot.ok { background: var(--success); }
   .workspaces-button { padding: 0 8px; display: flex; align-items: center; gap: 4px; }
   .count { border-radius: 10px; width: 28px; padding: 1px 2px; background: var(--danger); color: var(--bg); font-size: 0.75rem; }
   .count.quiet { visibility: hidden; }
