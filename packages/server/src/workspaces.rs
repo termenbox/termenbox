@@ -553,6 +553,12 @@ impl WorkspaceManager {
                 }
                 _ = update_tick.tick() => {
                     if auth.owner().is_some_and(|o| o.provider == identity.provider && o.id == identity.id) { self.check_update(); }
+                    // Another connection may have retried and replaced the shared pending request. Stop waiting
+                    // for the old id instead of reporting a timeout for an attempt somebody else already finished.
+                    let shared_pending = self.update_gate.lock().unwrap().pending.clone();
+                    if pending_superseded(&update_pending, &shared_pending) {
+                        update_pending = None;
+                    }
                     if let (Some(dir), Some((id, at))) = (&self.requests_dir, &update_pending) {
                         let result = crate::requests::update_result(dir, id);
                         let done = result.is_some() || at.elapsed() >= UPDATE_DEADLINE;
@@ -1638,6 +1644,15 @@ fn update_change(sent: &mut String, now: String) -> Option<ServerMessage> {
     }
     sent.clone_from(&now);
     Some(ServerMessage::UpdateStatus { available: now })
+}
+
+fn pending_superseded(
+    local: &Option<(String, std::time::Instant)>,
+    shared: &Option<(String, std::time::Instant)>,
+) -> bool {
+    local
+        .as_ref()
+        .is_some_and(|(id, _)| !shared.as_ref().is_some_and(|(next, _)| next == id))
 }
 
 fn update_result_error(
@@ -2855,6 +2870,16 @@ mod update_change_tests {
         assert_eq!(update_result_error(Some(result), true), None);
         assert_eq!(update_result_error(None, false), None);
         assert!(update_result_error(None, true).is_some());
+    }
+
+    #[test]
+    fn a_connection_stops_waiting_when_another_connection_supersedes_its_request() {
+        let now = std::time::Instant::now();
+        let one = Some(("one".into(), now));
+        assert!(pending_superseded(&one, &Some(("two".into(), now))));
+        assert!(pending_superseded(&one, &None));
+        assert!(!pending_superseded(&one, &one));
+        assert!(!pending_superseded(&None, &one));
     }
 
     #[test]

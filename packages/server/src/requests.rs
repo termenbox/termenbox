@@ -13,6 +13,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::release::Channel;
+
 const MAX_BYTES: u64 = 4096;
 const MAX_FILES: usize = 16;
 
@@ -167,6 +169,12 @@ pub fn available_update(requests_dir: &Path, current: &str) -> Option<String> {
         || now_secs().saturating_sub(checked) > 3600
         || !matches!(v.get("mode")?.as_str()?, "auto" | "notify")
     {
+        return None;
+    }
+    // A notice left by another update channel is not an update this binary may install. Beta follows
+    // stable (the beta alias can hold a stable release); stable and nightly follow only themselves.
+    let recorded_channel: Channel = serde_json::from_value(v.get("channel")?.clone()).ok()?;
+    if !Channel::of_version(current).trusts(recorded_channel) {
         return None;
     }
     let mut recorded = semver::Version::parse(v.get("current")?.as_str()?).ok()?;
@@ -367,13 +375,35 @@ mod tests {
         let status = d.parent().unwrap().join("update-status.json");
         write_json(
             &status,
-            &serde_json::json!({"available":"0.1.54-beta.1", "current":"0.1.53+helper", "checked_at":now_secs(), "channel":"beta", "mode":"notify"}),
+            &serde_json::json!({"available":"0.1.54-beta.1", "current":"0.1.53-beta.1+helper", "checked_at":now_secs(), "channel":"beta", "mode":"notify"}),
         )
         .unwrap();
         assert_eq!(
-            available_update(&d, "0.1.53+build").as_deref(),
+            available_update(&d, "0.1.53-beta.1+build").as_deref(),
             Some("0.1.54-beta.1")
         );
+        // A stable server must not offer a beta notice, while a beta server follows stable.
+        write_json(
+            &status,
+            &serde_json::json!({"available":"0.1.54-beta.1", "current":"0.1.53+helper", "checked_at":now_secs(), "channel":"beta", "mode":"notify"}),
+        )
+        .unwrap();
+        assert_eq!(available_update(&d, "0.1.53+build"), None);
+        write_json(
+            &status,
+            &serde_json::json!({"available":"0.1.54", "current":"0.1.53-beta.1+helper", "checked_at":now_secs(), "channel":"stable", "mode":"notify"}),
+        )
+        .unwrap();
+        assert_eq!(
+            available_update(&d, "0.1.53-beta.1+build").as_deref(),
+            Some("0.1.54")
+        );
+        write_json(
+            &status,
+            &serde_json::json!({"available":"0.1.54-beta.1", "current":"0.1.53-nightly.20261029+helper", "checked_at":now_secs(), "channel":"beta", "mode":"notify"}),
+        )
+        .unwrap();
+        assert_eq!(available_update(&d, "0.1.53-nightly.20261029+build"), None);
         std::fs::write(&status, r#"{"available":"1.0 <b>"}"#).unwrap();
         assert_eq!(available_update(&d, "0.1.53"), None);
         std::fs::write(&status, "junk").unwrap();
