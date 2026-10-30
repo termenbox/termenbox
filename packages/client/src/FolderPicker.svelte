@@ -17,6 +17,7 @@
   let view: BrowserState = $state({ status: 'loading', path: '', home: '', entries: [], truncated: false, error: '', filter: '', hidden: false, outside: false });
   const browser = new FolderBrowser(req => list(req), s => (view = s));
   let typed = $state('');
+  let pathOpen = $state(false);
   let typedError = $state('');
   let slow = $state(false); // skeleton rows only after 150 ms, so a quick answer does not flash
   let slowTimer: ReturnType<typeof setTimeout> | undefined;
@@ -27,7 +28,7 @@
   // Start where the field already points (it may be outside home: then the path bar just shows it), else at home.
   let started = false;
   $effect(() => {
-    if (!open) { started = false; return; }
+    if (!open) { started = false; pathOpen = false; return; }
     if (started) return;
     started = true;
     typedError = '';
@@ -166,10 +167,15 @@
   </div>
 
   {#snippet footer()}
-    <button type="button" class="select" data-testid="picker-select" disabled={!selection || view.status !== 'ready'} onclick={choose}>
-      <span class="label">Select this folder</span>
-      <span class="path" title={selection ?? ''}>{selection ? displayPath(selection, view.home, 0) : ''}</span>
-    </button>
+    <div class="select">
+      <button type="button" class="choose" data-testid="picker-select" disabled={!selection || view.status !== 'ready'} onclick={choose}>Select this folder</button>
+      {#if selection}
+        <!-- The chosen path reads collapsed here; a tap shows all of it, wrapping, without widening the sheet. -->
+        <button type="button" class="path" data-testid="picker-select-path" aria-expanded={pathOpen} title={selection} onclick={() => (pathOpen = !pathOpen)}>
+          <span class:wrap={pathOpen}>{displayPath(selection, view.home, pathOpen ? 0 : 44)}</span>
+        </button>
+      {/if}
+    </div>
   {/snippet}
 </DialogLayer>
 
@@ -183,7 +189,10 @@
   .skeleton { height: 48px; border-radius: 8px; background: var(--border); opacity: 0.4; animation: pulse 1s ease-in-out infinite alternate; }
   @keyframes pulse { to { opacity: 0.15; } }
   @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
-  .select { display: flex; flex-direction: column; align-items: center; width: 100%; min-height: 48px; padding: 6px 12px; background: var(--accent); color: var(--bg); border: none; border-radius: 8px; font-weight: 600; }
-  .select:disabled { opacity: 0.5; }
-  .select .path { max-width: 100%; font-size: 0.8rem; font-weight: 400; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+  .select { display: flex; flex-direction: column; gap: 4px; width: 100%; min-width: 0; }
+  .choose { width: 100%; min-height: 48px; padding: 6px 12px; background: var(--accent); color: var(--bg); border: none; border-radius: 8px; font-weight: 600; }
+  .choose:disabled { opacity: 0.5; }
+  .path { min-height: 44px; max-width: 100%; padding: 4px 8px; background: transparent; color: var(--fg-muted); border: none; font-size: 0.8rem; font-weight: 400; }
+  .path span { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .path span.wrap { white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
 </style>
