@@ -92,6 +92,15 @@ for (const [name, opts] of [['phone 360', { viewport: { width: 360, height: 740 
  await page.getByRole('heading', { name: 'Activity', exact: true }).waitFor();
  await page.goBack();
  await page.getByRole('heading', { name: 'Activity', exact: true }).waitFor({ state: 'detached' });
+ // The Menu is a bottom sheet and must stay in the visual viewport at every width.
+ await page.getByRole('button', { name: 'Menu' }).click();
+ const menu = page.getByRole('dialog', { name: 'Menu' });
+ await menu.waitFor();
+ const menuBox = await menu.boundingBox();
+ check(menuBox && menuBox.y >= 0 && menuBox.y + menuBox.height <= page.viewportSize().height + 1, `${name}: Menu is outside the viewport`);
+ check(await menu.getByRole('button', { name: 'Log out' }).isVisible(), `${name}: Menu actions are not visible`);
+ check(await menu.evaluate((e) => e.scrollWidth <= e.clientWidth + 1), `${name}: Menu scrolls horizontally`);
+ await menu.getByRole('button', { name: 'Close menu' }).click();
  check(errors.length === 0, `${name}: page errors: ${errors.slice(0, 3).join(' | ')}`);
  console.log(`ok  ${name}: the whole app moves between all four destinations, the Servers page and the palette`);
  await ctx.close();
@@ -145,6 +154,74 @@ for (const [label, viewport] of [['phone', { width: 390, height: 844 }], ['deskt
    check(await page.getByTestId('server-updating').count() === 0, `${label}: newer version still says Updating`);
    check(await update.count() === 0, `${label}: newer version still offers the installed update`);
    check(server.of('update_server').length === 2, `${label}: retry was duplicated or lost`);
+ } catch (e) { t.fail(String(e)); }
+ if (!(await t.end())) failed = true;
+}
+
+// New tab is another bottom sheet. Use a tab-capable scripted server at a short desktop height and simulate
+// the visual viewport being above the keyboard; the same CSS variables are written by AppShell on a real phone.
+class TabbedServer extends ScriptedServer {
+ workspaces() {
+   return [{ id: 's1', name: 'a very long workspace name that must truncate instead of leaving the sheet', dir: '/srv/very-long-directory-name/that/keeps/going/and/going/end', agent: null,
+     tabs: [{ id: 't1', label: 'Shell', kind: 'shell', dir: '', order: 0, window: '@0' }] }];
+ }
+ snapshot() {
+   return { type: 'agent_snapshot', states: [{ workspace: 's1', state: 'idle', seq: 1, ts: Date.now(), stale: false, agent: null }] };
+ }
+ handle(ws, m) {
+   if (m.type === 'auth') {
+     this.received.push(m);
+     this.send(ws, { type: 'auth_ok', protocol: 2, tabs: true, user: 'tester', server_name: 'one', version: '0.1.31', backends: ['tmux'], control_mode: true, prefix: 'C-b' });
+     this.send(ws, { type: 'workspaces', workspaces: this.workspaces() });
+     this.send(ws, this.snapshot());
+     return;
+   }
+   super.handle(ws, m);
+ }
+}
+{
+ const server = new TabbedServer();
+ const t = await startApp({ origin, browser }, { viewport: { width: 1280, height: 420 }, server });
+ const page = t.page;
+ try {
+   await t.open();
+   await t.openWorkspace('s1');
+   await page.evaluate(() => {
+     const s = document.documentElement.style;
+     s.setProperty('--app-height', '240px');
+     s.setProperty('--app-bottom', '180px');
+     s.setProperty('--app-top', '0px');
+     s.setProperty('--app-width', '1280px');
+   });
+   await page.getByTestId('strip-new-tab').click();
+   const sheet = page.getByRole('dialog', { name: 'New tab' });
+   await sheet.waitFor();
+   const box = await sheet.boundingBox();
+   t.check(box && box.y >= 0 && box.y + box.height <= 241, 'New tab is outside the visual viewport');
+   const ws = server.workspaces()[0];
+   const title = sheet.locator('h2');
+   t.check((await title.getAttribute('title')) === ws.name, 'the full workspace name is not in the title');
+   t.check(await title.evaluate((e) => getComputedStyle(e).textOverflow === 'ellipsis' && getComputedStyle(e).whiteSpace === 'nowrap'), 'the long workspace name is not truncated');
+   const dir = sheet.getByTestId('new-tab-dir');
+   t.check((await dir.getAttribute('aria-expanded')) === 'false', 'the directory starts expanded');
+   t.check((await dir.innerText()).includes('…'), 'the long directory is not collapsed');
+   await dir.click();
+   t.check((await dir.getAttribute('aria-expanded')) === 'true', 'the directory did not expand');
+   t.check((await dir.innerText()).trim() === ws.dir, 'the full directory is not shown after a tap');
+   await dir.click();
+   t.check((await dir.getAttribute('aria-expanded')) === 'false', 'the directory did not collapse again');
+   await sheet.getByRole('button', { name: 'Create' }).scrollIntoViewIfNeeded();
+   const action = await sheet.getByRole('button', { name: 'Create' }).boundingBox();
+   t.check(action && action.y >= 0 && action.y + action.height <= 241, 'New tab actions are not reachable');
+   t.check(await sheet.evaluate((e) => e.scrollWidth <= e.clientWidth + 1), 'New tab scrolls horizontally');
+   await sheet.getByRole('button', { name: 'Cancel' }).click();
+   await page.getByRole('button', { name: 'Menu' }).click();
+   const menu = page.getByRole('dialog', { name: 'Menu' });
+   await menu.waitFor();
+   const menuBox = await menu.boundingBox();
+   t.check(menuBox && menuBox.y >= 0 && menuBox.y + menuBox.height <= 241, 'Menu does not follow the simulated keyboard inset');
+   await menu.getByRole('button', { name: 'Close menu' }).click();
+   t.ok('desktop short viewport: Menu and New tab stay inside the visual viewport');
  } catch (e) { t.fail(String(e)); }
  if (!(await t.end())) failed = true;
 }
