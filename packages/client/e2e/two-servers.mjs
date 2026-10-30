@@ -253,8 +253,8 @@ try {
   // 4. The tab menu creates a tab in the open workspace; the server and tmux record it.
   const agentTabId = tabsOf(a, 'api')[0]?.split('|')[0];
   await openMenu();
-  if (!(await menu().getByRole('button', { name: '+ New window', exact: true }).count())) fail('the tab menu has no + New window action');
-  await menu().getByRole('button', { name: '+ New window', exact: true }).click();
+  if (!(await menu().getByRole('button', { name: 'New tab in api', exact: true }).count())) fail('the tab menu has no + next to the workspace name');
+  await menu().getByRole('button', { name: 'New tab in api', exact: true }).click();
   await newTabDialog().waitFor();
   const heading = (await newTabDialog().getByRole('heading').innerText()) ?? '';
   if (!heading.includes('New tab in api')) fail(`the new-tab dialog is not for api: ${heading}`);
@@ -267,7 +267,7 @@ try {
   const tabOptions = tabsOf(a, 'api');
   const tabIds = tabOptions.map((l) => l.split('|')[0]);
   if (tabIds.length !== 2 || tabIds.some((id) => !id) || new Set(tabIds).size !== 2) fail(`tmux has no distinct @termenbox_tab for both windows: ${JSON.stringify(tabOptions)}`);
-  ok('+ New window creates a tab in the current workspace and tmux carries @termenbox_tab');
+  ok('the header + creates a tab in the current workspace and tmux carries @termenbox_tab');
 
   // 5. Switching tabs keeps the terminal, and each tab shows its own window.
   const shellWindow = tabOptions
@@ -294,9 +294,21 @@ try {
 
   // 6. Deleting a tab frees its tmux window; the workspace keeps the other one.
   await openMenu();
+  const shellRow = menu().locator('[data-row]').filter({ hasText: shellTab }).first();
+  const rowBefore = await shellRow.boundingBox();
   await menu().getByRole('button', { name: `Actions for ${shellTab}`, exact: true }).click();
-  await menu().getByRole('button', { name: 'Delete', exact: true }).click();
-  await menu().getByRole('button', { name: 'Delete this tab?', exact: true }).click();
+  const tabMenu = menu().getByRole('menu');
+  await tabMenu.waitFor();
+  await page.keyboard.press('Escape');
+  await tabMenu.waitFor({ state: 'hidden' });
+  if (!(await menu().isVisible())) fail('Escape closed the whole tab dialog instead of its row menu');
+  await menu().getByRole('button', { name: `Actions for ${shellTab}`, exact: true }).click();
+  await menu().getByRole('menuitem', { name: 'Delete tab…', exact: true }).click();
+  const rowDuring = await shellRow.boundingBox();
+  if (!rowBefore || !rowDuring || Math.abs(rowBefore.y - rowDuring.y) > 1 || Math.abs(rowBefore.height - rowDuring.height) > 1) {
+    fail(`the row moved when its menu opened: ${JSON.stringify({ rowBefore, rowDuring })}`);
+  }
+  await menu().getByRole('menuitem', { name: 'Delete tab', exact: true }).click();
   await waitFor(() => windowsOf(a, 'api') === 1, 'the tab to close');
   await page.waitForFunction((l) => document.querySelector('[data-testid=tab-plaque]')?.getAttribute('aria-label')?.endsWith(`: ${l}`), agentTab);
   await menu().getByRole('button', { name: 'Close the tab menu' }).click().catch(() => {});
@@ -344,17 +356,34 @@ try {
   }, 'the tab menu', 5000);
   await menu().waitFor();
   await menu().getByRole('button', { name: 'Actions for Shell', exact: true }).click();
-  await menu().getByRole('button', { name: 'Delete', exact: true }).click();
-  await menu().getByRole('button', { name: 'Delete this tab?', exact: true }).click();
+  await menu().getByRole('menuitem', { name: 'Delete tab…', exact: true }).click();
+  await menu().getByRole('menuitem', { name: 'Delete tab', exact: true }).click();
   await waitFor(() => windowsOf(a, 'api') === 1, 'the strip tab to close');
   await menu().getByRole('button', { name: 'Close the tab menu' }).click();
   await waitFor(async () => (await stripTabs.count()) === 1, 'one tab in the strip again');
   ok('the desktop strip and its + act on the current workspace’s tabs, not on workspaces');
 
-  // 9. Back on the phone, Close workspace still asks and ends only that workspace.
-  // Capture the ids before the close: removing the tab/workspace can finish before the next tmux query.
+  // 9. A workspace row has a cross next to its pencil: it asks first, naming the workspace and its server.
   const [apiId, infraId] = [idOf(a, 'api'), idOf(b, 'infra')];
   await page.setViewportSize({ width: 390, height: 800 });
+  await bottom('workspaces').click();
+  const apiRow = rowFor('api');
+  await apiRow.waitFor();
+  const closeRow = apiRow.getByRole('button', { name: 'Close api', exact: true });
+  if (!(await closeRow.count())) fail('the workspace row has no Close button next to the pencil');
+  const actions = page.getByRole('dialog', { name: 'Workspace actions' });
+  await closeRow.click();
+  await actions.waitFor();
+  if (!(await actions.getByText(/Close api on/).count())) fail('the confirmation does not name the workspace and its server');
+  await actions.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await actions.waitFor({ state: 'hidden' });
+  if (!sessionsOf(a).includes(apiId)) fail('Cancel closed the workspace');
+  ok('the workspace row cross asks first and names the workspace and its server');
+
+  // 10. Back on the phone, Close workspace still asks and ends only that workspace.
+  const apiPhoneRow = rowFor('api');
+  await apiPhoneRow.waitFor();
+  await apiPhoneRow.locator('button').filter({ hasText: 'api' }).first().click();
   await plaque().waitFor();
   await openMenu();
   await menu().getByRole('button', { name: 'Close workspace', exact: true }).click();
