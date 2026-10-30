@@ -677,11 +677,26 @@ impl WorkspaceManager {
     fn observe_tmux(&self, updates: &[WindowUpdate]) -> bool {
         let mut moved = false;
         for update in updates {
+            // A read that began before the server focused a tab itself describes the window from before it.
+            if self
+                .windows
+                .as_ref()
+                .is_some_and(|hub| update.generation < hub.generation(&update.workspace))
+            {
+                continue;
+            }
             if let Some(tab) = update.active_tab() {
                 moved |= self.registry.observe_focus(&update.workspace, tab);
             }
         }
         moved
+    }
+
+    /// The server focused a tab itself: control reads already in flight describe the window from before it.
+    fn bump_focus(&self, workspace: &str) {
+        if let Some(hub) = &self.windows {
+            hub.bump(workspace);
+        }
     }
 
     /// A moved focus is `Some(fresh list)` for this connection to send and for every other connection to be told.
@@ -1110,6 +1125,7 @@ impl WorkspaceManager {
                 } else {
                     self.backend.select_window(&workspace, index).await?;
                 }
+                self.bump_focus(&workspace);
             }
             ClientMessage::NewWindow { workspace } => {
                 info!(target: "audit", event = "new_window", provider = %identity.provider, account_id = %identity.id, session = %workspace);
@@ -1123,6 +1139,7 @@ impl WorkspaceManager {
                 } else {
                     self.backend.new_window(&workspace).await?;
                 }
+                self.bump_focus(&workspace);
             }
             ClientMessage::CloseWindow { workspace, index } => {
                 info!(target: "audit", event = "close_window", provider = %identity.provider, account_id = %identity.id, session = %workspace, window = index);
@@ -1136,6 +1153,7 @@ impl WorkspaceManager {
                 } else {
                     self.backend.kill_window(&workspace, index).await?;
                 }
+                self.bump_focus(&workspace);
                 let workspaces = self.registry.list(self.backend.as_ref()).await?;
                 send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
                 let _ = self.list_changed.send(conn);
@@ -1170,6 +1188,7 @@ impl WorkspaceManager {
                 self.registry
                     .new_tab(self.backend.as_ref(), &workspace, &template, &label, &dir)
                     .await?;
+                self.bump_focus(&workspace);
                 let workspaces = self.registry.list(self.backend.as_ref()).await?;
                 send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
                 let _ = self.list_changed.send(conn);
@@ -1192,6 +1211,7 @@ impl WorkspaceManager {
                 self.registry
                     .close_tab(self.backend.as_ref(), &workspace, &tab)
                     .await?;
+                self.bump_focus(&workspace);
                 if let Some(events) = &self.events {
                     events.forget_tab(&workspace, &tab);
                 }
@@ -1213,6 +1233,7 @@ impl WorkspaceManager {
                 self.registry
                     .focus_tab(self.backend.as_ref(), &workspace, &tab)
                     .await?;
+                self.bump_focus(&workspace);
                 let workspaces = self.registry.list(self.backend.as_ref()).await?;
                 send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
                 let _ = self.list_changed.send(conn);
@@ -1514,6 +1535,7 @@ impl WorkspaceManager {
                             *rows,
                         )
                         .await?;
+                    self.bump_focus(&workspace_id);
                     *attachment = Some(att);
                     send_r(
                         tx,
@@ -1540,6 +1562,7 @@ impl WorkspaceManager {
                         let _ = self.backend.focus_window(&workspace_id, index).await;
                     }
                     *attachment = Some(self.backend.attach(&workspace_id, *cols, *rows)?);
+                    self.bump_focus(&workspace_id);
                     send_r(
                         tx,
                         &ServerMessage::WorkspaceAttached {
@@ -3129,6 +3152,7 @@ mod follow_tests {
             representative: Some(if active { 0 } else { 1 }),
             window_ids: vec!["@1".into(), "@2".into()],
             tab_ids: vec![first.into(), second.into()],
+            generation: 0,
         }
     }
 
@@ -3237,5 +3261,45 @@ mod follow_tests {
         );
         assert!(end.from_workspace.try_recv().is_err());
         assert!(pings.try_recv().is_err());
+    }
+
+    /// A control read that began before the server focused a tab describes the window from before it: it must not
+    /// move the focus back, while the read after that focus is applied.
+    #[tokio::test]
+    async fn a_read_from_before_an_explicit_focus_does_not_move_it_back() {
+        let backend = Arc::new(TwoTabs::new());
+        let registry = Arc::new(Registry::memory());
+        let hub = WindowHub::default();
+        let manager = WorkspaceManager::new(backend.clone(), RunMode::Container, registry.clone())
+            .with_windows(hub.clone(), "3.6".into());
+        let id = registry
+            .create_workspace(backend.as_ref(), "Work", None, None, "shell")
+            .await
+            .unwrap();
+        let second = registry
+            .new_tab(backend.as_ref(), &id, "shell", "Logs", "")
+            .await
+            .unwrap();
+        let first = registry.record(&id).unwrap().tabs[0].id.clone();
+
+        // The read saw the first window as current, then the new tab was focused before it could be stored.
+        let stale = update(&id, &first, &second.id, true);
+        hub.bump(&id);
+        assert!(!manager.observe_tmux(std::slice::from_ref(&stale)));
+        assert_eq!(
+            registry.record(&id).unwrap().focus.as_deref(),
+            Some(second.id.as_str())
+        );
+
+        // The read that starts after the focus carries its generation and is applied.
+        let fresh = WindowUpdate {
+            generation: hub.generation(&id),
+            ..update(&id, &first, &second.id, true)
+        };
+        assert!(manager.observe_tmux(std::slice::from_ref(&fresh)));
+        assert_eq!(
+            registry.record(&id).unwrap().focus.as_deref(),
+            Some(first.as_str())
+        );
     }
 }

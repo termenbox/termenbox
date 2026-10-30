@@ -141,6 +141,9 @@ pub struct WindowUpdate {
     pub window_ids: Vec<String>,
     /// The registry tab id of each entry in `windows`, in the same order.
     pub tab_ids: Vec<String>,
+    /// The explicit-focus generation the read described. An update older than the workspace's current generation
+    /// was read before the server focused a tab itself, so it must not move the focus back.
+    pub generation: u64,
 }
 
 impl WindowUpdate {
@@ -160,6 +163,9 @@ impl WindowUpdate {
 pub struct WindowHub {
     workspaces: Arc<Mutex<HashMap<String, WindowUpdate>>>,
     tx: broadcast::Sender<WindowUpdate>,
+    /// Bumped whenever the server focuses a tab itself (an attach, a new tab, a tap). A control read that began
+    /// before the bump describes the window from before that focus and must not move the focus back.
+    generations: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl Default for WindowHub {
@@ -167,6 +173,7 @@ impl Default for WindowHub {
         Self {
             workspaces: Arc::default(),
             tx: broadcast::channel(256).0,
+            generations: Arc::default(),
         }
     }
 }
@@ -176,22 +183,54 @@ impl WindowHub {
         self.tx.subscribe()
     }
 
+    pub fn generation(&self, workspace: &str) -> u64 {
+        self.generations
+            .lock()
+            .unwrap()
+            .get(workspace)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// The server focused a tab itself, so control reads already in flight are stale.
+    pub fn bump(&self, workspace: &str) {
+        let mut generations = self.generations.lock().unwrap();
+        let generation = generations.entry(workspace.to_string()).or_insert(0);
+        *generation += 1;
+    }
+
     /// Stores the windows of `session` and tells subscribers only when something a client shows has changed.
     pub fn publish(&self, workspace: &str, states: &[WindowState]) -> bool {
+        self.publish_read(workspace, states, self.generation(workspace))
+            .unwrap_or(false)
+    }
+
+    /// `publish` of a read that began at `generation`: `None` when the server focused a tab while the read ran, so
+    /// the windows describe the session from before that focus. The read is dropped and asked for again.
+    pub fn publish_read(
+        &self,
+        workspace: &str,
+        states: &[WindowState],
+        generation: u64,
+    ) -> Option<bool> {
+        if generation < self.generation(workspace) {
+            return None;
+        }
         let update = WindowUpdate {
             workspace: workspace.to_string(),
             windows: states.iter().map(|w| w.info.clone()).collect(),
             representative: representative(states),
             window_ids: states.iter().map(|w| w.window_id.clone()).collect(),
             tab_ids: states.iter().map(|w| w.tab.clone()).collect(),
+            generation,
         };
         let mut workspaces = self.workspaces.lock().unwrap();
         if workspaces.get(workspace) == Some(&update) {
-            return false;
+            return Some(false);
         }
         workspaces.insert(workspace.to_string(), update.clone());
         let _ = self.tx.send(update);
-        true
+        Some(true)
     }
 
     pub fn all(&self) -> Vec<WindowUpdate> {
@@ -210,6 +249,7 @@ impl WindowHub {
 
     pub fn forget(&self, workspace: &str) {
         self.workspaces.lock().unwrap().remove(workspace);
+        self.generations.lock().unwrap().remove(workspace);
     }
 }
 
@@ -287,6 +327,7 @@ async fn watch(hub: WindowHub, runner: Runner, prefix: String, name: String) {
             _ = tokio::time::sleep_until(next_allowed), if dirty => {
                 dirty = false;
                 next_allowed = Instant::now() + REFRESH_EVERY;
+                let generation = hub.generation(&key);
                 match read_windows(&runner, &name).await {
                     // An empty list means the pane is not there yet; publishing it would hide the workspace.
                     Ok(states) if states.is_empty() => {
@@ -295,7 +336,15 @@ async fn watch(hub: WindowHub, runner: Runner, prefix: String, name: String) {
                         dirty = true;
                         next_allowed = Instant::now() + Duration::from_millis(200);
                     }
-                    Ok(states) => { failures = 0; hub.publish(&key, &states); }
+                    Ok(states) => {
+                        failures = 0;
+                        // A tab was focused while this read ran: it describes the window from before that, so ask
+                        // again for the state after it instead of moving the focus back.
+                        if hub.publish_read(&key, &states, generation).is_none() {
+                            dirty = true;
+                            next_allowed = Instant::now() + Duration::from_millis(200);
+                        }
+                    }
                     // The session may still be starting: ask again shortly instead of losing the watch.
                     Err(_) => {
                         failures += 1;
@@ -484,6 +533,7 @@ mod tests {
                 representative: None,
                 window_ids: (0..windows.len()).map(|i| format!("@{i}")).collect(),
                 tab_ids: tabs.iter().map(|t| t.to_string()).collect(),
+                generation: 0,
             }
         }
         let u = update(&[(0, false), (1, true), (2, false)], &["t1", "t2", "t3"]);
@@ -494,6 +544,21 @@ mod tests {
         // No current window at all.
         let u = update(&[(0, false)], &["t1"]);
         assert_eq!(u.active_tab(), None);
+    }
+
+    #[test]
+    fn a_read_that_crossed_an_explicit_focus_is_dropped() {
+        let hub = WindowHub::default();
+        let mut rx = hub.subscribe();
+        let windows = parse_windows(&row(0, 1, 100, 1, "bash", "/a", "w"));
+        let generation = hub.generation("s");
+        hub.bump("s");
+        assert_eq!(hub.publish_read("s", &windows, generation), None);
+        assert!(rx.try_recv().is_err());
+        // The read that starts after the focus is accepted and carries the generation it described.
+        let generation = hub.generation("s");
+        assert_eq!(hub.publish_read("s", &windows, generation), Some(true));
+        assert_eq!(rx.try_recv().unwrap().generation, generation);
     }
 
     #[test]
