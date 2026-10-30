@@ -143,6 +143,18 @@ pub struct WindowUpdate {
     pub tab_ids: Vec<String>,
 }
 
+impl WindowUpdate {
+    /// The registry tab of the window tmux has current, when that window carries one. A window made in tmux
+    /// directly has no tab until the registry adopts it, and a session with no current window names none.
+    pub fn active_tab(&self) -> Option<&str> {
+        let at = self.windows.iter().position(|w| w.active)?;
+        self.tab_ids
+            .get(at)
+            .map(String::as_str)
+            .filter(|tab| !tab.is_empty())
+    }
+}
+
 /// The latest windows of every tmux workspace, and a stream of changes.
 #[derive(Clone)]
 pub struct WindowHub {
@@ -451,6 +463,37 @@ mod tests {
         assert_eq!(hub.representative("s"), Some(0));
         hub.forget("s");
         assert!(hub.all().is_empty());
+    }
+
+    #[test]
+    fn the_current_window_names_the_tab_it_carries() {
+        fn update(windows: &[(u32, bool)], tabs: &[&str]) -> WindowUpdate {
+            WindowUpdate {
+                workspace: "w".into(),
+                windows: windows
+                    .iter()
+                    .map(|&(index, active)| WindowInfo {
+                        index,
+                        name: String::new(),
+                        command: String::new(),
+                        path: String::new(),
+                        active,
+                        agent: None,
+                    })
+                    .collect(),
+                representative: None,
+                window_ids: (0..windows.len()).map(|i| format!("@{i}")).collect(),
+                tab_ids: tabs.iter().map(|t| t.to_string()).collect(),
+            }
+        }
+        let u = update(&[(0, false), (1, true), (2, false)], &["t1", "t2", "t3"]);
+        assert_eq!(u.active_tab(), Some("t2"));
+        // A window made in tmux directly carries no tab until the registry adopts it.
+        let u = update(&[(0, false), (1, true)], &["t1", ""]);
+        assert_eq!(u.active_tab(), None);
+        // No current window at all.
+        let u = update(&[(0, false)], &["t1"]);
+        assert_eq!(u.active_tab(), None);
     }
 
     #[test]

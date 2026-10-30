@@ -642,6 +642,24 @@ impl Registry {
         Ok(())
     }
 
+    /// tmux's current window is the workspace's focus: every device shows the tab that window carries, and a new
+    /// device opens it. Writes only when the tab is known and the focus actually moves.
+    pub fn observe_focus(&self, workspace: &str, tab: &str) -> bool {
+        if tab.is_empty() {
+            return false;
+        }
+        let mut state = self.state.lock().unwrap();
+        let Some(record) = state.workspaces.iter_mut().find(|r| r.id == workspace) else {
+            return false;
+        };
+        if record.focus.as_deref() == Some(tab) || !record.tabs.iter().any(|t| t.id == tab) {
+            return false;
+        }
+        record.focus = Some(tab.to_string());
+        self.save(&state);
+        true
+    }
+
     pub async fn move_workspace(&self, workspace: &str, index: u32) -> Result<()> {
         let mut state = self.state.lock().unwrap();
         let at = state

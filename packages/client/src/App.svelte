@@ -22,7 +22,7 @@
   import { SnapshotStore } from './lib/snapshots';
   import { serverAtLeast, NEW_WINDOW_VERSION } from './lib/serverVersion';
   import { loadHidden, needsYou, openTabs, saveHidden } from './lib/tabs';
-  import { focusedTab, liveTab, loadActiveTab, saveActiveTab, tabForPrompt, tabOrder } from './lib/workspaceTabs';
+  import { focusedTab, followFocus, liveTab, loadActiveTab, saveActiveTab, tabForPrompt, tabOrder } from './lib/workspaceTabs';
   import { windowToOpen } from './lib/windows';
   import { installAudioUnlock, onAudioRunning, playChime } from './lib/bell';
   import { announce, waitingList, createAttention, createNotifier, createAlerter } from './lib/notify';
@@ -318,6 +318,8 @@
   let menuKey: string | null = null;
   /** The tab this device opened in the workspace; the server's focus is the fallback for a new device. */
   let activeTab: string | null = null;
+  /** The last focus this device saw for the open workspace: the strip moves only when the server's focus changes. */
+  let seenFocus: { key: string; focus: string | null } | null = null;
   let tabMenuOpen = false;
   let tabMenuAll = false;
   let newTabFor: HubWorkspace | null = null;
@@ -822,14 +824,32 @@
 
   /** The visible tab was closed or moved: follow the focus the server chose, without a blank terminal. */
   function syncActiveTab(serverId: string, list: import('./lib/protocol').WorkspaceInfo[]) {
-    if (!activeKey || !activeTab) return;
-    const workspace = list.find((w) => w.id === activeWorkspaceId);
-    if (!workspace?.tabs || workspace.tabs.some((t) => t.id === activeTab)) return;
-    const next = liveTab(workspace.tabs, null, workspace.focus)?.id ?? null;
-    activeTab = next;
-    if (next) saveActiveTab(activeKey, next);
-    if (!away && !listPage) {
-      if (next) showWorkspace(activeKey, next);
+    if (!activeKey || !activeTab || serverId !== activeServerId) return;
+    const workspace = list.find((w) => workspaceKey(serverId, w.id) === activeKey);
+    if (!workspace?.tabs) return;
+    if (!workspace.tabs.some((t) => t.id === activeTab)) {
+      const next = liveTab(workspace.tabs, null, workspace.focus)?.id ?? null;
+      activeTab = next;
+      if (next) saveActiveTab(activeKey, next);
+      if (!away && !listPage) {
+        if (next) showWorkspace(activeKey, next);
+      }
+      return;
+    }
+    // tmux has one current window per session, and a device showing the workspace follows it. Only a control-mode
+    // server reports it (an older one keeps its old behaviour); the terminal already shows the new window, so this
+    // moves the tab strip without attaching again. A list that still carries the focus this device already saw is
+    // not a move: ignoring it keeps a tap on a tab from flickering back while the attach is in flight.
+    const key = workspaceKey(serverId, workspace.id);
+    const focus = workspace.focus ?? null;
+    const before = seenFocus?.key === key ? seenFocus.focus : focus;
+    seenFocus = { key, focus };
+    if (before === focus) return;
+    if (!$hubServers.find((s) => s.id === serverId)?.controlMode) return;
+    const moved = followFocus(workspace.tabs, activeTab, focus);
+    if (moved) {
+      activeTab = moved;
+      saveActiveTab(activeKey, moved);
     }
   }
 

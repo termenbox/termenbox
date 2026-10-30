@@ -4,6 +4,7 @@ import type { WorkspaceAgent } from './agents';
 import {
   aggregateStatus,
   focusedTab,
+  followFocus,
   liveTab,
   tabForPrompt,
   loadActiveTab,
@@ -70,6 +71,13 @@ describe('the tabs a device opens', () => {
     expect(liveTab(tabs, 't3', 't2')?.id).toBe('t3');
     expect(liveTab(tabs, 'gone', 't2')?.id).toBe('t2');
     expect(liveTab(tabs, null, 'gone')?.id).toBe('t1');
+  });
+  it('follows a focus that moved to another live tab, and nothing else', () => {
+    expect(followFocus(tabs, 't1', 't3')).toBe('t3');
+    expect(followFocus(tabs, 't3', 't3')).toBeNull();
+    expect(followFocus(tabs, 't3', 'gone')).toBeNull();
+    expect(followFocus(tabs, 't3', null)).toBeNull();
+    expect(followFocus([], 't1', 't2')).toBeNull();
   });
   it('remembers the last tab per workspace on this device', () => {
     const map = new Map<string, string>();

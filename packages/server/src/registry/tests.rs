@@ -328,6 +328,31 @@ async fn fake_workspace(
 }
 
 #[tokio::test]
+async fn tmux_current_window_becomes_the_focus_but_only_for_a_known_tab() {
+    let dir = temp("observe-focus");
+    let backend = Fake::new();
+    let registry = Registry::memory();
+    let work = fake_workspace(&registry, &backend, "Work", &dir, "claude").await;
+    let second = registry
+        .new_tab(&backend, &work, "shell", "Logs", "")
+        .await
+        .unwrap();
+    let focus = || registry.record(&work).unwrap().focus;
+    let first = registry.record(&work).unwrap().tabs[0].id.clone();
+
+    assert_eq!(focus().as_deref(), Some(second.id.as_str()));
+    // tmux moved back to its first window: the focus follows the window, not the clock.
+    assert!(registry.observe_focus(&work, &first));
+    assert_eq!(focus().as_deref(), Some(first.as_str()));
+    // The same window again, an unknown tab and an unknown workspace change nothing.
+    assert!(!registry.observe_focus(&work, &first));
+    assert!(!registry.observe_focus(&work, "t99"));
+    assert!(!registry.observe_focus("gone", "t1"));
+    assert!(!registry.observe_focus(&work, ""));
+    assert_eq!(focus().as_deref(), Some(first.as_str()));
+}
+
+#[tokio::test]
 async fn agent_tabs_are_capped_per_workspace_and_closing_one_frees_a_slot() {
     let dir = temp("cap");
     let backend = Fake::new();

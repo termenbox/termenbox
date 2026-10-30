@@ -4,7 +4,7 @@ use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use tracing::{debug, info};
 
-use termenbox_core::protocol::{ClientMessage, ServerMessage, WindowInfo};
+use termenbox_core::protocol::{ClientMessage, ServerMessage, WindowInfo, WorkspaceInfo};
 
 use std::sync::Arc;
 
@@ -503,11 +503,17 @@ impl WorkspaceManager {
                 }
                 update = next_window(&mut window_rx) => {
                     let msg = match update {
-                        Some(u) => self.window_update_message(&u),
+                        Some(u) => {
+                            // tmux moved its current window: the tab strip follows before the menu is mapped.
+                            if !self.send_followed(conn, std::slice::from_ref(&u), &link.tx).await { break; }
+                            self.window_update_message(&u)
+                        }
                         None => {
                             // Fell behind: send everything again.
-                            for u in self.windows.as_ref().map(|h| h.all()).unwrap_or_default() {
-                                if !send(&link.tx, &self.window_update_message(&u)).await { return Ok(()); }
+                            let updates = self.windows.as_ref().map(|h| h.all()).unwrap_or_default();
+                            if !self.send_followed(conn, &updates, &link.tx).await { return Ok(()); }
+                            for u in &updates {
+                                if !send(&link.tx, &self.window_update_message(u)).await { return Ok(()); }
                             }
                             continue;
                         }
@@ -663,6 +669,41 @@ impl WorkspaceManager {
             .tabs(workspace)
             .get(index as usize)
             .map(|t| t.id.clone())
+    }
+
+    /// The focus follows tmux's current window: the tab that window carries is the one every device shows and a new
+    /// device opens. The tab strip reads it from the list, so a moved focus is `Some(fresh list)` for this
+    /// connection to send and for every other connection to be told.
+    async fn follow_tmux(&self, updates: &[WindowUpdate]) -> Result<Option<Vec<WorkspaceInfo>>> {
+        let mut moved = false;
+        for update in updates {
+            if let Some(tab) = update.active_tab() {
+                moved |= self.registry.observe_focus(&update.workspace, tab);
+            }
+        }
+        if !moved {
+            return Ok(None);
+        }
+        Ok(Some(self.registry.list(self.backend.as_ref()).await?))
+    }
+
+    /// Sends the fresh list to this connection and pings the others when tmux moved the focus. False when the
+    /// connection is gone.
+    async fn send_followed(&self, conn: u64, updates: &[WindowUpdate], tx: &LinkTx) -> bool {
+        let workspaces = match self.follow_tmux(updates).await {
+            Ok(Some(workspaces)) => workspaces,
+            Ok(None) => return true,
+            // The focus is kept; the next list change tells the clients about it.
+            Err(e) => {
+                debug!("the focus moved but the workspace list could not be read: {e}");
+                return true;
+            }
+        };
+        if !send(tx, &ServerMessage::Workspaces { workspaces }).await {
+            return false;
+        }
+        let _ = self.list_changed.send(conn);
+        true
     }
 
     /// The `window_list` an old client reads: the registry's tabs in order, with the live command and path of the
@@ -1040,9 +1081,14 @@ impl WorkspaceManager {
                 if !events.is_empty() {
                     send_r(tx, &ServerMessage::AgentEvents { events }).await?;
                 }
-                // A tab speaks for one window of its workspace: send them all along with the agent states.
-                for u in self.windows.as_ref().map(|h| h.all()).unwrap_or_default() {
-                    send_r(tx, &self.window_update_message(&u)).await?;
+                // A tab speaks for one window of its workspace: send them all along with the agent states, and
+                // follow tmux's current window first so a new device opens the tab it has active.
+                let updates = self.windows.as_ref().map(|h| h.all()).unwrap_or_default();
+                if !self.send_followed(conn, &updates, tx).await {
+                    return Ok(());
+                }
+                for u in &updates {
+                    send_r(tx, &self.window_update_message(u)).await?;
                 }
             }
             ClientMessage::Windows { workspace } => {
@@ -1447,6 +1493,7 @@ impl WorkspaceManager {
             }
             ClientMessage::Attach { workspace_id, tab } => {
                 *attachment = None; // detach the previous one first
+                let before = self.registry.record(&workspace_id).and_then(|r| r.focus);
                 if self.registry.has(&workspace_id) {
                     let (attached, att) = self
                         .registry
@@ -1462,11 +1509,18 @@ impl WorkspaceManager {
                     send_r(
                         tx,
                         &ServerMessage::WorkspaceAttached {
-                            workspace_id,
-                            tab: Some(attached),
+                            workspace_id: workspace_id.clone(),
+                            tab: Some(attached.clone()),
                         },
                     )
                     .await?;
+                    // Opening a tab makes it tmux's current window: every other device viewing this workspace
+                    // follows the shared focus, as it does for `Ctrl+B` in tmux itself.
+                    if before.as_deref() != Some(attached.as_str()) {
+                        let workspaces = self.registry.list(self.backend.as_ref()).await?;
+                        send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
+                        let _ = self.list_changed.send(conn);
+                    }
                 } else {
                     // A workspace with no tabs (an ACP one): the old path, with no tab to name.
                     if let Some(index) = self
@@ -2955,5 +3009,155 @@ mod replay_message_tests {
         assert!(
             matches!(&reset[..], [ServerMessage::AcpEvents { reset: true, frames, .. }] if frames.is_empty())
         );
+    }
+}
+
+#[cfg(test)]
+mod follow_tests {
+    use super::*;
+    use crate::backend::{CreatedWorkspace, TabSpec};
+    use termenbox_core::protocol::WorkspaceInfo;
+
+    /// One tmux workspace with two tabs; its current window is the second one.
+    struct TwoTabs;
+
+    #[async_trait::async_trait]
+    impl WorkspaceBackend for TwoTabs {
+        fn name(&self) -> &str {
+            "fake"
+        }
+        fn kinds(&self) -> Vec<String> {
+            vec!["tmux".into()]
+        }
+        async fn list(&self) -> Result<Vec<WorkspaceInfo>> {
+            Ok(vec![WorkspaceInfo {
+                id: "ws-1".into(),
+                name: "Work".into(),
+                agent: None,
+                backend: Some("tmux".into()),
+                dir: std::env::temp_dir().to_string_lossy().into_owned(),
+                order: 0,
+                focus: None,
+                tabs: Vec::new(),
+            }])
+        }
+        async fn create(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn attach(&self, _: &str, _: u16, _: u16) -> Result<Attachment> {
+            Err(anyhow::anyhow!("no terminal"))
+        }
+        async fn create_workspace(
+            &self,
+            _: &str,
+            _: Option<&str>,
+            _: Option<&str>,
+            _: Option<&str>,
+            _: &TabSpec,
+        ) -> Result<CreatedWorkspace> {
+            Ok(CreatedWorkspace {
+                id: "ws-1".into(),
+                window: Some("@1".into()),
+            })
+        }
+        async fn new_tab(&self, _: &str, _: &TabSpec) -> Result<String> {
+            Ok("@2".into())
+        }
+        async fn ensure_session(&self, _: &str, _: &str, _: &str, _: &TabSpec) -> Result<String> {
+            Ok("@1".into())
+        }
+        async fn focus_tab(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn windows(&self, _: &str) -> Result<Vec<WindowState>> {
+            let window = |index, id: &str, active| WindowState {
+                info: WindowInfo {
+                    index,
+                    name: String::new(),
+                    command: "bash".into(),
+                    path: std::env::temp_dir().to_string_lossy().into_owned(),
+                    active,
+                    agent: None,
+                },
+                activity: 0,
+                window_id: id.into(),
+                tab: String::new(),
+            };
+            Ok(vec![window(0, "@1", false), window(1, "@2", true)])
+        }
+    }
+
+    fn update(workspace: &str, first: &str, second: &str, active: bool) -> WindowUpdate {
+        let window = |index, active| WindowInfo {
+            index,
+            name: String::new(),
+            command: "bash".into(),
+            path: String::new(),
+            active,
+            agent: None,
+        };
+        WindowUpdate {
+            workspace: workspace.into(),
+            windows: vec![window(0, active), window(1, !active)],
+            representative: Some(if active { 0 } else { 1 }),
+            window_ids: vec!["@1".into(), "@2".into()],
+            tab_ids: vec![first.into(), second.into()],
+        }
+    }
+
+    /// tmux's current window becomes the focus: the tab strip follows it, and the old window menu names the same
+    /// tab active and representative. A repeat is not news.
+    #[tokio::test]
+    async fn the_current_window_moves_the_focus_and_the_active_tab() {
+        let backend = Arc::new(TwoTabs);
+        let registry = Arc::new(Registry::memory());
+        let manager = WorkspaceManager::new(backend.clone(), RunMode::Container, registry.clone());
+        let id = registry
+            .create_workspace(backend.as_ref(), "Work", None, None, "shell")
+            .await
+            .unwrap();
+        let second = registry
+            .new_tab(backend.as_ref(), &id, "shell", "Logs", "")
+            .await
+            .unwrap();
+        let first = registry.record(&id).unwrap().tabs[0].id.clone();
+
+        // tmux went back to its first window; the update names the tab that window carries.
+        let moved = update(&id, &first, &second.id, true);
+        let list = manager
+            .follow_tmux(std::slice::from_ref(&moved))
+            .await
+            .unwrap()
+            .expect("the focus moved");
+        assert_eq!(list[0].focus.as_deref(), Some(first.as_str()));
+        assert_eq!(
+            registry.record(&id).unwrap().focus.as_deref(),
+            Some(first.as_str())
+        );
+        match manager.window_update_message(&moved) {
+            ServerMessage::WindowList {
+                windows,
+                representative,
+                ..
+            } => {
+                assert_eq!((windows[0].active, windows[1].active), (true, false));
+                assert_eq!(representative, Some(0));
+            }
+            other => panic!("{other:?}"),
+        }
+
+        // The same current window again is not news; tmux moving on is.
+        assert!(manager
+            .follow_tmux(std::slice::from_ref(&moved))
+            .await
+            .unwrap()
+            .is_none());
+        let back = update(&id, &first, &second.id, false);
+        let list = manager
+            .follow_tmux(std::slice::from_ref(&back))
+            .await
+            .unwrap()
+            .expect("the focus moved back");
+        assert_eq!(list[0].focus.as_deref(), Some(second.id.as_str()));
     }
 }

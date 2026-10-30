@@ -24,6 +24,16 @@ export function liveTab(tabs: TabInfo[] | undefined, wanted: string | null | und
   return ordered.find((t) => t.id === wanted) ?? focusedTab(ordered, focus);
 }
 
+/**
+ * The tab the shared tmux current window just moved to, or null when this device already shows it. A control-mode
+ * server reports the current window as the workspace focus; a device viewing the workspace follows it, and a focus
+ * that names no live tab changes nothing.
+ */
+export function followFocus(tabs: TabInfo[] | undefined, wanted: string | null | undefined, focus?: string | null): string | null {
+  if (!focus || focus === wanted) return null;
+  return tabOrder(tabs).some((t) => t.id === focus) ? focus : null;
+}
+
 /** The per-tab state key; PR4 fills the map, the aggregate already understands an empty one. */
 export const tabStateKey = (workspaceKey: string, tabId: string) => `${workspaceKey}/${tabId}`;
 
