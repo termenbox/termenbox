@@ -162,7 +162,7 @@ for (const [label, viewport] of [['phone', { width: 390, height: 844 }], ['deskt
 // the visual viewport being above the keyboard; the same CSS variables are written by AppShell on a real phone.
 class TabbedServer extends ScriptedServer {
  workspaces() {
-   return [{ id: 's1', name: 'a very long workspace name that must wrap instead of leaving the sheet', agent: null,
+   return [{ id: 's1', name: 'a very long workspace name that must truncate instead of leaving the sheet', dir: '/srv/very-long-directory-name/that/keeps/going/and/going/end', agent: null,
      tabs: [{ id: 't1', label: 'Shell', kind: 'shell', dir: '', order: 0, window: '@0' }] }];
  }
  snapshot() {
@@ -180,7 +180,8 @@ class TabbedServer extends ScriptedServer {
  }
 }
 {
- const t = await startApp({ origin, browser }, { viewport: { width: 1280, height: 420 }, server: new TabbedServer() });
+ const server = new TabbedServer();
+ const t = await startApp({ origin, browser }, { viewport: { width: 1280, height: 420 }, server });
  const page = t.page;
  try {
    await t.open();
@@ -197,7 +198,18 @@ class TabbedServer extends ScriptedServer {
    await sheet.waitFor();
    const box = await sheet.boundingBox();
    t.check(box && box.y >= 0 && box.y + box.height <= 241, 'New tab is outside the visual viewport');
-   t.check(await sheet.locator('h2').evaluate((e) => e.scrollWidth <= e.clientWidth + 1), 'New tab title scrolls horizontally');
+   const ws = server.workspaces()[0];
+   const title = sheet.locator('h2');
+   t.check((await title.getAttribute('title')) === ws.name, 'the full workspace name is not in the title');
+   t.check(await title.evaluate((e) => getComputedStyle(e).textOverflow === 'ellipsis' && getComputedStyle(e).whiteSpace === 'nowrap'), 'the long workspace name is not truncated');
+   const dir = sheet.getByTestId('new-tab-dir');
+   t.check((await dir.getAttribute('aria-expanded')) === 'false', 'the directory starts expanded');
+   t.check((await dir.innerText()).includes('…'), 'the long directory is not collapsed');
+   await dir.click();
+   t.check((await dir.getAttribute('aria-expanded')) === 'true', 'the directory did not expand');
+   t.check((await dir.innerText()).trim() === ws.dir, 'the full directory is not shown after a tap');
+   await dir.click();
+   t.check((await dir.getAttribute('aria-expanded')) === 'false', 'the directory did not collapse again');
    await sheet.getByRole('button', { name: 'Create' }).scrollIntoViewIfNeeded();
    const action = await sheet.getByRole('button', { name: 'Create' }).boundingBox();
    t.check(action && action.y >= 0 && action.y + action.height <= 241, 'New tab actions are not reachable');
