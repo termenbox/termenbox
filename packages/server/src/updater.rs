@@ -123,6 +123,7 @@ impl UpdatePolicy {
 pub enum Trigger {
     Timer,
     UpdateNow,
+    Check,
 }
 
 /// Minutes since local midnight, for the maintenance window.
@@ -327,10 +328,12 @@ impl Updater<'_> {
             Some(v) => {
                 let body = serde_json::json!({
                     "available": v,
+                    "current": self.current,
+                    "checked_at": crate::requests::now_secs(),
                     "channel": format!("{:?}", self.policy.channel).to_ascii_lowercase(),
                     "mode": format!("{:?}", self.policy.mode).to_ascii_lowercase(),
                 });
-                std::fs::write(&path, serde_json::to_vec(&body)?)?;
+                crate::requests::write_json(&path, &body)?;
             }
             None => {
                 let _ = std::fs::remove_file(&path);
@@ -340,6 +343,13 @@ impl Updater<'_> {
     }
 
     pub async fn run(&self) -> Result<Outcome> {
+        // Invalidate the previous check before fetching. A verified installable release is recorded again below;
+        // a download or health failure can keep that valid notice so the owner can retry.
+        let _ = self.record_available(None);
+        self.run_inner().await
+    }
+
+    async fn run_inner(&self) -> Result<Outcome> {
         if self.policy.mode == Mode::Hold {
             return Ok(Outcome::Held);
         }
@@ -374,6 +384,12 @@ impl Updater<'_> {
         // (and after an install that failed); a successful install clears it. It is a hint for the app: a directory
         // the updater cannot write to never stops the update itself.
         let _ = self.record_available(Some(&manifest.version));
+        if self.trigger == Trigger::Check {
+            return Ok(Outcome::Available {
+                version: manifest.version,
+                reason: "check only",
+            });
+        }
         if self.trigger == Trigger::Timer {
             let hold_back = if self.policy.mode == Mode::Notify {
                 Some("notify mode: the owner installs it")
@@ -794,6 +810,63 @@ mod tests {
         Fake {
             files: w.files.clone(),
             fetched: Mutex::new(vec![]),
+        }
+    }
+
+    #[tokio::test]
+    async fn check_verifies_and_records_without_downloading_or_restarting_even_in_auto_mode() {
+        let Some(w) = world("0.2.0", false, b"new binary") else {
+            return;
+        };
+        let (f, s) = (fake(&w), svc(&w, 1, true));
+        let mut u = updater(&w, &f, &s, "0.1.0");
+        u.trigger = Trigger::Check;
+        assert!(matches!(u.run().await.unwrap(), Outcome::Available { .. }));
+        assert_eq!(f.fetched.lock().unwrap().len(), 2);
+        assert_eq!(*s.restarts.lock().unwrap(), 0);
+        assert_eq!(std::fs::read(&w.binary).unwrap(), b"old binary");
+        assert_eq!(
+            crate::requests::available_update(&w.dir.join("requests"), "0.1.0").as_deref(),
+            Some("0.2.0")
+        );
+        assert!(!w.dir.join("root").exists());
+    }
+
+    #[tokio::test]
+    async fn a_failed_held_frozen_or_wrong_channel_check_removes_a_previous_notice() {
+        for case in ["signature", "hold", "freeze", "channel", "current"] {
+            let Some(w) = world("0.2.0", case == "freeze", b"new binary") else {
+                return;
+            };
+            let mut f = fake(&w);
+            if case == "signature" {
+                f.files.insert(
+                    "https://rel/manifest.json.sig".into(),
+                    b"bad signature".to_vec(),
+                );
+            }
+            let s = svc(&w, 1, true);
+            let mut u = updater(
+                &w,
+                &f,
+                &s,
+                if case == "current" { "0.2.0" } else { "0.1.0" },
+            );
+            u.trigger = Trigger::Check;
+            if case == "hold" {
+                u.policy.mode = Mode::Hold;
+            }
+            if case == "channel" {
+                u.policy.channel = Channel::Nightly;
+            }
+            u.record_available(Some("0.3.0")).unwrap();
+            let out = u.run().await;
+            assert_eq!(out.is_err(), case == "signature");
+            assert!(!w.dir.join("update-status.json").exists(), "{case}");
+            assert_eq!(*s.restarts.lock().unwrap(), 0);
+            if case == "hold" {
+                assert!(f.fetched.lock().unwrap().is_empty());
+            }
         }
     }
 

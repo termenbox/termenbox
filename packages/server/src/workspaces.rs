@@ -21,6 +21,14 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// A streaming reply changes many times a second; a client that shows it gets one update per this long at most.
 /// How often a connection looks at `update-status.json` to tell its client when the recorded release changed.
 const UPDATE_POLL: Duration = Duration::from_secs(20);
+const UPDATE_CHECK_EVERY: Duration = Duration::from_secs(600);
+const UPDATE_DEADLINE: Duration = Duration::from_secs(600);
+
+#[derive(Default)]
+struct UpdateGate {
+    checked: Option<std::time::Instant>,
+    pending: Option<(String, std::time::Instant)>,
+}
 const ACP_BATCH: Duration = Duration::from_millis(120);
 /// The longest prompt a client may send (the backend caps it again).
 const ACP_PROMPT_BYTES: usize = 16 * 1024;
@@ -99,6 +107,7 @@ pub struct WorkspaceManager {
     /// Where requests for the root helper go and where the updater's status sits beside them (decision 0077); None
     /// in tests and builds without an updater.
     requests_dir: Option<std::path::PathBuf>,
+    update_gate: Arc<std::sync::Mutex<UpdateGate>>,
     events: Option<EventHub>,
     push: Option<Arc<crate::push::Push>>,
     windows: Option<WindowHub>,
@@ -129,6 +138,7 @@ impl WorkspaceManager {
             server_name: String::new(),
             on_uninstalled: Arc::new(|| {}),
             requests_dir: None,
+            update_gate: Arc::default(),
             events: None,
             push: None,
             windows: None,
@@ -175,6 +185,11 @@ impl WorkspaceManager {
 
     /// Lets the owner update the server from the app: `dir` is the requests directory the root helper watches.
     pub fn with_requests(mut self, dir: std::path::PathBuf) -> Self {
+        if let Some((id, age)) = crate::requests::pending_update(&dir) {
+            let now = std::time::Instant::now();
+            self.update_gate.lock().unwrap().pending =
+                Some((id, now.checked_sub(age).unwrap_or(now)));
+        }
         self.requests_dir = Some(dir);
         self
     }
@@ -183,8 +198,59 @@ impl WorkspaceManager {
     pub fn update_available(&self) -> String {
         self.requests_dir
             .as_deref()
-            .and_then(crate::requests::available_update)
+            .and_then(|dir| crate::requests::available_update(dir, &crate::version()))
             .unwrap_or_default()
+    }
+
+    fn check_update(&self) {
+        let Some(dir) = &self.requests_dir else {
+            return;
+        };
+        let mut gate = self.update_gate.lock().unwrap();
+        if gate
+            .pending
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() < UPDATE_DEADLINE)
+            || gate
+                .checked
+                .is_some_and(|at| at.elapsed() < UPDATE_CHECK_EVERY)
+        {
+            return;
+        }
+        // The shared gate is held through publishing the tiny request, never through a network call.
+        if crate::requests::leave_update_check(dir).is_ok() {
+            gate.checked = Some(std::time::Instant::now());
+        }
+    }
+
+    fn request_update(&self, dir: &std::path::Path) -> Result<String> {
+        let mut gate = self.update_gate.lock().unwrap();
+        if let Some((id, at)) = &gate.pending {
+            if at.elapsed() < UPDATE_DEADLINE && crate::requests::update_result(dir, id).is_none() {
+                return Ok(id.clone());
+            }
+        }
+        let id = crate::requests::leave_update_now(dir)?;
+        gate.pending = Some((id.clone(), std::time::Instant::now()));
+        Ok(id)
+    }
+
+    fn finish_update(&self, id: &str) {
+        let mut gate = self.update_gate.lock().unwrap();
+        if gate
+            .pending
+            .as_ref()
+            .is_some_and(|(pending, _)| pending == id)
+        {
+            gate.pending = None;
+            if let Some(state) = self
+                .requests_dir
+                .as_deref()
+                .and_then(std::path::Path::parent)
+            {
+                let _ = std::fs::remove_file(state.join("update-progress.json"));
+            }
+        }
     }
 
     /// Serves the agent event stream (plan v6) to every connection.
@@ -319,6 +385,14 @@ impl WorkspaceManager {
         let mut update_tick = tokio::time::interval(UPDATE_POLL);
         update_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut update_sent = self.update_available();
+        let mut update_pending = if auth
+            .owner()
+            .is_some_and(|o| o.provider == identity.provider && o.id == identity.id)
+        {
+            self.update_gate.lock().unwrap().pending.clone()
+        } else {
+            None
+        };
         // None once the collector is gone: the arm below then waits for ever instead of spinning on a closed channel.
         let mut health_rx = self.health.as_ref().map(|h| h.subscribe());
         if let Some(u) = self.health.as_ref().and_then(|h| h.latest()) {
@@ -361,7 +435,9 @@ impl WorkspaceManager {
                         // Who got a shell on the host and as whom; never what they typed.
                         info!(target: "audit", event = "host_session", provider = %identity.provider, account_id = %identity.id, login = %identity.login, run_as = %self.mode.label(), session = %workspace_id);
                     }
+                    let updating = matches!(&client_msg, ClientMessage::UpdateServer {});
                     let result = self.handle(conn, client_msg, auth, &identity, &mut attachment, &mut cols, &mut rows, &mut acp, &mut events, &link.tx).await;
+                    if updating && result.is_ok() { update_pending = self.update_gate.lock().unwrap().pending.clone(); }
                     match (req, result) {
                         (Some(req), result) => {
                             if !send_ack(&link.tx, req, result.map_err(|e| e.to_string())).await { break; }
@@ -476,6 +552,22 @@ impl WorkspaceManager {
                     }
                 }
                 _ = update_tick.tick() => {
+                    if auth.owner().is_some_and(|o| o.provider == identity.provider && o.id == identity.id) { self.check_update(); }
+                    // Another connection may have retried and replaced the shared pending request. Stop waiting
+                    // for the old id instead of reporting a timeout for an attempt somebody else already finished.
+                    let shared_pending = self.update_gate.lock().unwrap().pending.clone();
+                    if pending_superseded(&update_pending, &shared_pending) {
+                        update_pending = None;
+                    }
+                    if let (Some(dir), Some((id, at))) = (&self.requests_dir, &update_pending) {
+                        let result = crate::requests::update_result(dir, id);
+                        let done = result.is_some() || at.elapsed() >= UPDATE_DEADLINE;
+                        let error = update_result_error(result, at.elapsed() >= UPDATE_DEADLINE);
+                        if let Some(error) = error {
+                            if !send(&link.tx, &ServerMessage::Error { message: format!("Server update: {error}") }).await { break; }
+                        }
+                        if done { self.finish_update(id); update_pending = None; }
+                    }
                     if let Some(msg) = update_change(&mut update_sent, self.update_available()) {
                         if !send(&link.tx, &msg).await { break; }
                     }
@@ -711,9 +803,13 @@ impl WorkspaceManager {
                     .is_some_and(|o| o.provider == identity.provider && o.id == identity.id);
                 let Some(dir) = self.requests_dir.as_deref().filter(|_| is_owner) else {
                     info!(target: "audit", event = "update_refused", provider = %identity.provider, account_id = %identity.id);
-                    return Err(anyhow::anyhow!("Only the owner can update this server"));
+                    return Err(anyhow::anyhow!(
+                        "Server update: Only the owner can update this server"
+                    ));
                 };
-                crate::requests::leave_update_now(dir)?;
+                self.request_update(dir).map_err(|_| {
+                    anyhow::anyhow!("Server update: Could not contact the update helper.")
+                })?;
                 info!(target: "audit", event = "update_requested", provider = %identity.provider, account_id = %identity.id, login = %identity.login);
                 send_r(
                     tx,
@@ -1548,6 +1644,28 @@ fn update_change(sent: &mut String, now: String) -> Option<ServerMessage> {
     }
     sent.clone_from(&now);
     Some(ServerMessage::UpdateStatus { available: now })
+}
+
+fn pending_superseded(
+    local: &Option<(String, std::time::Instant)>,
+    shared: &Option<(String, std::time::Instant)>,
+) -> bool {
+    local
+        .as_ref()
+        .is_some_and(|(id, _)| !shared.as_ref().is_some_and(|(next, _)| next == id))
+}
+
+fn update_result_error(
+    result: Option<crate::requests::UpdateResult>,
+    expired: bool,
+) -> Option<String> {
+    match result {
+        Some(result) => result.error,
+        None if expired => Some(
+            "The helper did not report an update result in time. Check its service logs.".into(),
+        ),
+        None => None,
+    }
 }
 
 fn status_message(c: crate::events::StatusChange) -> ServerMessage {
@@ -2390,6 +2508,54 @@ mod propagation_tests {
         }
     }
 
+    /// Every connection uses one queue and a restart restores the same pending owner request.
+    #[test]
+    fn update_checks_and_install_requests_are_shared_across_connections_and_survive_restart() {
+        let root = std::env::temp_dir().join(format!("tm-update-gate-{}", uuid::Uuid::new_v4()));
+        let dir = root.join("requests");
+        let manager = || {
+            WorkspaceManager::new(
+                Arc::new(Names(Mutex::new("w".into()))),
+                RunMode::Container,
+                Arc::new(Registry::memory()),
+            )
+            .with_requests(dir.clone())
+        };
+        let first = manager();
+        let other = first.clone();
+        first.check_update();
+        other.check_update();
+        assert_eq!(
+            crate::requests::take_requests(&dir),
+            vec![crate::requests::Request::CheckUpdate {}]
+        );
+        other.check_update();
+        assert!(crate::requests::take_requests(&dir).is_empty());
+        let id = first.request_update(&dir).unwrap();
+        assert_eq!(other.request_update(&dir).unwrap(), id);
+        assert_eq!(crate::requests::take_requests(&dir).len(), 1);
+        assert_eq!(manager().request_update(&dir).unwrap(), id);
+        crate::requests::write_json(
+            &root.join("update-result.json"),
+            &crate::requests::UpdateResult {
+                id: id.clone(),
+                error: Some("held".into()),
+            },
+        )
+        .unwrap();
+        let retry = first.request_update(&dir).unwrap();
+        assert_ne!(retry, id);
+        first.finish_update(&id);
+        let restored = manager();
+        let pending = restored.update_gate.lock().unwrap().pending.clone();
+        assert_eq!(pending.map(|(id, _)| id), Some(retry.clone()));
+        first.finish_update(&retry);
+        assert!(first.update_gate.lock().unwrap().pending.is_none());
+        assert!(manager().update_gate.lock().unwrap().pending.is_none());
+        assert!(!root.join("update-progress.json").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// Reads messages from a connection until one lists the workspace under `name`.
     async fn sees_name(end: &mut crate::link::LinkEnd, name: &str) -> bool {
         let wanted = format!("\"name\":\"{name}\"");
@@ -2404,6 +2570,51 @@ mod propagation_tests {
         tokio::time::timeout(Duration::from_secs(3), read)
             .await
             .unwrap_or(false)
+    }
+
+    #[tokio::test]
+    async fn only_the_owner_can_publish_an_install_request() {
+        let root = std::env::temp_dir().join(format!("tm-update-owner-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let auth = AuthState::new(root.join("auth"), CertKeys::default(), "srv".into()).unwrap();
+        let identity = |id: &str| Identity {
+            provider: "github".into(),
+            id: id.into(),
+            login: format!("login-{id}"),
+            issued_at: None,
+        };
+        let claim = auth.claim_token().unwrap().unwrap();
+        auth.authorize(&identity("1"), Some(&claim)).unwrap();
+        for who in ["1", "2"] {
+            let dir = root.join(who).join("requests");
+            let manager = WorkspaceManager::new(
+                Arc::new(Names(Mutex::new("w".into()))),
+                RunMode::Container,
+                Arc::new(Registry::memory()),
+            )
+            .with_requests(dir.clone());
+            let (link, _end) = crate::link::pair(None, None);
+            let result = manager
+                .handle(
+                    1,
+                    ClientMessage::UpdateServer {},
+                    &auth,
+                    &identity(who),
+                    &mut None,
+                    &mut 80,
+                    &mut 24,
+                    &mut None,
+                    &mut None,
+                    &link.tx,
+                )
+                .await;
+            assert_eq!(result.is_ok(), who == "1");
+            assert_eq!(
+                crate::requests::take_requests(&dir).len(),
+                usize::from(who == "1")
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
@@ -2649,6 +2860,27 @@ mod scrollback_tests {
 #[cfg(test)]
 mod update_change_tests {
     use super::*;
+
+    #[test]
+    fn a_reported_success_is_not_replaced_with_a_deadline_error() {
+        let result = crate::requests::UpdateResult {
+            id: "request".into(),
+            error: None,
+        };
+        assert_eq!(update_result_error(Some(result), true), None);
+        assert_eq!(update_result_error(None, false), None);
+        assert!(update_result_error(None, true).is_some());
+    }
+
+    #[test]
+    fn a_connection_stops_waiting_when_another_connection_supersedes_its_request() {
+        let now = std::time::Instant::now();
+        let one = Some(("one".into(), now));
+        assert!(pending_superseded(&one, &Some(("two".into(), now))));
+        assert!(pending_superseded(&one, &None));
+        assert!(!pending_superseded(&one, &one));
+        assert!(!pending_superseded(&None, &one));
+    }
 
     #[test]
     fn a_connection_is_told_once_when_the_recorded_release_changes_or_clears() {
