@@ -193,7 +193,7 @@
   input, button { min-height: 44px; min-width: 44px; }
   input { width: 100%; }
 
-  .summary { margin: 0; font-size: 0.85rem; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .summary { margin: 0; min-width: 0; font-size: 0.85rem; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .actions { display: flex; gap: 8px; justify-content: flex-end; }
   .problem { margin: 0; color: var(--danger); font-size: 0.8rem; }
 
