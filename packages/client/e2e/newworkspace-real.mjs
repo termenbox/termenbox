@@ -143,7 +143,7 @@ try {
   const inCode = await q('picker-list').locator('[data-dir]').evaluateAll((els) => els.map((e) => e.dataset.dir));
   if (inCode.join() !== 'app,termenbox') throw new Error(`code lists ${inCode.join()} (a file must not appear), expected app,termenbox`);
   await row('termenbox').click();
-  await page.waitForFunction(() => /termenbox/.test(document.querySelector('[data-testid="picker-select"] .path')?.textContent ?? ''));
+  await page.waitForFunction(() => /termenbox/.test(document.querySelector('[data-testid="picker-select-path"]')?.textContent ?? ''));
   await q('picker-select').click();
   await see(q('folder-value'), 'the folder field');
   const shown = await q('folder-value').innerText();
