@@ -230,6 +230,18 @@ try {
   if (!rowText.some((t) => t.includes('infra') && t.includes('beta'))) fail(`the second server's workspace row is missing: ${JSON.stringify(rowText)}`);
   ok('three agent workspaces in one repo and one on a second server give four rows');
 
+  // 1b. A workspace row carries a cross next to its pencil: it asks first, naming the workspace and its server.
+  const cross = rowFor('api').getByRole('button', { name: 'Close api', exact: true });
+  if (!(await cross.count())) fail('the workspace row has no Close button next to the pencil');
+  const actions = page.getByRole('dialog', { name: 'Workspace actions' });
+  await cross.click();
+  await actions.waitFor();
+  if (!(await actions.getByText(/Close api on/).count())) fail('the confirmation does not name the workspace and its server');
+  await actions.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await actions.waitFor({ state: 'hidden' });
+  if ((await rows().count()) !== 4) fail('Cancel closed the workspace');
+  ok('the workspace row cross asks first and names the workspace and its server');
+
   // 2. Opening a row shows one phone plaque for that workspace's tabs.
   await openWorkspace('api');
   if ((await plaque().count()) !== 1) fail('the phone has no single tab plaque');
@@ -363,27 +375,10 @@ try {
   await waitFor(async () => (await stripTabs.count()) === 1, 'one tab in the strip again');
   ok('the desktop strip and its + act on the current workspace’s tabs, not on workspaces');
 
-  // 9. A workspace row has a cross next to its pencil: it asks first, naming the workspace and its server.
+  // 9. Back on the phone, Close workspace still asks and ends only that workspace.
+  // Capture the ids before the close: removing the tab/workspace can finish before the next tmux query.
   const [apiId, infraId] = [idOf(a, 'api'), idOf(b, 'infra')];
   await page.setViewportSize({ width: 390, height: 800 });
-  await bottom('workspaces').click();
-  const apiRow = rowFor('api');
-  await apiRow.waitFor();
-  const closeRow = apiRow.getByRole('button', { name: 'Close api', exact: true });
-  if (!(await closeRow.count())) fail('the workspace row has no Close button next to the pencil');
-  const actions = page.getByRole('dialog', { name: 'Workspace actions' });
-  await closeRow.click();
-  await actions.waitFor();
-  if (!(await actions.getByText(/Close api on/).count())) fail('the confirmation does not name the workspace and its server');
-  await actions.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await actions.waitFor({ state: 'hidden' });
-  if (!sessionsOf(a).includes(apiId)) fail('Cancel closed the workspace');
-  ok('the workspace row cross asks first and names the workspace and its server');
-
-  // 10. Back on the phone, Close workspace still asks and ends only that workspace.
-  const apiPhoneRow = rowFor('api');
-  await apiPhoneRow.waitFor();
-  await apiPhoneRow.locator('button').filter({ hasText: 'api' }).first().click();
   await plaque().waitFor();
   await openMenu();
   await menu().getByRole('button', { name: 'Close workspace', exact: true }).click();
