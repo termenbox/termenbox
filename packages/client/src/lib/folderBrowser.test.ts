@@ -52,6 +52,14 @@ describe('FolderBrowser', () => {
     expect(b.state).toMatchObject({ status: 'ready', path: '/home/u/code' });
     expect(calls.map(c => c.path)).toEqual([undefined, '/home/u/code']);
   });
+  it('ignores a second Up while the parent is still loading (#408)', async () => {
+    const b = new FolderBrowser(fake().list);
+    await b.open('/home/u/code/termenbox');
+    const first = b.up();
+    const second = b.up();
+    await Promise.all([first, second]);
+    expect(b.state).toMatchObject({ status: 'ready', path: '/home/u/code' });
+  });
   it('shows an error for an unlistable folder and Retry asks again', async () => {
     const f = fake();
     const b = new FolderBrowser(f.list);
