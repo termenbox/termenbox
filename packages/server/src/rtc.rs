@@ -1027,6 +1027,10 @@ mod tests {
     const RESTART_RANGE: RangeInclusive<u16> = 20_020..=20_030;
     const REMEMBERED_RANGE: RangeInclusive<u16> = 20_040..=20_050;
     const OUTSIDE_RANGE: RangeInclusive<u16> = 20_060..=20_070;
+    /// Single ports for the tests that free a port and bind it again. They must not come from the OS (port 0):
+    /// between the free and the second bind any other UDP socket of the process can be given that ephemeral port.
+    const SAVED_OUTSIDE_PORT: u16 = 20_080;
+    const EXPLICIT_PORT: u16 = 20_090;
 
     fn localhost() -> IpAddr {
         std::net::Ipv4Addr::LOCALHOST.into()
@@ -1074,11 +1078,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_saved_port_outside_the_range_is_still_the_port() {
-        let probe = UdpSocket::bind(SocketAddr::new(localhost(), 0))
-            .await
-            .unwrap();
-        let port = probe.local_addr().unwrap().port();
-        drop(probe);
+        let port = SAVED_OUTSIDE_PORT;
         let (_socket, got) = bind_transport(localhost(), None, OUTSIDE_RANGE, Some(port))
             .await
             .unwrap();
@@ -1090,10 +1090,10 @@ mod tests {
 
     #[tokio::test]
     async fn an_explicit_port_is_used_as_given_and_a_taken_one_fails_clearly() {
-        let held = UdpSocket::bind(SocketAddr::new(localhost(), 0))
+        let port = EXPLICIT_PORT;
+        let held = UdpSocket::bind(SocketAddr::new(localhost(), port))
             .await
             .unwrap();
-        let port = held.local_addr().unwrap().port();
         let err = bind_transport(localhost(), Some(port), TWO_SERVERS_RANGE, None)
             .await
             .unwrap_err();
