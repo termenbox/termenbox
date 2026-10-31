@@ -70,6 +70,31 @@ refuse "a released slot has no claim, acquire hands it out again" test "$(pool a
 echo z >"$p/dirty"
 check "release --force drops uncommitted work" pool release --force "$p"
 
+# --- reap gives back merged slots by itself ---
+setup
+pool acquire fix/m1 >/dev/null
+pool acquire fix/m2 >/dev/null
+pool acquire fix/m3 >/dev/null
+m1=$wt/pool-01 m2=$wt/pool-02 m3=$wt/pool-03
+inside "$m1"
+(cd "$m1" && echo 1 >f1 && git add f1 && git commit -qm w1 && git push -q -u origin HEAD:refs/heads/fix/m1)
+(cd "$m2" && echo 2 >f2 && git add f2 && git commit -qm w2 && git push -q -u origin HEAD:refs/heads/fix/m2)
+(cd "$m3" && echo 3 >f3 && git add f3 && git commit -qm w3 && git push -q -u origin HEAD:refs/heads/fix/m3)
+pool reap >/dev/null 2>&1
+eq "reap keeps a slot whose branch is not merged" "$(branch_of "$m1")" fix/m1
+# squash merge of m1 into develop, then its remote branch is deleted
+(cd "$repo" && git fetch -q origin && git switch -q develop && git merge -q --squash origin/fix/m1 && git commit -qm "squash m1" && git push -q origin develop && git push -q origin --delete fix/m1)
+echo dirty >"$m3/dirty"
+git -C "$repo" push -q origin --delete fix/m3
+pool reap >/dev/null 2>&1
+eq "reap releases a squash-merged slot (remote branch gone)" "$(branch_of "$m1")" detached
+eq "reap keeps an unmerged slot" "$(branch_of "$m2")" fix/m2
+eq "reap never drops uncommitted work" "$(branch_of "$m3")" fix/m3
+refuse "reap deleted the merged local branch" git -C "$repo" show-ref -q --verify refs/heads/fix/m1
+(cd "$repo" && git fetch -q origin && git merge -q origin/fix/m2 -m m2 && git push -q origin develop)
+pool acquire fix/next >/dev/null 2>&1
+eq "acquire reaps a branch contained in develop" "$(branch_of "$m2")" detached
+
 # --- free slots beyond the warm count are removed ---
 setup
 pool warm >/dev/null

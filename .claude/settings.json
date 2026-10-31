@@ -32,6 +32,15 @@
             "command": "sh -c 'd=$PWD; while [ ! -f \"$d/.go-getter/bin/go-getter\" ] && [ \"$d\" != / ]; do d=$(dirname \"$d\"); done; [ -f \"$d/.go-getter/bin/go-getter\" ] || { echo \"go-getter: runner not found; hook skipped\" >&2; exit 0; }; exec sh \"$d/.go-getter/bin/go-getter\" hook post-tool --host claude-code --project \"$d\"'"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pool-reap.py\""
+          }
+        ]
       }
     ],
     "SessionStart": [
@@ -40,6 +49,10 @@
           {
             "type": "command",
             "command": "sh -c 'd=$PWD; while [ ! -f \"$d/.go-getter/bin/go-getter\" ] && [ \"$d\" != / ]; do d=$(dirname \"$d\"); done; [ -f \"$d/.go-getter/bin/go-getter\" ] || { echo \"go-getter: runner not found; hook skipped\" >&2; exit 0; }; exec sh \"$d/.go-getter/bin/go-getter\" hook session-start --host claude-code --project \"$d\"'"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pool-reap.py\""
           }
         ]
       }

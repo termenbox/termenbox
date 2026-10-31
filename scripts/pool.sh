@@ -3,7 +3,8 @@
 #
 #   scripts/pool.sh acquire <type>/<slug>   claim a slot on a new branch from origin/develop; prints its path
 #   scripts/pool.sh release [--force] <slot|path>   give a slot back (refuses unsaved work unless --force)
-#   scripts/pool.sh warm                    refresh free slots; keep POOL_WARM of them, create or remove to match
+#   scripts/pool.sh warm                    reap merged slots, refresh free ones; keep POOL_WARM of them, create or remove to match
+#   scripts/pool.sh reap                    release every clean slot whose branch is merged (acquire and warm do this too)
 #   scripts/pool.sh adopt <slot|path>       claim a worktree made by hand in the pool directory
 #   scripts/pool.sh status                  one line per slot
 #
@@ -38,7 +39,7 @@ is_free() { exists "$1" && ! claimed "$2" && detached "$1" && clean "$1"; }
 
 lock() { exec 9>"$state/lock"; flock 9; }
 
-fetch() { git -C "$main" fetch -q origin "$BASE" 2>/dev/null || echo "pool: could not fetch origin/$BASE; using what is known" >&2; }
+fetch() { git -C "$main" fetch -q --prune origin 2>/dev/null || echo "pool: could not fetch origin/$BASE; using what is known" >&2; }
 
 warm_cmd() { [ -z "${POOL_WARM_CMD:-}" ] || (cd "$1" && sh -c "$POOL_WARM_CMD") >/dev/null 2>&1 || true; }
 
@@ -72,6 +73,39 @@ total_count() {
   local c=0 n=1
   while [ "$n" -le "$MAX" ]; do exists "$(slot_dir "$n")" && c=$((c + 1)); n=$((n + 1)); done
   echo "$c"
+}
+
+# a branch is merged when its remote branch was deleted after the merge (a squash merge leaves no ancestor), it is
+# contained in origin/BASE, or its pull request is merged
+merged() {
+  local base
+  [ "$(git -C "$main" for-each-ref --format='%(upstream:track)' "refs/heads/$1")" = "[gone]" ] && return 0
+  # contained in origin/BASE counts only once the branch has moved off the commit it was created at
+  base=$(sed -n 3p "$(claim_file "$2")")
+  [ -n "$base" ] && [ "$(git -C "$main" rev-parse "refs/heads/$1" 2>/dev/null)" != "$base" ] \
+    && git -C "$main" merge-base --is-ancestor "$1" "origin/$BASE" 2>/dev/null && return 0
+  command -v gh >/dev/null 2>&1 && [ -n "$(cd "$main" && gh pr list --head "$1" --state merged --json number -q '.[0].number' 2>/dev/null)" ]
+}
+
+free_slot() {
+  git -C "$2" reset -q --hard
+  git -C "$2" clean -fdq
+  git -C "$2" switch -q --detach "origin/$BASE"
+  git -C "$main" branch -D "$1" >/dev/null 2>&1 || true
+  rm -f "$(claim_file "$3")"
+}
+
+# give back every clean slot whose branch is merged, so finished tasks never occupy the pool
+reap() {
+  local n=1 d b
+  while [ "$n" -le "$MAX" ]; do
+    d=$(slot_dir "$n")
+    if exists "$d" && claimed "$n"; then
+      b=$(sed -n 1p "$(claim_file "$n")")
+      if clean "$d" && merged "$b" "$n"; then free_slot "$b" "$d" "$n"; echo "pool: released slot $n (merged $b)" >&2; fi
+    fi
+    n=$((n + 1))
+  done
 }
 
 # keep exactly WARM free slots where the cap allows: create missing ones, drop the surplus
@@ -112,6 +146,7 @@ cmd_acquire() {
     n=$((n + 1))
   done
   fetch
+  reap
   pick=
   n=1
   while [ "$n" -le "$MAX" ]; do
@@ -133,7 +168,7 @@ cmd_acquire() {
   else
     git -C "$d" switch -q -c "$branch" "origin/$BASE"
   fi
-  printf '%s\n%s\n' "$branch" "$(date +%s)" >"$(claim_file "$pick")"
+  printf '%s\n%s\n%s\n' "$branch" "$(date +%s)" "$(git -C "$d" rev-parse HEAD)" >"$(claim_file "$pick")"
   background_top_up
   echo "$d"
 }
@@ -149,7 +184,7 @@ cmd_release() {
   lock
   claimed "$n" || die "slot $n is not claimed"
   branch=$(sed -n 1p "$(claim_file "$n")")
-  if [ "$force" -ne 1 ]; then
+  if [ "$force" -ne 1 ] && ! { clean "$d" && merged "$branch" "$n"; }; then
     clean "$d" || die "slot $n has uncommitted work; commit it or use --force"
     if [ -n "$(git -C "$d" rev-list "$branch" --not --remotes 2>/dev/null | head -1)" ]; then
       die "branch $branch has commits that exist nowhere else; push it or use --force"
@@ -176,7 +211,9 @@ cmd_adopt() {
   echo "adopted slot $n"
 }
 
-cmd_warm() { lock; fetch; top_up; }
+cmd_warm() { lock; fetch; reap; top_up; }
+
+cmd_reap() { lock; fetch; reap; }
 
 cmd_status() {
   local n=1 d
@@ -203,6 +240,7 @@ case "$cmd" in
   release) cmd_release "$@" ;;
   adopt) cmd_adopt "$@" ;;
   warm) cmd_warm ;;
+  reap) cmd_reap ;;
   status) cmd_status ;;
-  *) die "usage: pool.sh acquire|release|adopt|warm|status" ;;
+  *) die "usage: pool.sh acquire|release|adopt|warm|reap|status" ;;
 esac
