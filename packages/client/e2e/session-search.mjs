@@ -2,7 +2,7 @@
 // fixture Claude Code and Codex session files; one workspace is open (a real tmux window), others are dormant records.
 // The Search sheet finds a phrase in both agents' files, scrubbed; a forced cap (50 hits, 3 per session) shows the cut line;
 // a tap on an open hit switches to its tab; a tap on a dormant hit asks first and then resumes; and the query appears in
-// no server log line. The ACP jump landing is driven in acp-history.mjs (the fixture ACP agent needs its own server config).
+// no server log line. An ACP workspace (the fixture agent) lands on the turn and marks the match.
 // What this proves is the page in this engine on a desktop window. It does not prove a phone or a real Safari.
 //
 // Usage: node e2e/session-search.mjs   (after: pnpm run build && pnpm run e2e:build; needs tmux and a built server)
@@ -95,10 +95,17 @@ function writeCodex(dir, id) {
 const openDir = dirOf('open-app');
 const downClaude = dirOf('down-claude');
 const downCodex = dirOf('down-codex');
+const acpDir = dirOf('acp-app');
+const ACP_SESSION = 'fake-workspace-1'; // the id the fixture ACP agent reports
 const OPEN_ID = uuid(1), DOWN_CLAUDE_ID = uuid(2), DOWN_CODEX_ID = 'c0de0000-0000-7000-8000-000000000003';
 writeClaude(openDir, OPEN_ID, 1, true);
 writeClaude(downClaude, DOWN_CLAUDE_ID, 1);
 writeCodex(downCodex, DOWN_CODEX_ID);
+writeClaude(acpDir, ACP_SESSION, 1);
+const acpFile = join(claudeProjects, acpDir.replace(/[^A-Za-z0-9]/g, '-'), `${ACP_SESSION}.jsonl`);
+writeFileSync(acpFile, readFileSync(acpFile, 'utf8').replace(`${PHRASE} number 0`, 'a wombat itinerary for the agent view'));
+mkdirSync(join(home, 'config'), { recursive: true });
+writeFileSync(join(home, 'config', 'acp-agents.toml'), `max_sessions = 3\n[agents.claude]\ncommand = "node"\nargs = ["${join(here, 'fake-acp-agent.mjs')}"]\n`);
 // Enough dormant sessions of three hits each to pass the server's cap of 50 hits (3 per session): 18 x 3 = 54.
 const FILLERS = Array.from({ length: 18 }, (_, i) => ({ dir: dirOf(`filler-${i}`), id: uuid(100 + i) }));
 for (const f of FILLERS) writeClaude(f.dir, f.id, 3);
@@ -120,6 +127,7 @@ const env = {
   TERMENBOX_DIRECTORY_URL: '',
   TERMENBOX_CERT_KEYS: `e2e=${signerPublic}`,
   TERMENBOX_CLAIM_SECRET: claim,
+  TERMENBOX_BACKEND: 'tmux,acp',
   TERMENBOX_LOG: 'trace', // the loudest level: the query must be absent even there
   LANG: 'C.UTF-8',
 };
@@ -196,7 +204,7 @@ try {
   open.dir = openDir;
   open.tabs[0].kind = 'claude';
   open.tabs[0].agent_session = OPEN_ID;
-  const dormant = (id, label, dir, kind, session) => ({ id, label, dir, order: 0, next_tab: 2, tabs: [{ id: 't1', label: kind, kind, dir: '', order: 0, agent_session: session }] });
+  const dormant = (id, label, dir, kind, session) => ({ id: `tmux:${id}`, label, dir, backend: 'tmux', order: 0, next_tab: 2, tabs: [{ id: 't1', label: kind, kind, dir: '', order: 0, agent_session: session }] });
   const extra = [
     dormant('ws-down-claude', 'down-claude', downClaude, 'claude', DOWN_CLAUDE_ID),
     dormant('ws-down-codex', 'down-codex', downCodex, 'codex', DOWN_CODEX_ID),
@@ -251,6 +259,29 @@ try {
   await page.locator('.xterm').first().waitFor({ state: 'visible', timeout: 10000 }).catch(() => { throw new Error('no terminal after a tap on an open hit'); });
   console.log('ok  a tap on an open hit lands on the terminal of its tab');
 
+  // 4b. An ACP workspace (the fixture agent): a tap on its hit lands on the turn and marks the match.
+  await page.getByRole('button', { name: /^(\+ New|New workspace( on .*)?)$/ }).first().click();
+  await see(dialog, 'the New workspace dialog');
+  await dialog.locator('[data-testid=view-acp]').click();
+  await dialog.locator('[data-testid=folder-change]').click();
+  await dialog.locator('[data-testid=picker-path]').fill(acpDir);
+  await dialog.locator('[data-testid=picker-go]').click();
+  await dialog.locator('[data-testid=picker-select]:not([disabled])').click();
+  await dialog.locator('[data-testid=picker-path]').waitFor({ state: 'detached' });
+  await dialog.getByLabel('Name').fill('agent-view');
+  await dialog.getByRole('button', { name: 'Create' }).click();
+  await dialog.waitFor({ state: 'detached' });
+  await page.locator('[data-testid=acp-view]').first().waitFor({ timeout: 30000 });
+  await openSheet();
+  await search('wombat itinerary');
+  await see(hits, 'the ACP hit');
+  await hits.first().click();
+  await input.waitFor({ state: 'detached', timeout: 10000 });
+  const mark = page.locator('[data-testid=acp-view] [data-hit]').first();
+  await see(mark, 'the match marked in the agent view');
+  if (!/wombat itinerary/i.test(await mark.innerText())) throw new Error('the marked text is not the match');
+  console.log('ok  a tap on an Agent view hit lands on the turn and marks the match');
+
   // 5. A tap on a dormant hit asks first, Not now leaves it dormant, Resume brings the workspace back.
   await openSheet();
   await search('codex side');
@@ -278,7 +309,6 @@ try {
 } catch (e) {
   failed = e;
   console.error(`FAIL: ${e instanceof Error ? e.stack : e}`);
-  if (process.env.E2E_DEBUG) console.error(await page?.evaluate(() => JSON.stringify({ sheet: !!document.querySelector('[data-testid=session-search]'), dialogs: [...document.querySelectorAll('dialog')].map((d) => d.getAttribute('aria-label') + ':' + d.open), input: document.querySelector('[data-testid=search-input]')?.getBoundingClientRect() })).catch(() => '(no page)'));
 } finally {
   await browser?.close().catch(() => {});
   server?.kill();
