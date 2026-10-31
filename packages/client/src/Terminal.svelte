@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Terminal as XTermTerminal } from 'xterm';
-  import { FitAddon } from 'xterm-addon-fit';
-  import { WebglAddon } from 'xterm-addon-webgl';
-  import { SerializeAddon } from 'xterm-addon-serialize';
-  import 'xterm/css/xterm.css';
+  import { Terminal as XTermTerminal } from '@xterm/xterm';
+  import { FitAddon } from '@xterm/addon-fit';
+  import { WebglAddon } from '@xterm/addon-webgl';
+  import { SerializeAddon } from '@xterm/addon-serialize';
+  import '@xterm/xterm/css/xterm.css';
 
   import type { HubConnection, ServerState } from './lib/hub';
   import { b64ToBytes, textToB64 } from './lib/connection';

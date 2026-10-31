@@ -10,11 +10,11 @@ import { mkdtempSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, extname, resolve } from 'node:path';
 import { generateKeyPairSync, sign } from 'node:crypto';
+import { freeTcpPort, freeUdpPort } from './ports.mjs';
 
 const here = import.meta.dirname;
 const BIN = process.env.TERMENBOX_BIN ?? resolve(here, '../../../target/release/termenbox-server');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const randomPort = () => 30000 + Math.floor(Math.random() * 30000);
 const results = [];
 const check = (c, m) => { results.push([c, m]); console.log(`${c ? 'ok  ' : 'FAIL'} ${m}`); };
 async function waitFor(fn, what, ms = 20000) {
@@ -44,10 +44,10 @@ const appPort = web.address().port;
 const root = mkdtempSync(join(tmpdir(), 'termenbox-pair-'));
 const home = join(root, 'lan');
 mkdirSync(home);
-const httpPort = randomPort();
+const httpPort = await freeTcpPort();
 const env = {
   ...process.env, HOME: home, TMUX_TMPDIR: home, TERMENBOX_CONFIG_DIR: join(home, 'config'), TERMENBOX_HOST: '127.0.0.1', TERMENBOX_PORT: String(httpPort),
-  TERMENBOX_UDP_PORT: String(randomPort()), TERMENBOX_LAN_ONLY: '1', TERMENBOX_LAN_ADDRS: '127.0.0.1', TERMENBOX_SERVER_NAME: 'pair-e2e',
+  TERMENBOX_UDP_PORT: String(await freeUdpPort()), TERMENBOX_LAN_ONLY: '1', TERMENBOX_LAN_ADDRS: '127.0.0.1', TERMENBOX_SERVER_NAME: 'pair-e2e',
   TERMENBOX_CLIENT_URL: `http://127.0.0.1:${appPort}`, TERMENBOX_DEV_INFO: 'on', TERMENBOX_CERT_KEYS: `e2e=${signerPublic}`,
 };
 delete env.TERMENBOX_PUBLIC_IP; delete env.TERMENBOX_DIRECTORY_URL; delete env.TERMENBOX_CLAIM_SECRET;

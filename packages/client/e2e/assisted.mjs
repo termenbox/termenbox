@@ -11,11 +11,11 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 
 import { tmpdir } from 'node:os';
 import { join, extname, resolve } from 'node:path';
 import { generateKeyPairSync, sign } from 'node:crypto';
+import { freeTcpPort, freeUdpPort } from './ports.mjs';
 
 const here = import.meta.dirname;
 const BIN = process.env.TERMENBOX_BIN ?? resolve(here, '../../../target/release/termenbox-server');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const randomPort = () => 30000 + Math.floor(Math.random() * 30000);
 const results = [];
 const check = (c, m) => { results.push([c, m]); console.log(`${c ? 'ok  ' : 'FAIL'} ${m}`); };
 async function waitFor(fn, what, ms = 20000) {
@@ -54,10 +54,10 @@ const home = join(root, 'home');
 mkdirSync(join(home, 'config'), { recursive: true });
 // What `--setup-cloudflare` leaves: the Worker's URL and the TURN key (the account token is never kept).
 writeFileSync(join(home, 'config', 'relay.json'), JSON.stringify({ signal: `wss://127.0.0.1:${worker.securePort}/s/${ROUTE}`, turn_key_id: 'e2e-key', turn_key_token: 'e2e-token' }), { mode: 0o600 });
-const httpPort = randomPort();
+const httpPort = await freeTcpPort();
 const env = {
   ...process.env, HOME: home, TMUX_TMPDIR: home, TERMENBOX_CONFIG_DIR: join(home, 'config'), TERMENBOX_HOST: '127.0.0.1', TERMENBOX_PORT: String(httpPort),
-  TERMENBOX_UDP_PORT: String(randomPort()), TERMENBOX_SERVER_NAME: 'assisted-e2e', TERMENBOX_CLIENT_URL: `http://127.0.0.1:${appPort}`,
+  TERMENBOX_UDP_PORT: String(await freeUdpPort()), TERMENBOX_SERVER_NAME: 'assisted-e2e', TERMENBOX_CLIENT_URL: `http://127.0.0.1:${appPort}`,
   TERMENBOX_DEV_INFO: 'on', TERMENBOX_CERT_KEYS: `e2e=${signerPublic}`,
   // 192.0.2.1 (TEST-NET-1) is announced as the public address and answers nobody; STUN says the real one is the NAT's alias.
   TERMENBOX_PUBLIC_IP: '192.0.2.1', TERMENBOX_ASSUME_NAT: '1', TERMENBOX_LAN_ADDRS: '192.0.2.2', TERMENBOX_OVERLAY_ADDRS: '192.0.2.3', TERMENBOX_NO_IPV6: '1', TERMENBOX_STUN: `127.0.0.1:${nat.port}`,

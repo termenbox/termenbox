@@ -10,7 +10,7 @@ const suites = {
   server: ['run', 'touch', 'cards', 'decision', 'activity', 'windows', 'two-servers', 'appshell', 'desktop', 'newworkspace-real', 'app', 'pane', 'acp', 'acp-views',
     'hookoffer', 'add-server', 'pair', 'assisted', 'failures', 'wizard', 'search', 'push-link', 'banner-resize'],
   // The built client against scripted servers, no binary: the browser matrix runs these per engine (R36).
-  desktop: ['desktop', 'newworkspace'],
+  desktop: ['desktop', 'newworkspace', 'xterm-dispose'],
   phone: ['appshell', 'cards', 'reorder', 'windows', 'app', 'decision', 'activity', 'failures', 'newworkspace', 'banner-resize'],
   // The phone scripts that need the real server binary (TERMENBOX_BIN) and tmux: WebKit as a phone in CI (R36). A tap is a click there (tap() in browser.mjs).
   'phone-real': ['pane', 'search', 'two-servers', 'hookoffer', 'pair', 'add-server', 'acp'],

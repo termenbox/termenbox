@@ -12,6 +12,7 @@ import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, readFileSync, exist
 import { tmpdir } from 'node:os';
 import { join, extname, resolve } from 'node:path';
 import { randomBytes, generateKeyPairSync, sign, createPrivateKey, createPublicKey } from 'node:crypto';
+import { freeTcpPort, freeUdpPort } from './ports.mjs';
 
 const here = import.meta.dirname;
 const BIN = process.env.TERMENBOX_BIN ?? resolve(here, '../../../target/release/termenbox-server');
@@ -23,7 +24,6 @@ const fail = (msg) => {
 const ok = (msg) => console.log(`ok  ${msg}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const listen = (server) => new Promise((r) => server.listen(0, '127.0.0.1', () => r(server.address().port)));
-const randomPort = () => 30000 + Math.floor(Math.random() * 30000);
 async function waitFor(fn, what, ms = 15000) {
   const start = Date.now();
   for (;;) {
@@ -79,7 +79,7 @@ const servers = [];
 async function startServer(label) {
   const home = join(root, label);
   mkdirSync(home);
-  const httpPort = randomPort();
+  const httpPort = await freeTcpPort();
   const claim = randomBytes(32).toString('base64url');
   const proc = spawn(BIN, [], {
     env: {
@@ -90,7 +90,7 @@ async function startServer(label) {
       TERMENBOX_CONFIG_DIR: join(home, 'config'),
       TERMENBOX_HOST: '127.0.0.1',
       TERMENBOX_PORT: String(httpPort),
-      TERMENBOX_UDP_PORT: String(randomPort()),
+      TERMENBOX_UDP_PORT: String(await freeUdpPort()),
       TERMENBOX_PUBLIC_IP: '127.0.0.1',
       TERMENBOX_DIRECTORY_URL: '',
       TERMENBOX_DEV_INFO: 'on',
