@@ -264,8 +264,9 @@ try {
   await see(dialog, 'the New workspace dialog');
   await dialog.locator('[data-testid=view-acp]').click();
   await dialog.locator('[data-testid=folder-change]').click();
-  await dialog.locator('[data-testid=picker-path]').fill(acpDir);
-  await dialog.locator('[data-testid=picker-go]').click();
+  await see(dialog.locator('[data-testid="picker-list"] [data-dir="code"]'), 'code in the picker');
+  await dialog.locator('[data-testid="picker-list"] [data-dir="code"]').click();
+  await dialog.locator('[data-testid="picker-list"] [data-dir="acp-app"]').click();
   await page.waitForFunction(() => /acp-app/.test(document.querySelector('[data-testid="picker-select"] .path')?.textContent ?? ''));
   await dialog.locator('[data-testid=picker-select]:not([disabled])').click();
   await dialog.locator('[data-testid=picker-path]').waitFor({ state: 'detached' });
