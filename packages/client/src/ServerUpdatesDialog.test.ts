@@ -1,8 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render } from 'svelte/server';
 import ServerUpdatesDialog from './ServerUpdatesDialog.svelte';
 import type { HubServer } from './lib/hub';
 
+// A fixed midday: a deadline hours ahead is then on the same day whenever the suite runs (the text drops the weekday only then).
+vi.useFakeTimers({ toFake: ['Date'] });
+vi.setSystemTime(new Date(2026, 0, 15, 12, 0));
 const sec = Math.floor(Date.now() / 1000);
 const status = (over: Partial<HubServer>): HubServer => ({ id: 'a', server: { server_id: 'a', server_url: '', server_name: 'alpha', registered_at: 0 }, state: 'connected', reason: '', version: '0.1.57+abc', updateAvailable: '', updating: false, backends: ['tmux'], acpAgents: [], controlMode: true, tmuxVersion: '3.8', prefix: 'C-b', updateCapabilities: ['check', 'postpone', 'skip'], ...over });
 const draw = (over: Partial<HubServer>) => render(ServerUpdatesDialog, { props: { status: status(over), name: 'alpha', onclose() {}, oncheck() {}, onupdate() {}, onpostpone() {}, onskip() {} } }).body;
