@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Terminal as XTermTerminal } from 'xterm';
-  import { FitAddon } from 'xterm-addon-fit';
-  import { WebglAddon } from 'xterm-addon-webgl';
-  import { SerializeAddon } from 'xterm-addon-serialize';
-  import 'xterm/css/xterm.css';
+  import { Terminal as XTermTerminal } from '@xterm/xterm';
+  import { FitAddon } from '@xterm/addon-fit';
+  import { WebglAddon } from '@xterm/addon-webgl';
+  import { SerializeAddon } from '@xterm/addon-serialize';
+  import '@xterm/xterm/css/xterm.css';
 
   import type { HubConnection, ServerState } from './lib/hub';
   import { b64ToBytes, textToB64 } from './lib/connection';
@@ -20,7 +20,8 @@
   import { dropColorReplies, setEnterKeyHint, silenceColorQueries } from './lib/terminal/inputGuards';
   import { WordTracker } from './lib/terminal/wordTracker';
   import { IOS_KEYBOARD_HINT, nextVoiceLang, parseVoiceLang, pickLanguage, recognizerFactory, Voice, type VoiceLang } from './lib/terminal/voice';
-  import { linkAt } from './lib/terminal/links';
+  import { isOpenClick, linkAt } from './lib/terminal/links';
+  import { handleOpenRequests, hyperlinkHandler, openWeb } from './lib/terminal/openRequest';
   import { cellAt } from './lib/selection';
   import { PinchZoom } from './lib/terminal/pinch';
   import { InputBatcher } from './lib/terminal/inputBatch';
@@ -64,6 +65,8 @@
   let fnOpen = false;
   let sel: Selection | null = null;
   let selStatus = '';
+  /** A web address a program asked to open that the browser blocked: opened by the next tap, which is a gesture. */
+  let pendingLink = '';
   let debug = debugEnabled(location.search, localStorage.getItem(DEBUG_KEY));
   const syncDebug = () => (debug = debugEnabled(location.search, localStorage.getItem(DEBUG_KEY)));
 
@@ -397,15 +400,34 @@
     setTimeout(() => fire('mouseup', 0), 40);
     keyboard.tap();
   }
-  /** A tap on a web address opens it, unless the app in the terminal has asked for mouse clicks itself. */
+  /** A tap on a web address opens it, also when the app has asked for mouse clicks (tmux does): the app never sees it. */
   function openLinkAt(x: number, y: number): boolean {
     const rect = terminalContainer?.querySelector('.xterm-screen')?.getBoundingClientRect();
-    if (!term || !rect || term.modes.mouseTrackingMode !== 'none') return false;
+    if (!term || !rect) return false;
     const c = cellAt(x, y, rect, term.cols, term.rows, term.buffer.active.viewportY);
     const url = linkAt(term.buffer.active, term.cols, c.row, c.col);
     if (!url) return false;
-    window.open(url, '_blank', 'noopener,noreferrer');
+    openWeb(url);
     return true;
+  }
+  /** A program on the server asked for a page; with no gesture the browser may block it, so ask for a tap. */
+  function openRequested(url: string) {
+    if (!openWeb(url)) pendingLink = url;
+  }
+  function openPending() {
+    if (pendingLink) openWeb(pendingLink);
+    pendingLink = '';
+  }
+  /** Ctrl/Cmd+click on a web address opens it; capturing keeps the click from reaching the app. */
+  function onOpenClick(ev: MouseEvent) {
+    const rect = terminalContainer?.querySelector('.xterm-screen')?.getBoundingClientRect();
+    if (!term || !rect || !isOpenClick(ev)) return;
+    const c = cellAt(ev.clientX, ev.clientY, rect, term.cols, term.rows, term.buffer.active.viewportY);
+    const url = linkAt(term.buffer.active, term.cols, c.row, c.col);
+    if (!url) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    openWeb(url);
   }
   function onPointerDown(e: PointerEvent) {
     pinch.down(e.pointerId, e.clientX, e.clientY, fontSize);
@@ -492,7 +514,7 @@
   $: if (term && $settings) term.options.theme = terminalTheme(document.documentElement.dataset.theme === 'light');
 
   onMount(() => {
-    term = new XTermTerminal({ cursorBlink: true, fontSize, fontFamily: FONT_FAMILY, theme: terminalTheme(document.documentElement.dataset.theme === 'light') });
+    term = new XTermTerminal({ linkHandler: hyperlinkHandler(openRequested), cursorBlink: true, fontSize, fontFamily: FONT_FAMILY, theme: terminalTheme(document.documentElement.dataset.theme === 'light') });
     fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     serializer = new SerializeAddon();
@@ -643,6 +665,9 @@
       window.removeEventListener('mouseup', onForceEnd);
     });
 
+    terminalContainer.addEventListener('click', onOpenClick, true);
+    cleanups.push(() => terminalContainer.removeEventListener('click', onOpenClick, true));
+    cleanups.push(handleOpenRequests(term.parser, openRequested).dispose);
     cleanups.push(silenceColorQueries(term.parser).dispose);
     // tmux and the programs in it copy with OSC 52; that is how a copy made on the server reaches this machine's clipboard.
     cleanups.push(handleClipboardWrites(term.parser, (text) => void copyText(text).then((ok) => flash(ok ? 'Copied' : 'Copy blocked by the browser'))).dispose);
@@ -736,6 +761,13 @@
       {#if b}<button type="button" class="handle" aria-label="Selection end" style="left: {b.x}px; top: {b.y}px;" on:pointerdown={(e) => grabHandle('b', e)} on:pointermove={onPointerMove} on:pointerup={onPointerUp}></button>{/if}
     {/if}
     {#if selStatus}<div class="selstatus">{selStatus}</div>{/if}
+    {#if pendingLink}
+      <div class="selstatus linkbar" role="status">
+        <button type="button" on:mousedown|preventDefault on:click={openPending}>Open link</button>
+        <span class="url">{pendingLink}</span>
+        <button type="button" class="secondary" aria-label="Dismiss" on:mousedown|preventDefault on:click={() => (pendingLink = '')}>×</button>
+      </div>
+    {/if}
     {#if listening || voiceError}<div class="voicebar" role="status">{voiceError || interim || `Listening (${spoken})…`}</div>{/if}
     {#if connInfo}
       <div class="connbar" class:soft={connState === 'checking'} class:refused={inputRefused} role="status" aria-live="polite">
@@ -862,6 +894,18 @@
     .connbar.refused {
       animation: none;
     }
+  }
+  .linkbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: calc(100% - 12px);
+  }
+  .linkbar .url {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .selstatus {
     position: absolute;

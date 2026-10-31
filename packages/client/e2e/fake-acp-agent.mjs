@@ -133,7 +133,7 @@ async function onPrompt(msg) {
   out({ jsonrpc: '2.0', id: msg.id, result });
 }
 
-createInterface({ input: process.stdin }).on('line', (line) => {
+const onLine = (line) => {
   let m;
   try { m = JSON.parse(line); } catch { return; }
   if (log) appendFileSync(log, `${JSON.stringify(m)}\n`);
@@ -152,4 +152,10 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     case 'session/prompt': return void onPrompt(m);
     default: if (m.id !== undefined) out({ jsonrpc: '2.0', id: m.id, error: { code: -32601, message: 'Method not found' } });
   }
+};
+// A real agent takes a moment to act on a cancel; the test must wait for the effect, not read the log the instant a key is pressed.
+const CANCEL_LATENCY_MS = 300;
+createInterface({ input: process.stdin }).on('line', (line) => {
+  if (/"method"\s*:\s*"session\/cancel"/.test(line)) setTimeout(() => onLine(line), CANCEL_LATENCY_MS);
+  else onLine(line);
 });

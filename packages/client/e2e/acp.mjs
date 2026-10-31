@@ -530,9 +530,13 @@ try {
   await dfield.fill('stream');
   await dfield.press('Enter'); // Enter sends
   await dp.getByTestId('stop').waitFor();
+  // The stream replays the notices of every turn interrupted above, so wait for one more than are shown now, not for the first.
+  const interrupted = dp.locator('[data-kind=notice]').filter({ hasText: 'Interrupted' });
+  const shown = await interrupted.count();
   const cancels = logged().filter((m) => m.method === 'session/cancel').length;
   await dp.keyboard.press('Escape');
-  await dp.locator('[data-kind=notice]').filter({ hasText: 'Interrupted' }).first().waitFor({ timeout: 15000 });
+  await waitFor(async () => (await interrupted.count()) === shown + 1, 'the interrupt on the desktop');
+  await idle(dp);
   check(logged().filter((m) => m.method === 'session/cancel').length === cancels + 1, 'Esc did not interrupt on the desktop');
   await dfield.fill('line one');
   await dfield.press('Shift+Enter');

@@ -44,9 +44,10 @@ export class FolderBrowser {
     else this.set({ status: 'error', entries: [], truncated: false, error: r.reason });
   }
 
-  enter(name: string) { return this.open(`${this.state.path.replace(/\/+$/, '')}/${name}`); }
-  /** One level up; a no-op at home or outside it (see canGoUp). */
-  up() { const p = canGoUp(this.state) ? parentOf(this.state.path) : null; return p ? this.open(p) : Promise.resolve(); }
+  /** Into a child of the folder shown. While a folder loads, `path` is already the target and the old rows are still on screen, so a second click would nest it. */
+  enter(name: string) { return this.state.status === 'loading' ? Promise.resolve() : this.open(`${this.state.path.replace(/\/+$/, '')}/${name}`); }
+  /** One level up; a no-op at home or outside it (see canGoUp), and while loading, when `path` is already the target. */
+  up() { const p = this.state.status !== 'loading' && canGoUp(this.state) ? parentOf(this.state.path) : null; return p ? this.open(p) : Promise.resolve(); }
   toHome() { return this.open(undefined); }
   retry() { return this.open(this.state.path || undefined, { keepFilter: true }); }
   setFilter(filter: string) { this.state = { ...this.state, filter }; return this.open(this.state.path || undefined, { keepFilter: true }); }
