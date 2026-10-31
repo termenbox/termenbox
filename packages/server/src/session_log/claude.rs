@@ -29,6 +29,8 @@ pub const AGENT: &str = "claude";
 /// The major version of the files this adapter was written against (2.1.308 measured).
 const SUPPORTED_MAJOR: &str = "2";
 const CACHED_CHAINS: usize = 4;
+/// Directory names longer than this are looked up by prefix when the full name is not there.
+const LONG_DIR: usize = 100;
 const UNMAPPABLE: &str = "A record this version cannot show";
 /// Record types that carry no conversation. A record of another type that sits in the tree is shown as a notice.
 const NOISE: &[&str] = &[
@@ -71,8 +73,8 @@ impl ClaudeLog {
         Some(Self::new(base.join("projects")))
     }
 
-    /// Where a session lives. Only the session's own directory is looked in, never the whole tree, so an id cannot
-    /// reach another project's file; an id that is not a plain name reaches nothing.
+    /// Where a session lives. Only the session's own directory is looked in (or, for a long name, directories that
+    /// share its head and hold this exact id), so an id cannot reach another project's file; an id that is not a plain name reaches nothing.
     fn path(&self, s: &SessionRef) -> Option<PathBuf> {
         if s.id.is_empty()
             || !s
@@ -88,13 +90,30 @@ impl ClaudeLog {
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
             .collect();
-        Some(self.root.join(dir).join(format!("{}.jsonl", s.id)))
+        let file = format!("{}.jsonl", s.id);
+        let direct = self.root.join(&dir).join(&file);
+        if direct.exists() || dir.len() <= LONG_DIR {
+            return Some(direct);
+        }
+        // Claude shortens a very long directory name (a `MAX_SANITIZED_LENGTH` in its binary; the value and the
+        // suffix are not measured). The shortened name still starts with the head of the full one, so look among the
+        // directories that do, for this exact session file.
+        let head = &dir[..LONG_DIR];
+        let found = std::fs::read_dir(&self.root)
+            .ok()?
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(head))
+            .map(|e| e.path().join(&file))
+            .find(|p| p.is_file());
+        Some(found.unwrap_or(direct))
     }
 
     fn open(&self, s: &SessionRef) -> Result<(PathBuf, File, Fingerprint), LogError> {
         let path = self.path(s).ok_or(LogError::Missing)?;
         let file = File::open(&path).map_err(|e| match e.kind() {
             io::ErrorKind::NotFound => LogError::Missing,
+            // A directory name past the file system's limit: Claude shortened it and no such directory was found.
+            _ if e.raw_os_error() == Some(36) => LogError::Missing,
             _ => LogError::Disabled(UNREADABLE),
         })?;
         let meta = file
@@ -311,6 +330,23 @@ impl Chain {
             .or_else(|| turn.rsplit_once(':').and_then(|(u, _)| self.index.get(u)))
             .copied()
     }
+}
+
+/// The `pos` of a cursor at the boundary before node `at`: the place, and a hash of the record just before it, so a
+/// cursor taken before a rewind moved the branch is told apart from one on the same branch.
+fn mark(chain: &Chain, at: usize) -> u64 {
+    let h = at.checked_sub(1).map_or(0, |i| {
+        chain.nodes[i].uuid.bytes().fold(0xcbf2_9ce4u32, |h, b| {
+            (h ^ b as u32).wrapping_mul(0x0100_0193)
+        })
+    });
+    (u64::from(h) << 32) | at as u64
+}
+
+/// The place a cursor's `pos` names, if the record before it is still the same one.
+fn unmark(chain: &Chain, pos: u64) -> Option<usize> {
+    let at = (pos & 0xffff_ffff) as usize;
+    (at <= chain.nodes.len() && mark(chain, at) == pos).then_some(at)
 }
 
 /// One piece of a record that is shown: a text block, a thinking block or a tool's name.
@@ -563,15 +599,13 @@ impl SessionLog for ClaudeLog {
         let chain = self.chain(&file, &path, fp)?;
         let n = chain.nodes.len();
         let count = count.min(MAX_SIDE);
-        let pos = cursor
-            .map_or(
-                match direction {
-                    Direction::Older => n,
-                    Direction::Newer => 0,
-                },
-                |c| c.pos as usize,
-            )
-            .min(n);
+        let pos = match cursor {
+            Some(c) => unmark(&chain, c.pos).ok_or(LogError::StaleCursor)?,
+            None => match direction {
+                Direction::Older => n,
+                Direction::Newer => 0,
+            },
+        };
         let mut got: Vec<Entry> = Vec::new();
         let next = match direction {
             Direction::Older => {
@@ -595,7 +629,7 @@ impl SessionLog for ClaudeLog {
             entries: got,
             next: next.map(|p| Cursor {
                 fingerprint: fp,
-                pos: p as u64,
+                pos: mark(&chain, p),
             }),
         })
     }

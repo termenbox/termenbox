@@ -272,3 +272,71 @@ fn shared_caps_count_hits_across_sessions_and_stop_at_the_budget() {
     assert_eq!(run.budget.hits(), a.len() + b.len());
     std::fs::remove_dir_all(root).ok();
 }
+
+#[test]
+fn a_rewind_after_a_cursor_was_taken_makes_it_stale() {
+    let root = tmp();
+    let dir = projects(&root);
+    let log = ClaudeLog::new(root.clone());
+    let s = session("short");
+    let cursor = log
+        .page(&s, None, Direction::Older, 1)
+        .unwrap()
+        .next
+        .unwrap();
+    // The user rewinds to a2 and asks something else: u9 hangs under a2, so a4 and a5 leave the branch.
+    let line = r#"{"parentUuid":"a2","type":"user","uuid":"u9","timestamp":"2026-10-31T10:00:09Z","message":{"role":"user","content":"a different turn"},"version":"2.1.308"}"#;
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.join("short.jsonl"))
+        .unwrap();
+    use std::io::Write;
+    writeln!(f, "{line}").unwrap();
+    drop(f);
+    assert_eq!(
+        log.page(&s, Some(&cursor), Direction::Older, 1),
+        Err(LogError::StaleCursor)
+    );
+    let fresh = log.page(&s, None, Direction::Older, 1).unwrap();
+    assert_eq!(fresh.entries[0].turn, "u9");
+    assert!(log
+        .page(&s, fresh.next.as_ref(), Direction::Older, 1)
+        .is_ok());
+    let forged = Cursor { pos: 3, ..cursor };
+    assert_eq!(
+        log.page(&s, Some(&forged), Direction::Older, 1),
+        Err(LogError::StaleCursor)
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn a_long_directory_name_is_found_by_its_head() {
+    let root = tmp();
+    projects(&root);
+    let long = format!("/home/{}", "deep/".repeat(60));
+    let encoded: String = long
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let shortened = format!("{}-h4sh9x", &encoded[..200]);
+    let dir = root.join(&shortened);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(
+        Path::new(FIXTURES).join("short.jsonl"),
+        dir.join("short.jsonl"),
+    )
+    .unwrap();
+    let log = ClaudeLog::new(root.clone());
+    let at = |id: &str| SessionRef {
+        dir: PathBuf::from(&long),
+        ..session(id)
+    };
+    assert!(!log.search(&at("short"), "by size", 5).unwrap().is_empty());
+    assert_eq!(
+        log.search(&at("other"), "by size", 5),
+        Err(LogError::Missing),
+        "only this id"
+    );
+    std::fs::remove_dir_all(root).ok();
+}
