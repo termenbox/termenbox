@@ -27,8 +27,8 @@
     suggestName,
     TEMPLATE_BY_ID,
     TEMPLATES,
+    createProblem,
     validDir,
-    validLabel,
     viewControl,
     viewStore,
     type View,
@@ -93,8 +93,8 @@
   $: if (!nameTouched) name = suggestName(dir, template, taken);
   // Only tmux can start in a directory or run an agent; the sheet says so for other managers instead of ignoring them.
   $: tmux = !server || server.backends.length === 0 || backend === 'tmux';
-  $: ok = !!server && validLabel(name) && validDir(dir) && !taken.includes(name.trim()) && (!acp || (!!template && dir !== ''));
-  $: problem = acp && !template ? 'This server allows no agent workspaces yet.' : acp && dir === '' ? 'Choose the directory the agent works in, like /home/you/project.' : !validDir(dir) ? 'The directory must be an absolute path, like /home/you/project.' : taken.includes(name.trim()) ? 'That name is taken.' : !validLabel(name) ? 'Use one line of at most 64 characters, without |.' : '';
+  $: problem = createProblem({ acp, template, dir, name });
+  $: ok = !!server && !problem;
   $: home = homes[serverId] ?? getHome(serverId);
   $: agentLabel = template === 'shell' ? 'Shell' : TEMPLATE_BY_ID[template]?.label ?? template;
   $: summary = tmux || acp
