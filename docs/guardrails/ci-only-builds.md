@@ -30,7 +30,7 @@ Since 2026-10-16 no compile, test, lint, typecheck, format check, client build o
 |----------|---------|----------|
 | `ci.yaml` | PR, push to master | Test results, typecheck |
 | `docker-build.yaml` | push to master, tags | Multi-arch Docker images to GHCR |
-| `deploy-pages.yaml` | called by `release-stable/beta/nightly.yaml` after they publish | Client of that channel to its own Cloudflare Pages project |
+| `deploy-pages.yaml` | called by `release-nightly.yaml` after it publishes, or by hand; stable and beta deploy in the signing job of `release-build.yaml` through the same composite action | Client of that channel to its own Cloudflare Pages project |
 | `bootstrap-publish.yaml` | tag `bootstrap-v*` | Bootstrap script to get.termenbox.dev |
 
 ## Enforcement

@@ -74,6 +74,7 @@ jobs:
     if: needs.gate.outputs.run == 'true'
     permissions:
       contents: write
+      deployments: write
     uses: ./.github/workflows/release-build.yaml
     secrets: inherit
     with:
@@ -86,16 +87,4 @@ jobs:
       prerelease: false
       latest: true
       aliases: ${{ needs.gate.outputs.aliases }}
-
-  deploy:
-    name: Deploy the client
-    needs: [gate, release]
-    if: needs.gate.outputs.publish == 'true'
-    permissions:
-      contents: read
-      deployments: write
-    uses: ./.github/workflows/deploy-pages.yaml
-    secrets: inherit
-    with:
-      channel: stable
-      sha: ${{ github.sha }}
+      deploy: true
