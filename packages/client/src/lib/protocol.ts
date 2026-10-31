@@ -7,6 +7,12 @@ export type ClientMessage =
   | { type: 'revoke_device'; device: string }
   /** Owner-only: install the newer release now; the answer is `update_requested`, and the service restarts when it is done. */
   | { type: 'update_server' }
+  /** Owner-only (decision 0154): check for a release now without installing it; the answer is `update_check_requested`, then `update_state`. */
+  | { type: 'update_check' }
+  /** Owner-only: one more grace period before a scheduled install; offered only while `update_state.can_postpone`. */
+  | { type: 'update_postpone' }
+  /** Owner-only: stop offering this release (the one the owner saw); a newer one is offered again. */
+  | { type: 'update_skip'; version: string }
   /** Owner-only (decision 0144): asks for the scrubbed diagnostics bundle; the answer is `diagnostics_bundle` parts. */
   | { type: 'diagnostics_bundle' }
   | { type: 'uninstall'; confirm_name: string; delete_user?: boolean; remove_tmux?: boolean; kill_workspaces?: boolean }
@@ -88,6 +94,20 @@ export interface PushSettings {
   muted_agents: string[];
 }
 
+/** The updater's state as a server reports it (`update_state`); a field an older server omits reads as empty. */
+export interface UpdateInfo {
+  /** `idle`, `available`, `scheduled`, `installing` or `rolled-back`. */
+  phase?: string;
+  available?: string;
+  /** When a scheduled install starts, epoch seconds; 0 when none is scheduled. */
+  deadline?: number;
+  checked_at?: number;
+  checked_ok_at?: number;
+  /** Why the last check failed; empty when it did not. */
+  error?: string;
+  can_postpone?: boolean;
+}
+
 export type ServerMessage =
   | { type: 'challenge'; nonce: string; server_id: string }
   | { type: 'device_revoked'; device: string }
@@ -96,10 +116,13 @@ export type ServerMessage =
   | { type: 'update_requested'; available?: string }
   /** The recorded newer release changed while connected; empty when up to date (same as `auth_ok.update_available`). */
   | { type: 'update_status'; available?: string }
+  | { type: 'update_check_requested' }
+  /** What the updater knows (decision 0154), sent after `auth_ok` and on every change. Times are epoch seconds, 0 when unknown. */
+  | ({ type: 'update_state' } & UpdateInfo)
   | { type: 'uninstall_done'; mode: string }
   /** Decision 0123: the server's signed candidate bundle, pushed after `auth_ok`; verify it before use (lib/bundle.ts). */
   | { type: 'candidates'; bundle: string }
-  | { type: 'auth_ok'; protocol?: number; control_channel?: boolean; channels?: string[]; tabs?: boolean; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string; acp_agents?: string[]; update_available?: string }
+  | { type: 'auth_ok'; protocol?: number; control_channel?: boolean; channels?: string[]; tabs?: boolean; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string; acp_agents?: string[]; update_available?: string; update_capabilities?: string[] }
   | { type: 'workspaces'; workspaces: WorkspaceInfo[] }
   /** The answer to `list_dir`: directory names only, at most 500 (`truncated` says more matched). `parent` is absent at `home`. */
   | { type: 'dir_listing'; path: string; parent?: string | null; entries: DirEntry[]; truncated?: boolean; home: string }

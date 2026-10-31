@@ -84,6 +84,8 @@ pub struct Inputs<'a> {
     pub mode: &'a str,
     pub previous_exit: Option<&'a ServerMessage>,
     pub health: Option<ServerMessage>,
+    /// What the updater last recorded (`update-state.json`), if this server has an updater.
+    pub update: Option<crate::update_state::State>,
     /// Names, and ids that are not minted ones (an older server used the typed name as the id), of the live
     /// workspaces: text a user chose, which no field name or token shape gives away.
     pub names: &'a [String],
@@ -112,6 +114,11 @@ pub fn build(inputs: &Inputs<'_>) -> String {
     out.push_str(&match &inputs.health {
         Some(m) => json_line(m),
         None => "not sampled".into(),
+    });
+    out.push_str("\n\nupdater (update-state.json):\n");
+    out.push_str(&match &inputs.update {
+        Some(state) => serde_json::to_string(state).unwrap_or_default(),
+        None => "no updater on this server".into(),
     });
     out.push_str("\n\nnewest crash file:\n");
     out.push_str(&newest_crash(&logs).unwrap_or_else(|| "none".into()));
@@ -548,6 +555,7 @@ mod tests {
             mode: "systemd",
             previous_exit: Some(&previous),
             health: None,
+            update: None,
             names: &[],
         });
         for secret in [
@@ -594,6 +602,40 @@ mod tests {
     }
 
     #[test]
+    fn the_bundle_shows_what_the_updater_knows_and_scrubs_its_error() {
+        use crate::update_state::{Event, State};
+        let dir = temp_dir();
+        let mut state = State::default();
+        state.apply(1_700_000_000, Event::Available("0.2.0"));
+        state.apply(
+            1_700_000_100,
+            Event::Failed("fetch https://10.1.2.3:8443/m failed in /home/alice/.cache"),
+        );
+        let build_with = |update| {
+            build(&Inputs {
+                config_dir: &dir,
+                version: "0.1.0",
+                mode: "systemd",
+                previous_exit: None,
+                health: None,
+                update,
+                names: &[],
+            })
+        };
+        let text = build_with(Some(state));
+        assert!(
+            text.contains("updater (update-state.json):")
+                && text.contains("\"available\":\"0.2.0\""),
+            "{text}"
+        );
+        assert!(
+            !text.contains("10.1.2.3") && !text.contains("/home/alice"),
+            "{text}"
+        );
+        assert!(build_with(None).contains("no updater on this server"));
+    }
+
+    #[test]
     fn bundle_scrub_removes_a_workspace_name_from_a_tmux_error_and_a_panic() {
         let dir = temp_dir();
         let logs = dir.join("logs");
@@ -618,6 +660,7 @@ mod tests {
             mode: "systemd",
             previous_exit: None,
             health: None,
+            update: None,
             names: &names,
         });
         for name in [

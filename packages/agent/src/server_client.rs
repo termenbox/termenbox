@@ -136,6 +136,8 @@ impl ServerClient {
             | ServerMessage::UninstallDone { .. }
             | ServerMessage::UpdateRequested { .. }
             | ServerMessage::UpdateStatus { .. }
+            | ServerMessage::UpdateCheckRequested {}
+            | ServerMessage::UpdateState { .. }
             | ServerMessage::Candidates { .. }
             | ServerMessage::DirListing { .. }
             | ServerMessage::DirError { .. } => {}

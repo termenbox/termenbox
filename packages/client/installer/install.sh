@@ -340,7 +340,7 @@ write_update_config() {
   _win="$(sed -n 's/^\(maintenance_window *=.*\)$/\1/p' "$JOURNAL/update.toml" 2>/dev/null | head -n 1)"
   {
     echo "# How this server updates (decision 0131). Edit it on this machine; nothing in the app changes it."
-    echo "# channel: stable | beta | nightly      mode: auto (install daily) | notify (say so, install on request) | hold"
+    echo "# channel: stable | beta | nightly      mode: auto (install at the next check) | notify (say so, install on request) | hold"
     echo "# maintenance_window = \"03:00-04:00\"    local time; limits the automatic install"
     echo "[update]"
     echo "channel = \"$CHANNEL\""
@@ -503,6 +503,30 @@ journal() {
   "$JBIN" --journal-dir "$JOURNAL" --journal-record "$_kind" $_args >/dev/null || die "could not write the journal"
 }
 
+# An update timer from before decision 0154 fires once a day, between 00:00 and 01:00, so it never reaches a
+# maintenance window elsewhere and a fresh install waits for the next midnight. Replace it (backed up and journaled by
+# put_file) with the boot-and-6-hourly cadence. Idempotent: a timer that already has OnBootSec is left alone.
+# migrate_update_timer <timer file> <new content>
+UPDATE_TIMER="[Unit]
+Description=Check for a new Termenbox release
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=6h
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target"
+
+migrate_update_timer() {
+  [ -f "$1" ] || return 0
+  grep -q '^OnBootSec=' "$1" && return 0
+  printf '%s\n' "$2" > "$TMP/timer-$(basename "$1")"
+  put_file "$TMP/timer-$(basename "$1")" "$1" 0644
+  _added=1
+}
+
 # The root-owned updater and request handler (decisions 0076, 0077). They run the installed binary as root, so the
 # server itself can stay an unprivileged user. Idempotent: only what is missing is added, each unit journaled first.
 install_helper_units() {
@@ -533,16 +557,7 @@ Description=Termenbox updater
 Type=oneshot
 Environment=TERMENBOX_RELEASE_URL=$RELEASE_URL
 ExecStart=$BIN --root-helper update --journal-dir $JOURNAL --requests-dir $STATE/requests"
-  add_unit termenbox-update.timer "[Unit]
-Description=Check for a new Termenbox release every day
-
-[Timer]
-OnCalendar=daily
-RandomizedDelaySec=3600
-Persistent=true
-
-[Install]
-WantedBy=timers.target"
+  add_unit termenbox-update.timer "$UPDATE_TIMER"
   add_unit termenbox-request.service "[Unit]
 Description=Termenbox root helper (requests from the server)
 
@@ -559,9 +574,12 @@ PathExistsGlob=$STATE/requests/*.json
 [Install]
 WantedBy=multi-user.target"
   migrate_helper_requests /etc/systemd/system/termenbox-update.service /etc/systemd/system/termenbox-request.service
+  migrate_update_timer /etc/systemd/system/termenbox-update.timer "$UPDATE_TIMER"
   if [ -n "$_added" ]; then
     systemctl daemon-reload
     systemctl enable --now termenbox-update.timer termenbox-request.path >/dev/null 2>&1 || die "could not start the updater; see: systemctl status termenbox-update.timer"
+    systemctl restart termenbox-update.timer >/dev/null 2>&1 || true
+    systemctl start --no-block termenbox-update.service >/dev/null 2>&1 || true # the first check now, not at midnight
   fi
 }
 
@@ -753,7 +771,7 @@ install_native() {
     command -v tmux >/dev/null 2>&1 || say "  - the package tmux (sessions are tmux sessions)"
   fi
   say "  - state       $STATE"
-  say "  - a service   $UNIT_NAME (starts at boot), and a daily update check (root-owned, signed releases only)"
+  say "  - a service   $UNIT_NAME (starts at boot), and an update check at boot and every 6 hours (root-owned, signed releases only)"
   update_policy_note
   say "  - UDP port    $PORT (opened in the firewall if one is active)"
   say "Every change is recorded in $JOURNAL; undo them with: termenbox-server --revert --dry-run, then --revert"
@@ -954,7 +972,7 @@ install_user() {
   say "  - the server  $BIN"
   [ -z "$TMUX_SHA" ] || say "  - tmux        $(dirname "$BIN")/termenbox-tmux (a pinned static build, used before any tmux on PATH)"
   say "  - state       $STATE"
-  say "  - a user service $SERVICE, and a daily update check (signed releases only), in $UNIT_DIR"
+  say "  - a user service $SERVICE, and an update check at boot and every 6 hours (signed releases only), in $UNIT_DIR"
   update_policy_note
   if [ -n "$UDP_PIN" ]; then say "  - UDP port    $UDP_PIN (your choice)"; else say "  - UDP port    the server picks a free one from 4443-4542 on its first start and keeps it"; fi
   say "Every change is recorded in $JOURNAL; undo them with: termenbox-server --journal-dir $JOURNAL --revert --dry-run, then --revert"
@@ -1070,16 +1088,7 @@ Type=oneshot
 Environment=TERMENBOX_RELEASE_URL=$RELEASE_URL
 Environment=TERMENBOX_BINARY=$BIN
 ExecStart=$BIN --root-helper update --user-helper --journal-dir $JOURNAL --requests-dir $STATE/requests"
-  add_user_unit termenbox-update.timer "[Unit]
-Description=Check for a new Termenbox release every day
-
-[Timer]
-OnCalendar=daily
-RandomizedDelaySec=3600
-Persistent=true
-
-[Install]
-WantedBy=timers.target"
+  add_user_unit termenbox-update.timer "$UPDATE_TIMER"
   add_user_unit termenbox-request.service "[Unit]
 Description=Termenbox helper (requests from the server)
 
@@ -1097,9 +1106,12 @@ PathExistsGlob=$STATE/requests/*.json
 [Install]
 WantedBy=default.target"
   migrate_helper_requests "$UNIT_DIR/termenbox-update.service" "$UNIT_DIR/termenbox-request.service"
+  migrate_update_timer "$UNIT_DIR/termenbox-update.timer" "$UPDATE_TIMER"
   if [ -n "$_added" ]; then
     systemctl --user daemon-reload
     systemctl --user enable --now termenbox-update.timer termenbox-request.path >/dev/null 2>&1 || die "could not start the updater; see: systemctl --user status termenbox-update.timer"
+    systemctl --user restart termenbox-update.timer >/dev/null 2>&1 || true
+    systemctl --user start --no-block termenbox-update.service >/dev/null 2>&1 || true # the first check now, not at midnight
   fi
 }
 

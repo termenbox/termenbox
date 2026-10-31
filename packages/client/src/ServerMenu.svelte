@@ -4,8 +4,8 @@
 
   /** What one server's row can do, behind one button (the three dots): pause or resume, retry a server that is not
    *  connected, send it to another device, rename it on this device, remove it from this browser. Each entry is an icon and its words. */
-  let { name, paused, canRetry, canShare, onpause, onresume, onretry, onshare, onrename, onremove }: {
-    name: string; paused: boolean; canRetry: boolean; canShare: boolean;
+  let { name, paused, canRetry, canShare, canUpdates = false, onupdates = () => {}, onpause, onresume, onretry, onshare, onrename, onremove }: {
+    name: string; paused: boolean; canRetry: boolean; canShare: boolean; canUpdates?: boolean; onupdates?: () => void;
     onpause: () => void; onresume: () => void; onretry: () => void; onshare: () => void; onrename: () => void; onremove: () => void;
   } = $props();
   const item = 'flex min-h-11 cursor-pointer items-center gap-3 rounded-control px-3 text-base text-fg outline-none data-[highlighted]:bg-raised';
@@ -34,6 +34,11 @@
     {#if canShare}
       <DropdownMenu.Item class={item} onSelect={onshare}>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12M8 7l4-4 4 4"></path><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"></path></svg>Send to another device
+      </DropdownMenu.Item>
+    {/if}
+    {#if canUpdates}
+      <DropdownMenu.Item class={item} onSelect={onupdates} data-testid="server-updates-item">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 16V8M8.5 11.5 12 8l3.5 3.5"></path></svg>Updates
       </DropdownMenu.Item>
     {/if}
     <DropdownMenu.Item class={item} onSelect={onrename} data-testid="server-rename-item">

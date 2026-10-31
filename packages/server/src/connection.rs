@@ -152,6 +152,7 @@ pub async fn run(mut link: Link, state: AppState) {
         prefix: state.workspaces.prefix().to_string(),
         acp_agents: state.workspaces.acp_agents(),
         update_available: state.workspaces.update_available(),
+        update_capabilities: state.workspaces.update_capabilities(),
     };
     if !send(&link, &ok).await {
         return;

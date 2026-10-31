@@ -202,6 +202,16 @@ pub enum ClientMessage {
     /// Owner-only: install the newer release now (decision 0077): the server leaves an `update-now` request for the
     /// root helper and answers `update_requested`. The service restarts when the update is installed.
     UpdateServer {},
+    /// Owner-only: check for a release now without installing it (decision 0154); answered with `update_check_requested`,
+    /// then `update_state` when the updater has recorded the outcome.
+    UpdateCheck {},
+    /// Owner-only: one more grace period before a scheduled install. The helper refuses when none is scheduled or the
+    /// limit is reached; `update_state.can_postpone` says when to offer it.
+    UpdatePostpone {},
+    /// Owner-only: stop offering `version` (the release the owner saw); a newer one is offered again.
+    UpdateSkip {
+        version: String,
+    },
     /// Owner-only (decision 0144): asks for the server's diagnostics bundle, answered with `diagnostics_bundle`.
     DiagnosticsBundle {},
     /// Owner-only, recently signed in: remove this server (decision 0072). `confirm_name` must equal the
@@ -548,6 +558,27 @@ pub enum ServerMessage {
         #[serde(default)]
         available: String,
     },
+    /// The `update_check` request was handed to the updater; `update_state` follows once it has checked.
+    UpdateCheckRequested {},
+    /// What the updater knows (`update-state.json`, decision 0154), sent after `auth_ok` and whenever it changes.
+    /// Times are seconds since the epoch, 0 when unknown; `phase` is `idle`, `available`, `scheduled`, `installing` or
+    /// `rolled-back`; `error` is why the last check failed, empty when it did not.
+    UpdateState {
+        #[serde(default)]
+        phase: String,
+        #[serde(default)]
+        available: String,
+        #[serde(default)]
+        deadline: u64,
+        #[serde(default)]
+        checked_at: u64,
+        #[serde(default)]
+        checked_ok_at: u64,
+        #[serde(default)]
+        error: String,
+        #[serde(default)]
+        can_postpone: bool,
+    },
     /// The server wiped its configuration and will stop; `mode` is `container` or `host:<user>`.
     UninstallDone {
         mode: String,
@@ -600,6 +631,10 @@ pub enum ServerMessage {
         /// A newer release this server could install but has not (`update-status.json`); absent when up to date.
         #[serde(default, skip_serializing_if = "String::is_empty")]
         update_available: String,
+        /// The update actions this server's helper accepts (`check`, `postpone`, `skip`); absent from older servers,
+        /// so a client offers no button the helper would reject.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        update_capabilities: Vec<String>,
     },
     Workspaces {
         workspaces: Vec<WorkspaceInfo>,
@@ -1266,6 +1301,47 @@ mod tests {
     }
 
     #[test]
+    fn the_update_messages_round_trip_and_an_old_state_reads_with_defaults() {
+        let v: ClientMessage = serde_json::from_str(r#"{"type":"update_check"}"#).unwrap();
+        assert_eq!(v, ClientMessage::UpdateCheck {});
+        let v: ClientMessage = serde_json::from_str(r#"{"type":"update_postpone"}"#).unwrap();
+        assert_eq!(v, ClientMessage::UpdatePostpone {});
+        let v: ClientMessage =
+            serde_json::from_str(r#"{"type":"update_skip","version":"0.1.58"}"#).unwrap();
+        assert_eq!(
+            v,
+            ClientMessage::UpdateSkip {
+                version: "0.1.58".into()
+            }
+        );
+        let state = ServerMessage::UpdateState {
+            phase: "available".into(),
+            available: "0.1.58".into(),
+            deadline: 7,
+            checked_at: 5,
+            checked_ok_at: 4,
+            error: "offline".into(),
+            can_postpone: true,
+        };
+        let text = serde_json::to_string(&state).unwrap();
+        assert!(text.contains(r#""type":"update_state""#));
+        assert_eq!(serde_json::from_str::<ServerMessage>(&text).unwrap(), state);
+        let bare: ServerMessage = serde_json::from_str(r#"{"type":"update_state"}"#).unwrap();
+        assert_eq!(
+            bare,
+            ServerMessage::UpdateState {
+                phase: String::new(),
+                available: String::new(),
+                deadline: 0,
+                checked_at: 0,
+                checked_ok_at: 0,
+                error: String::new(),
+                can_postpone: false
+            }
+        );
+    }
+
+    #[test]
     fn quiet_hours_are_read_in_the_owners_local_time() {
         let night = |offset| PushSettings {
             quiet_hours: Some("22:00-07:00".into()),
@@ -1357,9 +1433,11 @@ mod tests {
             prefix: "C-b".into(),
             acp_agents: vec![],
             update_available: String::new(),
+            update_capabilities: vec![],
         })
         .unwrap();
         assert_eq!(v["type"], "auth_ok");
+        assert!(v.get("update_capabilities").is_none());
         assert!(v.get("acp_agents").is_none());
         assert!(v.get("update_available").is_none());
         let v: ClientMessage = serde_json::from_str(r#"{"type":"update_server"}"#).unwrap();

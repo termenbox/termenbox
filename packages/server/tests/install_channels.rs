@@ -309,6 +309,66 @@ fn an_existing_user_install_migrates_its_timer_without_losing_custom_arguments_a
 }
 
 #[test]
+fn the_update_timer_checks_at_boot_and_every_six_hours_and_an_old_daily_timer_is_replaced_once() {
+    let Some(r) = run("timer-cadence", &beta(&["host-me", "--channel", "beta"])) else {
+        return;
+    };
+    assert!(r.out.status.success(), "{}", r.stderr());
+    let fresh = r.unit("termenbox-update.timer");
+    assert!(fresh.contains("OnBootSec=2min"), "{fresh}");
+    assert!(fresh.contains("OnUnitActiveSec=6h"), "{fresh}");
+    assert!(!fresh.contains("OnCalendar=daily"), "{fresh}");
+    // An install from before decision 0154 has the daily timer; the next run replaces it, with a backup.
+    let timer = r.home.join(".config/systemd/user/termenbox-update.timer");
+    let daily = "[Unit]\nDescription=Check for a new Termenbox release every day\n\n[Timer]\nOnCalendar=daily\nRandomizedDelaySec=3600\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n";
+    std::fs::write(&timer, daily).unwrap();
+    let log = r.home.join("journal-calls");
+    write_exe(
+        &r.home.join(".local/bin/termenbox-server"),
+        &format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$*\" in *--register*) echo 'https://app.test/#/pair/PAYLOAD' ;; esac\n", log.display()),
+    );
+    let root = r.home.parent().unwrap();
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../client/installer/install.sh");
+    let rerun = || {
+        Command::new("sh")
+            .arg(&script)
+            .arg("host-me")
+            .env_clear()
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", root.join("stubs").display()),
+            )
+            .env("HOME", &r.home)
+            .env("XDG_RUNTIME_DIR", root.join("run"))
+            .env("TERMENBOX_CLAIM", "-")
+            .env("TERMENBOX_CLIENT_URL", "https://app.test")
+            .env("TERMENBOX_SKIP_LINGER", "1")
+            .env("TERMENBOX_SKIP_FIREWALL", "1")
+            .output()
+            .unwrap()
+    };
+    let out = rerun();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let migrated = r.unit("termenbox-update.timer");
+    assert_eq!(migrated, fresh);
+    let replaced = |l: &str| l.matches("--journal-record file_replaced").count();
+    let logged = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(replaced(&logged), 1, "{logged}");
+    let backups = r.home.join(".local/state/termenbox/backups");
+    assert!(std::fs::read_dir(&backups)
+        .unwrap()
+        .flatten()
+        .any(|p| std::fs::read_to_string(p.path()).ok().as_deref() == Some(daily)));
+    assert!(rerun().status.success());
+    assert_eq!(r.unit("termenbox-update.timer"), migrated);
+    assert_eq!(replaced(&std::fs::read_to_string(log).unwrap()), 1);
+}
+
+#[test]
 fn a_nightly_install_only_notifies_unless_auto_update_is_asked_for() {
     let nightly = |args| Case {
         manifest_channel: "nightly",

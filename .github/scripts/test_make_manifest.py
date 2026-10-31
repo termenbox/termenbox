@@ -11,9 +11,12 @@ SCRIPT = Path(__file__).with_name("make_manifest.py")
 NOTICES = ("tmux-COPYING", "tmux-libevent-LICENSE", "tmux-ncurses-COPYING")
 
 
-def build(*args):
+def build(*args, image=None):
     with tempfile.TemporaryDirectory() as tmp:
         assets = Path(tmp)
+        if image is not None:
+            (assets / "image.json").write_text(json.dumps(image))
+            args = (*args, "--image-digests", str(assets / "image.json"))
         for arch in ("x86_64", "aarch64"):
             (assets / f"termenbox-server-{arch}-linux").write_bytes(b"server " + arch.encode())
             (assets / f"tmux-{arch}-linux").write_bytes(b"tmux " + arch.encode())
@@ -50,6 +53,14 @@ class MakeManifest(unittest.TestCase):
         for bad in ("1.2", "v1.2.3", "01.2.3", "1.2.3-", "one"):
             self.assertNotEqual(build(bad)[0].returncode, 0, bad)
         self.assertNotEqual(build("1.2.3", "--channel", "gold")[0].returncode, 0)
+
+    def test_image_digests_are_signed_in_and_only_well_formed_ones(self):
+        good = {"x86_64": "sha256:" + "a" * 64, "aarch64": "sha256:" + "b" * 64}
+        run, m = build("1.2.3", image=good)
+        self.assertEqual((run.returncode, m["image"]), (0, good))
+        self.assertNotIn("image", build("1.2.3")[1])
+        for bad in ({"x86_64": good["x86_64"]}, {**good, "aarch64": "latest"}, {**good, "riscv": good["x86_64"]}):
+            self.assertNotEqual(build("1.2.3", image=bad)[0].returncode, 0, bad)
 
 
 if __name__ == "__main__":

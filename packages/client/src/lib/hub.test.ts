@@ -115,6 +115,63 @@ describe('ServerHub', () => {
     c.emit({ type: 'update_status', available: '' });
     expect(get(hub.servers)[0].updateAvailable).toBe('');
   });
+  describe('the updater (decision 0154)', () => {
+    const ready = (caps?: string[]) => {
+      const { hub, connections } = setup(); hub.start([server('a')]);
+      const c = connections[0];
+      c.opts.onState('connected');
+      c.opts.onReady({ type: 'auth_ok', user: 'u', server_name: 'host', version: '0.1.57', update_available: '0.1.58', update_capabilities: caps }, false);
+      return { hub, c };
+    };
+    const state = (over: object = {}) => ({ type: 'update_state' as const, phase: 'available', available: '0.1.58', checked_at: 100, checked_ok_at: 100, ...over });
+
+    it('keeps what the server says about its updater and what its helper accepts', () => {
+      const { hub, c } = ready(['check', 'skip']);
+      c.emit(state({ deadline: 500, can_postpone: false }));
+      expect(get(hub.servers)[0]).toMatchObject({ updateCapabilities: ['check', 'skip'], update: { phase: 'available', available: '0.1.58', deadline: 500 } });
+      expect(hub.canUpdate('a', 'check')).toBe(true);
+      expect(hub.canUpdate('a', 'postpone')).toBe(false);
+    });
+    it('sends nothing an older server or helper would reject', () => {
+      const { hub, c } = ready(undefined);
+      c.emit(state({ deadline: 500, can_postpone: true }));
+      hub.checkUpdate('a'); hub.postponeUpdate('a'); hub.skipUpdate('a');
+      expect(c.sent.filter(m => m.type.startsWith('update_'))).toEqual([]);
+    });
+    it('holds "checking" until the updater records a newer attempt, then lets go', () => {
+      const { hub, c } = ready(['check']);
+      c.emit(state());
+      hub.checkUpdate('a'); hub.checkUpdate('a');
+      expect(c.sent.filter(m => m.type === 'update_check')).toHaveLength(1);
+      expect(get(hub.servers)[0].checking).toBe(true);
+      c.emit(state());
+      expect(get(hub.servers)[0].checking).toBe(true);
+      c.emit(state({ checked_at: 200, error: 'offline' }));
+      expect(get(hub.servers)[0]).toMatchObject({ checking: false, update: { error: 'offline' } });
+    });
+    it('gives up waiting for a check after a while and when the connection is made again', () => {
+      vi.useFakeTimers();
+      try {
+        const { hub, c } = ready(['check']);
+        hub.checkUpdate('a');
+        vi.advanceTimersByTime(91_000);
+        expect(get(hub.servers)[0].checking).toBe(false);
+        hub.checkUpdate('a');
+        c.opts.onReady({ type: 'auth_ok', user: 'u', server_name: 'host', update_capabilities: ['check'] }, true);
+        expect(get(hub.servers)[0].checking).toBe(false);
+      } finally { vi.useRealTimers(); }
+    });
+    it('postpones only while the server allows it and skips the release it showed', () => {
+      const { hub, c } = ready(['check', 'postpone', 'skip']);
+      c.emit(state({ deadline: 500, can_postpone: false }));
+      hub.postponeUpdate('a');
+      expect(c.sent.some(m => m.type === 'update_postpone')).toBe(false);
+      c.emit(state({ deadline: 500, can_postpone: true }));
+      hub.postponeUpdate('a'); hub.skipUpdate('a');
+      expect(c.sent).toContainEqual({ type: 'update_postpone' });
+      expect(c.sent).toContainEqual({ type: 'update_skip', version: '0.1.58' });
+    });
+  });
   it('starts every saved server once, even if start or add is repeated', () => {
     const { hub, connections } = setup();
     hub.start([server('a'), server('b')]); hub.start([server('a'), server('b')]); hub.add(server('a'));

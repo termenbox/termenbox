@@ -29,6 +29,11 @@ pub enum Request {
     },
     /// Refresh the signed release notice without installing anything.
     CheckUpdate {},
+    /// Ask for one more grace period before the scheduled install (at most three times, decision 0154).
+    UpdatePostpone {},
+    /// Stop offering this release; a newer one is offered again. The version is the one the owner saw, so a request
+    /// made against an older notice cannot skip a newer release.
+    UpdateSkip { version: String },
     /// Remove this server (decision 0072); the flags are the owner's opt-ins for host cleanup.
     Uninstall {
         #[serde(default)]
@@ -45,6 +50,8 @@ impl Request {
         match self {
             Request::UpdateNow { .. } => "update-now",
             Request::CheckUpdate {} => "check-update",
+            Request::UpdatePostpone {} => "update-postpone",
+            Request::UpdateSkip { .. } => "update-skip",
             Request::Uninstall { .. } => "uninstall",
         }
     }
@@ -80,6 +87,33 @@ pub fn leave_update_check(dir: &Path) -> std::io::Result<()> {
     write_json_mode(
         &dir.join("check-update.json"),
         &serde_json::json!({"action":"check-update"}),
+        0o600,
+    )
+}
+
+/// The owner's choice to wait: one fixed file per server, so repeated taps leave one request.
+pub fn leave_update_postpone(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    write_json_mode(
+        &dir.join("update-postpone.json"),
+        &serde_json::json!({"action":"update-postpone"}),
+        0o600,
+    )
+}
+
+/// The owner's choice to skip `version`. Refused here for a version the helper would refuse, so a bad value never
+/// reaches the request directory.
+pub fn leave_update_skip(dir: &Path, version: &str) -> std::io::Result<()> {
+    if !is_release_version(version) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid version",
+        ));
+    }
+    std::fs::create_dir_all(dir)?;
+    write_json_mode(
+        &dir.join("update-skip.json"),
+        &serde_json::json!({"action":"update-skip", "version":version}),
         0o600,
     )
 }
@@ -137,7 +171,7 @@ pub fn pending_update(dir: &Path) -> Option<(String, std::time::Duration)> {
     (age < 600).then(|| (id.to_string(), std::time::Duration::from_secs(age)))
 }
 
-fn read_status(path: &Path) -> Option<String> {
+pub(crate) fn read_status(path: &Path) -> Option<String> {
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -158,17 +192,29 @@ fn read_status(path: &Path) -> Option<String> {
     Some(text)
 }
 
-/// The release the updater recorded as installable but not installed (`update-status.json`, written next to the
-/// requests directory), or None. A file that is large, unreadable or not what the updater writes reads as None.
+/// The newest of the two files the updater writes next to the requests directory: `update-state.json` and, for one
+/// release, the older `update-status.json` (an old helper writes only that one). On a tie the state file wins.
+fn newest_notice(dir: &Path) -> Option<serde_json::Value> {
+    let read = |name: &str| -> Option<serde_json::Value> {
+        serde_json::from_str(&read_status(&dir.join(name))?).ok()
+    };
+    let checked = |v: &serde_json::Value| v.get("checked_at").and_then(|c| c.as_u64());
+    let state =
+        read(crate::update_state::FILE).filter(|v| v.get("v").and_then(|v| v.as_u64()) == Some(1));
+    let status = read("update-status.json");
+    match (state, status) {
+        (Some(a), Some(b)) => Some(if checked(&a) >= checked(&b) { a } else { b }),
+        (a, b) => a.or(b),
+    }
+}
+
+/// The release the updater recorded as installable but not installed, or None. A notice stays valid until it is
+/// superseded or installed; how old it is, is for the app to show (`checked_at`). A file that is large, unreadable or
+/// not what the updater writes reads as None, and so does a version that was rolled back or skipped.
 pub fn available_update(requests_dir: &Path, current: &str) -> Option<String> {
-    let path = requests_dir.parent()?.join("update-status.json");
-    let text = read_status(&path)?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let v = newest_notice(requests_dir.parent()?)?;
     let checked = v.get("checked_at")?.as_u64()?;
-    if checked > now_secs()
-        || now_secs().saturating_sub(checked) > 3600
-        || !matches!(v.get("mode")?.as_str()?, "auto" | "notify")
-    {
+    if checked > now_secs() || !matches!(v.get("mode")?.as_str()?, "auto" | "notify") {
         return None;
     }
     // A notice left by another update channel is not an update this binary may install. Beta follows
@@ -185,17 +231,15 @@ pub fn available_update(requests_dir: &Path, current: &str) -> Option<String> {
         return None;
     }
     let version = v.get("available")?.as_str()?;
+    if v.get("skipped").and_then(|s| s.as_str()) == Some(version) {
+        return None;
+    }
     let mut available = semver::Version::parse(version).ok()?;
     available.build = semver::BuildMetadata::EMPTY;
     if available <= running {
         return None;
     }
-    (!version.is_empty()
-        && version.len() <= 64
-        && version
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c)))
-    .then(|| version.to_string())
+    is_release_version(version).then(|| version.to_string())
 }
 
 /// Reads and removes the pending requests (at most 16 per run). Anything that is not a valid request is removed
@@ -250,7 +294,21 @@ fn read_one(path: &Path) -> Result<Request, &'static str> {
             return Err("invalid update id");
         }
     }
+    if let Request::UpdateSkip { version } = &request {
+        if !is_release_version(version) {
+            return Err("invalid version");
+        }
+    }
     Ok(request)
+}
+
+/// The charset and length a notice's version must have, shared by what the server shows and what it may ask for.
+pub fn is_release_version(version: &str) -> bool {
+    !version.is_empty()
+        && version.len() <= 64
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c))
 }
 
 #[cfg(test)]
@@ -290,6 +348,42 @@ mod tests {
             0,
             "nothing is left to trigger the path unit again"
         );
+    }
+
+    #[test]
+    fn postpone_and_skip_are_read_and_a_skip_names_a_plain_version() {
+        let d = dir();
+        std::fs::write(d.join("a.json"), r#"{"action":"update-postpone"}"#).unwrap();
+        std::fs::write(
+            d.join("b.json"),
+            r#"{"action":"update-skip","version":"0.2.0-beta.1"}"#,
+        )
+        .unwrap();
+        let mut got = take_requests(&d);
+        got.sort_by_key(|r| r.name());
+        assert_eq!(
+            got,
+            vec![
+                Request::UpdatePostpone {},
+                Request::UpdateSkip {
+                    version: "0.2.0-beta.1".into()
+                }
+            ]
+        );
+        for (name, body) in [
+            ("c.json", r#"{"action":"update-skip"}"#),
+            ("d.json", r#"{"action":"update-skip","version":"../x"}"#),
+            ("e.json", r#"{"action":"update-skip","version":""}"#),
+            ("f.json", r#"{"action":"update-postpone","by":"9"}"#),
+            (
+                "g.json",
+                r#"{"action":"update-skip","version":"1.0","id":"x"}"#,
+            ),
+        ] {
+            std::fs::write(d.join(name), body).unwrap();
+        }
+        assert!(take_requests(&d).is_empty());
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 0);
     }
 
     #[test]
@@ -412,6 +506,46 @@ mod tests {
     }
 
     #[test]
+    fn the_state_file_is_read_beside_the_old_status_file_and_a_pinned_version_is_not_offered() {
+        let d = dir();
+        let requests = d.join("requests");
+        std::fs::create_dir(&requests).unwrap();
+        let status = d.join("update-status.json");
+        let state = d.join(crate::update_state::FILE);
+        let base = serde_json::json!({"v":1, "available":"0.2.0", "current":"0.1.0", "mode":"notify", "channel":"stable", "checked_at":now_secs()});
+        // only the new file, only the old file
+        write_json(&state, &base).unwrap();
+        assert_eq!(
+            available_update(&requests, "0.1.0").as_deref(),
+            Some("0.2.0")
+        );
+        std::fs::remove_file(&state).unwrap();
+        write_json(&status, &base).unwrap();
+        assert_eq!(
+            available_update(&requests, "0.1.0").as_deref(),
+            Some("0.2.0")
+        );
+        // the newer of the two decides: a state that says up to date beats an older notice, and the reverse
+        let mut none = base.clone();
+        none["available"] = serde_json::Value::Null;
+        none["checked_at"] = serde_json::json!(now_secs());
+        write_json(&state, &none).unwrap();
+        assert_eq!(available_update(&requests, "0.1.0"), None);
+        none["checked_at"] = serde_json::json!(now_secs().saturating_sub(100));
+        write_json(&state, &none).unwrap();
+        assert_eq!(
+            available_update(&requests, "0.1.0").as_deref(),
+            Some("0.2.0")
+        );
+        // a pinned version is not offered
+        let mut pinned = base.clone();
+        pinned["skipped"] = serde_json::json!("0.2.0");
+        write_json(&state, &pinned).unwrap();
+        assert_eq!(available_update(&requests, "0.1.0"), None);
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
     fn a_check_is_coalesced_and_invalid_request_ids_are_rejected() {
         let d = dir();
         leave_update_check(&d).unwrap();
@@ -433,10 +567,6 @@ mod tests {
         let status = d.join("update-status.json");
         let base = serde_json::json!({"available":"0.2.0", "current":"0.1.0", "checked_at":now_secs(), "mode":"notify"});
         for (key, value) in [
-            (
-                "checked_at",
-                serde_json::json!(now_secs().saturating_sub(3601)),
-            ),
             ("checked_at", serde_json::json!(now_secs() + 60)),
             ("available", serde_json::json!("0.1.0+other")),
             ("available", serde_json::json!("0.0.9")),
@@ -448,6 +578,15 @@ mod tests {
             write_json(&status, &v).unwrap();
             assert_eq!(available_update(&requests, "0.1.0"), None);
         }
+        // An old notice is still a notice: the timer no longer runs every hour.
+        let mut old = base.clone();
+        old["channel"] = serde_json::json!("stable");
+        old["checked_at"] = serde_json::json!(now_secs().saturating_sub(7 * 86400));
+        write_json(&status, &old).unwrap();
+        assert_eq!(
+            available_update(&requests, "0.1.0").as_deref(),
+            Some("0.2.0")
+        );
         std::fs::write(&status, " ".repeat(5000)).unwrap();
         assert_eq!(available_update(&requests, "0.1.0"), None);
         std::fs::remove_file(&status).unwrap();
@@ -478,5 +617,25 @@ mod tests {
             Some("held")
         );
         std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn the_owners_postpone_and_skip_are_fixed_files_the_helper_reads_back() {
+        let requests = dir();
+        leave_update_postpone(&requests).unwrap();
+        leave_update_skip(&requests, "0.1.58").unwrap();
+        let mut taken = take_requests(&requests);
+        taken.sort_by_key(|r| r.name());
+        assert_eq!(
+            taken,
+            vec![
+                Request::UpdatePostpone {},
+                Request::UpdateSkip {
+                    version: "0.1.58".into()
+                }
+            ]
+        );
+        assert!(leave_update_skip(&requests, "../../etc").is_err());
+        assert!(take_requests(&requests).is_empty());
     }
 }

@@ -22,6 +22,7 @@ use tracing::{info, warn};
 use crate::events::{now_ms, EventHub, StatusChange};
 
 /// Seconds a push may wait at the push service for a device that is offline.
+const UPDATE_WATCH: Duration = Duration::from_secs(60);
 const TTL_SECS: u32 = 4 * 60 * 60;
 /// Subscriptions kept (one per device); the oldest go first.
 pub const MAX_SUBSCRIPTIONS: usize = 20;
@@ -287,6 +288,30 @@ pub fn payload_for(
         .into_bytes()
 }
 
+/// The body for "a server update is waiting": the server's name, the kind and a time. No version and no release text;
+/// the app fetches those after it opens (`notifications-carry-no-agent-text`).
+pub fn update_payload(server: &str, at: u64) -> Vec<u8> {
+    serde_json::json!({"session": server, "kind": "update", "at": at, "tag": "update", "deep_link": "/#/home"})
+        .to_string()
+        .into_bytes()
+}
+
+/// The key under which an update has been announced, or `None` when it needs no push: the release is on offer (not
+/// skipped, rolled back or installing). One key per version, and a second once its deadline is within an hour.
+pub fn update_push_key(state: &crate::update_state::State, now: u64) -> Option<String> {
+    use crate::update_state::Phase;
+    let version = state.available.as_deref()?;
+    if !matches!(state.phase, Phase::Available | Phase::Scheduled) || state.is_pinned(version) {
+        return None;
+    }
+    let soon = state.deadline > now && state.deadline - now <= 3600;
+    Some(if soon {
+        format!("{version}#soon")
+    } else {
+        version.to_string()
+    })
+}
+
 /// The part of a workspace id a person recognises: without the manager prefix.
 fn display_name(workspace: &str) -> &str {
     workspace.rsplit(':').next().unwrap_or(workspace)
@@ -312,6 +337,8 @@ pub struct Push {
     config: Arc<Mutex<EscalationConfig>>,
     /// The server id that prefixes a deep link, so the client can find the workspace across servers.
     server_id: Mutex<Option<String>>,
+    /// The update announcements already sent (`update_push_key`); kept in memory, so a restart may repeat one.
+    update_announced: Mutex<HashSet<String>>,
 }
 
 impl Push {
@@ -361,6 +388,7 @@ impl Push {
             grace: DEFAULT_GRACE,
             config: Arc::new(Mutex::new(config)),
             server_id: Mutex::default(),
+            update_announced: Mutex::default(),
         }
     }
 
@@ -562,6 +590,42 @@ impl Push {
         }
     }
 
+    /// Sends one body to every device; a dead subscription is removed. Returns how many accepted it.
+    async fn send_all(&self, body: &[u8], topic: &str) -> usize {
+        let subs = self.subs.lock().unwrap().clone();
+        let mut ok = 0;
+        for s in subs {
+            match self.send_one(&s, body, topic).await {
+                Sent::Ok => ok += 1,
+                Sent::Gone => {
+                    self.unsubscribe(&s.endpoint);
+                }
+                Sent::Failed(why) => warn!("push failed: {why}"),
+            }
+        }
+        ok
+    }
+
+    /// Tells every device that a server update is waiting, once per `key` (see `update_push_key`). Quiet hours hold it
+    /// back without using the key, so it goes out when they end. Returns how many devices accepted it.
+    pub async fn notify_update(&self, server: &str, key: &str, at: u64) -> usize {
+        if self.update_announced.lock().unwrap().contains(key)
+            || self.config.lock().unwrap().quiet_at_ms(now_ms())
+        {
+            return 0;
+        }
+        let ok = self.send_all(&update_payload(server, at), "update").await;
+        // Only an accepted push counts as announced, so an offline phone is told again at the next tick.
+        if ok > 0 {
+            self.update_announced
+                .lock()
+                .unwrap()
+                .insert(key.to_string());
+        }
+        info!(target: "audit", event = "push_sent", kind = "update", accepted = ok);
+        ok
+    }
+
     /// Sends to every device; a dead subscription is removed. Returns how many accepted it.
     pub async fn notify(&self, workspace: &str, kind: AttentionKind, at: u64) -> usize {
         self.notify_tab(workspace, kind, at, None).await
@@ -585,21 +649,27 @@ impl Push {
             None => workspace.to_string(),
         };
         let topic = B64.encode(&Sha256::digest(topic_seed.as_bytes())[..16]);
-        let subs = self.subs.lock().unwrap().clone();
-        let mut ok = 0;
-        for s in subs {
-            match self.send_one(&s, &body, &topic).await {
-                Sent::Ok => ok += 1,
-                Sent::Gone => {
-                    self.unsubscribe(&s.endpoint);
-                }
-                Sent::Failed(why) => warn!("push failed: {why}"),
-            }
-        }
+        let ok = self.send_all(&body, &topic).await;
         // Workspace and kind only (audit-logging-no-secrets).
         info!(target: "audit", event = "push_sent", session = %workspace, kind = ?kind, accepted = ok);
         ok
     }
+}
+
+/// Watches the updater's state file and announces a release by push, so a phone is told with nobody connected.
+pub fn spawn_update_watcher(push: Arc<Push>, dir: PathBuf, server_name: String) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(UPDATE_WATCH).await;
+            if !push.configured() || push.subscription_count() == 0 {
+                continue;
+            }
+            let state = crate::update_state::State::load(&dir);
+            if let Some(key) = update_push_key(&state, crate::requests::now_secs()) {
+                push.notify_update(&server_name, &key, now_ms()).await;
+            }
+        }
+    });
 }
 
 /// The wait after a rung: the last wait times the multiplier, never past the cap.
@@ -912,6 +982,80 @@ mod tests {
         p.set_grace(Duration::from_millis(50));
         p.subs.lock().unwrap().push(sub.clone());
         (p, sub)
+    }
+
+    #[test]
+    fn an_update_is_pushed_once_per_version_and_again_when_its_deadline_is_near() {
+        use crate::update_state::{Phase, State};
+        let mut state = State {
+            phase: Phase::Available,
+            available: Some("0.2.0".into()),
+            ..State::default()
+        };
+        assert_eq!(update_push_key(&state, 1_000).as_deref(), Some("0.2.0"));
+        state.phase = Phase::Scheduled;
+        state.deadline = 1_000 + 7_200;
+        assert_eq!(update_push_key(&state, 1_000).as_deref(), Some("0.2.0"));
+        assert_eq!(
+            update_push_key(&state, 1_000 + 3_700).as_deref(),
+            Some("0.2.0#soon")
+        );
+        for phase in [Phase::Idle, Phase::Installing, Phase::RolledBack] {
+            state.phase = phase;
+            assert_eq!(update_push_key(&state, 1_000), None, "{phase:?}");
+        }
+        state.phase = Phase::Available;
+        state.skipped = Some("0.2.0".into());
+        assert_eq!(update_push_key(&state, 1_000), None);
+    }
+
+    #[tokio::test]
+    async fn an_update_push_names_the_server_and_nothing_else_and_goes_once_per_key() {
+        let (ua, auth, _keys) = device();
+        let (url, mut rx) = fake_service(Arc::new(Mutex::new(StatusCode::CREATED))).await;
+        let (push, _) = push_for(&url, &ua, &auth);
+        // A name and a key that hold a marker: only the name may reach the device, never the key (the version).
+        const VERSION_MARKER: &str = "9.8.7-marker-4412";
+        assert_eq!(push.notify_update("home-box", VERSION_MARKER, 5).await, 1);
+        let (_, body) = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let plain = String::from_utf8(decrypt(&ua, &auth, &body)).unwrap();
+        assert!(!plain.contains(VERSION_MARKER), "{plain}");
+        let v: serde_json::Value = serde_json::from_str(&plain).unwrap();
+        assert_eq!(
+            (v["session"].as_str(), v["kind"].as_str()),
+            (Some("home-box"), Some("update"))
+        );
+        assert!(v.get("version").is_none());
+        // The same key again sends nothing; a new key does.
+        assert_eq!(push.notify_update("home-box", VERSION_MARKER, 6).await, 0);
+        assert!(tokio::time::timeout(Duration::from_millis(300), rx.recv())
+            .await
+            .is_err());
+        assert_eq!(push.notify_update("home-box", "9.8.8", 7).await, 1);
+    }
+
+    #[tokio::test]
+    async fn an_update_push_is_held_back_in_quiet_hours_and_not_counted_as_sent() {
+        let (ua, auth, _keys) = device();
+        let (url, mut rx) = fake_service(Arc::new(Mutex::new(StatusCode::CREATED))).await;
+        let (push, _) = push_for(&url, &ua, &auth);
+        // A window around the real time, so the test needs no clock of its own.
+        let day: u32 = 24 * 60;
+        let minute = (now_ms() / 60_000 % u64::from(day)) as u32;
+        let hhmm = |m: u32| format!("{:02}:{:02}", m % day / 60, m % 60);
+        push.set_config(EscalationConfig {
+            quiet_hours: Some(format!("{}-{}", hhmm(minute + day - 60), hhmm(minute + 60))),
+            ..EscalationConfig::default()
+        });
+        assert_eq!(push.notify_update("home-box", "0.2.0", 5).await, 0);
+        assert!(tokio::time::timeout(Duration::from_millis(300), rx.recv())
+            .await
+            .is_err());
+        push.set_config(EscalationConfig::default());
+        assert_eq!(push.notify_update("home-box", "0.2.0", 6).await, 1);
     }
 
     #[tokio::test]

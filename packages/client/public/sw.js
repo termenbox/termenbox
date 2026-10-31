@@ -24,7 +24,7 @@ const withTimeout = (promise, ms) =>
 
 // Web Push (decision 0095, U11). The payload is {session, kind, at, tag, deep_link} and nothing
 // an agent wrote; the words are ours. A newer notification for the same session replaces the older by `tag`.
-const WORDS = { needs_input: 'needs you', finished: 'finished', failed: 'failed', attention: 'wants you' };
+const WORDS = { needs_input: 'needs you', finished: 'finished', failed: 'failed', attention: 'wants you', update: 'has an update' };
 self.addEventListener('push', (event) => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch { /* Show the generic text. */ }

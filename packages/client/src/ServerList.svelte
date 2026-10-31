@@ -3,6 +3,7 @@
   import { serverKey, type HubServer } from './lib/hub';
   import ServerMenu from './ServerMenu.svelte';
   import ServerIssue from './ServerIssue.svelte';
+  import ServerUpdatesDialog from './ServerUpdatesDialog.svelte';
 
   export let servers: ServerListItem[] = [];
   export let states: HubServer[] = [];
@@ -20,6 +21,12 @@
   export let onrename: (index: number, name: string) => void = () => {};
   /** Asks the server to install its newer release. */
   export let onupdate: (id: string) => void = () => {};
+  /** The Updates card's other actions (decision 0154); the server decides which of them its helper accepts. */
+  export let oncheck: (id: string) => void = () => {};
+  export let onpostpone: (id: string) => void = () => {};
+  export let onskip: (id: string) => void = () => {};
+  /** The server whose Updates card is open; the banner opens it too. */
+  export let updatesFor: string | null = null;
 
   const word = (state: string) => (state === 'connected' ? 'Connected' : state.charAt(0).toUpperCase() + state.slice(1));
   const workspacesText = (n: number) => (n === 1 ? '1 workspace' : `${n} workspaces`);
@@ -28,6 +35,8 @@
   const update = (server: ServerListItem, from: string, to: string) => {
     if (confirm(`Update "${server.server_name || 'Server'}" from ${shortVersion(from) || 'its current version'} to v${to}? The server restarts and reconnects in a few seconds.`)) onupdate(serverKey(server));
   };
+  $: updatesStatus = updatesFor ? states.find(s => s.id === updatesFor) : undefined;
+  $: updatesServer = updatesFor ? servers.find(s => serverKey(s) === updatesFor) : undefined;
   // Rename in place, as the sidebar does for workspaces: Enter saves, Esc or leaving the field cancels.
   let editing: string | null = null;
   let draft = '';
@@ -46,6 +55,12 @@
     if (confirm(`Remove "${server.server_name}" from this browser? You can add it again with its link or QR.`)) onremove(index);
   };
 </script>
+
+{#if updatesFor && updatesServer}
+  <ServerUpdatesDialog status={updatesStatus} name={updatesServer.server_name || 'Server'} onclose={() => { updatesFor = null; }}
+    oncheck={() => oncheck(updatesFor ?? '')} onpostpone={() => onpostpone(updatesFor ?? '')} onskip={() => onskip(updatesFor ?? '')}
+    onupdate={() => { if (updatesStatus?.updateAvailable) update(updatesServer, updatesStatus.version, updatesStatus.updateAvailable); }} />
+{/if}
 
 <div class="server-list" style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 48px 24px;">
   <div style="width: 100%; max-width: 600px;">
@@ -104,7 +119,7 @@
               </p>
             </div>
             <span class="slot">{#if status && state !== 'connected'}<ServerIssue name={server.server_name || 'Server'} {status} udpPort={server.record?.udp_port} />{/if}</span>
-            <ServerMenu name={server.server_name || 'Server'} paused={state === 'paused'} canRetry={!!status && state !== 'connected' && state !== 'paused'} canShare={!!server.server_id}
+            <ServerMenu name={server.server_name || 'Server'} paused={state === 'paused'} canRetry={!!status && state !== 'connected' && state !== 'paused'} canShare={!!server.server_id} canUpdates={state === 'connected'} onupdates={() => { updatesFor = serverKey(server); }}
               onpause={() => onpause(serverKey(server))} onresume={() => onresume(serverKey(server))} onretry={() => onretry(serverKey(server))} onshare={() => onshare(index)} onrename={() => startEdit(server)} onremove={() => remove(server, index)} />
           </div>
         {/each}

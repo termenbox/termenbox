@@ -65,6 +65,7 @@ mod tmuxconf;
 mod transcript;
 mod turn;
 mod uninstall;
+mod update_state;
 mod updater;
 mod websocket;
 mod workspaces;
@@ -260,9 +261,14 @@ struct Args {
     release_arch: Option<String>,
 
     /// One-shot, run as root by the systemd units the installer creates: `update` checks for a new signed release and
-    /// applies it (rolling back if the service does not come up); `requests` handles what the server asked for.
+    /// applies it (rolling back if the service does not come up); `requests` handles what the server asked for. By
+    /// hand: `status` (read-only), `check` (never installs), `apply`, `postpone` and `skip`.
     #[arg(long)]
     root_helper: Option<String>,
+
+    /// With `--root-helper status`: print the update state as JSON.
+    #[arg(long, default_value = "false")]
+    json: bool,
 
     /// With --root-helper: this is the no-root install (decision 0113). The helper runs as the user who owns the
     /// service, never as root, and restarts it with `systemctl --user`.
@@ -716,7 +722,7 @@ async fn main() -> anyhow::Result<()> {
             requests_dir: args.requests_dir.clone(),
             user: args.user_helper,
         };
-        match helper::run(action, &setup).await {
+        match helper::run(action, &setup, args.json).await {
             Ok(status) => std::process::exit(status),
             Err(e) => {
                 eprintln!("root helper: {e}");
@@ -826,6 +832,9 @@ async fn main() -> anyhow::Result<()> {
     });
     let push = push::Push::load(&args.config_dir);
     push::spawn_watcher(push.clone(), hub.clone());
+    if let Some(dir) = args.requests_dir.parent() {
+        push::spawn_update_watcher(push.clone(), dir.to_path_buf(), args.server_name.clone());
+    }
     // A `working` signal that goes quiet decays to `unknown` without any event to trigger it.
     tokio::spawn({
         let hub = hub.clone();
