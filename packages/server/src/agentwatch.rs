@@ -83,6 +83,21 @@ fn no_tmux_server(stderr: &str) -> bool {
         || e.contains("failed to connect to server")
 }
 
+/// The text of one pane; `None` when tmux refuses (the pane is gone) or the id is not a tmux pane id.
+async fn capture_pane(runner: &Runner, pane_id: &str) -> Option<String> {
+    if !(pane_id.starts_with('%')
+        && pane_id.len() > 1
+        && pane_id[1..].chars().all(|c| c.is_ascii_digit()))
+    {
+        return None;
+    }
+    let args = ["capture-pane", "-p", "-t", pane_id].map(String::from);
+    match runner.run("tmux", &args).await {
+        Ok(o) if o.status.success() => Some(String::from_utf8_lossy(&o.stdout).into_owned()),
+        _ => None,
+    }
+}
+
 /// One scan cycle over tmux: states from the process scan, then prompts from the screens of agent workspaces.
 pub async fn scan_tmux_once(
     hub: &EventHub,
@@ -132,9 +147,32 @@ pub async fn scan_tmux_once(
         status.retain(&live_tabs);
         for p in &panes {
             status.set_pane(&p.pane_id, &p.workspace, &p.tab);
-            if let (Some(agent), Some(state)) =
-                (adapters::agent_name(&p.command), adapters::scan_state(p))
-            {
+            let Some(agent) = adapters::agent_name(&p.command) else {
+                continue;
+            };
+            let (profile, _) = Profiles::builtin().for_agent(Some(agent));
+            if profile.has_state_markers() {
+                // The screen decides: a redraw (a client attaching, a resize) is output on every pane at once.
+                let Some(screen) = capture_pane(runner, &p.pane_id).await else {
+                    continue;
+                };
+                if screen.is_empty() {
+                    continue;
+                }
+                let v = profile.read(&screen);
+                status.set_screen_state(
+                    &p.workspace,
+                    &p.tab,
+                    Screen {
+                        working: v.working,
+                        idle: v.idle,
+                        blocked: v.blocked,
+                    },
+                    Some(agent),
+                    now_ms(),
+                );
+                tokio::time::sleep(PANE_SPACING).await;
+            } else if let Some(state) = adapters::scan_state(p) {
                 status.set_scan_state(&p.workspace, &p.tab, state, Some(agent), now_ms());
             }
         }
@@ -241,6 +279,7 @@ pub async fn scan_tmux_once(
             }
             hub.reconcile(
                 &p.workspace,
+                Some(p.tab.as_str()).filter(|t| !t.is_empty()),
                 Screen {
                     working: v.working,
                     idle: v.idle,

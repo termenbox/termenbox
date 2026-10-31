@@ -11,6 +11,9 @@ use std::sync::Mutex;
 use termenbox_core::events::{AgentState, EventKind};
 use termenbox_core::events::{TabAgentState, TabPrompt};
 
+/// Events newer than this are never contradicted by the screen.
+const GRACE_MS: u64 = 4_000;
+
 /// The state of every known tab and the pane -> tab mapping the hooks use.
 #[derive(Default)]
 pub struct TabStatus {
@@ -62,6 +65,59 @@ impl TabStatus {
                     entry.agent = Some(agent.to_string());
                 }
                 return;
+            }
+        }
+        self.apply_state(&mut states, workspace, tab, state, agent, now);
+    }
+
+    /// The state the reducer derived from this tab's hook; a hook is a fact, so it overrides what the scan saw.
+    pub fn set_hook_state(&self, workspace: &str, tab: &str, state: AgentState, now: u64) {
+        if tab.is_empty() {
+            return;
+        }
+        let mut states = self.states.lock().unwrap();
+        self.apply_state(&mut states, workspace, tab, state, None, now);
+    }
+
+    /// The owner has seen a tab's result: `done` and `error` go back to `idle`. Anything live stays.
+    pub fn clear_result(&self, workspace: &str, tab: &str) {
+        let mut states = self.states.lock().unwrap();
+        if let Some(entry) = states.get_mut(&(workspace.to_string(), tab.to_string())) {
+            if matches!(entry.state, AgentState::Done | AgentState::Error) {
+                entry.state = AgentState::Idle;
+                entry.waiting_since = None;
+                self.rev.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// What the tab's screen shows, for an agent whose profile tells working from idle. A redraw is output, not
+    /// inference, so only the markers decide. A wait a hook opened is closed only by a screen that shows no dialog
+    /// and no work, and only once the last event is `GRACE_MS` old (the screen lags a hook by a redraw).
+    pub fn set_screen_state(
+        &self,
+        workspace: &str,
+        tab: &str,
+        screen: crate::reducer::Screen,
+        agent: Option<&str>,
+        now: u64,
+    ) {
+        if tab.is_empty() || screen.blocked {
+            return;
+        }
+        let state = if screen.working {
+            AgentState::Working
+        } else if screen.idle {
+            AgentState::Idle
+        } else {
+            return;
+        };
+        let mut states = self.states.lock().unwrap();
+        if let Some(entry) = states.get(&(workspace.to_string(), tab.to_string())) {
+            match entry.state {
+                AgentState::Error | AgentState::Done if state != AgentState::Working => return,
+                AgentState::NeedsInput if now.saturating_sub(entry.ts) < GRACE_MS => return,
+                _ => {}
             }
         }
         self.apply_state(&mut states, workspace, tab, state, agent, now);
@@ -243,6 +299,101 @@ impl TabStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn screen(working: bool, idle: bool, blocked: bool) -> crate::reducer::Screen {
+        crate::reducer::Screen {
+            working,
+            idle,
+            blocked,
+        }
+    }
+
+    #[test]
+    fn output_alone_never_makes_a_tab_work_and_the_screen_does() {
+        let status = TabStatus::default();
+        status.set_state("w", "t1", AgentState::Idle, Some("claude"), 0);
+        // A redraw: the screen shows an idle prompt, so nothing changes.
+        status.set_screen_state(
+            "w",
+            "t1",
+            screen(false, true, false),
+            Some("claude"),
+            10_000,
+        );
+        assert_eq!(status.snapshot()[0].state, AgentState::Idle);
+        status.set_screen_state(
+            "w",
+            "t1",
+            screen(true, false, false),
+            Some("claude"),
+            11_000,
+        );
+        assert_eq!(status.snapshot()[0].state, AgentState::Working);
+        // A screen with no marker at all changes nothing.
+        status.set_screen_state(
+            "w",
+            "t1",
+            screen(false, false, false),
+            Some("claude"),
+            12_000,
+        );
+        assert_eq!(status.snapshot()[0].state, AgentState::Working);
+    }
+
+    #[test]
+    fn a_wait_survives_until_the_screen_shows_no_dialog_after_the_grace() {
+        let status = TabStatus::default();
+        status.set_state("w", "t1", AgentState::NeedsInput, Some("claude"), 10_000);
+        status.set_screen_state(
+            "w",
+            "t1",
+            screen(false, true, false),
+            Some("claude"),
+            11_000,
+        );
+        assert_eq!(
+            status.snapshot()[0].state,
+            AgentState::NeedsInput,
+            "within the grace"
+        );
+        status.set_screen_state("w", "t1", screen(false, true, true), Some("claude"), 20_000);
+        assert_eq!(
+            status.snapshot()[0].state,
+            AgentState::NeedsInput,
+            "the dialog is still shown"
+        );
+        status.set_screen_state(
+            "w",
+            "t1",
+            screen(false, true, false),
+            Some("claude"),
+            20_000,
+        );
+        assert_eq!(
+            status.snapshot()[0].state,
+            AgentState::Idle,
+            "Esc sent no hook"
+        );
+    }
+
+    #[test]
+    fn a_hook_state_replaces_an_error_and_seeing_the_result_clears_it() {
+        let status = TabStatus::default();
+        status.set_hook_state("w", "t1", AgentState::Error, 10);
+        assert_eq!(status.snapshot()[0].state, AgentState::Error);
+        status.clear_result("w", "t1");
+        assert_eq!(status.snapshot()[0].state, AgentState::Idle);
+        status.set_hook_state("w", "t1", AgentState::Working, 20);
+        status.clear_result("w", "t1");
+        assert_eq!(
+            status.snapshot()[0].state,
+            AgentState::Working,
+            "a live state is not a result"
+        );
+        status.set_hook_state("w", "t1", AgentState::Error, 30);
+        status.set_hook_state("w", "t1", AgentState::Working, 40);
+        assert_eq!(status.snapshot()[0].state, AgentState::Working);
+    }
 
     #[test]
     fn a_hook_colors_the_tab_of_its_pane_not_the_other_one() {
