@@ -1,6 +1,8 @@
 <script lang="ts">
   import { bannerChoices, bannerKind, bannerText, type Waiting } from './lib/notify';
   import type { WorkspaceAgent } from './lib/agents';
+  import AgentBadge from './lib/ds/AgentBadge.svelte';
+  import type { FleetState } from './lib/ds';
 
   export let waiting: Waiting[];
   export let now: number;
@@ -17,12 +19,15 @@
   $: first = waiting[0];
   $: choices = first ? bannerChoices(first.agent, now) : [];
   $: kind = first ? bannerKind(first.agent) : '';
+  let state: FleetState = 'needs-you';
+  $: state = kind === 'failed' ? 'failed' : kind === 'finished' ? 'finished' : 'needs-you';
   $: clearable = first?.agent.attention && first.agent.attention.kind !== 'needs_input' ? first.agent.attention.id : '';
 </script>
 
 <div class="live" aria-live="polite">
   {#if show && first}
-    <div class="banner" role="status">
+    <div class="banner" class:failed={state === 'failed'} class:finished={state === 'finished'} role="status">
+      <AgentBadge agent={first.agent.agent} {state} size={24} />
       <button type="button" class="what" title="Open Home" on:click={onhome}><strong>{bannerText(waiting.length)}</strong>{#if waiting.length === 1} · {first.name}{:else} · first: {first.name}{/if}{#if kind} · {kind}{/if}</button>
       {#each choices as choice, i}
         <!-- pointerdown/mousedown are cancelled so a tap does not take the focus (and the soft keyboard) from the terminal. -->
@@ -35,9 +40,14 @@
 </div>
 
 <style>
-  .banner { position: absolute; top: 0; left: 0; right: 0; box-sizing: border-box; display: flex; align-items: center; gap: 6px; padding: 2px 8px; min-height: 44px; background: var(--bg-secondary); border-bottom: 2px solid var(--danger); font-size: 0.85rem; }
+  /* One row, as tall as the bar it replaces, so it hides no more of the screen: an inset rounded card in the state's tone. */
+  .banner { --tone: var(--warn); position: absolute; top: 4px; left: 6px; right: 6px; box-sizing: border-box; display: flex; align-items: center; gap: 6px; padding: 2px 6px 2px 8px; min-height: 40px; background: var(--bg-secondary); border: 1px solid color-mix(in oklab, var(--tone) 45%, var(--border)); border-left: 4px solid var(--tone); border-radius: 12px; box-shadow: 0 6px 18px rgb(0 0 0 / 0.3); font-size: 0.85rem; }
+  .banner.failed { --tone: var(--bad); }
+  .banner.finished { --tone: var(--ok); }
   .what { background: none; border: 0; color: inherit; text-align: left; font: inherit; padding: 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  button { min-height: 40px; min-width: 44px; }
-  .choice, .open { padding: 0 10px; }
-  .dismiss { padding: 0 10px; }
+  .what strong { color: var(--tone); }
+  button { min-height: 36px; min-width: 44px; }
+  .choice, .open { padding: 0 12px; border-radius: 999px; }
+  .choice { background: var(--tone); color: var(--panel); border: 0; font-weight: 600; }
+  .dismiss { padding: 0 10px; border-radius: 999px; }
 </style>

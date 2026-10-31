@@ -66,5 +66,6 @@
 | 0066 | The repo has two video recorders and no docs media, and workflow artifacts expire | docs, ci, video, site | active |
 | 0067 | A dispatch-only workflow cannot be run until its file is on the default branch, and issue and comment workflows run the default branch's copy with a write token | ci, github, security | active |
 | 0068 | GitHub Markdown does not play a repository MP4 inline, and a chapter-length GIF is several megabytes | docs, video, github | active |
+| 0069 | The Electron community template pins an end-of-life Electron 26, and the wrappers use Electron 45 | desktop, platform, security | active |
 
 <!-- bootstrap-generated: true -->

@@ -3,9 +3,11 @@ import { render } from 'svelte/server';
 import UpdateBanner from './UpdateBanner.svelte';
 import type { HubServer } from './lib/hub';
 
-const sec = Math.floor(Date.now() / 1000);
+// A fixed midday, so that a deadline an hour later is on the same day whenever the suite runs (the text drops the weekday only then).
+const NOW = new Date(2026, 0, 15, 12, 0).getTime();
+const sec = Math.floor(NOW / 1000);
 const server = (id: string, over: Partial<HubServer> = {}): HubServer => ({ id, server: { server_id: id, server_url: '', server_name: id, registered_at: 0 }, state: 'connected', reason: '', version: '0.1.57', updateAvailable: '', updating: false, backends: [], acpAgents: [], controlMode: true, tmuxVersion: '3.8', prefix: 'C-b', updateCapabilities: ['check', 'postpone', 'skip'], ...over });
-const draw = (servers: HubServer[]) => render(UpdateBanner, { props: { servers, now: Date.now(), onupdate() {}, onpostpone() {}, onskip() {}, onopen() {} } }).body;
+const draw = (servers: HubServer[]) => render(UpdateBanner, { props: { servers, now: NOW, onupdate() {}, onpostpone() {}, onskip() {}, onopen() {} } }).body;
 
 describe('the update banner', () => {
   it('is absent when nothing is on offer, the server is away, or it is already installing', () => {

@@ -1,3 +1,4 @@
 packages:
   - packages/client
+  - packages/native
   - infra/owner-relay
