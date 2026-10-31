@@ -58,6 +58,7 @@ mod registry;
 mod release;
 mod requests;
 mod rtc;
+mod session_log;
 mod signal;
 mod stun;
 mod tabstatus;

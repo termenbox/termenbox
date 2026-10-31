@@ -17,11 +17,18 @@ Do: Run Claude Code and Codex on small prompts to produce real session files. Re
 Done-when: both fixture directories hold the six cases above, and fact 0065 lists each agent's version and file location.
 Progress: done. Real sessions run for Claude 2.1.308 and Codex 0.166.0 (resume, fork, tool call, compaction for Claude). Not measured, fixtures are synthetic there (listed in `testdata/session_log/README.md` and fact 0065): Codex fork and compaction, Claude rewind. Step 4 must treat the Claude tree as the source of truth for the active branch; step 5 must tolerate an absent fork marker.
 
-### 2 SessionLog port, unified entries and the contract suite — [ ]
+### 2 SessionLog port, unified entries and the contract suite — [x]
 Class: implement · Needs: 1 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log`
 Context: Decision 0157. The unified entry kinds are the ones `packages/client/src/lib/acpStore.ts` `Entry` already renders (`user`, `message`, `thought`, `tool`, `plan`, `notice`). Scrubbing is `crate::events::sanitize_block` (as `packages/server/src/event_log.rs` uses it). Model the port on `WorkspaceBackend` in `packages/server/src/backend.rs`.
 Do: Add `packages/server/src/session_log/mod.rs` with the trait (`search`, `window`, `page`), the cursor type that carries the file fingerprint (inode, size, mtime), the unified entry and hit types, and an adapter registry keyed by agent name. Add a shared contract suite that runs any adapter over its fixtures: a torn last line is dropped, a truncated file and an unknown version turn search off for that agent without a panic, an unmappable record becomes a `notice`, tool input and output never appear in the output, secrets are scrubbed, and a changed fingerprint invalidates a cursor.
 Done-when: `session_log` compiles, a stub adapter passes the contract suite, and the suite fails when the stub copies tool output.
+Progress: done. `session_log/{mod,contract,stub,tests}.rs`; 9 tests pass, clippy and rustfmt clean for the module. Notes for later steps:
+- The suite (`contract::run`, `Cases`) needs, besides step 1's six cases, a fixture with an unmappable record (`unmappable`, its turn id) and one with text the scrubber hides (`secret_text`; the tool-secret fixture's "token variable" works, since "token" hides the next word). Steps 4 and 5 add the unmappable fixture; step 1's README should list it then.
+- A search matches the *scrubbed* text only (`snippet`), so a query cannot confirm a guess at a hidden secret. The engine in step 3 must prefilter on raw bytes but confirm with `snippet`.
+- The scrubber is not idempotent (`[secret]` is itself a keyword), so the suite checks "already scrubbed" only on sessions without secrets.
+- `Fingerprint::still_holds`: same inode, not smaller, and equal mtime when the size is equal. Appends keep a cursor valid.
+- `snippet` folds case only; step 3 adds accent folding.
+- Build on this machine: `sg docker -c "scripts/dev.sh env CARGO_TARGET_DIR=/cache/target/<user> cargo test ..."` (the shell may predate the docker group; the shared `target` dir is owned by another uid). `cargo fmt` needs `HOME=/tmp`.
 
 ### 3 Bounded scan engine and its benchmark — [ ]
 Class: implement · Needs: 2 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log::scan`
