@@ -13,9 +13,9 @@ go-getter:
       check: Where TERMENBOX_POOL_ONLY=1 is set, a PreToolUse hook refuses edits inside a main checkout and Bash commands there that are not read-only
       run: .claude/hooks/worktree-only.py
     - tier: 1
-      check: Start a task with `sh scripts/pool.sh acquire <type>/<slug>` and work in the path it prints; release the slot when the pull request is merged
+      check: Start a task with `sh scripts/pool.sh acquire <type>/<slug>` and work in the path it prints; a slot whose branch is merged is released by itself (`pool.sh reap`, run at session start, after `gh pr merge` and on acquire)
 ---
 
 ## Guardrail
 
-Never edit, build, commit or switch branches in the main checkout. Take a slot with `sh scripts/pool.sh acquire <type>/<slug>` and work in it (`cd <slot> && ...`, or start the session there). The pool has 10 slots and keeps 3 warm; when it is full, release a finished one with `sh scripts/pool.sh release <slot>` instead of working elsewhere. Reading in the main checkout is allowed. The hook enforces this per environment: it is off unless `TERMENBOX_POOL_ONLY=1` is set (shell profile or `.env`), so other clones are not locked; the rule itself holds everywhere. Tested by `scripts/worktree-guard.test.sh` and `scripts/pool.test.sh`.
+Never edit, build, commit or switch branches in the main checkout. A session started in the main checkout is given a slot at start (the hook tells you the path); name its branch with `sh scripts/pool.sh name <type>/<slug>` when the task is clear. Otherwise take a slot with `sh scripts/pool.sh acquire <type>/<slug>` and work in it (`cd <slot> && ...`, or start the session there). The pool has 10 slots and keeps 3 warm; when it is full, finished slots are released automatically once merged; release an abandoned one with `sh scripts/pool.sh release <slot>` instead of working elsewhere. Reading in the main checkout is allowed. The hook enforces this per environment: it is off unless `TERMENBOX_POOL_ONLY=1` is set (shell profile or `.env`), so other clones are not locked; the rule itself holds everywhere. Tested by `scripts/worktree-guard.test.sh` and `scripts/pool.test.sh`.
