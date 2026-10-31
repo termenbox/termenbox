@@ -21,7 +21,7 @@
   import { WordTracker } from './lib/terminal/wordTracker';
   import { IOS_KEYBOARD_HINT, nextVoiceLang, parseVoiceLang, pickLanguage, recognizerFactory, Voice, type VoiceLang } from './lib/terminal/voice';
   import { isOpenClick, linkAt } from './lib/terminal/links';
-  import { handleOpenRequests, openWeb } from './lib/terminal/openRequest';
+  import { handleOpenRequests, hyperlinkHandler, openWeb } from './lib/terminal/openRequest';
   import { cellAt } from './lib/selection';
   import { PinchZoom } from './lib/terminal/pinch';
   import { InputBatcher } from './lib/terminal/inputBatch';
@@ -514,7 +514,7 @@
   $: if (term && $settings) term.options.theme = terminalTheme(document.documentElement.dataset.theme === 'light');
 
   onMount(() => {
-    term = new XTermTerminal({ cursorBlink: true, fontSize, fontFamily: FONT_FAMILY, theme: terminalTheme(document.documentElement.dataset.theme === 'light') });
+    term = new XTermTerminal({ linkHandler: hyperlinkHandler(openRequested), cursorBlink: true, fontSize, fontFamily: FONT_FAMILY, theme: terminalTheme(document.documentElement.dataset.theme === 'light') });
     fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     serializer = new SerializeAddon();
