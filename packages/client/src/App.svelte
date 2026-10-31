@@ -457,12 +457,15 @@
     ? (liveTab(activeWorkspace.tabs, activeTab, activeWorkspace.focus)?.id ?? null)
     : null;
   $: tabMenuGroups = (tabMenuAll ? $allWorkspaces.filter((w) => (w.tabs?.length ?? 0) > 0) : (activeWorkspace ? [activeWorkspace] : []))
-    .map((w) => ({
-      workspace: w,
-      tabs: w.tabs ?? [],
-      // A single-agent ACP workspace has one agent tab and no tab actions until R75.
-      editable: (w.backend ?? $hubServers.find((s) => s.id === w.serverId)?.backends[0] ?? '') === 'tmux',
-    }));
+    .map((w) => {
+      const server = $hubServers.find((s) => s.id === w.serverId);
+      return {
+        workspace: w,
+        tabs: w.tabs ?? [],
+        // A single-agent ACP workspace has one agent tab and no tab actions until R75; a server without tabs has none either.
+        editable: (w.backend ?? server?.backends[0] ?? '') === 'tmux' && !!server?.tabs,
+      };
+    });
   $: profile = backendOf(activeWorkspace) === 'tmux' ? 'tmux' as const : 'shell' as const;
   $: if (hidden.size) { const live = new Set($allWorkspaces.map(s => s.key)); if ([...hidden].some(k => !live.has(k)) && $allWorkspaces.length) { hidden = new Set([...hidden].filter(k => live.has(k))); saveHidden(hidden); } }
   let showAddServer = false;
@@ -1206,6 +1209,7 @@
               <WorkspaceGroups workspaces={$allWorkspaces} agents={$allAgents} {now} unhealthy={unhealthyServers} tabStates={$allTabStates} onopen={attach} onnew={newWorkspace}
                 onactions={tabsAnywhere ? undefined : (key) => { actionConfirm = false; actionKey = key; }}
                 onrename={(key) => { const w = hub.findWorkspace(key); if (w) askRenameWorkspace(w); }}
+                onclose={askCloseWorkspace}
                 onmove={tabsAnywhere ? (key, index) => hub.moveWorkspace(key, index) : undefined} />
             {:else if connection && connState !== 'paused' && activeIsAcp && activeWorkspace}
               {#key activeKey}
@@ -1262,10 +1266,10 @@
   {#if actionWorkspace}<WorkspaceActions workspace={actionWorkspace} canClose={['tmux', 'acp'].includes(backendOf(actionWorkspace))} confirmFirst={actionConfirm} onrename={(name) => renameWorkspace(actionWorkspace.key, name)} placement={placementOf($allWorkspaces, actionWorkspace.key)} onmove={(to) => moveWorkspace($allWorkspaces, actionWorkspace.key, to)} ondetach={() => detach(actionWorkspace.key)} oncloseworkspace={() => closeWorkspace(actionWorkspace.key)} onclose={() => actionKey = null} />{/if}
   {#if tabMenuOpen}
     <TabMenu groups={tabMenuGroups} activeKey={activeKey} activeTab={activeTabId} states={$allTabStates} cacheTtlMs={$settings.cacheTtlMs} onopen={openTab}
-      onrename={canTab ? askRenameTab : undefined}
-      onclosetab={canTab ? (key, tab) => hub.closeTab(key, tab.id) : undefined}
+      onrename={canTab || tabsAnywhere ? askRenameTab : undefined}
+      onclosetab={canTab || tabsAnywhere ? (key, tab) => hub.closeTab(key, tab.id) : undefined}
       onmove={canTab ? moveTab : undefined}
-      onnew={canTab ? (key) => { const w = hub.findWorkspace(key); if (w) newTab(w); } : undefined}
+      onnew={canTab || tabsAnywhere ? (key) => { const w = hub.findWorkspace(key); if (w) newTab(w); } : undefined}
       oncloseworkspace={(key) => closeWorkspace(key)} onclose={() => (tabMenuOpen = false)} />
   {/if}
   {#if newTabFor}
