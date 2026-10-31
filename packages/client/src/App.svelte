@@ -11,7 +11,8 @@
   import MenuSheet from './MenuSheet.svelte';
   import InboxSheet from './InboxSheet.svelte';
   import SearchSheet from './SearchSheet.svelte';
-  import { SessionSearch, IDLE as SEARCH_IDLE, type SearchState } from './lib/sessionSearch';
+  import { fileChanged, withWindow, type WindowMap } from './lib/acpHistory';
+  import { SessionSearch, parts as hitParts, IDLE as SEARCH_IDLE, type SearchState } from './lib/sessionSearch';
   import { inbox, mergeAttention, markAllRead, unreadCount } from './lib/inbox';
   import { currentEndpoint, disablePush, enablePush, pushSupported } from './lib/push';
   import WorkspaceActions from './WorkspaceActions.svelte';
@@ -189,6 +190,11 @@
       else if (msg.type === 'acp_view') acpStreams.update(m => applyAcp(m, workspaceKey(_id, msg.workspace), msg.workspace, msg));
       else if (msg.type === 'workspaces') { openPending(_id, msg.workspaces); openPendingTab(_id, msg.workspaces); syncActiveTab(_id, msg.workspaces); acpStreams.update(m => forgetAcp(m, `${_id}/`, new Set(msg.workspaces.map(x => workspaceKey(_id, x.id))))); }
       else if (msg.type === 'attention') inbox.update(l => mergeAttention(l, _id, msg.items, s => workspaceKey(_id, s), s => hub.findWorkspace(workspaceKey(_id, s))?.name ?? s));
+      else if (msg.type === 'session_window') {
+        const k = workspaceKey(_id, msg.workspace);
+        windowChanged = { ...windowChanged, [k]: fileChanged(fileWindows[k], msg) };
+        fileWindows = withWindow(fileWindows, k, msg);
+      }
       else if (msg.type === 'history') historyMap = answered(historyMap, _id, msg);
       else if (msg.type === 'health_history') healthMap = answeredHealth(healthMap, _id, msg);
       else if (msg.type === 'history_deleted') historyDeletes.reply(_id, msg.removed);
@@ -351,8 +357,19 @@
     send: (id, m) => hub.send(id, m),
     onchange: s => (searchState = s),
   });
+  // Older turns of an ACP workspace, read from the agent's file for the hit that was tapped (step 9 of R78).
+  let fileWindows: WindowMap = {};
+  let windowChanged: Record<string, boolean> = {};
+  let acpFocus: { key: string; turn: string; query: string; nonce: number } | null = null;
+  function landOnHit(h: { serverId: string; workspace: string; turn: string; snippet: string; highlight: [number, number] }) {
+    acpFocus = { key: workspaceKey(h.serverId, h.workspace), turn: h.turn, query: hitParts(h).match, nonce: (acpFocus?.nonce ?? 0) + 1 };
+  }
   function closeSearch() { searchOpen = false; sessionSearch.close(); }
-  function pickHit(h: { serverId: string; workspace: string }) { closeSearch(); void attach(workspaceKey(h.serverId, h.workspace)); }
+  function pickHit(h: { serverId: string; workspace: string; tab: string; turn: string; snippet: string; highlight: [number, number] }) {
+    closeSearch();
+    void attach(workspaceKey(h.serverId, h.workspace));
+    if (!h.tab) landOnHit(h); // an ACP workspace has no tab: the view scrolls to the turn
+  }
   let pushInfos: Record<string, Extract<import('./lib/protocol').ServerMessage, { type: 'push_info' }>> = {};
   let pushOn = false;
   void currentEndpoint().then(e => (pushOn = !!e && typeof Notification !== 'undefined' && Notification.permission === 'granted'));
@@ -1257,7 +1274,7 @@
                 onmove={tabsAnywhere ? (key, index) => hub.moveWorkspace(key, index) : undefined} />
             {:else if connection && connState !== 'paused' && activeIsAcp && activeWorkspace}
               {#key activeKey}
-                <AcpView workspaceKey={activeWorkspace.key} name={activeWorkspace.name} agent={activeRow?.agent} fleet={activeRow?.state} stream={$acpStreams[activeWorkspace.key]} {connState} {now} {canShell}
+                <AcpView focus={acpFocus?.key === activeWorkspace.key ? acpFocus : null} window={fileWindows[activeWorkspace.key]} changed={!!windowChanged[activeWorkspace.key]} onwindow={(turn) => sendAcp({ type: 'window', workspace: activeWorkspace.key, turn, before: 12, after: 6 })} workspaceKey={activeWorkspace.key} name={activeWorkspace.name} agent={activeRow?.agent} fleet={activeRow?.state} stream={$acpStreams[activeWorkspace.key]} {connState} {now} {canShell}
                   onprompt={(text) => sendAcp({ type: 'acp_prompt', workspace: activeWorkspace.key, text })} oninterrupt={() => sendAcp({ type: 'acp_interrupt', workspace: activeWorkspace.key })}
                   onanswer={(promptId, optionId) => sendAcp({ type: 'acp_answer', workspace: activeWorkspace.key, prompt_id: promptId, option_id: optionId })}
                   onmode={(mode) => sendAcp({ type: 'acp_mode', workspace: activeWorkspace.key, mode })} onshell={() => openShell(activeWorkspace.key)} />
