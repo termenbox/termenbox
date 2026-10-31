@@ -273,8 +273,8 @@ try {
   await dialog.waitFor({ state: 'detached' });
   await page.locator('[data-testid=acp-view]').first().waitFor({ timeout: 30000 });
   await openSheet();
-  await search('wombat itinerary');
-  await see(hits, 'the ACP hit');
+  // The server learns the agent's session id when the agent answers session/new, which can be just after the view shows.
+  await waitFor(async () => { await search('wombat itinerary'); return (await hits.count()) > 0; }, 'the ACP hit', 30000);
   await hits.first().click();
   await input.waitFor({ state: 'detached', timeout: 10000 });
   const mark = page.locator('[data-testid=acp-view] [data-hit]').first();
