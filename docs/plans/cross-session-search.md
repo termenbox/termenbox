@@ -10,11 +10,12 @@ The feature: one global Search sheet finds text in agent conversations by readin
 
 Agreed defaults: case- and accent-insensitive; newest first; at most 50 hits, 3 per session; scan stops at 2 s or 200 MB; replies at most 48 KiB; scrubbed snippets; the query is never logged.
 
-### 1 Measure the Claude and Codex session files — [ ]
+### 1 Measure the Claude and Codex session files — [x]
 Class: explore · Needs: none · Check: `ls packages/server/testdata/session_log/claude packages/server/testdata/session_log/codex`
 Context: Decision 0157 needs adapters for two formats that the vendors call internal. Fact 0065 records only what the docs say. Use a throwaway `HOME` and a throwaway tmux (`tmux -L scratch`), never the owner's sessions or the owner's `termenbox.service`.
 Do: Run Claude Code and Codex on small prompts to produce real session files. Record where they live, the record shape, how a rewind or fork, a compaction and a tool call are written, and what a torn last line looks like. Save fixtures under `packages/server/testdata/session_log/<agent>/`: a short conversation, a rewind or fork, a torn last line, a truncated file, an unknown version, and a tool output holding a fake secret. Extend fact 0065 with the paths, versions and shapes measured.
 Done-when: both fixture directories hold the six cases above, and fact 0065 lists each agent's version and file location.
+Progress: done. Real sessions run for Claude 2.1.308 and Codex 0.166.0 (resume, fork, tool call, compaction for Claude). Not measured, fixtures are synthetic there (listed in `testdata/session_log/README.md` and fact 0065): Codex fork and compaction, Claude rewind. Step 4 must treat the Claude tree as the source of truth for the active branch; step 5 must tolerate an absent fork marker.
 
 ### 2 SessionLog port, unified entries and the contract suite — [ ]
 Class: implement · Needs: 1 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log`

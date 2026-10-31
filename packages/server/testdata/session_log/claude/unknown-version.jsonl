@@ -1,0 +1,2 @@
+{"type":"event","version":"9.0.0","sessionId":"c1a0de00-0000-4000-8000-000000000001","payload":{"role":"user","text":"new shape"}}
+{"type":"event","version":"9.0.0","sessionId":"c1a0de00-0000-4000-8000-000000000001","payload":{"role":"assistant","text":"new shape reply"}}
