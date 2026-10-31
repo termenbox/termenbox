@@ -31,7 +31,7 @@ packages/
   agent/           # termenbox-agent (parked; see issue #19)
   core/            # termenbox-core (Rust, shared protocol types)
   client/          # termenbox-client (Svelte 5, xterm.js WebGL)
-  native/          # termenbox-native (planned, R76: optional Capacitor iOS/Android + @capacitor-community/electron desktop)
+  native/          # termenbox-native (R76 scaffold: optional Capacitor iOS/Android + @capacitor-community/electron desktop)
 ```
 
 ## Quick Commands
