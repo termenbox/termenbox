@@ -88,11 +88,12 @@ Do: create `scripts/check-course.mjs`: for every chapter, the parts in order (a 
 Done-when: the Check passes and the CI step is present.
 Progress (2026-10-31): `scripts/check-course.mjs` checks the promise line, the part order, two entries in the trouble box, the final Next link, 250 words, relative links, the steps block (needs `--catalog`, fails without it) and the poster block. Deviation: a missing video in `docs/media/` is a warning unless `--require-media`, because the 4.3 chapters must pass their Check before the media is picked in 5.1; step 5.1 runs it with `--require-media` (add that to its Check). CI runs the self-test always and the chapters, with a catalog from `render.mjs --list --json`, once `docs/course` exists; the catalog step needs Playwright installed in that job, which is unconfirmed.
 
-### 4.2 Course index, story and task index — [ ]
+### 4.2 Course index, story and task index — [x]
 Class: implement · Needs: 2.2 · Check: `test -f docs/course/README.md && grep -c "0[1-6]-" docs/course/README.md | awk '$1>=6{exit 0} {exit 1}'`
 Context: DECISION-0160; procedure `write-a-course-chapter`. The reference pages in `docs/guide/` stay; the task index links into chapters first and the reference second.
 Do: write `docs/course/README.md`: the running story in a short paragraph (you start a long agent task at your desk, leave, and finish it from the train), the six chapters with their promise and time, a "How do I…" index of at least eight tasks linking to a chapter or a reference section, and a line that Master follows. Vivid, second person, no feature lists.
 Done-when: the Check exits 0 and every relative link in the file resolves (`node scripts/check-course.mjs` once 4.1 exists).
+Progress (2026-10-31): `docs/course/README.md` written: the story, the six chapters with what each ends with (no times yet: a chapter's promise carries the real time, set in 4.3), 13 tasks, the Master line. The Check exits 0. The links to the six chapter files do not resolve until 4.3a to 4.3f create them; every other link does. `check-course.mjs` does not check the README (it is not a chapter), so run a link check on it again after 4.3f.
 
 ### 4.3a Chapter 1, Install — [ ]‖
 Class: implement · Needs: 3.1, 4.1, 4.2 · Check: `node scripts/check-course.mjs docs/course/01-install.md`
