@@ -130,6 +130,7 @@ try {
   if ((await page.evaluate(() => window.__navigation.active())) !== 'alpha/workspace-1') fail('long press suppressed later keyboard activation');
   await page.getByRole('button', { name: 'Menu', exact: true }).click();
   await page.getByRole('dialog', { name: 'Menu', exact: true }).getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Dismiss', exact: true }).click(); // the banner floats over the top of the page (#372); dismiss it as a user would
   await page.getByRole('button', { name: /^Appearance, notifications and more/ }).click();
   await page.getByLabel('Cache TTL').selectOption('3600000');
   await page.getByLabel('Theme').selectOption('light');

@@ -1,8 +1,9 @@
 name: Deploy to Cloudflare Pages
 
-# One reusable deployment per release channel (decision 0134). The three release workflows call it after they publish:
-# a stable tag deploys app.termenbox.dev, a beta tag beta.app.termenbox.dev, a nightly nightly.app.termenbox.dev. A push
-# to master or develop deploys nothing. The job runs in the GitHub Environment of its channel, so each channel has its
+# One deployment per release channel (decision 0134): a stable tag deploys app.termenbox.dev, a beta tag
+# beta.app.termenbox.dev, a nightly nightly.app.termenbox.dev. A push to master or develop deploys nothing. Stable and
+# beta deploy inside the signing job of release-build.yaml, so one approval covers the release and its client; this
+# workflow is the nightly deploy and the manual one. Both run the composite action .github/actions/deploy-pages. The job runs in the GitHub Environment of its channel, so each channel has its
 # own GitHub OAuth app (TERMENBOX_GITHUB_CLIENT_ID / _SECRET); the D1 database, signing key and salt are repository-level
 # and shared. Stable deploys only on a stable tag, so migrations must stay additive: beta and nightly apply them first.
 # Run by hand it builds and deploys the chosen channel from the ref it is run on.
@@ -53,91 +54,16 @@ jobs:
         with:
           ref: ${{ inputs.sha || github.sha }}
 
-      # Stable keeps the project name of the repository variable (a fork names its own); beta and nightly add a suffix.
-      - name: Name the Pages project
-        run: |
-          case "$CHANNEL" in
-            stable) suffix="" ;;
-            beta|nightly) suffix="-$CHANNEL" ;;
-            *) echo "unknown channel $CHANNEL"; exit 1 ;;
-          esac
-          echo "PAGES_PROJECT=${{ vars.TERMENBOX_PAGES_PROJECT_NAME || 'termenbox' }}$suffix" >> "$GITHUB_ENV"
-
-      - uses: pnpm/action-setup@v6
+      - uses: ./.github/actions/deploy-pages
         with:
-          version: 9
-
-      # The same Node as ci.yaml (the canonical build): what is deployed is built the way it was tested. Node 20 is past
-      # its end of life. The pnpm store cache has the same key as CI's, so it is restored, not rebuilt.
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build client
-        run: pnpm --filter termenbox-client run build
-        env:
-          VITE_CHANNEL: ${{ inputs.channel }}
-          VITE_APP_VERSION: ${{ inputs.version }}
-          VITE_GITHUB_CLIENT_ID: ${{ secrets.TERMENBOX_GITHUB_CLIENT_ID }}
-          # This channel's own address, baked into its installer; the Environment variable wins over the repository one.
-          TERMENBOX_CLIENT_ORIGIN: ${{ vars.TERMENBOX_CLIENT_ORIGIN }}
-
-      # Still the latest wrangler on every run, in a job that holds the Cloudflare token and the secrets below. To pin
-      # it by the lockfile: `pnpm --filter termenbox-client add -D wrangler`, then use
-      # `pnpm --filter termenbox-client exec wrangler` here and in the steps that follow instead of `wrangler`.
-      - name: Install Wrangler
-        run: npm install -g wrangler
-
-      # Pages Functions are read from ./functions of the directory wrangler runs in, so deploy from the
-      # client package. The directory's D1 binding is written here so each deployment (hosted or
-      # self-hosted) points at its own database.
-      - name: Configure Pages project
-        working-directory: packages/client
-        run: |
-          cat > wrangler.toml <<EOF
-          name = "$PAGES_PROJECT"
-          pages_build_output_dir = "dist"
-          compatibility_date = "2026-10-01"
-
-          [[d1_databases]]
-          binding = "DB"
-          database_name = "termanch-directory"
-          database_id = "${{ vars.TERMENBOX_D1_DATABASE_ID }}"
-          migrations_dir = "migrations"
-          EOF
-
-      - name: Apply directory migrations
-        if: ${{ vars.TERMENBOX_D1_DATABASE_ID != '' }}
-        working-directory: packages/client
-        run: wrangler d1 migrations apply termanch-directory --remote
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-      # The OAuth code exchange (a Pages Function) reads these at runtime. GitHub stays the single source;
-      # unset ones are left alone on the project.
-      - name: Sync Pages Function secrets
-        working-directory: packages/client
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          GITHUB_CLIENT_ID: ${{ secrets.TERMENBOX_GITHUB_CLIENT_ID }}
-          GITHUB_CLIENT_SECRET: ${{ secrets.TERMENBOX_GITHUB_CLIENT_SECRET }}
-          CERT_SIGNING_KEY: ${{ secrets.TERMENBOX_CERT_SIGNING_KEY }}
-          DIRECTORY_SALT: ${{ secrets.TERMENBOX_DIRECTORY_SALT }}
-        run: |
-          umask 077
-          node -e 'const o={};for(const k of ["GITHUB_CLIENT_ID","GITHUB_CLIENT_SECRET","CERT_SIGNING_KEY","DIRECTORY_SALT"])if(process.env[k])o[k]=process.env[k];require("fs").writeFileSync(process.env.RUNNER_TEMP+"/pages-secrets.json",JSON.stringify(o))'
-          wrangler pages secret bulk "$RUNNER_TEMP/pages-secrets.json" --project-name="$PAGES_PROJECT"
-          rm -f "$RUNNER_TEMP/pages-secrets.json"
-
-      - name: Deploy to Cloudflare Pages
-        working-directory: packages/client
-        run: wrangler pages deploy dist --project-name="$PAGES_PROJECT" --branch=master
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          channel: ${{ inputs.channel }}
+          version: ${{ inputs.version }}
+          pages-project-name: ${{ vars.TERMENBOX_PAGES_PROJECT_NAME }}
+          d1-database-id: ${{ vars.TERMENBOX_D1_DATABASE_ID }}
+          client-origin: ${{ vars.TERMENBOX_CLIENT_ORIGIN }}
+          cloudflare-api-token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          cloudflare-account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          github-client-id: ${{ secrets.TERMENBOX_GITHUB_CLIENT_ID }}
+          github-client-secret: ${{ secrets.TERMENBOX_GITHUB_CLIENT_SECRET }}
+          cert-signing-key: ${{ secrets.TERMENBOX_CERT_SIGNING_KEY }}
+          directory-salt: ${{ secrets.TERMENBOX_DIRECTORY_SALT }}

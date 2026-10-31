@@ -329,7 +329,6 @@
   let actionConfirm = false;
   let showNew = false;
   let pendingOpen: { serverId: string; name: string; before: string[] } | null = null;
-  let quality = '';
   let keyboardOpen = false;
   let sheetHeld = false;
   let menuOpen = false;
@@ -467,7 +466,6 @@
       editable: (w.backend ?? $hubServers.find((s) => s.id === w.serverId)?.backends[0] ?? '') === 'tmux',
     }));
   $: profile = backendOf(activeWorkspace) === 'tmux' ? 'tmux' as const : 'shell' as const;
-  $: link = selected ? { ok: connState === 'connected', text: connState === 'connected' ? quality || 'connected' : connState } : null;
   $: if (hidden.size) { const live = new Set($allWorkspaces.map(s => s.key)); if ([...hidden].some(k => !live.has(k)) && $allWorkspaces.length) { hidden = new Set([...hidden].filter(k => live.has(k))); saveHidden(hidden); } }
   let showAddServer = false;
   /** A pairing link waiting for the user's confirmation (decision 0123). */
@@ -1002,9 +1000,6 @@
     const stopReplay = onAudioRunning(() => alertWaiting.replay({ sound: $settings.alertSound })); // a sound that found audio locked plays on the unlocking tap
     const clock = setInterval(() => {
       now = Date.now();
-      const c = connection;
-      const kind = c?.kind;
-      quality = kind ? `${c?.pathLabel ?? (kind === 'rtc' ? 'Direct' : 'Tunnel')}${c?.rtt != null ? ` · ${c.rtt} ms` : ''}` : '';
     }, 1000);
     const vv = window.visualViewport;
     const kb = () => { keyboardOpen = !!vv && window.innerHeight - vv.height > 150; };
@@ -1173,15 +1168,16 @@
       canCreate={canCreate} bind:wide bind:helpOpen onopen={attach} onserver={openServer} onrename={renameWorkspace} oncloseworkspace={askCloseWorkspace} onaction={runAction} onshortcut={handleShortcut}
       onback={() => { showWorkspaceList(); sheetHeight = 'half'; }}>
     {#if $destination === 'workspaces' || servers.length === 0}
-    <NavigationBar workspaces={tabWorkspaces} agents={$allAgents} servers={$hubServers} windows={$allWindows} {expiring} {link} {activeKey} held={!!actionWorkspace || !!menuWorkspace || cardExpanded || sheetHeld} onopen={attach} onpeek={peek} ontabmenu={openWindowMenu} onactions={(key) => { actionConfirm = false; actionKey = key; }}
+    <NavigationBar workspaces={tabWorkspaces} agents={$allAgents} servers={$hubServers} windows={$allWindows} {expiring} {activeKey} held={!!actionWorkspace || !!menuWorkspace || cardExpanded || sheetHeld} onopen={attach} onpeek={peek} ontabmenu={openWindowMenu} onactions={(key) => { actionConfirm = false; actionKey = key; }}
       strip={!wide || !$layout.sidebarOpen || (!!activeKey && !listPage)} onnew={wide && canCreate ? () => newWorkspace() : undefined}
       tabsCapable={tabsCapable} workspace={activeWorkspace ?? null} tabs={activeTabs} activeTab={activeTabId} page={!activeKey || listPage} {wide}
       ontabopen={(tab) => activeKey && openTab(activeKey, tab)}
       ontabmenuopen={() => { if (!activeKey || listPage) openPageTabs(); else openTabMenu(); }}
       onnewtab={wide && activeKey && !listPage && tabsCapable && canTab ? () => activeWorkspace && newTab(activeWorkspace) : undefined}
-      onlink={() => link && showToast(link.text, link.ok ? 'success' : 'error')} onmenu={() => { titleTapped(); menuOpen = true; }} expanded={wide ? $layout.sidebarOpen : sheetHeight !== 'closed'} controls={wide && $layout.sidebarOpen ? 'workspace-sidebar' : undefined} onworkspaces={() => { if (wide) { toggleSidebar(); return; } crumb('workspaces sheet toggled'); showWorkspaceList(); sheetHeight = sheetHeight === 'closed' ? 'half' : 'closed'; }} />
+      onmenu={() => { titleTapped(); menuOpen = true; }} expanded={wide ? $layout.sidebarOpen : sheetHeight !== 'closed'} controls={wide && $layout.sidebarOpen ? 'workspace-sidebar' : undefined} onworkspaces={() => { if (wide) { toggleSidebar(); return; } crumb('workspaces sheet toggled'); showWorkspaceList(); sheetHeight = sheetHeight === 'closed' ? 'half' : 'closed'; }} />
     {/if}
-    <NeedsYouBanner {waiting} {now} collapsed={keyboardOpen} onopen={openWaiting} onhome={() => go('home')} ondismiss={(key, id) => sendAttention(key, { type: 'dismiss', attention_id: id })} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} />
+    <!-- Zero height: the banner floats over the content and never resizes the terminal (#372). -->
+    <div class="banner-layer"><NeedsYouBanner {waiting} {now} onopen={openWaiting} onhome={() => go('home')} ondismiss={(key, id) => sendAttention(key, { type: 'dismiss', attention_id: id })} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} /></div>
 
     {#if iosHint && !selectedServer}
       <div style="display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--bg-secondary); border-bottom: 1px solid var(--border); font-size: 0.85rem;">
@@ -1323,6 +1319,7 @@
 </AppShell>
 
 <style>
+  .banner-layer { position: relative; height: 0; z-index: 30; }
   .workspace { display: flex; flex: 1; min-height: 0; overflow: hidden; position: relative; }
   .workspace.mobile { flex-direction: column; }
   .terminal-pane { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }

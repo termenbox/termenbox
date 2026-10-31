@@ -28,6 +28,7 @@ on:
       prerelease: { required: true, type: boolean }
       latest: { description: 'GitHub marks it as the latest release (only stable)', required: true, type: boolean }
       aliases: { description: 'space separated rolling releases that may point at it', required: false, type: string, default: '' }
+      deploy: { description: 'deploy the channel client after publishing, in the same approved job (stable and beta)', required: false, type: boolean, default: false }
       notes: { description: 'text put before the generated release notes', required: false, type: string, default: '' }
 
 permissions:
@@ -148,6 +149,7 @@ jobs:
     environment: ${{ inputs.channel }}
     permissions:
       contents: write
+      deployments: write
     # The inputs reach the scripts as variables, never pasted into the script text.
     env:
       CHANNEL: ${{ inputs.channel }}
@@ -257,3 +259,22 @@ jobs:
           for alias in $ALIASES; do
             sh .github/scripts/update_alias.sh "$alias" dist/manifest.json dist/manifest.json.sig
           done
+
+      # Last, and only for a published release: the client of this channel, from the same commit, in the job that was
+      # approved for the release (decision 0134). A failure here leaves the release published and the run red. Two
+      # releases of one channel can overlap; there is no concurrency group, because a newer run would cancel the older
+      # one while it waits, and a release must never be dropped for that.
+      - name: Deploy the client
+        if: inputs.publish && inputs.deploy
+        uses: ./.github/actions/deploy-pages
+        with:
+          channel: ${{ inputs.channel }}
+          pages-project-name: ${{ vars.TERMENBOX_PAGES_PROJECT_NAME }}
+          d1-database-id: ${{ vars.TERMENBOX_D1_DATABASE_ID }}
+          client-origin: ${{ vars.TERMENBOX_CLIENT_ORIGIN }}
+          cloudflare-api-token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          cloudflare-account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          github-client-id: ${{ secrets.TERMENBOX_GITHUB_CLIENT_ID }}
+          github-client-secret: ${{ secrets.TERMENBOX_GITHUB_CLIENT_SECRET }}
+          cert-signing-key: ${{ secrets.TERMENBOX_CERT_SIGNING_KEY }}
+          directory-salt: ${{ secrets.TERMENBOX_DIRECTORY_SALT }}

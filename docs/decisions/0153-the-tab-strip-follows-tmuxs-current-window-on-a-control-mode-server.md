@@ -1,5 +1,5 @@
 ---
-id: 0150-the-tab-strip-follows-tmuxs-current-window-on-a-control-mode-server
+id: 0153-the-tab-strip-follows-tmuxs-current-window-on-a-control-mode-server
 title: The tab strip follows tmux's current window on a control-mode server
 status: active
 date: 2026-10-30
@@ -23,6 +23,6 @@ The top bar disagreed with the terminal: `Ctrl+B <n>` or `tmux select-window` ch
 
 ## Consequences
 
-- Issue #375 and step 2 of `docs/plans/workspace-tabs-followups.md`.
+- Issue #375 and step 2 of `docs/plans/workspace-tabs.md`.
 - The device's remembered tab (`termenbox_active_tab`) still decides which tab it opens; once the workspace is open, a control-mode focus supersedes it. Where the server has no focus or no control mode, the remembered tab stays in charge.
 - The foreground report follows the moved tab, so a push is not sent for the window the user is looking at.

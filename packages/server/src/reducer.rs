@@ -131,6 +131,21 @@ impl Reducer {
         }
     }
 
+    /// The state last derived, changed or not.
+    pub fn state(&self) -> Option<AgentState> {
+        self.last
+    }
+
+    /// Whether a turn is open (and, with `blocked`, whether something waits on the human).
+    pub fn working(&self) -> bool {
+        self.turn_open
+    }
+
+    /// ms of the last edge, on the server's clock.
+    pub fn last_edge_at(&self) -> u64 {
+        self.last_edge_at
+    }
+
     /// Whether the reducer holds a fact that a low-confidence guess must not override: something waits on the
     /// human, or a turn is open.
     pub fn pins(&self) -> bool {
