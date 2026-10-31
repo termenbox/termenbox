@@ -57,6 +57,29 @@ describe('linkAt', () => {
   });
 });
 
+describe('linkAt on rows Claude Code draws', () => {
+  // Captured from a 194-column pane: the log holds the URL as one line, Claude Code breaks it into indented rows
+  // that stop at column 193, with no wrap mark.
+  const rows = [
+    "  https://example.com/oauth/authorize?response_type=code&client_id=termenbox-test-0123456789abcdef&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback%2Fgithub%3Fworkspace%3Dws-07bbf3bb7cf546",
+    "  39be81cc9151e7ebbc%26tab%3D1&scope=read%3Auser+user%3Aemail+repo&state=9a8b7c6d5e4f30211a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw",
+    "  -cM&code_challenge_method=S256&utm_source=termenbox&utm_medium=terminal&utm_campaign=long-link-test&utm_content=six-row-wrap-check&nonce=c0ffee1234567890deadbeefc0ffee1234567890&ref=beta16",
+  ];
+  const full = "https://example.com/oauth/authorize?response_type=code&client_id=termenbox-test-0123456789abcdef&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback%2Fgithub%3Fworkspace%3Dws-07bbf3bb7cf54639be81cc9151e7ebbc%26tab%3D1&scope=read%3Auser+user%3Aemail+repo&state=9a8b7c6d5e4f30211a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&utm_source=termenbox&utm_medium=terminal&utm_campaign=long-link-test&utm_content=six-row-wrap-check&nonce=c0ffee1234567890deadbeefc0ffee1234567890&ref=beta16";
+  it('opens the whole address from any of its rows', () => {
+    const b = buffer(rows, 194);
+    for (const [row, col] of [[0, 2], [0, 100], [0, 190], [1, 2], [1, 190], [2, 5], [2, 100], [2, 189]]) expect(linkAt(b, 194, row, col), `${row}:${col}`).toBe(full);
+  });
+  it('does not take the indentation as part of the link', () => {
+    expect(linkAt(buffer(rows, 194), 194, 1, 0)).toBeNull();
+  });
+  it('leaves a short word on the next row alone when the link row is not near the edge', () => {
+    const b = buffer(['  see https://a.dev/x', '  Done'], 194);
+    expect(linkAt(b, 194, 0, 8)).toBe('https://a.dev/x');
+    expect(linkAt(b, 194, 1, 3)).toBeNull();
+  });
+});
+
 describe('isOpenClick', () => {
   it('opens on a primary click with Ctrl or Cmd held, and only then', () => {
     expect(isOpenClick({ button: 0, ctrlKey: true, metaKey: false })).toBe(true);
