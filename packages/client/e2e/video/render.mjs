@@ -5,7 +5,7 @@
 // phone is 390 x 844 at DPR 2 with touch; desktop is 1280 x 800. The page is the built client (pnpm run e2e:build) against the
 // scripted server and its fake home, recorded with Playwright and converted with ffmpeg. A case whose final assertion fails
 // exits non-zero and leaves no file in DIR. The video says it is a rendered walkthrough on scripted data, not a real device.
-import { startShared, startApp } from '../app-lib.mjs';
+import { startShared, startApp, ScriptedServer } from '../app-lib.mjs';
 import { humanPage, overlayScript, paceFactor, sleep } from './lib.mjs';
 import { cases } from './cases.mjs';
 import { launchReal } from './real-server.mjs';
@@ -49,8 +49,10 @@ try {
     // The installer's captured output in an xterm.js page: no app, no server (terminal-replay.mjs).
     t = await launchReplay({ viewport, scale, phone, recordDir: work, overlay: overlayScript });
   } else {
+    const server = new ScriptedServer();
+    cases[caseName].prepare?.(server);
     t = await startApp(shared, {
-      viewport, deviceScaleFactor: scale, storage: { termenbox_ios_hint: '1', ...cases[caseName].storage },
+      server, viewport, deviceScaleFactor: scale, storage: { termenbox_ios_hint: '1', ...cases[caseName].storage },
       contextExtra: { ...(phone ? { isMobile: true, hasTouch: true } : {}), recordVideo: { dir: work, size: viewport } },
     });
     await t.ctx.addInitScript(overlayScript, phone);

@@ -67,11 +67,12 @@ Do: add `steps`, mark the `poster` still (dialog open), call `h.result` when the
 Done-when: the Check passes and the video runs 30 to 60 s.
 Progress (2026-10-31): `recent-folder` phone renders in 35.5 s (container, real ffmpeg); the `poster` still is the open dialog (was `dialog-open`), a new last step `created` ("Your workspace now runs in ~/code/termenbox") reads the folder aloud and rests with `h.result()`; the final assertions are unchanged. The workspace name is not in the caption: the dialog has no name field to read, the summary names the agent and folder. Not run: a mutation of the final assertion.
 
-### 3.4 Talk-to-your-agent case — [ ]‖
+### 3.4 Talk-to-your-agent case — [x]‖
 Class: implement · Needs: 1.1, 2.1 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && pnpm run e2e:build && node e2e/video/render.mjs --case talk-to-agent --profile phone --out /tmp/course && test -s /tmp/course/talk-to-agent-phone.mp4'`
 Context: chapter 4. `ScriptedServer` in `packages/client/e2e/app-lib.mjs` scripts a workspace with an agent tab and its screen; the key row and the soft keyboard are covered by the key-row e2e (`grep -rln "key row\|keyrow" packages/client/e2e`). Read both before writing the case.
 Do: add the case `talk-to-agent` (group `start`, page `docs/course/04-talk-to-your-agent.md`): open the workspace, tap the input, type a short prompt at human pace, send it, watch the scripted agent answer, use the key row once for a key the soft keyboard lacks (Esc), and end on an assertion that the agent's answer is on screen. Steps, `poster`, `h.result` on the answer.
 Done-when: the Check passes and the final assertion fails when the expected answer is changed.
+Progress (2026-10-31): the case `talk-to-agent` (phone) renders in 54 s: open `build`, tap the terminal, type "fix the login test" at human pace, Enter, the scripted agent answers, Escape from the key row; the poster is the agent's answer. The scripted server is made to echo input and answer on Enter by the case's `prepare(server)` (a new hook in `render.mjs`, called on the `ScriptedServer` before the app starts). Final assertions: the answer is on screen, Escape reached the server, the answer is still there. Changing the expected answer text makes the render FAIL with no video. The case shows the Decision/Terminal switch at the top (the scripted workspace has an agent); the video does not explain it.
 
 ### 3.5 Answer-from-the-train case — [ ]‖
 Class: implement · Needs: 1.1, 2.1 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && pnpm run e2e:build && node e2e/video/render.mjs --case answer-from-the-train --profile phone --out /tmp/course && test -s /tmp/course/answer-from-the-train-phone.mp4'`

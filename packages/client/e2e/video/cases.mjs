@@ -301,4 +301,65 @@ Object.assign(cases, {
   },
 });
 
+const typedBytes = (m) => Buffer.from(m.data, 'base64').toString('latin1');
+
+Object.assign(cases, {
+  /** Chapter 4: type a prompt to the agent, read its answer, use the key row for a key the phone keyboard lacks. */
+  'talk-to-agent': {
+    title: 'Talk to your agent',
+    group: 'start',
+    page: 'docs/course/04-talk-to-your-agent.md',
+    server: 'scripted',
+    inputs: ['packages/client/src/App.svelte', 'packages/client/src/Terminal.svelte', 'packages/client/src/KeyRow.svelte', 'packages/client/e2e/app-lib.mjs', 'packages/client/e2e/video/**'],
+    steps: [
+      { id: 'open', caption: 'Open the workspace your agent runs in', label: 'build' },
+      { id: 'type', caption: 'Tap the screen and type what you want done', label: null },
+      { id: 'send', caption: 'Send it with Enter', label: null },
+      { id: 'answer', caption: 'The answer arrives on the same screen', label: null },
+      { id: 'escape', caption: 'A key your phone keyboard lacks is in the key row: Escape stops the agent', label: 'Escape' },
+    ],
+    storage: {},
+    // The agent is idle at its prompt; the server echoes what is typed and answers when Enter arrives, as tmux and the agent would.
+    prepare(server) {
+      server.states = { s1: 'idle', s2: 'idle', s3: 'idle' };
+      server.views.set('s1', server.view('s1', { tail: ['$'] }));
+      const handle = server.handle.bind(server);
+      server.handle = (ws, m) => {
+        if (m.type !== 'input') return handle(ws, m);
+        server.received.push(m);
+        const key = typedBytes(m);
+        if (key === '\r') server.output('\r\n● Looking at the login test…\r\n  The token was not refreshed.\r\n  Fixed. The test passes.\r\n> ');
+        else if (key === '\x1b') server.output('\r\n[Stopped]\r\n> ');
+        else server.output(key);
+      };
+    },
+    async run(c) {
+      const { h, page, server } = c;
+      await h.step('open');
+      await openWorkspace(c, 'build');
+      await screenHas(page, 'attached to s1');
+      await h.step('type', page.locator('.xterm').first());
+      await h.tap(page.locator('.xterm').first());
+      const prompt = 'fix the login test';
+      await h.typeText(prompt, (ch) => page.keyboard.type(ch));
+      await screenHas(page, prompt);
+      expectThat(server.of('input').map(typedBytes).join('') === prompt, `the server received "${server.of('input').map(typedBytes).join('')}"`);
+      await h.pause();
+      await h.step('send', page.locator('.xterm').first());
+      await page.keyboard.press('Enter');
+      await h.step('answer', page.locator('.xterm').first());
+      await screenHas(page, 'The test passes');
+      expectThat(await page.locator('.xterm-rows').innerText().then((t) => t.includes('Fixed. The test passes.')), 'the agent answer is not on screen');
+      await h.still('poster');
+      await h.result();
+      const keys = page.getByRole('button', { name: 'Escape', exact: true });
+      await h.step('escape', keys);
+      await h.tap(keys);
+      await screenHas(page, '[Stopped]');
+      expectThat(server.of('input').some((m) => typedBytes(m) === '\x1b'), 'Escape did not reach the server');
+      expectThat(await page.locator('.xterm-rows').innerText().then((t) => t.includes('The test passes.')), 'the answer left the screen');
+    },
+  },
+});
+
 for (const [id, c] of Object.entries(cases)) checkDeclared(id, c.steps);
