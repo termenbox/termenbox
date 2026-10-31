@@ -25,6 +25,7 @@ use crate::events::sanitize_block;
 use scan::{Budget, Cancel, Limits, Scanner};
 
 pub mod claude;
+pub mod codex;
 #[cfg(test)]
 mod contract;
 pub mod scan;
@@ -374,6 +375,18 @@ pub struct SessionLogs {
 }
 
 impl SessionLogs {
+    /// Every adapter this build has, each rooted at its agent's home (`$CLAUDE_CONFIG_DIR`, `$CODEX_HOME`).
+    pub fn standard() -> Self {
+        let mut logs = SessionLogs::default();
+        if let Some(a) = claude::ClaudeLog::from_env() {
+            logs.register(Arc::new(a));
+        }
+        if let Some(a) = codex::CodexLog::from_env() {
+            logs.register(Arc::new(a));
+        }
+        logs
+    }
+
     pub fn register(&mut self, adapter: Arc<dyn SessionLog>) {
         self.adapters.insert(adapter.agent().to_string(), adapter);
     }

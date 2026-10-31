@@ -58,11 +58,17 @@ Progress: done. `session_log/claude.rs` (+ `claude/tests.rs`); 39 `session_log` 
 - Head check: first line not JSON, or the first `version` is not major 2 -> `Disabled`. A file with one unfinished line and no newline reads as empty (a session being born), not off.
 - Fixtures changed: `torn` is cut inside the message text; `tool-secret` no longer says "token" in user text (the scrubber's `[secret]` is not idempotent, which the suite checks). Added `secret-text` and `unmappable` (README).
 
-### 5 Codex adapter — [ ]
+### 5 Codex adapter — [x]
 Class: implement · Needs: 2, 3 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log::codex`
 Context: Same as step 4 with the Codex rollout format measured in step 1. Follow `docs/skills/add-a-session-log-adapter.md`.
 Do: Add `session_log/codex.rs` implementing the port the same way, and register it.
 Done-when: the contract suite passes over the Codex fixtures.
+Done: `session_log/codex.rs` + `codex/tests.rs`; `SessionLogs::standard()` registers Claude and Codex from their env homes (step 7 calls it).
+- Records are linear: the turn id is the record `ordinal` (`<ordinal>:<n>` for a later block). Shown: `response_item` user/assistant messages (a user text that is one tag, `<...>`, is setup and skipped; `developer` skipped), reasoning `summary`, `*_call` as the tool name, `compacted` as a notice. `event_msg` and the other noise types are skipped; `*_output` never read. A fork is one linear conversation (no branch case; the contract's `branch` is none).
+- Head: first line must be `session_meta` with `cli_version` major 0, else `Disabled`; its `cwd` must equal the asked directory, else `Missing` (a session whose first line is not whole yet is `Missing`, not off). File found by name `rollout-<19-char stamp>-<id>.jsonl`, newest date folder first, path cached by id.
+- Cursor `pos` is a plain record index; the fingerprint alone guards it. Reused from `claude.rs`: `next_line`, `AtRead`, `turn_id`.
+- Fixtures changed: `torn` is cut inside a message text; `tool-secret` user text no longer says "token" (scrubber not idempotent).
+- Dev machine note: `COMPOSE_PROJECT_NAME=termenbox-sergei scripts/dev.sh ...` uses the cache volume owned by uid 1004; the default `docker_cache` volume is not writable. `cargo clippy --workspace` fails in `bridge-contract` already on develop, so lint `-p termenbox-server`.
 
 ### 6 Known sessions: tab to session id to file — [ ]
 Class: implement · Needs: 2 · Check: `scripts/dev.sh cargo test -p termenbox-server registry`

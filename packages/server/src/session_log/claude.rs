@@ -32,7 +32,7 @@ const CACHED_CHAINS: usize = 4;
 /// Claude keeps the first 200 characters of an encoded directory name and appends `-` and a short hash (measured on
 /// 2.1.308: 207 characters in all). The hash is not computed here: the directory is found by its head.
 const LONG_DIR: usize = 200;
-const UNMAPPABLE: &str = "A record this version cannot show";
+pub(super) const UNMAPPABLE: &str = "A record this version cannot show";
 /// Record types that carry no conversation. A record of another type that sits in the tree is shown as a notice.
 const NOISE: &[&str] = &[
     "queue-operation",
@@ -146,7 +146,7 @@ impl ClaudeLog {
     }
 }
 
-const UNREADABLE: &str = "unreadable file";
+pub(super) const UNREADABLE: &str = "unreadable file";
 
 /// Whether the head of the file looks like a Claude session this code understands.
 fn check_head(file: &File, size: u64) -> Result<(), LogError> {
@@ -187,9 +187,9 @@ fn check_head(file: &File, size: u64) -> Result<(), LogError> {
 }
 
 /// A positional reader, so a read of the file does not move any shared offset.
-struct AtRead<'a> {
-    file: &'a File,
-    pos: u64,
+pub(super) struct AtRead<'a> {
+    pub(super) file: &'a File,
+    pub(super) pos: u64,
 }
 
 impl Read for AtRead<'_> {
@@ -202,7 +202,7 @@ impl Read for AtRead<'_> {
 
 /// Reads the next line into `buf` and returns how many bytes it took in the file, or `None` at the end. A line over
 /// `MAX_LINE` is stepped over and `buf` is left empty, so one huge record cannot take the memory of the process.
-fn next_line(r: &mut impl BufRead, buf: &mut Vec<u8>) -> io::Result<Option<u64>> {
+pub(super) fn next_line(r: &mut impl BufRead, buf: &mut Vec<u8>) -> io::Result<Option<u64>> {
     buf.clear();
     let mut total = 0u64;
     let mut too_long = false;
@@ -427,7 +427,7 @@ fn parts(v: &Value) -> Vec<Part> {
     }
 }
 
-fn turn_id(uuid: &str, n: usize) -> String {
+pub(super) fn turn_id(uuid: &str, n: usize) -> String {
     if n == 0 {
         uuid.to_string()
     } else {
