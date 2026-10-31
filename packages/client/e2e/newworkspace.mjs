@@ -210,12 +210,12 @@ for (const [width, height] of only ? [only] : WIDTHS) {
     await gone(q('dirs-layer'), 'the recent folders layer');
     await text(q('summary'), /~\/notes$/, 'the summary from the layer');
 
-    // Create is disabled with the reason visible: a taken name, and an invalid one.
+    // A name another workspace uses is fine (the server keys workspaces by a minted id); an invalid one disables Create with the reason visible.
     await q('dirs-more').count();
     await dialog.getByLabel('Name').fill('s1');
-    await see(dialog.getByText('That name is taken.'), 'the taken-name reason');
-    if (!(await dialog.getByRole('button', { name: 'Create' }).isDisabled())) throw new Error(at('Create is enabled with a taken name'));
-    await rules('create disabled, name taken');
+    await dialog.getByText('That name is taken.').waitFor({ state: 'detached', timeout: 2000 });
+    if (await dialog.getByRole('button', { name: 'Create' }).isDisabled()) throw new Error(at('Create is disabled for a name another workspace uses'));
+    await rules('create enabled, name in use');
     // `|` is the list separator the server refuses; a space and punctuation are valid label text (0146/0149).
     await dialog.getByLabel('Name').fill('bad|name');
     await see(dialog.getByText(/Use one line of at most 64 characters, without \|/), 'the invalid-name reason');

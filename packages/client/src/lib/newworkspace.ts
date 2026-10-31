@@ -177,6 +177,16 @@ export const validName = (name: string) => /^[A-Za-z0-9_-]{1,64}$/.test(name);
 /** The server's label rule: one line, at most 64 characters, no `|`; a minted id keeps the label free of id syntax. */
 export const validLabel = (name: string) => { const t = name.trim(); return t.length > 0 && t.length <= 64 && !/[\u0000-\u001f\u007f|]/.test(t); };
 
+/** Why the New workspace sheet cannot create yet, or '' when it can. A name another workspace uses is fine: the server
+ *  keys a workspace by a minted id and the name is only a label. */
+export function createProblem(f: { acp: boolean; template: string; dir: string; name: string }): string {
+  if (f.acp && !f.template) return 'This server allows no agent workspaces yet.';
+  if (f.acp && f.dir === '') return 'Choose the directory the agent works in, like /home/you/project.';
+  if (!validDir(f.dir)) return 'The directory must be an absolute path, like /home/you/project.';
+  if (!validLabel(f.name)) return 'Use one line of at most 64 characters, without |.';
+  return '';
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // The view: how an agent runs. "Terminal" is the agent's own TUI in a tmux workspace; "Agent view" is an ACP workspace the
 // server starts and termenbox draws. (Not the agent's own workspace "mode", which AcpView has a select for.)

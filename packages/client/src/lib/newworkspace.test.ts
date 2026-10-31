@@ -1,9 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { backendFor, COLD_START_AGENTS, getRecentDirs, inlineAgents, mergeRecentDirs, saveRecentDir, loadView, managerOptions, recentDirs, resolveView, saveView, suggestName, TEMPLATES, validDir, validName, viewControl } from './newworkspace';
+import { backendFor, createProblem, COLD_START_AGENTS, getRecentDirs, inlineAgents, mergeRecentDirs, saveRecentDir, loadView, managerOptions, recentDirs, resolveView, saveView, suggestName, TEMPLATES, validDir, validName, viewControl } from './newworkspace';
 
 const w = (path: string) => ({ index: 0, name: 'n', command: 'bash', path, active: false });
 
 describe('new workspace', () => {
+  const form = { acp: false, template: 'shell', dir: '/srv/api', name: 'api' };
+  it('lets a name through that another workspace already uses, because the server keys workspaces by a minted id', () => {
+    expect(createProblem(form)).toBe('');
+    expect(createProblem({ ...form, name: ' api ' })).toBe('');
+  });
+  it('still refuses what the server refuses', () => {
+    expect(createProblem({ ...form, name: '  ' })).toMatch(/one line/);
+    expect(createProblem({ ...form, name: 'a|b' })).toMatch(/one line/);
+    expect(createProblem({ ...form, dir: 'relative' })).toMatch(/absolute/);
+    expect(createProblem({ ...form, acp: true, dir: '' })).toMatch(/directory/);
+    expect(createProblem({ ...form, acp: true, template: '' })).toMatch(/no agent workspaces/);
+  });
   it('offers every agent the server recognises, plus a plain shell', () => {
     const ids = TEMPLATES.map(t => t.id);
     for (const a of ['claude', 'codex', 'copilot', 'opencode', 'kilo', 'gemini', 'aider', 'cursor-agent', 'amp', 'goose', 'qwen', 'shell']) expect(ids).toContain(a);
