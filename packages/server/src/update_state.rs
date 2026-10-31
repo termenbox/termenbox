@@ -14,6 +14,7 @@ use crate::requests::{now_secs, read_status, write_json};
 pub const FILE: &str = "update-state.json";
 const SCHEMA: u32 = 1;
 const MAX_ERROR_CHARS: usize = 200;
+const MAX_DEFERRALS: u32 = 3;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -127,6 +128,33 @@ impl State {
         self.skipped.as_deref() == Some(version)
     }
 
+    /// The owner does not want `version`: it stays pinned, unannounced, until a newer release appears or the owner
+    /// asks for it. Only the release the state names can be skipped, so a request made against an old notice does
+    /// nothing to a newer one.
+    pub fn skip(&mut self, version: &str) -> Result<(), &'static str> {
+        if self.available.as_deref() != Some(version) {
+            return Err("that release is not the one on offer");
+        }
+        self.skipped = Some(version.to_string());
+        self.phase = Phase::Idle;
+        self.deadline = 0;
+        Ok(())
+    }
+
+    /// One more grace period before a scheduled install, at most `MAX_DEFERRALS` times. Nothing is scheduled until
+    /// the grace period lands (U5b), so today this refuses; `extend` is how far the deadline moves.
+    pub fn postpone(&mut self, extend: u64) -> Result<(), &'static str> {
+        if self.deadline == 0 {
+            return Err("no install is scheduled");
+        }
+        if self.deferrals >= MAX_DEFERRALS {
+            return Err("already postponed the most it can be");
+        }
+        self.deferrals += 1;
+        self.deadline += extend;
+        Ok(())
+    }
+
     pub fn apply(&mut self, now: u64, event: Event) {
         match event {
             Event::UpToDate => {
@@ -149,10 +177,16 @@ impl State {
                 if !self.is_pinned(version) {
                     self.skipped = None;
                 }
-                self.phase = if self.is_pinned(version) {
+                self.phase = if !self.is_pinned(version) {
+                    Phase::Available
+                } else if self
+                    .last
+                    .as_ref()
+                    .is_some_and(|l| l.result == Verdict::RolledBack && l.to == version)
+                {
                     Phase::RolledBack
                 } else {
-                    Phase::Available
+                    Phase::Idle // the owner skipped it
                 };
             }
             Event::Installing => self.phase = Phase::Installing,
@@ -313,6 +347,28 @@ mod tests {
             (Phase::Idle, None, None)
         );
         assert_eq!(s.checked_ok_at, 1, "a held server checked nothing");
+    }
+
+    #[test]
+    fn skip_pins_only_the_release_on_offer_and_postpone_waits_for_a_schedule() {
+        let mut s = State::default();
+        s.apply(1, Event::Available("0.2.0"));
+        assert!(s.skip("0.1.9").is_err());
+        assert!(s.skip("0.2.0").is_ok());
+        s.apply(2, Event::Available("0.2.0"));
+        assert!(
+            s.is_pinned("0.2.0") && s.phase == Phase::Idle,
+            "skipping is not a rollback"
+        );
+        s.apply(3, Event::Available("0.2.1"));
+        assert!(!s.is_pinned("0.2.0") && s.phase == Phase::Available);
+        assert!(s.postpone(60).is_err(), "nothing is scheduled yet");
+        s.deadline = 1000;
+        for n in 1..=3 {
+            assert!(s.postpone(60).is_ok());
+            assert_eq!((s.deferrals, s.deadline), (n, 1000 + 60 * n as u64));
+        }
+        assert!(s.postpone(60).is_err(), "at most three times");
     }
 
     #[test]

@@ -9,7 +9,7 @@ use tracing::info;
 
 use crate::release::{ReleaseKeys, URL_PREFIX};
 use crate::requests::{take_requests, Request};
-use crate::update_state;
+use crate::update_state::{self, State};
 use crate::updater::{HttpFetch, Outcome, Systemd, Trigger, UpdatePolicy, Updater};
 
 pub const DEFAULT_RELEASE_URL: &str =
@@ -27,7 +27,14 @@ fn is_root() -> bool {
 }
 
 /// Exit status: 0 fine (also "nothing to do"), 1 error, 2 an update was rolled back.
-pub async fn run(action: &str, setup: &Setup) -> Result<i32> {
+///
+/// Besides the two units' actions (`update`, `requests`) the owner at a shell can run `status` (read-only, any user who
+/// can read the state), and `check`, `apply`, `postpone` and `skip` (the helper's own account: root, or the user of a
+/// no-root install). `check` never installs, even in `auto` mode.
+pub async fn run(action: &str, setup: &Setup, json: bool) -> Result<i32> {
+    if action == "status" {
+        return status(setup, json);
+    }
     // A system install's helper changes system files, so only root may run it (tests set the override). The no-root
     // install's helper changes only the user's own files, and refuses to run as root so it cannot be mixed up with it.
     if setup.user {
@@ -45,6 +52,22 @@ pub async fn run(action: &str, setup: &Setup) -> Result<i32> {
     };
     match action {
         "update" => update(&setup, Trigger::Timer, None).await,
+        "check" => update(&setup, Trigger::Check, None).await,
+        "apply" => update(&setup, Trigger::UpdateNow, None).await,
+        "postpone" => handle(Request::UpdatePostpone {}, &setup).await,
+        "skip" => {
+            let available = setup
+                .requests_dir
+                .parent()
+                .and_then(|dir| State::load(dir).available);
+            match available {
+                Some(version) => handle(Request::UpdateSkip { version }, &setup).await,
+                None => {
+                    println!("no release is on offer");
+                    Ok(0)
+                }
+            }
+        }
         "requests" => {
             let mut status = 0;
             for request in take_requests(&setup.requests_dir) {
@@ -59,7 +82,9 @@ pub async fn run(action: &str, setup: &Setup) -> Result<i32> {
             }
             Ok(status)
         }
-        other => bail!("unknown helper action `{other}` (update or requests)"),
+        other => bail!(
+            "unknown helper action `{other}` (update, requests, status, check, apply, postpone or skip)"
+        ),
     }
 }
 
@@ -77,12 +102,147 @@ async fn handle(request: Request, setup: &Setup) -> Result<i32> {
             update(setup, Trigger::UpdateNow, id.as_deref()).await
         }
         Request::CheckUpdate {} => update(setup, Trigger::Check, None).await,
+        Request::UpdatePostpone {} => {
+            let done = change_state(setup, |state| state.postpone(0));
+            info!(target: "audit", event = "update_postpone", done = done.is_ok());
+            report(done, "postponed")
+        }
+        Request::UpdateSkip { version } => {
+            let done = change_state(setup, |state| state.skip(&version));
+            info!(target: "audit", event = "update_skip", done = done.is_ok());
+            report(done, "skipped")
+        }
         Request::Uninstall { .. } => {
             info!(target: "audit", event = "helper_uninstall_not_available");
             println!("uninstall through the helper is not available in this version");
             Ok(0)
         }
     }
+}
+
+/// Applies an owner's choice to `update-state.json`. The helper is the only writer of the file.
+fn change_state(
+    setup: &Setup,
+    change: impl FnOnce(&mut State) -> std::result::Result<(), &'static str>,
+) -> std::result::Result<(), &'static str> {
+    let dir = setup.requests_dir.parent().ok_or("no state directory")?;
+    let _lock = update_lock(&setup.root_dir).map_err(|_| "an update is running; try again")?;
+    let mut state = State::load(dir);
+    change(&mut state)?;
+    state
+        .store(dir)
+        .map_err(|_| "the state could not be written")
+}
+
+fn report(done: std::result::Result<(), &'static str>, what: &str) -> Result<i32> {
+    match done {
+        Ok(()) => println!("{what}"),
+        Err(why) => println!("not {what}: {why}"),
+    }
+    Ok(0)
+}
+
+/// `status`: what the updater knows, for a person or (`--json`) a script. Reads only; a policy the user cannot read is
+/// said so rather than guessed.
+fn status(setup: &Setup, json: bool) -> Result<i32> {
+    let setup = Setup {
+        root_dir: setup.root_dir.clone(),
+        requests_dir: requests_dir(setup),
+        user: setup.user,
+    };
+    let state = setup
+        .requests_dir
+        .parent()
+        .map(State::load)
+        .unwrap_or_default();
+    let version = crate::version();
+    let policy = UpdatePolicy::load(&setup.root_dir.join("update.toml"), &version);
+    let unreleased = is_unreleased(&version);
+    let ago = |at: u64| seconds_ago(at);
+    if json {
+        println!("{}", status_json(&version, &policy, &state));
+        return Ok(0);
+    }
+    let hours = |at: u64| match ago(at) {
+        None => "never".to_string(),
+        Some(s) if s < 90 => "just now".to_string(),
+        Some(s) if s < 5400 => format!("{} min ago", s / 60),
+        Some(s) => format!("{} h ago", s / 3600),
+    };
+    println!("running:      {version}");
+    if unreleased {
+        println!("              an unreleased build: it is newer than the releases of its channel, so none is offered");
+    }
+    match &policy {
+        Ok(p) => {
+            println!(
+                "policy:       channel {}, mode {}{}",
+                format!("{:?}", p.channel).to_ascii_lowercase(),
+                format!("{:?}", p.mode).to_ascii_lowercase(),
+                p.window.map_or(String::new(), |w| format!(", window {w}"))
+            );
+        }
+        Err(e) => println!("policy:       unreadable ({e})"),
+    }
+    println!(
+        "last check:   {} (good: {})",
+        hours(state.checked_at),
+        hours(state.checked_ok_at)
+    );
+    if let Some(error) = &state.error {
+        println!("              failed: {error}");
+    }
+    match (&state.available, state.phase) {
+        (Some(v), update_state::Phase::RolledBack) => {
+            println!("available:    {v}, rolled back before; not retried unless you apply it")
+        }
+        (Some(v), _) if state.is_pinned(v) => println!("available:    {v}, skipped"),
+        (Some(v), _) => println!("available:    {v}"),
+        (None, _) => println!("available:    nothing newer"),
+    }
+    if let Some(last) = &state.last {
+        println!(
+            "last result:  {:?} {} -> {}",
+            last.result, last.from, last.to
+        );
+    }
+    println!(
+        "next check:   systemctl{} list-timers termenbox-update.timer",
+        if setup.user { " --user" } else { "" }
+    );
+    Ok(0)
+}
+
+/// A build from source reports `+dev`; it compares newer than the prereleases of its own version (`0.1.57+dev` against
+/// `0.1.57-beta.7`), so no release is offered. Said, not worked around.
+fn is_unreleased(version: &str) -> bool {
+    version.ends_with("+dev")
+}
+
+fn seconds_ago(at: u64) -> Option<u64> {
+    (at > 0).then(|| crate::requests::now_secs().saturating_sub(at))
+}
+
+fn status_json(version: &str, policy: &Result<UpdatePolicy>, state: &State) -> serde_json::Value {
+    let (channel, mode, window) = match policy {
+        Ok(p) => (
+            Some(format!("{:?}", p.channel).to_ascii_lowercase()),
+            Some(format!("{:?}", p.mode).to_ascii_lowercase()),
+            p.window.map(|w| w.to_string()),
+        ),
+        Err(_) => (None, None, None),
+    };
+    serde_json::json!({
+        "version": version,
+        "unreleased_build": is_unreleased(version),
+        "channel": channel,
+        "mode": mode,
+        "maintenance_window": window,
+        "policy_error": policy.as_ref().err().map(|e| e.to_string()),
+        "state": state,
+        "checked_seconds_ago": seconds_ago(state.checked_at),
+        "checked_ok_seconds_ago": seconds_ago(state.checked_ok_at),
+    })
 }
 
 fn requests_dir(setup: &Setup) -> PathBuf {
@@ -296,6 +456,74 @@ mod tests {
             0
         );
         assert!(crate::requests::update_result(&requests_dir, &id).is_some());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn skip_and_postpone_change_only_the_state_file_and_status_json_has_a_fixed_shape() {
+        let root = std::env::temp_dir().join(format!("tm-update-skip-{}", uuid::Uuid::new_v4()));
+        let requests = root.join("state/requests");
+        std::fs::create_dir_all(&requests).unwrap();
+        let journal = root.join("journal");
+        std::fs::create_dir_all(&journal).unwrap();
+        let setup = Setup {
+            root_dir: journal,
+            requests_dir: requests,
+            user: true,
+        };
+        let state_dir = root.join("state");
+        update_state::record(
+            &state_dir,
+            "stable",
+            "notify",
+            "0.1.0",
+            update_state::Event::Available("0.2.0"),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        // postpone refuses while nothing is scheduled; a skip of another release does nothing
+        rt.block_on(handle(Request::UpdatePostpone {}, &setup))
+            .unwrap();
+        rt.block_on(handle(
+            Request::UpdateSkip {
+                version: "0.1.9".into(),
+            },
+            &setup,
+        ))
+        .unwrap();
+        assert!(!State::load(&state_dir).is_pinned("0.1.9"));
+        rt.block_on(handle(
+            Request::UpdateSkip {
+                version: "0.2.0".into(),
+            },
+            &setup,
+        ))
+        .unwrap();
+        let state = State::load(&state_dir);
+        assert!(state.is_pinned("0.2.0"));
+        assert_eq!(
+            crate::requests::available_update(&setup.requests_dir, "0.1.0"),
+            None
+        );
+
+        let policy = UpdatePolicy::parse(
+            "[update]\nmode = \"notify\"\nmaintenance_window = \"03:00-04:00\"\n",
+            "0.1.0+dev",
+        );
+        let v = status_json("0.1.0+dev", &policy, &state);
+        assert_eq!(v["unreleased_build"], true);
+        assert_eq!(v["mode"], "notify");
+        assert_eq!(v["maintenance_window"], "03:00-04:00");
+        assert_eq!(v["state"]["skipped"], "0.2.0");
+        assert_eq!(v["policy_error"], serde_json::Value::Null);
+        let broken = status_json(
+            "0.1.0+abc1234",
+            &UpdatePolicy::parse("[update]\nmode = 3", "0.1.0"),
+            &state,
+        );
+        assert_eq!(broken["unreleased_build"], false);
+        assert!(broken["policy_error"].is_string() && broken["mode"].is_null());
         std::fs::remove_dir_all(root).unwrap();
     }
 

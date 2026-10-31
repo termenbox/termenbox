@@ -186,7 +186,7 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   Cleanups: `cargo clippy -D warnings` already fails in `bridge-contract` (not ours); `control::a_real_tmux_pushes_...`
   failed once in a full run and passes alone.
 
-### U3 [ ] Manual check and apply (CLI and requests)
+### U3 [x] Manual check and apply (CLI and requests)
 
 - Needs: U2.
 - Do: `termenbox-server update status|check|apply|postpone|skip [--json]`. Root or user helper: act directly.
@@ -196,8 +196,16 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   Fix `docs/guide/install.md` ("Check now") and the `--help` text.
 - Tests: request round-trips and `deny_unknown_fields` junk is rejected (extend the existing `requests.rs` tests); CLI
   `--json` snapshot; `check` never installs even in `auto`.
-- Verify: `scripts/dev.sh cargo test -p termenbox-server requests helper` and `grep -q 'update check' docs/guide/install.md`.
-- PR: - | Merged: - | Notes:
+- Verify: `scripts/dev.sh cargo test -p termenbox-server -- requests helper update_state` and
+  `grep -q 'root-helper check' docs/guide/install.md`.
+- PR: this branch | Merged: - | Notes: DEVIATIONS from "Do": the CLI is flag-based, so the commands are
+  `--root-helper status|check|apply|postpone|skip` with `--json`, not an `update` subcommand. Unprivileged shells do not
+  leave a request and wait (that needs ids on check requests; the app is the unprivileged path); they are told to run as
+  the helper's account. `Request::UpdatePostpone`/`UpdateSkip {version}` exist and are validated; the server-side
+  `leave_update_*` writers come with U4 where they are first used. `skip` works now (pins the release). `postpone` refuses
+  until U5b schedules a deadline (it takes the extension as an argument, wired to `grace` then). `status` prints a
+  `systemctl list-timers` hint instead of a next-check time. NOT DONE: the conditional-GET spike (carried from U1);
+  nothing relies on ETag, so it stays optional. The `--help` text of `--root-helper` lists the new actions.
 
 ### U4 [ ] App: Updates card, banner, health
 
@@ -265,3 +273,4 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
 - 2026-10-31 U0 done: decision 0153 written and accepted by the owner; next step U1.
 - 2026-10-31 U1 done: cadence, migration and test; install_channels 8/8 pass; tick moved to U5b, ETag spike carried to U3; next step U2.
 - 2026-10-31 U2 done: update-state.json, honest notice, rolled-back pin; server tests pass; next step U3.
+- 2026-10-31 U3 done: helper actions status/check/apply/postpone/skip, two new requests, install guide fixed; next step U4 (client and core; a fresh session is cheaper).

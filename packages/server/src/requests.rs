@@ -29,6 +29,11 @@ pub enum Request {
     },
     /// Refresh the signed release notice without installing anything.
     CheckUpdate {},
+    /// Ask for one more grace period before the scheduled install (at most three times, decision 0153).
+    UpdatePostpone {},
+    /// Stop offering this release; a newer one is offered again. The version is the one the owner saw, so a request
+    /// made against an older notice cannot skip a newer release.
+    UpdateSkip { version: String },
     /// Remove this server (decision 0072); the flags are the owner's opt-ins for host cleanup.
     Uninstall {
         #[serde(default)]
@@ -45,6 +50,8 @@ impl Request {
         match self {
             Request::UpdateNow { .. } => "update-now",
             Request::CheckUpdate {} => "check-update",
+            Request::UpdatePostpone {} => "update-postpone",
+            Request::UpdateSkip { .. } => "update-skip",
             Request::Uninstall { .. } => "uninstall",
         }
     }
@@ -205,12 +212,7 @@ pub fn available_update(requests_dir: &Path, current: &str) -> Option<String> {
     if available <= running {
         return None;
     }
-    (!version.is_empty()
-        && version.len() <= 64
-        && version
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c)))
-    .then(|| version.to_string())
+    is_release_version(version).then(|| version.to_string())
 }
 
 /// Reads and removes the pending requests (at most 16 per run). Anything that is not a valid request is removed
@@ -265,7 +267,21 @@ fn read_one(path: &Path) -> Result<Request, &'static str> {
             return Err("invalid update id");
         }
     }
+    if let Request::UpdateSkip { version } = &request {
+        if !is_release_version(version) {
+            return Err("invalid version");
+        }
+    }
     Ok(request)
+}
+
+/// The charset and length a notice's version must have, shared by what the server shows and what it may ask for.
+pub fn is_release_version(version: &str) -> bool {
+    !version.is_empty()
+        && version.len() <= 64
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c))
 }
 
 #[cfg(test)]
@@ -305,6 +321,42 @@ mod tests {
             0,
             "nothing is left to trigger the path unit again"
         );
+    }
+
+    #[test]
+    fn postpone_and_skip_are_read_and_a_skip_names_a_plain_version() {
+        let d = dir();
+        std::fs::write(d.join("a.json"), r#"{"action":"update-postpone"}"#).unwrap();
+        std::fs::write(
+            d.join("b.json"),
+            r#"{"action":"update-skip","version":"0.2.0-beta.1"}"#,
+        )
+        .unwrap();
+        let mut got = take_requests(&d);
+        got.sort_by_key(|r| r.name());
+        assert_eq!(
+            got,
+            vec![
+                Request::UpdatePostpone {},
+                Request::UpdateSkip {
+                    version: "0.2.0-beta.1".into()
+                }
+            ]
+        );
+        for (name, body) in [
+            ("c.json", r#"{"action":"update-skip"}"#),
+            ("d.json", r#"{"action":"update-skip","version":"../x"}"#),
+            ("e.json", r#"{"action":"update-skip","version":""}"#),
+            ("f.json", r#"{"action":"update-postpone","by":"9"}"#),
+            (
+                "g.json",
+                r#"{"action":"update-skip","version":"1.0","id":"x"}"#,
+            ),
+        ] {
+            std::fs::write(d.join(name), body).unwrap();
+        }
+        assert!(take_requests(&d).is_empty());
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 0);
     }
 
     #[test]

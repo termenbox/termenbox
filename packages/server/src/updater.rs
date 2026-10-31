@@ -37,6 +37,13 @@ pub struct Window {
     end: u32,
 }
 
+impl std::fmt::Display for Window {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let t = |m: u32| format!("{:02}:{:02}", m / 60, m % 60);
+        write!(f, "{}-{}", t(self.start), t(self.end))
+    }
+}
+
 impl Window {
     pub fn parse(s: &str) -> Result<Self> {
         let bad = || anyhow!("maintenance_window `{s}` is not like 03:00-04:00");
