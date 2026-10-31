@@ -14,7 +14,7 @@ export function issueBody({ dir, previewUrl, runId }) {
 }
 
 /**
- * Copies one ticked render (its video, GIF, stills and render.json) into the docs media folder and returns the file names. The hash
+ * Copies one ticked render (its video, poster, stills and render.json) into the docs media folder and returns the file names. The hash
  * the reviewer ticked must be the hash the render was made with, so a re-render after the tick never lands under the old approval.
  */
 export function approve({ artifactDir, mediaDir, case: id, profile, hash }) {

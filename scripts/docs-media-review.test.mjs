@@ -60,12 +60,12 @@ test('approve copies the ticked render into the docs folder and refuses a hash t
   const art = mkdtempSync(join(tmpdir(), 'tb-art-')), out = mkdtempSync(join(tmpdir(), 'tb-docs-'));
   try {
     writeFileSync(join(art, 'add-server-phone.mp4'), 'v');
-    writeFileSync(join(art, 'add-server-phone.gif'), 'g');
-    writeFileSync(join(art, 'add-server-phone.render.json'), JSON.stringify({ case: 'add-server', profile: 'phone', hash: H, version: '1.0.0', files: ['add-server-phone.mp4', 'add-server-phone.gif', '../escape.txt'] }));
+    writeFileSync(join(art, 'add-server-phone-poster.png'), 'g');
+    writeFileSync(join(art, 'add-server-phone.render.json'), JSON.stringify({ case: 'add-server', profile: 'phone', hash: H, version: '1.0.0', files: ['add-server-phone.mp4', 'add-server-phone-poster.png', '../escape.txt'] }));
     assert.throws(() => approve({ artifactDir: art, mediaDir: out, case: 'add-server', profile: 'phone', hash: 'f'.repeat(16) }), /not the ticked/);
     assert.equal(existsSync(join(out, 'add-server-phone.mp4')), false, 'nothing was copied');
     const names = approve({ artifactDir: art, mediaDir: out, case: 'add-server', profile: 'phone', hash: H });
-    assert.deepEqual(names, ['add-server-phone.mp4', 'add-server-phone.gif', 'add-server-phone.render.json'], 'a path outside the folder is not copied');
+    assert.deepEqual(names, ['add-server-phone.mp4', 'add-server-phone-poster.png', 'add-server-phone.render.json'], 'a path outside the folder is not copied');
     assert.equal(readFileSync(join(out, 'add-server-phone.mp4'), 'utf8'), 'v');
     assert.equal(JSON.parse(readFileSync(join(out, 'add-server-phone.render.json'), 'utf8')).hash, H, 'the hash travels with the video');
   } finally { rmSync(art, { recursive: true, force: true }); rmSync(out, { recursive: true, force: true }); }

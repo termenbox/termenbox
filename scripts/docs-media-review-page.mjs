@@ -29,7 +29,7 @@ export function buildPage(dir, { title = 'Docs media review' } = {}) {
     const stills = (r.files ?? []).filter((f) => f.endsWith('.png'));
     return `<article id="${esc(r.base)}">
 <h2>${esc(r.case)} <small>(${esc(r.profile)})</small></h2>
-<video controls playsinline muted loop preload="metadata" poster="${esc(stills[0] ?? `${r.base}.gif`)}" src="${esc(r.base)}.mp4"></video>
+<video controls playsinline muted loop preload="metadata" poster="${esc(r.poster ?? stills[0] ?? '')}" src="${esc(r.base)}.mp4"></video>
 ${stills.length ? `<div class="stills">${stills.map((s) => `<a href="${esc(s)}"><img src="${esc(s)}" alt="${esc(s)}" loading="lazy"></a>`).join('')}</div>` : ''}
 <dl><dt>input hash</dt><dd>${esc(r.hash)}</dd><dt>pace</dt><dd>${esc(r.pace)}</dd><dt>captions</dt><dd>${r.captions === false ? 'off' : 'on'}</dd><dt>version</dt><dd>${esc(r.version)}</dd><dt>rendered</dt><dd>${esc(r.renderedAt)}</dd></dl>
 </article>`;
@@ -47,7 +47,7 @@ function selfTest() {
   try {
     for (const [c, p] of [['add-server', 'phone'], ['recent-folder', 'desktop']]) {
       const base = `${c}-${p}`;
-      writeFileSync(join(dir, `${base}.render.json`), JSON.stringify({ case: c, profile: p, pace: 'normal', captions: true, hash: 'ab12'.repeat(4), version: '1.0.0', renderedAt: '2026-10-31T00:00:00Z', files: [`${base}.mp4`, `${base}.gif`, `${base}-step.png`] }));
+      writeFileSync(join(dir, `${base}.render.json`), JSON.stringify({ case: c, profile: p, pace: 'normal', captions: true, hash: 'ab12'.repeat(4), version: '1.0.0', renderedAt: '2026-10-31T00:00:00Z', files: [`${base}.mp4`, `${base}-poster.png`, `${base}-step.png`], poster: `${base}-poster.png` }));
     }
     writeFileSync(join(dir, 'x-phone.render.json'), JSON.stringify({ case: '<script>alert(1)</script>', profile: 'phone', hash: 'h', files: [] }));
     const html = buildPage(dir);
@@ -57,6 +57,7 @@ function selfTest() {
     assert.ok(html.includes('&lt;script&gt;'));
     assert.ok(html.includes('name="robots" content="noindex"'));
     assert.ok(html.includes('prefers-color-scheme:dark') && html.includes('width=device-width'));
+    assert.ok(html.includes('poster="add-server-phone-poster.png"'), 'the poster is the video poster');
     assert.ok(html.indexOf('add-server-phone') < html.indexOf('recent-folder-desktop'), 'sorted');
   } finally { rmSync(dir, { recursive: true, force: true }); }
   console.log('ok  docs-media-review-page self-test');
