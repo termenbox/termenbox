@@ -866,15 +866,18 @@ impl WorkspaceManager {
                     ));
                 };
                 let (event, left) = match &msg {
-                    ClientMessage::UpdateCheck {} => {
-                        ("update_check_requested", crate::requests::leave_update_check(dir))
-                    }
-                    ClientMessage::UpdatePostpone {} => {
-                        ("update_postpone_requested", crate::requests::leave_update_postpone(dir))
-                    }
-                    ClientMessage::UpdateSkip { version } => {
-                        ("update_skip_requested", crate::requests::leave_update_skip(dir, version))
-                    }
+                    ClientMessage::UpdateCheck {} => (
+                        "update_check_requested",
+                        crate::requests::leave_update_check(dir),
+                    ),
+                    ClientMessage::UpdatePostpone {} => (
+                        "update_postpone_requested",
+                        crate::requests::leave_update_postpone(dir),
+                    ),
+                    ClientMessage::UpdateSkip { version } => (
+                        "update_skip_requested",
+                        crate::requests::leave_update_skip(dir, version),
+                    ),
                     _ => unreachable!(),
                 };
                 left.map_err(|_| {

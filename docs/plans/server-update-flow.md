@@ -207,7 +207,7 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   `systemctl list-timers` hint instead of a next-check time. NOT DONE: the conditional-GET spike (carried from U1);
   nothing relies on ETag, so it stays optional. The `--help` text of `--root-helper` lists the new actions.
 
-### U4 [ ] App: Updates card, banner, health
+### U4 [x] App: Updates card, banner, health
 
 - Needs: U3.
 - Do: protocol (`packages/core/src/protocol.rs`): `update_capabilities`, `UpdateState` message with phase, version,
@@ -217,7 +217,22 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
 - Tests: protocol round-trip, `hub.test.ts`, component test with a mocked state for each phase; a phone check named by
   platform (`a-phone-check-names-its-platform`); the old-client/new-server and new-client/old-server pairs.
 - Verify: `cd packages/client && pnpm test` and `cargo test -p termenbox-core`.
-- PR: - | Merged: - | Notes:
+- PR: this branch | Merged: - | Notes: protocol: client `update_check`, `update_postpone`, `update_skip {version}`; server
+  `update_check_requested` and `update_state {phase, available, deadline, checked_at, checked_ok_at, error, can_postpone}`;
+  `auth_ok.update_capabilities` (`check|postpone|skip`, empty without a helper). The server pushes `update_state` after
+  auth and on every change (20 s poll, so a check's outcome shows within ~20 s) and writes fixed request files
+  (`leave_update_postpone`, `leave_update_skip`, owner only; the skip version is charset-checked before it is written).
+  Client: `lib/updateState.ts` (pure text and staleness), hub `checkUpdate|postponeUpdate|skipUpdate|canUpdate`, an
+  **Updates** dialog from the server menu (`ServerUpdatesDialog.svelte`) and a floating `UpdateBanner.svelte` in the #391
+  layer (hidden while a needs-you banner shows). DEVIATIONS: the card is a dialog from the server menu, not a section of
+  the row (the row keeps one height); the 72 h warning is in the card, not in `ServerHealth` (that is a different
+  message, U7 can fold it in); the banner's tap opens the Updates card on the servers page, which leaves the open
+  workspace. Compatibility: a new client with an old server gets no capabilities, so no button is offered (hub test);
+  an old client ignores the two new server messages and the new `auth_ok` key. Postpone shows only once U5b schedules a
+  deadline (`can_postpone` is false until then). PHONE CHECK: none; the dialog and banner are covered by server-render
+  tests only, not run on an iPhone, an Android phone or an emulator (`a-phone-check-names-its-platform`). Verify passed
+  (client 1053 tests + svelte-check 0 errors; core and server tests). `control::a_real_tmux_pushes_window_and_directory_changes`
+  times out in this container, alone and in a full run; `control.rs` is untouched here, baseline on develop not established.
 
 ### U5 [ ] Grace period and fallback
 
@@ -274,3 +289,4 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
 - 2026-10-31 U1 done: cadence, migration and test; install_channels 8/8 pass; tick moved to U5b, ETag spike carried to U3; next step U2.
 - 2026-10-31 U2 done: update-state.json, honest notice, rolled-back pin; server tests pass; next step U3.
 - 2026-10-31 U3 done: helper actions status/check/apply/postpone/skip, two new requests, install guide fixed; next step U4 (client and core; a fresh session is cheaper).
+- 2026-10-31 U4 done: update_state and the three owner actions on the wire, Updates dialog, banner, hub and compat tests; next step U5a (parser accepts and ignores grace/on_timeout).

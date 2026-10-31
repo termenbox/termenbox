@@ -15,6 +15,7 @@
   import WorkspaceActions from './WorkspaceActions.svelte';
   import WindowMenu from './WindowMenu.svelte';
   import NeedsYouBanner from './NeedsYouBanner.svelte';
+  import UpdateBanner from './UpdateBanner.svelte';
   import NewWorkspaceSheet from './NewWorkspaceSheet.svelte';
   import NewTabSheet from './NewTabSheet.svelte';
   import RenameDialog from './RenameDialog.svelte';
@@ -919,6 +920,17 @@
     sheetHeight = 'closed';
   }
 
+  /** The Updates card of a server (decision 0153), from the banner: it lives on the servers page. */
+  let updatesFor: string | null = null;
+  function openUpdates(id: string) {
+    updatesFor = id;
+    leaveServer();
+  }
+  function updateNow(id: string) {
+    const s = $hubServers.find(x => x.id === id);
+    if (s?.updateAvailable && confirm(`Update "${s.server.server_name || 'Server'}" to v${s.updateAvailable}? The server restarts and reconnects in a few seconds.`)) hub.updateServer(id);
+  }
+
   function go(dest: Destination) {
     if (dest !== 'settings') serversPage = false;
     listPage = dest === 'workspaces' && !!activeKey; // Workspaces is one page, wherever it is pressed from; opening a workspace leaves it
@@ -1168,7 +1180,9 @@
       onmenu={() => { titleTapped(); menuOpen = true; }} expanded={wide ? $layout.sidebarOpen : sheetHeight !== 'closed'} controls={wide && $layout.sidebarOpen ? 'workspace-sidebar' : undefined} onworkspaces={() => { if (wide) { toggleSidebar(); return; } crumb('workspaces sheet toggled'); showWorkspaceList(); sheetHeight = sheetHeight === 'closed' ? 'half' : 'closed'; }} />
     {/if}
     <!-- Zero height: the banner floats over the content and never resizes the terminal (#372). -->
-    <div class="banner-layer"><NeedsYouBanner {waiting} {now} onopen={openWaiting} onhome={() => go('home')} ondismiss={(key, id) => sendAttention(key, { type: 'dismiss', attention_id: id })} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} /></div>
+    <div class="banner-layer"><NeedsYouBanner {waiting} {now} onopen={openWaiting} onhome={() => go('home')} ondismiss={(key, id) => sendAttention(key, { type: 'dismiss', attention_id: id })} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} />
+      <!-- A question for the owner comes first; the update waits behind it rather than stacking on top of it. -->
+      {#if waiting.length === 0}<UpdateBanner servers={$hubServers} {now} onupdate={updateNow} onpostpone={(id) => hub.postponeUpdate(id)} onskip={(id) => hub.skipUpdate(id)} onopen={openUpdates} />{/if}</div>
 
     {#if iosHint && !selectedServer}
       <div style="display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--bg-secondary); border-bottom: 1px solid var(--border); font-size: 0.85rem;">
@@ -1190,7 +1204,7 @@
         </div>
       {/snippet}
       {#if serversPage || servers.length === 0}
-        <ServerList {servers} states={$hubServers} counts={workspaceCounts} onpause={(id) => { hub.pause(id); }} onresume={(id) => hub.resume(id)} onretry={(id) => hub.retry(id)} onadd={() => { addPrefill = null; addStart = 'install'; showAddServer = true; }} onscan={() => { addPrefill = null; addStart = 'scan'; showAddServer = true; }} onremove={removeServer} onshare={shareServer} onrename={renameServer} onupdate={(id) => hub.updateServer(id)} />
+        <ServerList {servers} states={$hubServers} counts={workspaceCounts} onpause={(id) => { hub.pause(id); }} onresume={(id) => hub.resume(id)} onretry={(id) => hub.retry(id)} onadd={() => { addPrefill = null; addStart = 'install'; showAddServer = true; }} onscan={() => { addPrefill = null; addStart = 'scan'; showAddServer = true; }} onremove={removeServer} onshare={shareServer} onrename={renameServer} onupdate={(id) => hub.updateServer(id)} oncheck={(id) => hub.checkUpdate(id)} onpostpone={(id) => hub.postponeUpdate(id)} onskip={(id) => hub.skipUpdate(id)} bind:updatesFor />
       {:else if $destination === 'home'}
         <Home workspaces={$allWorkspaces} agents={$allAgents} servers={$hubServers} tabStates={$allTabStates} {now} {lastKey} {focusKey} offer={hookOffer} onhook={homeHook} onopen={openWaiting} onservers={leaveServer} onnew={newWorkspace}
           onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })}

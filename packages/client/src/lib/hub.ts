@@ -1,7 +1,8 @@
 import { derived, writable } from 'svelte/store';
 import { Connection, type ConnectionOptions, type ConnState } from './connection';
 import { applyActivity, applyAttention, applyEvents, applySnapshot, syncRequest, type AgentMap } from './agents';
-import type { ClientMessage, ServerHealth, ServerListItem, ServerMessage, TabAgentState, WorkspaceInfo } from './protocol';
+import type { ClientMessage, ServerHealth, ServerListItem, ServerMessage, TabAgentState, UpdateInfo, WorkspaceInfo } from './protocol';
+import { CHECK_WAIT_MS, checkAnswered, type UpdateAction } from './updateState';
 import type { Target } from './transport';
 import { storedBundle, type PathFailure } from './paths';
 import { BundleRejected, decodeBundle, verifyBundle } from './bundle';
@@ -18,6 +19,12 @@ export interface HubServer {
   version: string;
   /** A newer release the server could install but has not (`auth_ok.update_available`); empty when up to date. */
   updateAvailable?: string;
+  /** What the updater knows (`update_state`, decision 0153); absent from an older server. */
+  update?: UpdateInfo;
+  /** The update actions this server's helper accepts (`auth_ok.update_capabilities`); empty from an older server. */
+  updateCapabilities?: string[];
+  /** A check was asked for and the updater has not recorded its outcome yet. */
+  checking?: boolean;
   /** The owner asked this server to update; it restarts when done, and the reconnect brings the new version. */
   updating?: boolean;
   backends: string[];
@@ -40,6 +47,8 @@ export interface HubServer {
 export interface HubWorkspace extends WorkspaceInfo { serverId: string; key: string; serverName: string }
 interface Entry extends HubServer {
   updateFrom?: string;
+  checkBaseline?: number;
+  checkTimer?: ReturnType<typeof setTimeout>;
   updateTimer?: ReturnType<typeof setTimeout>;
   connection: HubConnection | null;
   unsubscribe?: () => void;
@@ -181,6 +190,41 @@ export class ServerHub {
     try { this.send(id, { type: 'update_server' }); }
     catch { this.finishUpdate(e, 'Server update: The request could not be sent.'); }
   }
+  /** Whether this server's helper accepts `action`; a client offers no button an older helper would reject. */
+  canUpdate(id: string, action: UpdateAction): boolean {
+    const e = this.entries.get(id);
+    return !!e && e.state === 'connected' && !!e.updateCapabilities?.includes(action);
+  }
+  /** Asks for a check without installing; `checking` holds until the updater records an attempt or the wait ends. */
+  checkUpdate(id: string) {
+    const e = this.entries.get(id);
+    if (!e || e.checking || !this.canUpdate(id, 'check')) return;
+    e.checkBaseline = e.update?.checked_at ?? 0;
+    e.checking = true;
+    clearTimeout(e.checkTimer);
+    e.checkTimer = setTimeout(() => this.endCheck(e), CHECK_WAIT_MS);
+    this.publishServers();
+    try { this.send(id, { type: 'update_check' }); }
+    catch { this.endCheck(e); }
+  }
+  private endCheck(e: Entry) {
+    clearTimeout(e.checkTimer);
+    if (!e.checking) return;
+    e.checking = false;
+    this.publishServers();
+  }
+  /** One more grace period; only while the server says it is allowed. */
+  postponeUpdate(id: string) {
+    if (!this.canUpdate(id, 'postpone') || !this.entries.get(id)?.update?.can_postpone) return;
+    try { this.send(id, { type: 'update_postpone' }); } catch { /* the card still shows the deadline */ }
+  }
+  /** Stops offering the release the owner is looking at. */
+  skipUpdate(id: string) {
+    const e = this.entries.get(id);
+    const version = e?.update?.available || e?.updateAvailable;
+    if (!e || !version || !this.canUpdate(id, 'skip')) return;
+    try { this.send(id, { type: 'update_skip', version }); } catch { /* the notice stays */ }
+  }
   private beginUpdate(e: Entry) {
     if (e.updating) return;
     e.updateFrom = e.version.split('+')[0];
@@ -250,6 +294,8 @@ export class ServerHub {
         const { claim, ...saved } = e.server;
         e.server = { ...saved, server_name: saved.server_name || msg.server_name };
         e.version = msg.version ?? ''; e.updateAvailable = msg.update_available ?? '';
+        e.updateCapabilities = msg.update_capabilities ?? [];
+        this.endCheck(e);
         if (e.updating && newerRelease(e.version, e.updateFrom ?? '')) this.finishUpdate(e);
         e.backends = msg.backends ?? []; e.tabs = !!msg.tabs; e.acpAgents = msg.acp_agents ?? [];
         e.controlMode = !!msg.control_mode; e.tmuxVersion = msg.tmux_version ?? ''; e.prefix = msg.prefix ?? '';
@@ -287,6 +333,12 @@ export class ServerHub {
         if (result.gap) connection.send({ type: 'agent_sync', after: syncRequest(e.agents) });
       }
       if (msg.type === 'update_status') { e.updateAvailable = msg.available ?? ''; this.publishServers(); }
+      if (msg.type === 'update_state') {
+        const { type: _type, ...info } = msg;
+        e.update = info;
+        if (e.checking && checkAnswered(info, e.checkBaseline ?? 0)) e.checking = false;
+        this.publishServers();
+      }
       if (msg.type === 'update_requested') this.beginUpdate(e);
       if (msg.type === 'error' && e.updating && (msg.message.startsWith('Server update:') || msg.message === 'Only the owner can update this server')) this.finishUpdate(e);
       if (msg.type === 'candidates') void this.acceptBundle(e, msg.bundle, current);
@@ -319,7 +371,7 @@ export class ServerHub {
   }
   /** The server list alone: a health sample every 10 s per server must not rebuild the workspace, agent and window stores. */
   private publishServers(entries = [...this.entries.values()]) {
-    this.servers.set(entries.map(({ id, server, state, reason, version, updateAvailable, updating, backends, tabs, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures }) => ({ id, server, state, reason, version, updateAvailable, updating, backends, tabs, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures })));
+    this.servers.set(entries.map(({ id, server, state, reason, version, updateAvailable, update, updateCapabilities, checking, updating, backends, tabs, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures }) => ({ id, server, state, reason, version, updateAvailable, update, updateCapabilities, checking, updating, backends, tabs, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures })));
   }
   private publish() {
     const entries = [...this.entries.values()];
