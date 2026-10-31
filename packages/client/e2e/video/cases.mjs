@@ -360,6 +360,62 @@ Object.assign(cases, {
       expectThat(await page.locator('.xterm-rows').innerText().then((t) => t.includes('The test passes.')), 'the answer left the screen');
     },
   },
+
+  /** Chapter 5: the agent asks, the banner names the workspace, one tap answers, the status goes to Working. */
+  'answer-from-the-train': {
+    title: 'Answer your agent from anywhere',
+    group: 'start',
+    page: 'docs/course/05-answer-from-the-train.md',
+    server: 'scripted',
+    inputs: ['packages/client/src/App.svelte', 'packages/client/src/lib/decision.ts', 'packages/client/src/lib/notify.ts', 'packages/client/e2e/app-lib.mjs', 'packages/client/e2e/video/**'],
+    steps: [
+      { id: 'away', caption: 'You left your desk; your agent keeps working', label: null },
+      { id: 'banner', caption: 'When it needs you, a banner names the workspace and offers its choices', label: null },
+      { id: 'answer', caption: 'Tap your answer; it goes to the tab that asked', label: 'Yes' },
+      { id: 'working', caption: 'The agent takes it and goes back to Working', label: null },
+    ],
+    storage: {},
+    prepare(server) {
+      server.states = { s1: 'working', s2: 'idle', s3: 'idle' };
+      server.views.set('s1', server.view('s1', { tail: ['working'] }));
+      const handle = server.handle.bind(server);
+      // The banner and the card answer with `answer` (the workspace view uses workspace_answer): the agent takes it and works on.
+      server.handle = (ws, m) => {
+        if (m.type !== 'answer') return handle(ws, m);
+        server.received.push(m);
+        server.states[m.workspace] = 'working';
+        server.broadcast({ type: 'agent_events', events: [{ workspace: m.workspace, seq: 4, ts: Date.now(), source: 'hook', confidence: 'high', kind: 'state', state: 'working' }] });
+      };
+    },
+    async run(c) {
+      const { h, page, server } = c;
+      const tile = (label, n) => page.getByRole('button', { name: new RegExp(`^\\s*${n}\\s*\\S?\\s*${label}`) });
+      await tile('Working', 1).waitFor({ timeout: 8000 });
+      expectThat(await tile('Needs you', 0).isVisible(), 'something already needed an answer');
+      await h.step('away');
+      await h.pause();
+      // The agent asks (a hook reports the question with its choices).
+      server.states.s1 = 'needs_input';
+      server.broadcast({ type: 'agent_events', events: [
+        { workspace: 's1', seq: 2, ts: Date.now(), source: 'hook', confidence: 'high', kind: 'state', state: 'needs_input' },
+        { workspace: 's1', seq: 3, ts: Date.now(), source: 'hook', confidence: 'high', kind: 'prompt', id: 'p-s1', prompt_kind: 'choice', choices: ['Yes', 'No'] },
+      ] });
+      const yes = page.getByRole('button', { name: 'Yes', exact: true }).first();
+      await yes.waitFor({ state: 'visible', timeout: 8000 });
+      await h.step('banner', yes);
+      expectThat(await page.getByText('build', { exact: false }).first().isVisible(), 'the banner does not name the workspace');
+      await h.still('poster');
+      await h.result();
+      await h.step('answer', yes);
+      await h.tap(yes);
+      await tile('Working', 1).waitFor({ timeout: 8000 });
+      await h.step('working');
+      expectThat(await tile('Working', 1).isVisible() && await tile('Needs you', 0).isVisible(), 'the status did not go to Working');
+      expectThat(server.of('answer').length === 1 && server.of('answer')[0].choice === 0, `the answer sent was ${JSON.stringify(server.of('answer'))}`);
+      await h.still('working');
+      await h.result();
+    },
+  },
 });
 
 for (const [id, c] of Object.entries(cases)) checkDeclared(id, c.steps);
