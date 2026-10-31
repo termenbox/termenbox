@@ -1,9 +1,10 @@
 ---
 id: 0165-native-wrappers-ship-no-self-updater-until-the-owner-opts-in
 title: The native wrappers ship no self-updater, and nothing publishes a release, until the owner opts in and updates are signature-checked
-status: draft
+status: active
 date: 2026-11-01
 track: process
+accepted-by: Sergey Strebulaev <s@vivantel.dev>
 tags: [distribution, security, desktop, platform]
 ---
 

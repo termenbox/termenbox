@@ -1,9 +1,10 @@
 ---
 id: 0166-wrappers-inject-an-optional-capability-host-and-the-client-stays-native-free
 title: Wrappers inject an optional-capability host as a global, and back and keep-awake are wrapper-only chrome
-status: draft
+status: active
 date: 2026-11-01
 track: process
+accepted-by: Sergey Strebulaev <s@vivantel.dev>
 tags: [platform, client, mobile, parity]
 ---
 
