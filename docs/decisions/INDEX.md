@@ -149,3 +149,4 @@
 | 0147-remote-folders-are-browsed-through-an-owner-only-home-confined-listdir | Remote folders are browsed through a new owner-only, directories-only list_dir request confined to the server user's home | product | active | Sergey Strebulaev | - |
 | 0148-the-new-workspace-dialog-shows-recents-and-puts-the-rest-in-layers-inside-it | The New workspace dialog shows three recent agents and a readonly folder with recent chips, and puts the full lists in layers inside the dialog | product | active | Sergey Strebulaev | - |
 | 0149-a-workspace-is-a-server-record-and-each-tab-is-a-tmux-window | A workspace is a server record and each tab is a tmux window | product | active | Sergey Strebulaev | - |
+| 0150-all-work-happens-in-a-pool-worktree | All work happens in a worktree from a fixed pool, never in the main checkout | process | draft | - | - |
