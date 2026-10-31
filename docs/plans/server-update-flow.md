@@ -1,6 +1,6 @@
 # Server update flow: watch, notify, check, update, grace
 
-Decision: 0154. Refines decisions 0063 (signed releases, opt-in host updates), 0076 (updater), 0077 (root actions by request file),
+Tracking issue: #405. Decision: 0154. Refines decisions 0063 (signed releases, opt-in host updates), 0076 (updater), 0077 (root actions by request file),
 0131 (update policy). Keeps guardrails `updates-are-verified-and-reversible`, `unprivileged-server-never-holds-root`,
 `manifest-url-resolution`, `host-changes-are-journaled`, `notifications-carry-no-agent-text`, `resource-constraints`.
 
