@@ -123,11 +123,12 @@ Do: write the chapter with the markers for `recent-folder` (phone).
 Done-when: the Check passes.
 Progress (2026-10-31): `docs/course/03-first-workspace.md` written (steps from `recent-folder`, media marker `recent-folder-phone`, two trouble entries: agent not installed, folder outside the home directory). The Check reports only the Next link to chapter 4 (lands with 4.3d) and the unpicked video.
 
-### 4.3d Chapter 4, Talk to your agent — [ ]‖
+### 4.3d Chapter 4, Talk to your agent — [x]‖
 Class: implement · Needs: 3.4, 4.1, 4.2 · Check: `node scripts/check-course.mjs docs/course/04-talk-to-your-agent.md`
 Context: as 4.3a; reference `docs/guide/workspaces.md`; failures: the soft keyboard covers the input (safe areas), a key that the phone keyboard lacks (the key row).
 Do: write the chapter with the markers for `talk-to-agent` (phone).
 Done-when: the Check passes.
+Progress (2026-10-31): `docs/course/04-talk-to-your-agent.md` written (steps from `talk-to-agent`, media marker `talk-to-agent-phone`). Trouble entries are "text typed but not sent" and "a key the phone lacks" (the key row has Escape, Ctrl+C, Tab, Ctrl, arrows; it has no Enter, only a newline key). The plan's "soft keyboard covers the input" is not written: no guide or fact documents it, and the procedure forbids inventing a failure; the cold read (5.2) will show whether it happens. The Check reports only the Next link to chapter 5 and the unpicked video.
 
 ### 4.3e Chapter 5, Answer from the train — [ ]‖
 Class: implement · Needs: 3.5, 4.1, 4.2 · Check: `node scripts/check-course.mjs docs/course/05-answer-from-the-train.md`
