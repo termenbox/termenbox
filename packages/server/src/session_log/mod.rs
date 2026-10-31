@@ -25,6 +25,7 @@ use crate::events::sanitize_block;
 
 #[cfg(test)]
 mod contract;
+pub mod scan;
 #[cfg(test)]
 mod stub;
 #[cfg(test)]
@@ -101,10 +102,14 @@ pub struct Hit {
 }
 
 /// The snippet of `raw` around the first match of `needle`, found in the *scrubbed* text. A match inside text the
-/// scrubber hides is not a match: otherwise a query could confirm a guess at a secret one prefix at a time.
+/// scrubber hides is not a match: otherwise a query could confirm a guess at a secret one prefix at a time. The match
+/// ignores case and accents, as the scan does (`scan::Needle`).
 pub fn snippet(raw: &str, needle: &str) -> Option<(String, (usize, usize))> {
-    let needle: Vec<char> = needle.chars().map(fold).collect();
-    if needle.is_empty() {
+    let mut want: Vec<char> = Vec::new();
+    for c in needle.chars() {
+        fold_char(c, |f| want.push(f));
+    }
+    if want.is_empty() {
         return None;
     }
     let text = sanitize_block(raw, MAX_TEXT_CHARS, MAX_TEXT_LINES);
@@ -112,11 +117,20 @@ pub fn snippet(raw: &str, needle: &str) -> Option<(String, (usize, usize))> {
         .chars()
         .map(|c| if c == '\n' { ' ' } else { c })
         .collect();
-    let folded: Vec<char> = chars.iter().copied().map(fold).collect();
-    let start = folded
-        .windows(needle.len())
-        .position(|w| w == needle.as_slice())?;
-    let end = start + needle.len();
+    // A char can fold to several or to none, so each folded char remembers the char it came from.
+    let mut folded: Vec<char> = Vec::with_capacity(chars.len());
+    let mut origin: Vec<usize> = Vec::with_capacity(chars.len());
+    for (i, c) in chars.iter().enumerate() {
+        fold_char(*c, |f| {
+            folded.push(f);
+            origin.push(i);
+        });
+    }
+    let found = folded
+        .windows(want.len())
+        .position(|w| w == want.as_slice())?;
+    let start = origin[found];
+    let end = origin[found + want.len() - 1] + 1;
     let from = start.saturating_sub(SNIPPET_CONTEXT);
     let to = (end + SNIPPET_CONTEXT).min(chars.len());
     let mut out = String::new();
@@ -131,9 +145,20 @@ pub fn snippet(raw: &str, needle: &str) -> Option<(String, (usize, usize))> {
     Some((out, (start - from + lead, end - from + lead)))
 }
 
-/// One char of case folding; step 3 extends it with accent folding for the scan.
-fn fold(c: char) -> char {
-    c.to_lowercase().next().unwrap_or(c)
+/// Hands `push` the folded form of `c`: lower case with accents removed (canonical decomposition, combining marks
+/// dropped). The one definition of "the same letter" for the scan and for `snippet`.
+pub fn fold_char(c: char, mut push: impl FnMut(char)) {
+    if c.is_ascii() {
+        push(c.to_ascii_lowercase());
+        return;
+    }
+    for lower in c.to_lowercase() {
+        unicode_normalization::char::decompose_canonical(lower, |d| {
+            if !unicode_normalization::char::is_combining_mark(d) {
+                push(d);
+            }
+        });
+    }
 }
 
 /// The identity of a file at the moment a cursor was taken. The files are append-only, so growth is expected; a
@@ -147,13 +172,16 @@ pub struct Fingerprint {
 
 impl Fingerprint {
     pub fn of(path: &Path) -> std::io::Result<Self> {
+        Ok(Self::of_meta(&std::fs::metadata(path)?))
+    }
+
+    pub fn of_meta(m: &std::fs::Metadata) -> Self {
         use std::os::unix::fs::MetadataExt;
-        let m = std::fs::metadata(path)?;
-        Ok(Fingerprint {
+        Fingerprint {
             inode: m.ino(),
             size: m.size(),
             mtime_ns: m.mtime() as u128 * 1_000_000_000 + m.mtime_nsec() as u128,
-        })
+        }
     }
 
     /// Whether a cursor taken at `self` still points at the same content in the file as it is `now`.
