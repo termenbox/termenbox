@@ -9,6 +9,7 @@ use tracing::info;
 
 use crate::release::{ReleaseKeys, URL_PREFIX};
 use crate::requests::{take_requests, Request};
+use crate::update_state;
 use crate::updater::{HttpFetch, Outcome, Systemd, Trigger, UpdatePolicy, Updater};
 
 pub const DEFAULT_RELEASE_URL: &str =
@@ -181,17 +182,23 @@ fn update_lock(root: &Path) -> Result<std::fs::File> {
 
 async fn update_outcome(setup: &Setup, trigger: Trigger) -> Result<Outcome> {
     let _lock = update_lock(&setup.root_dir)?;
-    // Configuration/key errors happen before Updater::run and invalidate an earlier notice too.
-    if let Some(dir) = setup.requests_dir.parent() {
-        let _ = std::fs::remove_file(dir.join("update-status.json"));
+    // A configuration or key error happens before Updater::run: it is recorded as the reason the check failed, and
+    // an earlier notice stays.
+    let failed = |e: anyhow::Error| {
+        if let Some(dir) = setup.requests_dir.parent() {
+            update_state::record_failure(dir, &format!("{e:#}"));
+        }
+        e
+    };
+    let keys = ReleaseKeys::from_env().map_err(failed)?;
+    if keys.is_empty() {
+        return Err(failed(anyhow::anyhow!("no release keys configured")));
     }
-    let keys = ReleaseKeys::from_env()?;
-    anyhow::ensure!(!keys.is_empty(), "no release keys configured");
     let port = std::fs::read_to_string(setup.root_dir.join("http_port")).map_err(|_| {
-        anyhow::anyhow!(
+        failed(anyhow::anyhow!(
             "no http_port in {}; was this installed by the installer?",
             setup.root_dir.display()
-        )
+        ))
     })?;
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(60))
@@ -215,7 +222,8 @@ async fn update_outcome(setup: &Setup, trigger: Trigger) -> Result<Outcome> {
         .unwrap_or_else(|| DEFAULT_RELEASE_URL.into());
     let current = crate::version();
     // Root-owned, beside the journal; a file that does not parse stops the run (a typo must not read as `auto`).
-    let policy = UpdatePolicy::load(&setup.root_dir.join("update.toml"), &current)?;
+    let policy =
+        UpdatePolicy::load(&setup.root_dir.join("update.toml"), &current).map_err(failed)?;
     let updater = Updater {
         fetch: &fetch,
         service: &service,

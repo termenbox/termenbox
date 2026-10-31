@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 
 use crate::journal::{Change, Journal};
 use crate::release::{Channel, ChannelNotFollowed, Manifest, ReleaseKeys};
+use crate::update_state::{self, Event};
 
 /// How a server treats a newer release (`[update] mode`, decision 0131).
 #[derive(Debug, Clone, Copy, Default, serde::Deserialize, PartialEq, Eq)]
@@ -192,7 +193,7 @@ pub struct Updater<'a> {
     pub trigger: Trigger,
     /// Local time as minutes since midnight, for the maintenance window.
     pub now_minute: u32,
-    /// The directory the server reads its state from; `update-status.json` goes here. None: nothing is recorded.
+    /// The directory the server reads its state from; `update-state.json` and `update-status.json` go here. None: nothing is recorded.
     pub status_dir: Option<PathBuf>,
     /// The running version, as `crate::version()` reports it.
     pub current: String,
@@ -326,6 +327,7 @@ impl Updater<'_> {
         let path = dir.join("update-status.json");
         match version {
             Some(v) => {
+                self.note(Event::Available(v));
                 let body = serde_json::json!({
                     "available": v,
                     "current": self.current,
@@ -342,11 +344,41 @@ impl Updater<'_> {
         Ok(())
     }
 
+    /// Records an event in `update-state.json` (decision 0153), stamped with the policy and version of this run.
+    fn note(&self, event: Event) {
+        if let Some(dir) = &self.status_dir {
+            update_state::record(
+                dir,
+                &format!("{:?}", self.policy.channel).to_ascii_lowercase(),
+                &format!("{:?}", self.policy.mode).to_ascii_lowercase(),
+                &self.current,
+                event,
+            );
+        }
+    }
+
     pub async fn run(&self) -> Result<Outcome> {
-        // Invalidate the previous check before fetching. A verified installable release is recorded again below;
-        // a download or health failure can keep that valid notice so the owner can retry.
-        let _ = self.record_available(None);
-        self.run_inner().await
+        // The previous notice stays while the check runs and when it fails: a failure is recorded as `error`, it does
+        // not erase what the owner was told. Only a verified answer that there is nothing to offer clears it.
+        let result = self.run_inner().await;
+        match &result {
+            Ok(Outcome::UpToDate | Outcome::Frozen | Outcome::OtherChannel) => {
+                let _ = self.record_available(None);
+                self.note(Event::UpToDate);
+            }
+            Ok(Outcome::Held) => {
+                let _ = self.record_available(None);
+                self.note(Event::Held);
+            }
+            Ok(Outcome::Available { version, .. }) => self.note(Event::Available(version)),
+            Ok(Outcome::Updated { from, to }) => {
+                let _ = self.record_available(None);
+                self.note(Event::Updated { from, to });
+            }
+            Ok(Outcome::RolledBack { to, reason }) => self.note(Event::RolledBack { to, reason }),
+            Err(e) => self.note(Event::Failed(&format!("{e:#}"))),
+        }
+        result
     }
 
     async fn run_inner(&self) -> Result<Outcome> {
@@ -377,7 +409,6 @@ impl Updater<'_> {
             return Ok(Outcome::Frozen);
         }
         if !manifest.is_newer_than(&self.current)? {
-            self.record_available(None)?;
             return Ok(Outcome::UpToDate);
         }
         // Recorded before anything is downloaded, so the app's card is truthful between the check and the install
@@ -391,7 +422,15 @@ impl Updater<'_> {
             });
         }
         if self.trigger == Trigger::Timer {
-            let hold_back = if self.policy.mode == Mode::Notify {
+            // A release that was rolled back is not retried by the timer; the owner can ask again, or a newer one
+            // replaces it.
+            let pinned = self
+                .status_dir
+                .as_deref()
+                .is_some_and(|dir| update_state::State::load(dir).is_pinned(&manifest.version));
+            let hold_back = if pinned {
+                Some("this release was rolled back; it is not retried until a newer one appears")
+            } else if self.policy.mode == Mode::Notify {
                 Some("notify mode: the owner installs it")
             } else if manifest.is_major_bump_from(&self.current)? {
                 Some("a new major version needs the owner's confirmation")
@@ -411,6 +450,7 @@ impl Updater<'_> {
                 });
             }
         }
+        self.note(Event::Installing);
         let binary = manifest.binary(&self.arch)?;
         let expected = binary.sha256.to_ascii_lowercase();
         let bytes = self.fetch.get(&binary.url).await?;
@@ -487,7 +527,6 @@ impl Updater<'_> {
 
         self.service.restart().await?;
         if self.wait_healthy().await {
-            let _ = self.record_available(None);
             return Ok(Outcome::Updated {
                 from: core_version(&self.current).to_string(),
                 to: manifest.version,
@@ -833,18 +872,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_held_frozen_or_wrong_channel_check_removes_a_previous_notice() {
-        for case in ["signature", "hold", "freeze", "channel", "current"] {
+    async fn a_held_frozen_or_wrong_channel_check_removes_a_previous_notice() {
+        for case in ["hold", "freeze", "channel", "current"] {
             let Some(w) = world("0.2.0", case == "freeze", b"new binary") else {
                 return;
             };
-            let mut f = fake(&w);
-            if case == "signature" {
-                f.files.insert(
-                    "https://rel/manifest.json.sig".into(),
-                    b"bad signature".to_vec(),
-                );
-            }
+            let f = fake(&w);
             let s = svc(&w, 1, true);
             let mut u = updater(
                 &w,
@@ -861,13 +894,82 @@ mod tests {
             }
             u.record_available(Some("0.3.0")).unwrap();
             let out = u.run().await;
-            assert_eq!(out.is_err(), case == "signature");
+            assert!(out.is_ok(), "{case}");
             assert!(!w.dir.join("update-status.json").exists(), "{case}");
             assert_eq!(*s.restarts.lock().unwrap(), 0);
             if case == "hold" {
                 assert!(f.fetched.lock().unwrap().is_empty());
             }
         }
+    }
+
+    #[tokio::test]
+    async fn a_failed_check_keeps_the_notice() {
+        let Some(w) = world("0.2.0", false, b"new binary") else {
+            return;
+        };
+        let (mut f, s) = (fake(&w), svc(&w, 1, true));
+        let mut u = updater(&w, &f, &s, "0.1.0");
+        u.trigger = Trigger::Check;
+        assert!(u.run().await.is_ok());
+        f.files.insert(
+            "https://rel/manifest.json.sig".into(),
+            b"bad signature".to_vec(),
+        );
+        let mut u = updater(&w, &f, &s, "0.1.0");
+        u.trigger = Trigger::Check;
+        assert!(u.run().await.is_err());
+        assert_eq!(
+            crate::requests::available_update(&w.dir.join("requests"), "0.1.0").as_deref(),
+            Some("0.2.0"),
+            "the owner still sees the release"
+        );
+        let state = update_state::State::load(&w.dir);
+        assert!(state.error.is_some());
+        assert_eq!(state.available.as_deref(), Some("0.2.0"));
+        assert!(state.checked_ok_at <= state.checked_at && state.checked_ok_at > 0);
+    }
+
+    #[tokio::test]
+    async fn a_rolled_back_version_is_not_retried() {
+        let Some(w) = world("9.9.9", false, b"new binary") else {
+            return;
+        };
+        let f = fake(&w);
+        let unhealthy = svc(&w, 2, true);
+        let u = with_policy(
+            updater(&w, &f, &unhealthy, "0.1.0"),
+            Channel::Stable,
+            Mode::Auto,
+            Trigger::Timer,
+        );
+        assert!(matches!(u.run().await.unwrap(), Outcome::RolledBack { .. }));
+        assert!(update_state::State::load(&w.dir).is_pinned("9.9.9"));
+        assert_eq!(
+            crate::requests::available_update(&w.dir.join("requests"), "0.1.0"),
+            None
+        );
+        // The next timer run does not download or restart anything.
+        let fetched = f.fetched.lock().unwrap().len();
+        let restarts = *unhealthy.restarts.lock().unwrap();
+        let out = u.run().await.unwrap();
+        assert!(matches!(out, Outcome::Available { .. }), "{out:?}");
+        assert_eq!(
+            f.fetched.lock().unwrap().len(),
+            fetched + 2,
+            "manifest and signature only"
+        );
+        assert_eq!(*unhealthy.restarts.lock().unwrap(), restarts);
+        // The owner asking again does try it.
+        let healthy = svc(&w, 1, true);
+        let u = with_policy(
+            updater(&w, &f, &healthy, "0.1.0"),
+            Channel::Stable,
+            Mode::Auto,
+            Trigger::UpdateNow,
+        );
+        assert!(matches!(u.run().await.unwrap(), Outcome::Updated { .. }));
+        assert!(!update_state::State::load(&w.dir).is_pinned("9.9.9"));
     }
 
     #[tokio::test]

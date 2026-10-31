@@ -348,7 +348,11 @@ fn the_update_timer_checks_at_boot_and_every_six_hours_and_an_old_daily_timer_is
             .unwrap()
     };
     let out = rerun();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let migrated = r.unit("termenbox-update.timer");
     assert_eq!(migrated, fresh);
     let replaced = |l: &str| l.matches("--journal-record file_replaced").count();

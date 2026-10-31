@@ -137,7 +137,7 @@ pub fn pending_update(dir: &Path) -> Option<(String, std::time::Duration)> {
     (age < 600).then(|| (id.to_string(), std::time::Duration::from_secs(age)))
 }
 
-fn read_status(path: &Path) -> Option<String> {
+pub(crate) fn read_status(path: &Path) -> Option<String> {
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -158,17 +158,29 @@ fn read_status(path: &Path) -> Option<String> {
     Some(text)
 }
 
-/// The release the updater recorded as installable but not installed (`update-status.json`, written next to the
-/// requests directory), or None. A file that is large, unreadable or not what the updater writes reads as None.
+/// The newest of the two files the updater writes next to the requests directory: `update-state.json` and, for one
+/// release, the older `update-status.json` (an old helper writes only that one). On a tie the state file wins.
+fn newest_notice(dir: &Path) -> Option<serde_json::Value> {
+    let read = |name: &str| -> Option<serde_json::Value> {
+        serde_json::from_str(&read_status(&dir.join(name))?).ok()
+    };
+    let checked = |v: &serde_json::Value| v.get("checked_at").and_then(|c| c.as_u64());
+    let state =
+        read(crate::update_state::FILE).filter(|v| v.get("v").and_then(|v| v.as_u64()) == Some(1));
+    let status = read("update-status.json");
+    match (state, status) {
+        (Some(a), Some(b)) => Some(if checked(&a) >= checked(&b) { a } else { b }),
+        (a, b) => a.or(b),
+    }
+}
+
+/// The release the updater recorded as installable but not installed, or None. A notice stays valid until it is
+/// superseded or installed; how old it is, is for the app to show (`checked_at`). A file that is large, unreadable or
+/// not what the updater writes reads as None, and so does a version that was rolled back or skipped.
 pub fn available_update(requests_dir: &Path, current: &str) -> Option<String> {
-    let path = requests_dir.parent()?.join("update-status.json");
-    let text = read_status(&path)?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let v = newest_notice(requests_dir.parent()?)?;
     let checked = v.get("checked_at")?.as_u64()?;
-    if checked > now_secs()
-        || now_secs().saturating_sub(checked) > 3600
-        || !matches!(v.get("mode")?.as_str()?, "auto" | "notify")
-    {
+    if checked > now_secs() || !matches!(v.get("mode")?.as_str()?, "auto" | "notify") {
         return None;
     }
     // A notice left by another update channel is not an update this binary may install. Beta follows
@@ -185,6 +197,9 @@ pub fn available_update(requests_dir: &Path, current: &str) -> Option<String> {
         return None;
     }
     let version = v.get("available")?.as_str()?;
+    if v.get("skipped").and_then(|s| s.as_str()) == Some(version) {
+        return None;
+    }
     let mut available = semver::Version::parse(version).ok()?;
     available.build = semver::BuildMetadata::EMPTY;
     if available <= running {
@@ -412,6 +427,46 @@ mod tests {
     }
 
     #[test]
+    fn the_state_file_is_read_beside_the_old_status_file_and_a_pinned_version_is_not_offered() {
+        let d = dir();
+        let requests = d.join("requests");
+        std::fs::create_dir(&requests).unwrap();
+        let status = d.join("update-status.json");
+        let state = d.join(crate::update_state::FILE);
+        let base = serde_json::json!({"v":1, "available":"0.2.0", "current":"0.1.0", "mode":"notify", "channel":"stable", "checked_at":now_secs()});
+        // only the new file, only the old file
+        write_json(&state, &base).unwrap();
+        assert_eq!(
+            available_update(&requests, "0.1.0").as_deref(),
+            Some("0.2.0")
+        );
+        std::fs::remove_file(&state).unwrap();
+        write_json(&status, &base).unwrap();
+        assert_eq!(
+            available_update(&requests, "0.1.0").as_deref(),
+            Some("0.2.0")
+        );
+        // the newer of the two decides: a state that says up to date beats an older notice, and the reverse
+        let mut none = base.clone();
+        none["available"] = serde_json::Value::Null;
+        none["checked_at"] = serde_json::json!(now_secs());
+        write_json(&state, &none).unwrap();
+        assert_eq!(available_update(&requests, "0.1.0"), None);
+        none["checked_at"] = serde_json::json!(now_secs().saturating_sub(100));
+        write_json(&state, &none).unwrap();
+        assert_eq!(
+            available_update(&requests, "0.1.0").as_deref(),
+            Some("0.2.0")
+        );
+        // a pinned version is not offered
+        let mut pinned = base.clone();
+        pinned["skipped"] = serde_json::json!("0.2.0");
+        write_json(&state, &pinned).unwrap();
+        assert_eq!(available_update(&requests, "0.1.0"), None);
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
     fn a_check_is_coalesced_and_invalid_request_ids_are_rejected() {
         let d = dir();
         leave_update_check(&d).unwrap();
@@ -433,10 +488,6 @@ mod tests {
         let status = d.join("update-status.json");
         let base = serde_json::json!({"available":"0.2.0", "current":"0.1.0", "checked_at":now_secs(), "mode":"notify"});
         for (key, value) in [
-            (
-                "checked_at",
-                serde_json::json!(now_secs().saturating_sub(3601)),
-            ),
             ("checked_at", serde_json::json!(now_secs() + 60)),
             ("available", serde_json::json!("0.1.0+other")),
             ("available", serde_json::json!("0.0.9")),
@@ -448,6 +499,15 @@ mod tests {
             write_json(&status, &v).unwrap();
             assert_eq!(available_update(&requests, "0.1.0"), None);
         }
+        // An old notice is still a notice: the timer no longer runs every hour.
+        let mut old = base.clone();
+        old["channel"] = serde_json::json!("stable");
+        old["checked_at"] = serde_json::json!(now_secs().saturating_sub(7 * 86400));
+        write_json(&status, &old).unwrap();
+        assert_eq!(
+            available_update(&requests, "0.1.0").as_deref(),
+            Some("0.2.0")
+        );
         std::fs::write(&status, " ".repeat(5000)).unwrap();
         assert_eq!(available_update(&requests, "0.1.0"), None);
         std::fs::remove_file(&status).unwrap();

@@ -65,6 +65,7 @@ mod tmuxconf;
 mod transcript;
 mod turn;
 mod uninstall;
+mod update_state;
 mod updater;
 mod websocket;
 mod workspaces;

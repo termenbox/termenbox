@@ -164,7 +164,7 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   Running tests without the `docker` group on this machine: `sg docker -c "COMPOSE_PROJECT_NAME=termenbox-sergei scripts/dev.sh ..."`
   (the shared `docker_cache` volume belongs to another uid).
 
-### U2 [ ] State file and honest notice
+### U2 [x] State file and honest notice
 
 - Needs: U1.
 - Do: `updater.rs` writes `update-state.json` (schema above) at every outcome; stop deleting on a failed check (record
@@ -172,10 +172,19 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   expiry, and keeps every existing channel, version and charset check. Rollback pins `skipped`.
 - Tests: table tests over phases; a check that fails keeps the previous notice and sets `error`; a rolled-back version
   is not offered again; old status file alone still works; junk/oversize files read as none.
-- Verify: `scripts/dev.sh cargo test -p termenbox-server updater requests` passes, and the tests named
+- Verify: `scripts/dev.sh cargo test -p termenbox-server -- updater requests update_state` passes (cargo takes one filter
+  before `--`), and the tests named
   `a_failed_check_keeps_the_notice` and `a_rolled_back_version_is_not_retried` exist:
   `grep -rq a_rolled_back_version_is_not_retried packages/server/src`.
-- PR: - | Merged: - | Notes:
+- PR: this branch | Merged: - | Notes: new module `update_state.rs` (`State::apply` with one `Event` per outcome, so the
+  transitions are tested without a clock); `Updater::run` records every outcome, a failed check keeps the notice and sets
+  `error` (the helper also records config/key failures before the updater exists); `available_update` reads the newer of
+  `update-state.json` and `update-status.json` (state wins a tie) and has no expiry; a rolled-back version is pinned in
+  `skipped` and the timer does not retry it, `update-now` does. Verify passed. `last.result = failed` and the `scheduled`
+  phase are not written yet (a failed install pins in U5b). Known edge: after a rollback to an old helper that writes only
+  the old file, a stale state file can win a tie only if its `checked_at` is newer, so it self-corrects at the next check.
+  Cleanups: `cargo clippy -D warnings` already fails in `bridge-contract` (not ours); `control::a_real_tmux_pushes_...`
+  failed once in a full run and passes alone.
 
 ### U3 [ ] Manual check and apply (CLI and requests)
 
@@ -255,3 +264,4 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   build newer than `0.1.57-beta.7`; the installed binary also predates `check-update`.
 - 2026-10-31 U0 done: decision 0153 written and accepted by the owner; next step U1.
 - 2026-10-31 U1 done: cadence, migration and test; install_channels 8/8 pass; tick moved to U5b, ETag spike carried to U3; next step U2.
+- 2026-10-31 U2 done: update-state.json, honest notice, rolled-back pin; server tests pass; next step U3.
