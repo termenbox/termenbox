@@ -4,7 +4,7 @@ title: The updater records what it knows in update-state.json and the server onl
 status: active
 kind: observation
 governed-by: 0154-a-new-release-waits-a-grace-period-for-the-owner-then-installs-or-is-skipped
-tags: [server, updates, observability]
+tags: [server, updater, observability]
 date: 2026-10-31
 last-verified: 2026-10-31
 ---

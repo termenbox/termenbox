@@ -61,6 +61,6 @@
 | 0060 | The server uses the turn crate for its relay, and the Cloudflare setup needs three token scopes | turn, cloudflare, durable-object, api-token, transport | active |
 | 0062 | The server logs to a file through a writer thread and builds a scrubbed diagnostics bundle on request | server, observability, performance, privacy | active |
 | 0063 | A browser cannot pick a folder on the server, and a native modal dialog hides overlays that are not inside it | client, mobile, ux, browser-support | active |
-| 0064 | The updater records what it knows in update-state.json and the server only reads it | server, updates, observability | active |
+| 0064 | The updater records what it knows in update-state.json and the server only reads it | server, updater, observability | active |
 
 <!-- bootstrap-generated: true -->

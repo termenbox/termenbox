@@ -17,6 +17,7 @@ bootstrap-generated: true
 | client | Browser-facing code (Svelte, WASM, UI) |
 | cloudflare | Cloudflare services the project or an owner uses (Workers, TURN, STUN, R2, D1) |
 | compatibility | Browser/version support matrix |
+| container | Container installs (Docker image, host-side container updates) |
 | crypto | Encryption, signatures, key derivation |
 | deployment | VPS, Docker, systemd, networking |
 | desktop | Desktop client, window chrome and desktop wrappers |

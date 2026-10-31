@@ -331,3 +331,4 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
 - 2026-10-31 U8: decision 0155 drafted (digest in the signed manifest, host timer, recreate and roll back); waiting for the owner to accept it before any code.
 - 2026-10-31 U8: decision 0155 accepted by the owner; next U8a.
 - 2026-10-31 U8a done: signed `image` digests in the manifest and the pipeline step that resolves them; next U8b (a release with `image` must ship before it lands).
+- 2026-10-31 merged develop (decision numbers moved: grace is 0154, container updater 0155); lint fixed a dangling id and two tags; capture found no contradiction (0155 amends 0063, which stays active). Next: land this PR, cut a beta (carries U5a and `image`), then U5b and U8b.

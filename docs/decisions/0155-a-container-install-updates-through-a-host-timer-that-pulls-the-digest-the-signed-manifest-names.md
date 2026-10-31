@@ -7,7 +7,7 @@ date: 2026-10-31
 track: product
 tags: [release, updater, container, security]
 amends: [0063-signed-releases-and-opt-in-updates]
-related: [0076-native-releases-and-updater, 0077-root-actions-by-request-file, 0131-update-policy, 0154-a-new-release-waits-a-grace-period-for-the-owner-then-installs-or-is-skipped]
+related: [0076-native-releases-and-updater, 0077-root-actions-by-request-file, 0131-nightly-installs-notify-and-do-not-update-themselves-by-default, 0154-a-new-release-waits-a-grace-period-for-the-owner-then-installs-or-is-skipped]
 ---
 
 ## Decision
