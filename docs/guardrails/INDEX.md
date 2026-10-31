@@ -66,3 +66,5 @@ a-phone-check-names-its-platform,"A phone check names the platform it ran on, an
 | listdir-is-owner-only-home-confined-and-directories-only | Directory listing for the folder picker is owner-only, confined to the home directory, and returns directories only | 0147 | 0140,0058,audit-logging-no-secrets | active |
 | ux-scenarios-assert-a-state-before-they-capture-it | A UX scenario asserts the state it claims to show before it records or screenshots it | 0135 | 0135,0056,0148 | active |
 | work-happens-in-pool-worktrees | Work happens only in a pool worktree, never in the main checkout | 0150 | 0150,0027,0028 | draft |
+| media-commands-come-only-from-people-with-write-access | A render, an approval or a regeneration is accepted only from a person with write access to the repository | 0158 | 0158,0067,no-paid-services | active |
+| nothing-is-published-without-a-matching-approval-record | A video or still enters docs/media only from a render a developer ticked, and its render.json hash is the ticked one | 0158 | 0158,0066,ux-scenarios-assert-a-state-before-they-capture-it | active |
