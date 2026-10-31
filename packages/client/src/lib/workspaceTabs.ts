@@ -25,6 +25,20 @@ export function liveTab(tabs: TabInfo[] | undefined, wanted: string | null | und
 }
 
 /**
+ * The tab a device opens a workspace on. A control-mode server shares one tmux current window between all devices, so
+ * that window's tab wins and a reload never drags the others to a stale remembered tab; without control mode the
+ * server has no current window to report and the device's remembered tab decides (decision 0153).
+ */
+export function openingTab(
+  tabs: TabInfo[] | undefined,
+  remembered: string | null | undefined,
+  focus: string | null | undefined,
+  controlMode: boolean,
+): TabInfo | undefined {
+  return controlMode ? focusedTab(tabs, focus) : liveTab(tabs, remembered, focus);
+}
+
+/**
  * The tab the shared tmux current window just moved to, or null when this device already shows it. A control-mode
  * server reports the current window as the workspace focus; a device viewing the workspace follows it, and a focus
  * that names no live tab changes nothing.

@@ -24,5 +24,5 @@ The top bar disagreed with the terminal: `Ctrl+B <n>` or `tmux select-window` ch
 ## Consequences
 
 - Issue #375 and step 2 of `docs/plans/workspace-tabs.md`.
-- The device's remembered tab (`termenbox_active_tab`) still decides which tab it opens; once the workspace is open, a control-mode focus supersedes it. Where the server has no focus or no control mode, the remembered tab stays in charge.
+- On a control-mode server a device opens the tab tmux has current, not its remembered one (`termenbox_active_tab`), so a reload never drags the other devices to a stale tab. Where the server has no control mode, the remembered tab stays in charge. Per-device focus would need one grouped tmux session per device and is not planned.
 - The foreground report follows the moved tab, so a push is not sent for the window the user is looking at.

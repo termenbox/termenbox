@@ -9,6 +9,7 @@ import {
   tabForPrompt,
   loadActiveTab,
   moveTab,
+  openingTab,
   relativeDirProblem,
   saveActiveTab,
   tabMove,
@@ -72,6 +73,14 @@ describe('the tabs a device opens', () => {
     expect(liveTab(tabs, 't3', 't2')?.id).toBe('t3');
     expect(liveTab(tabs, 'gone', 't2')?.id).toBe('t2');
     expect(liveTab(tabs, null, 'gone')?.id).toBe('t1');
+  });
+  it('opens on tmux\'s current window on a control-mode server and on the remembered tab otherwise', () => {
+    expect(openingTab(tabs, 't1', 't3', true)?.id).toBe('t3');
+    expect(openingTab(tabs, 't1', 't3', false)?.id).toBe('t1');
+    // No focus, or one that names no live tab: the first tab, as for a new device.
+    expect(openingTab(tabs, 't1', null, true)?.id).toBe('t1');
+    expect(openingTab(tabs, 't2', 'gone', true)?.id).toBe(tabOrder(tabs)[0].id);
+    expect(openingTab(tabs, 'gone', 't2', false)?.id).toBe('t2');
   });
   it('follows a focus that moved to another live tab, and nothing else', () => {
     expect(followFocus(tabs, 't1', 't3')).toBe('t3');

@@ -22,7 +22,7 @@
   import { SnapshotStore } from './lib/snapshots';
   import { serverAtLeast, NEW_WINDOW_VERSION } from './lib/serverVersion';
   import { loadHidden, needsYou, openTabs, saveHidden } from './lib/tabs';
-  import { focusedTab, liveTab, loadActiveTab, saveActiveTab, tabForPrompt, tabMove, tabOrder } from './lib/workspaceTabs';
+  import { focusedTab, liveTab, loadActiveTab, saveActiveTab, openingTab, tabForPrompt, tabMove, tabOrder } from './lib/workspaceTabs';
   import { windowToOpen } from './lib/windows';
   import { installAudioUnlock, onAudioRunning, playChime } from './lib/bell';
   import { announce, waitingList, createAttention, createNotifier, createAlerter } from './lib/notify';
@@ -658,11 +658,16 @@
   let lastKey: string | null = localStorage.getItem(LAST_KEY);
   function forget(key: string) { if (localStorage.getItem(LAST_KEY) === key) { localStorage.removeItem(LAST_KEY); lastKey = null; } }
 
+  /** Whether the server follows tmux's current window (decision 0153), so a device opens on it. */
+  function controlModeOf(serverId: string) {
+    return !!$hubServers.find((s) => s.id === serverId)?.controlMode;
+  }
+
   /** Opens a workspace that needs you on the window the need is in: the tab's window (the agent window used last), not
    *  whichever one tmux has current. Chosen before the attach, so the terminal comes up on it. */
   async function openWaiting(key: string, tabWanted?: string) {
     const workspace = hub.findWorkspace(key);
-    const tab = tabWanted ?? (workspace?.tabs ? liveTab(workspace.tabs, loadActiveTab(key), workspace.focus)?.id : null);
+    const tab = tabWanted ?? (workspace?.tabs ? openingTab(workspace.tabs, loadActiveTab(key), workspace.focus, controlModeOf(workspace.serverId))?.id : null);
     if (!tab && workspace && needsYou($allAgents[key]) && backendOf(workspace) === 'tmux') {
       // An older server has windows, not tabs.
       const index = windowToOpen($allWindows[key]);
@@ -687,7 +692,7 @@
     serversPage = false;
     listPage = false;
     navigate('workspaces');
-    const chosen = tab ?? (workspace.tabs ? liveTab(workspace.tabs, loadActiveTab(key), workspace.focus)?.id : null);
+    const chosen = tab ?? (workspace.tabs ? openingTab(workspace.tabs, loadActiveTab(key), workspace.focus, controlModeOf(workspace.serverId))?.id : null);
     preview = key === activeKey ? null : snapshots.text(key);
     activeKey = key;
     activeServerId = workspace.serverId;
@@ -721,7 +726,7 @@
   function peek(key: string) {
     if (key === activeKey) return;
     const workspace = hub.findWorkspace(key);
-    const tab = workspace?.tabs ? liveTab(workspace.tabs, loadActiveTab(key), workspace.focus)?.id : undefined;
+    const tab = workspace?.tabs ? openingTab(workspace.tabs, loadActiveTab(key), workspace.focus, controlModeOf(workspace.serverId))?.id : undefined;
     hub.sendToWorkspace(key, { type: 'peek', workspace: key, tab, hash: snapshots.hash(key) });
   }
 
@@ -832,7 +837,7 @@
     const focus = workspace.focus ?? null;
     const seen = seenFocus?.key === key ? seenFocus.focus : undefined;
     seenFocus = { key, focus };
-    const controlMode = !!$hubServers.find((s) => s.id === serverId)?.controlMode;
+    const controlMode = controlModeOf(serverId);
     const move = tabMove(workspace.tabs, activeTab, focus, seen, controlMode);
     if (!move) return;
     activeTab = move.tab;
