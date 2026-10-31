@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { linkAt, trimUrl, urlInText, type LineBuffer } from './links';
+import { isOpenClick, linkAt, trimUrl, urlInText, type LineBuffer } from './links';
 
 function buffer(rows: string[], cols: number, wrapped: boolean[] = []): LineBuffer {
   return {
@@ -42,5 +42,14 @@ describe('linkAt', () => {
   it('does not join rows that did not wrap', () => {
     const b = buffer(['https://a.dev/x', 'tail'], 15);
     expect(linkAt(b, 15, 1, 1)).toBeNull();
+  });
+});
+
+describe('isOpenClick', () => {
+  it('opens on a primary click with Ctrl or Cmd held, and only then', () => {
+    expect(isOpenClick({ button: 0, ctrlKey: true, metaKey: false })).toBe(true);
+    expect(isOpenClick({ button: 0, ctrlKey: false, metaKey: true })).toBe(true);
+    expect(isOpenClick({ button: 0, ctrlKey: false, metaKey: false })).toBe(false);
+    expect(isOpenClick({ button: 2, ctrlKey: true, metaKey: false })).toBe(false);
   });
 });

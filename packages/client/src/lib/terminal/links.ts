@@ -42,3 +42,8 @@ export function linkAt(buffer: LineBuffer, cols: number, row: number, col: numbe
   }
   return urlInText(text, offset + col);
 }
+
+/** A click that opens the web address under it: Ctrl or Cmd held, so a plain click stays with the terminal or its app. */
+export function isOpenClick(e: { button: number; ctrlKey: boolean; metaKey: boolean }): boolean {
+  return e.button === 0 && (e.ctrlKey || e.metaKey);
+}
