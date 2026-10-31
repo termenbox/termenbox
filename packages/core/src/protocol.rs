@@ -480,6 +480,29 @@ pub enum ClientMessage {
     HistoryDelete,
     /// U14: asks for the server's recent health samples; the answer is `health_history`. Older servers do not answer.
     HealthHistory,
+    /// R78 (decisions 0156, 0157): searches the agents' own conversation files for every session the server has a
+    /// record of. Hits stream as `search_hit`, then one `search_done`. `id` names the search: a new `search` (or one
+    /// with `cancel`) stops the connection's previous one, and the client drops hits whose `id` is not its latest.
+    /// Owner only. The query is never logged.
+    Search {
+        id: u64,
+        #[serde(default)]
+        query: String,
+        #[serde(default)]
+        cancel: bool,
+    },
+    /// The turns around `turn` of the session of `workspace`'s tab `tab` (empty for an ACP workspace); the answer is
+    /// `session_window`. Owner only.
+    Window {
+        workspace: String,
+        #[serde(default)]
+        tab: String,
+        turn: String,
+        #[serde(default)]
+        before: u32,
+        #[serde(default)]
+        after: u32,
+    },
     /// A message from a newer client; ignored.
     #[serde(other)]
     Unknown,
@@ -786,6 +809,39 @@ pub enum ServerMessage {
     HistoryDeleted {
         removed: u64,
     },
+    /// One match of a `search`. `workspace` and `tab` locate it, `up` says whether the workspace is running (a hit in a
+    /// dormant one offers Resume). `snippet` is scrubbed; `highlight` is the matched part, in characters of `snippet`.
+    SearchHit {
+        id: u64,
+        workspace: String,
+        tab: String,
+        agent: String,
+        up: bool,
+        turn: String,
+        kind: String,
+        snippet: String,
+        highlight: (u32, u32),
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<String>,
+    },
+    /// Ends a `search`. `cut` is why it stopped before it had looked everywhere (`hits`, `bytes`, `time` or
+    /// `cancelled`); `off` lists the agents whose search is off, each with a fixed reason.
+    SearchDone {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cut: Option<String>,
+        off: Vec<SearchOff>,
+    },
+    /// Answers `window`: entries in conversation order, at most 48 KiB of text. `anchor` is the index of the asked turn.
+    /// `fingerprint` changes when the session file was rewritten: hits found earlier may no longer hold.
+    SessionWindow {
+        workspace: String,
+        tab: String,
+        turn: String,
+        anchor: u32,
+        entries: Vec<WindowEntry>,
+        fingerprint: String,
+    },
     Error {
         message: String,
     },
@@ -1047,6 +1103,24 @@ pub struct HealthLevel {
     pub metric: String,
     pub enter: u8,
     pub exit: u8,
+}
+
+/// An agent whose session search is off, and the fixed reason.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct SearchOff {
+    pub agent: String,
+    pub reason: String,
+}
+
+/// One turn of a conversation read from an agent's own file. `kind` is `user`, `message`, `thought`, `tool` (the
+/// tool's name only), `plan` or `notice`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowEntry {
+    pub turn: String,
+    pub kind: String,
+    pub text: String,
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// One task an agent worked on: metadata only, never a prompt or terminal text (decision 0105).

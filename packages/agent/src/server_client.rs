@@ -182,6 +182,9 @@ impl ServerClient {
             | ServerMessage::AcpView(_)
             | ServerMessage::History { .. }
             | ServerMessage::HistoryDeleted { .. }
+            | ServerMessage::SearchHit { .. }
+            | ServerMessage::SearchDone { .. }
+            | ServerMessage::SessionWindow { .. }
             | ServerMessage::ServerHealth { .. }
             | ServerMessage::HealthHistory { .. }
             | ServerMessage::PreviousExit { .. }

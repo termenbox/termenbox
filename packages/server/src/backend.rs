@@ -184,6 +184,11 @@ pub trait WorkspaceBackend: Send + Sync {
     fn acp_agents(&self) -> Vec<String> {
         Vec::new()
     }
+    /// The conversations of the ACP workspaces: agent, directory, the agent's own session id. Only workspaces that
+    /// have a session id are listed. The ids are never logged (`KnownSession`'s `Debug` prints the agent only).
+    fn acp_sessions(&self) -> Vec<crate::registry::KnownSession> {
+        Vec::new()
+    }
     /// Wakes when the stream of ACP workspace `id` has a new revision; a closed channel means it never will.
     fn acp_watch(&self, _id: &str) -> Result<tokio::sync::watch::Receiver<u64>> {
         Err(anyhow!("This workspace is not an ACP workspace"))
@@ -1768,6 +1773,17 @@ impl WorkspaceBackend for CompositeBackend {
             .iter()
             .flat_map(|(_, b)| b.acp_agents())
             .collect()
+    }
+
+    fn acp_sessions(&self) -> Vec<crate::registry::KnownSession> {
+        let mut all = Vec::new();
+        for (kind, b) in &self.parts {
+            for mut s in b.acp_sessions() {
+                s.workspace = format!("{kind}:{}", s.workspace);
+                all.push(s);
+            }
+        }
+        all
     }
 
     fn acp_watch(&self, id: &str) -> Result<tokio::sync::watch::Receiver<u64>> {

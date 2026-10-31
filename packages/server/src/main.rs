@@ -59,6 +59,7 @@ mod release;
 mod requests;
 mod rtc;
 mod session_log;
+mod session_search;
 mod signal;
 mod stun;
 mod tabstatus;
@@ -949,6 +950,7 @@ async fn main() -> anyhow::Result<()> {
             .with_prefix(tmux_prefix.clone())
             .with_push(push.clone())
             .with_events(hub.clone())
+            .with_session_logs(Arc::new(session_log::SessionLogs::standard()))
             .with_health(health)
             .with_previous_exit(previous_run.message())
             .with_agent_hooks(agent_hooks::Targets {

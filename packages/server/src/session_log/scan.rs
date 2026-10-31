@@ -76,6 +76,11 @@ impl Cancel {
         self.0.store(true, Ordering::Relaxed);
     }
 
+    /// Whether `other` is a handle to the same flag.
+    pub fn same(&self, other: &Cancel) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
@@ -163,7 +168,6 @@ impl Budget {
 /// The query, folded once: lower case, accents removed. Matches a line that holds it after the line is folded the
 /// same way, so "CAFÉ", "café" and "cafe" are one query.
 pub struct Needle {
-    folded: Vec<u8>,
     finder: memmem::Finder<'static>,
 }
 
@@ -178,7 +182,7 @@ impl Needle {
             return None;
         }
         let finder = memmem::Finder::new(&folded).into_owned();
-        Some(Needle { folded, finder })
+        Some(Needle { finder })
     }
 
     /// Whether `line` holds the needle. `scratch` receives the folded line; its capacity is reused.

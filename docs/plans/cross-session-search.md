@@ -80,11 +80,18 @@ Done: `agent_session` was absent, so 0152's id part is implemented here. `TabRec
 - The directory boundary is by construction: only tab dirs of recorded workspaces are returned; adapters then check the file's own `cwd` (Codex) or look only in that directory's folder (Claude).
 - A test in `control` (`a_real_tmux_pushes_window_and_directory_changes`) failed once in the full run and passed alone: flaky, unrelated.
 
-### 7 Protocol: `search` and `window` messages and handlers — [ ]
+### 7 Protocol: `search` and `window` messages and handlers — [x]
 Class: implement · Needs: 4, 5, 6 · Check: `scripts/dev.sh cargo test --workspace`
 Context: Wire types are in `packages/core/src/protocol.rs` and mirrored by hand in `packages/client/src/lib/protocol.ts`. The direct transport carries 64 KiB a message, so replies stay at most 48 KiB. The existing `history` request (`packages/server/src/history.rs`) shows the pattern for a size-capped reply. Hits stream in more than one message so the sheet can fill while the scan runs.
 Do: Add `search` (query, optional cancel) and `search_hit`/`search_done` (with `cut`), and `window` (session, anchor turn id, before, after) with a reply of entries, in both type files. Route them to the registry and the adapters. Search is owner-only. Handle cancel and a closing connection. Make sure no log line, audit entry or error text contains the query or a snippet, and add a test that captures all log output during a search and asserts the query string is absent.
 Done-when: a server test searches a fixture session and gets scrubbed hits, a cut flag at the cap, and a window around a hit; the log-capture test passes; the client protocol types compile.
+
+Done: wire types in `core/src/protocol.rs` and `client/src/lib/protocol.ts`; `session_search.rs` (blocking `run` over the known sessions and `window`); handlers in `workspaces.rs`; `WorkspaceBackend::acp_sessions` (ACP workspaces, tab `""`; the composite prefixes the backend kind); `with_session_logs(SessionLogs::standard())` in `main.rs`.
+- Messages: `search {id, query, cancel}` -> `search_hit {id, workspace, tab, agent, up, turn, kind, snippet, highlight:[start,end], at?}`* then `search_done {id, cut?, off:[{agent,reason}]}`; `window {workspace, tab, turn, before, after}` -> `session_window {workspace, tab, turn, anchor, entries, fingerprint}`. The client names a workspace and tab, never a file or a session id; the server resolves them through the known sessions. Neither is a control message.
+- One search per connection: a new `search` or `cancel` stops the previous one; a closing connection stops it too (`serve`). The scan runs on `spawn_blocking` and streams through a bounded channel, so a slow client slows the scan, not the loop. A `search` with an empty query ends at once with `search_done`.
+- Hits arrive in session order (open workspaces first, one entry per conversation), not globally newest first: the sheet (step 8) sorts by `at`. Query: control characters dropped, at most 512 bytes. Window `before`/`after` capped at 200 entries and 48 KiB by the adapter.
+- The log test captures the handler thread plus a direct `session_search::run`; `spawn_blocking` threads do not inherit a test subscriber. The only audit line is `session_search` with the account, never the query. The capture-works control line avoids tracing's callsite cache, which makes a global-callsite check order dependent.
+- `cargo test` can leave stale core artifacts after an edit in the same second: `touch packages/core/src/lib.rs` if variants look missing. On this machine run Docker as `sg docker -c '...'` (the shell predates the group); client deps need `pnpm install` inside `scripts/dev.sh --full`.
 
 ### 8 Search sheet — [ ]
 Class: implement · Needs: 7 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test'`

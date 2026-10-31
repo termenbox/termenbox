@@ -12,7 +12,6 @@
 //! prints the agent only.
 //!
 //! Adapters block on file reads. The caller runs them on a blocking thread, never on the control path.
-#![allow(dead_code)] // wired in by the search handler (cross-session-search step 7)
 
 use std::collections::BTreeMap;
 use std::fmt;
