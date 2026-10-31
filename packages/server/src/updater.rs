@@ -961,7 +961,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_rolled_back_version_is_not_retried() {
-        let Some(w) = world("9.9.9", false, b"new binary") else {
+        let Some(w) = world("0.2.0", false, b"new binary") else {
             return;
         };
         let f = fake(&w);
@@ -974,7 +974,7 @@ mod tests {
         );
         let first = u.run().await.unwrap();
         assert!(matches!(first, Outcome::RolledBack { .. }), "{first:?}");
-        assert!(update_state::State::load(&w.dir).is_pinned("9.9.9"));
+        assert!(update_state::State::load(&w.dir).is_pinned("0.2.0"));
         assert_eq!(
             crate::requests::available_update(&w.dir.join("requests"), "0.1.0"),
             None
@@ -999,7 +999,7 @@ mod tests {
             Trigger::UpdateNow,
         );
         assert!(matches!(u.run().await.unwrap(), Outcome::Updated { .. }));
-        assert!(!update_state::State::load(&w.dir).is_pinned("9.9.9"));
+        assert!(!update_state::State::load(&w.dir).is_pinned("0.2.0"));
     }
 
     #[tokio::test]
