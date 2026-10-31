@@ -105,6 +105,11 @@ jobs:
           if [ -d docs/course ]; then node packages/client/e2e/video/render.mjs --list --json > "$RUNNER_TEMP/catalog.json" && node scripts/check-course.mjs --catalog "$RUNNER_TEMP/catalog.json"; fi
           node packages/client/e2e/video/inputs-hash.mjs --self-test
 
+      - name: Gate - native packages stay out of the client
+        run: |
+          node --test scripts/check-native-parity.test.mjs
+          node scripts/check-native-parity.mjs
+
       - name: Typecheck the client (svelte-check)
         run: pnpm --filter termenbox-client run check
 
