@@ -35,17 +35,32 @@ describe('handleOpenRequests', () => {
 });
 
 describe('openWeb', () => {
-  it('opens a window without an opener', () => {
-    const calls: unknown[][] = [];
-    expect(openWeb('https://a.b', { open: (...a: unknown[]) => (calls.push(a), {}) as Window })).toBe(true);
-    expect(calls).toEqual([['https://a.b', '_blank', 'noopener,noreferrer']]);
+  // A browser returns null for a window opened with `noopener`, so a block can only be seen without that feature.
+  const browser = (blocked: boolean) => {
+    const opened: { url: string; features: string | undefined; win: { opener: unknown } | null }[] = [];
+    return {
+      opened,
+      open: (url: string, _target?: string, features?: string) => {
+        const win = blocked || features?.includes('noopener') ? null : { opener: 'page' };
+        opened.push({ url, features, win });
+        return win as unknown as Window | null;
+      },
+    };
+  };
+
+  it('counts a window the browser opened as opened and cuts its link back to the page', () => {
+    const b = browser(false);
+    expect(openWeb('https://a.b', b)).toBe(true);
+    expect(b.opened[0].url).toBe('https://a.b');
+    expect(b.opened[0].features ?? '').not.toContain('noopener');
+    expect(b.opened[0].win!.opener).toBeNull();
   });
 
   it('reports a blocked popup, and never opens a non-web address', () => {
-    expect(openWeb('https://a.b', { open: () => null })).toBe(false);
-    let called = false;
-    expect(openWeb('javascript:alert(1)', { open: () => ((called = true), {} as Window) })).toBe(false);
-    expect(called).toBe(false);
+    expect(openWeb('https://a.b', browser(true))).toBe(false);
+    const b = browser(false);
+    expect(openWeb('javascript:alert(1)', b)).toBe(false);
+    expect(b.opened).toEqual([]);
   });
 });
 
