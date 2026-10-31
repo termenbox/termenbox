@@ -12,7 +12,7 @@
   import InboxSheet from './InboxSheet.svelte';
   import SearchSheet from './SearchSheet.svelte';
   import { fileChanged, withWindow, type WindowMap } from './lib/acpHistory';
-  import { SessionSearch, parts as hitParts, IDLE as SEARCH_IDLE, type SearchState } from './lib/sessionSearch';
+  import { SessionSearch, landingOf, resumeOutcome, parts as hitParts, IDLE as SEARCH_IDLE, type SearchState } from './lib/sessionSearch';
   import { inbox, mergeAttention, markAllRead, unreadCount } from './lib/inbox';
   import { currentEndpoint, disablePush, enablePush, pushSupported } from './lib/push';
   import WorkspaceActions from './WorkspaceActions.svelte';
@@ -185,7 +185,7 @@
       dirClients.get(_id)?.handle(msg);
       if (msg.type === 'search_hit' || msg.type === 'search_done') sessionSearch.handle(_id, msg);
       if (msg.type === 'snapshot') snapshots.apply(workspaceKey(_id, msg.workspace), msg);
-      else if (msg.type === 'workspace_attached') { preview = null; if (id === activeServerId && msg.workspace_id === activeWorkspaceId && msg.tab) { activeTab = msg.tab; saveActiveTab(workspaceKey(id, msg.workspace_id), msg.tab); } }
+      else if (msg.type === 'workspace_attached') { resumedReply(_id, msg); preview = null; if (id === activeServerId && msg.workspace_id === activeWorkspaceId && msg.tab) { activeTab = msg.tab; saveActiveTab(workspaceKey(id, msg.workspace_id), msg.tab); } }
       else if (msg.type === 'workspace_view') { if (id === activeServerId && msg.workspace === activeWorkspaceId) heldView = mergeView(heldView, msg); }
       else if (msg.type === 'acp_view') acpStreams.update(m => applyAcp(m, workspaceKey(_id, msg.workspace), msg.workspace, msg));
       else if (msg.type === 'workspaces') { openPending(_id, msg.workspaces); openPendingTab(_id, msg.workspaces); syncActiveTab(_id, msg.workspaces); acpStreams.update(m => forgetAcp(m, `${_id}/`, new Set(msg.workspaces.map(x => workspaceKey(_id, x.id))))); }
@@ -365,10 +365,32 @@
     acpFocus = { key: workspaceKey(h.serverId, h.workspace), turn: h.turn, query: hitParts(h).match, nonce: (acpFocus?.nonce ?? 0) + 1 };
   }
   function closeSearch() { searchOpen = false; sessionSearch.close(); }
-  function pickHit(h: { serverId: string; workspace: string; tab: string; turn: string; snippet: string; highlight: [number, number] }) {
+  // The three landings (decision 0156): an open terminal tab is switched to; an open ACP workspace is switched to and
+  // scrolled to the turn; a dormant one is reopened only after the person chose Resume, and says what became of the agent.
+  type TappedHit = { serverId: string; workspace: string; tab: string; agent: string; up: boolean; turn: string; snippet: string; highlight: [number, number] };
+  let resumeAsked: { key: string; hit: TappedHit } | null = null;
+  function pickHit(h: TappedHit) {
     closeSearch();
-    void attach(workspaceKey(h.serverId, h.workspace));
-    if (!h.tab) landOnHit(h); // an ACP workspace has no tab: the view scrolls to the turn
+    const key = workspaceKey(h.serverId, h.workspace);
+    void attach(key, h.tab || undefined);
+    if (landingOf(h) === 'jump') landOnHit(h);
+  }
+  function resumeHit(h: TappedHit) {
+    closeSearch();
+    const key = workspaceKey(h.serverId, h.workspace);
+    void attach(key, h.tab || undefined);
+    // An ACP workspace is restored by opening its view, which sends no `workspace_attached`: say it now and go to the turn.
+    if (!h.tab) { showToast(resumeOutcome(h, undefined).message); landOnHit(h); return; }
+    resumeAsked = { key, hit: h };
+  }
+  /** The reply to the attach that reopened a dormant workspace. */
+  function resumedReply(serverId: string, msg: { workspace_id: string; resumed?: import('./lib/protocol').TabResumed[] }) {
+    const ask = resumeAsked;
+    if (!ask || ask.key !== workspaceKey(serverId, msg.workspace_id)) return;
+    resumeAsked = null;
+    const r = resumeOutcome(ask.hit, msg.resumed);
+    showToast(r.message, r.ok ? undefined : 'error');
+    if (r.jump) landOnHit(ask.hit);
   }
   let pushInfos: Record<string, Extract<import('./lib/protocol').ServerMessage, { type: 'push_info' }>> = {};
   let pushOn = false;
@@ -1323,7 +1345,7 @@
   {/if}
 
   {#if menuOpen && user}<MenuSheet {user} {avatar} onservers={leaveServer} onsettings={() => go('settings')} onreport={openReport} ondiagnostics={() => openDiagnostics()} onlogout={logout} onclose={() => menuOpen = false} unread={unreadCount($inbox)} oninbox={() => inboxOpen = true} onsearch={() => searchOpen = true} />{/if}
-  {#if searchOpen}<SearchSheet bind:open={searchOpen} {wide} search={searchState} {now} nameOf={(sid, w) => hub.findWorkspace(workspaceKey(sid, w))?.name} onquery={(t) => sessionSearch.run(t)} onstop={() => sessionSearch.stop()} onpick={pickHit} onclose={closeSearch} />{/if}
+  {#if searchOpen}<SearchSheet bind:open={searchOpen} {wide} search={searchState} {now} nameOf={(sid, w) => hub.findWorkspace(workspaceKey(sid, w))?.name} onquery={(t) => sessionSearch.run(t)} onstop={() => sessionSearch.stop()} onpick={pickHit} onresume={resumeHit} onclose={closeSearch} />{/if}
   {#if inboxOpen}<InboxSheet items={$inbox} {now} agents={$allAgents} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} onreply={(key, text) => sendWorkspace({ type: 'reply', workspace: key, text })} onopen={openWaiting} onhome={() => go('home')} onread={() => inbox.update(markAllRead)} onclear={() => inbox.set([])} onclose={() => { inboxOpen = false; inbox.update(markAllRead); }} />{/if}
   {#if actionWorkspace}<WorkspaceActions workspace={actionWorkspace} canClose={['tmux', 'acp'].includes(backendOf(actionWorkspace))} confirmFirst={actionConfirm} onrename={(name) => renameWorkspace(actionWorkspace.key, name)} placement={placementOf($allWorkspaces, actionWorkspace.key)} onmove={(to) => moveWorkspace($allWorkspaces, actionWorkspace.key, to)} ondetach={() => detach(actionWorkspace.key)} oncloseworkspace={() => closeWorkspace(actionWorkspace.key)} onclose={() => actionKey = null} />{/if}
   {#if tabMenuOpen}

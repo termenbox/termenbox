@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SessionSearch, cleanQuery, cutText, groupHits, parts, whenText, MAX_HITS_PER_SERVER, type SearchState } from './sessionSearch';
+import { SessionSearch, landingOf, resumeOutcome, cleanQuery, cutText, groupHits, parts, whenText, MAX_HITS_PER_SERVER, type SearchState } from './sessionSearch';
 import type { ClientMessage, SearchHitMessage, ServerMessage } from './protocol';
 
 function rig(servers = [{ id: 'a', name: 'Box' }]) {
@@ -169,5 +169,26 @@ describe('debounced typing', () => {
     d.push('x'); d.cancel(); vi.advanceTimersByTime(1000);
     expect(got).toHaveLength(2);
     vi.useRealTimers();
+  });
+});
+
+describe('what a tap does', () => {
+  it('switches to an open terminal tab, jumps in an open ACP workspace, and asks before resuming a dormant one', () => {
+    expect(landingOf({ up: true, tab: 't1' })).toBe('switch');
+    expect(landingOf({ up: true, tab: '' })).toBe('jump');
+    expect(landingOf({ up: false, tab: 't1' })).toBe('resume');
+    expect(landingOf({ up: false, tab: '' })).toBe('resume');
+  });
+  it('after a resume: a resumed tab only switches, an ACP workspace jumps, a shell fallback says so', () => {
+    expect(resumeOutcome({ tab: 't1', agent: 'claude' }, [{ tab: 't1', outcome: 'resumed' }])).toEqual({ message: 'Resuming claude in this tab.', jump: false, ok: true });
+    expect(resumeOutcome({ tab: '', agent: 'claude' }, undefined)).toMatchObject({ jump: true, ok: true });
+    const shell = resumeOutcome({ tab: 't1', agent: 'codex' }, [{ tab: 't1', outcome: 'shell', reason: 'no conversation was recorded for this tab' }]);
+    expect(shell).toMatchObject({ jump: false, ok: false });
+    expect(shell.message).toContain('The tab is a shell again');
+    expect(shell.message).toContain('no conversation was recorded');
+    expect(shell.message).not.toMatch(/shown|found/);
+  });
+  it('does not claim a resume from a server that did not say', () => {
+    expect(resumeOutcome({ tab: 't1', agent: 'codex' }, undefined)).toMatchObject({ jump: false, ok: false });
   });
 });

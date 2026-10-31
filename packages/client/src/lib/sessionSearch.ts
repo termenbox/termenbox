@@ -2,7 +2,7 @@
 // read from the agents' own conversation files. This module keeps the state of one search: it numbers the search, drops
 // answers of an older one, groups hits by workspace and says why a search stopped early. The query goes to the servers
 // and nowhere else: it is not written to storage, the breadcrumbs or any log. Texts from a server are shown as text only.
-import type { ClientMessage, SearchDoneMessage, SearchHitMessage, ServerMessage } from './protocol';
+import type { ClientMessage, SearchDoneMessage, SearchHitMessage, ServerMessage, TabResumed } from './protocol';
 
 export const MAX_QUERY = 512;
 export const DEBOUNCE_MS = 250;
@@ -195,4 +195,20 @@ export function debounced(fn: (text: string) => void, ms = DEBOUNCE_MS) {
     flush() { if (timer === undefined) return; clearTimeout(timer); timer = undefined; fn(last); },
     cancel() { clearTimeout(timer); timer = undefined; },
   };
+}
+
+// ---- What a tap on a hit does (decision 0156). The workspace is up: a terminal tab is switched to and nothing more (the
+// agent's own screen cannot be scrolled from outside, fact 0065), an ACP workspace is switched to and scrolled to the
+// turn. The workspace is down: Resume is a separate, explicit step, and nothing is typed into an agent by the client.
+export type Landing = 'switch' | 'jump' | 'resume';
+export const landingOf = (h: Pick<Hit, 'up' | 'tab'>): Landing => (!h.up ? 'resume' : h.tab ? 'switch' : 'jump');
+
+/** What to tell after a Resume, and whether the view should now go to the turn. A tab that came back as a shell is said
+ *  to be one, and the hit is not claimed to be shown: the match lives in the agent's file, not on that screen. */
+export function resumeOutcome(h: Pick<Hit, 'tab' | 'agent'>, said: TabResumed[] | undefined): { message: string; jump: boolean; ok: boolean } {
+  if (!h.tab) return { message: 'Workspace reopened.', jump: true, ok: true };
+  const r = said?.find((x) => x.tab === h.tab);
+  if (r?.outcome === 'resumed') return { message: `Resuming ${h.agent} in this tab.`, jump: false, ok: true };
+  if (r) return { message: `Could not resume ${h.agent}: ${r.reason ?? 'no reason given'}. The tab is a shell again.`, jump: false, ok: false };
+  return { message: 'Workspace reopened. This server did not say whether the conversation was resumed.', jump: false, ok: false };
 }

@@ -4,7 +4,7 @@ import SearchSheet from './SearchSheet.svelte';
 import { IDLE, NOTICE, cutText, type Hit, type SearchState } from './lib/sessionSearch';
 
 const html = (props: Record<string, unknown>) =>
-  (render as unknown as (c: unknown, o: { props: Record<string, unknown> }) => { body: string })(SearchSheet, { props: { open: true, onquery: () => {}, onstop: () => {}, onpick: () => {}, ...props } }).body;
+  (render as unknown as (c: unknown, o: { props: Record<string, unknown> }) => { body: string })(SearchSheet, { props: { open: true, onquery: () => {}, onstop: () => {}, onpick: () => {}, onresume: () => {}, ...props } }).body;
 
 const hit = (over: Partial<Hit> = {}): Hit => ({ serverId: 'a', serverName: 'Box', workspace: 'w1', tab: 'build', agent: 'claude', up: true, turn: 'u1', kind: 'user', snippet: 'fix the parser bug', highlight: [8, 14], at: Date.parse('2026-10-30T10:00:00Z'), ...over });
 const st = (over: Partial<SearchState>): SearchState => ({ ...IDLE, ...over });
