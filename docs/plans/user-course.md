@@ -130,11 +130,12 @@ Do: write the chapter with the markers for `talk-to-agent` (phone).
 Done-when: the Check passes.
 Progress (2026-10-31): `docs/course/04-talk-to-your-agent.md` written (steps from `talk-to-agent`, media marker `talk-to-agent-phone`). Trouble entries are "text typed but not sent" and "a key the phone lacks" (the key row has Escape, Ctrl+C, Tab, Ctrl, arrows; it has no Enter, only a newline key). The plan's "soft keyboard covers the input" is not written: no guide or fact documents it, and the procedure forbids inventing a failure; the cold read (5.2) will show whether it happens. The Check reports only the Next link to chapter 5 and the unpicked video.
 
-### 4.3e Chapter 5, Answer from the train — [ ]‖
+### 4.3e Chapter 5, Answer from the train — [x]‖
 Class: implement · Needs: 3.5, 4.1, 4.2 · Check: `node scripts/check-course.mjs docs/course/05-answer-from-the-train.md`
 Context: as 4.3a; reference `docs/guide/workspaces.md` "Needs you" and "Notifications"; notifications carry no agent text; failures: notifications not allowed on the phone, the app not installed to the home screen on iOS.
 Do: write the chapter with the markers for `answer-from-the-train` (phone).
 Done-when: the Check passes.
+Progress (2026-10-31): `docs/course/05-answer-from-the-train.md` written (steps from `answer-from-the-train`, media marker `answer-from-the-train-phone`, trouble entries: notifications not allowed or no push key, iOS needs the Home Screen app). Prose says a notification never carries agent text. The Check reports only the Next link to chapter 6 and the unpicked video.
 
 ### 4.3f Chapter 6, Come back later — [ ]‖
 Class: implement · Needs: 3.6, 4.1, 4.2 · Check: `node scripts/check-course.mjs docs/course/06-come-back-later.md`
