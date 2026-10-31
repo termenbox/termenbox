@@ -11,6 +11,8 @@
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/termenbox/termenbox"></a>
 </p>
 
+**New here? [Start the course](docs/course/README.md).** You start a long agent task at your desk, leave, and finish it from the train; six short chapters get you there.
+
 ## Install
 
 On the Linux machine that will run your agents (a VPS or a home server; x86_64 or aarch64, with systemd):

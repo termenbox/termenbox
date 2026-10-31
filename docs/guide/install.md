@@ -1,6 +1,6 @@
 # Install, firewall and where workspaces run
 
-Back to the [README](../../README.md).
+Back to the [README](../../README.md). New to this? [Chapter 1, Install](../course/01-install.md) walks through it in a few minutes.
 
 The command is the same on every network and carries no secret:
 

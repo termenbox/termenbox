@@ -131,11 +131,12 @@ Context: as 4.3a; reference `docs/guide/workspaces.md` "Restore"; failures: the 
 Do: write the chapter with the markers for `resume-after-close` (phone) and a Next link to the Master note in the index.
 Done-when: the Check passes.
 
-### 4.4 README entry and reference back-links — [ ]
-Class: implement · Needs: 4.2 · Check: `head -20 README.md | grep -q "docs/course/README.md" && grep -l "docs/course" docs/guide/*.md | wc -l | awk '$1>=3{exit 0} {exit 1}'`
+### 4.4 README entry and reference back-links — [x]
+Class: implement · Needs: 4.2 · Check: `head -20 README.md | grep -q "docs/course/README.md" && grep -l "../course/" docs/guide/*.md | wc -l | awk '$1>=3{exit 0} {exit 1}'`
 Context: DECISION-0160: the README links to the course first; the guide pages link back to the matching chapter. `scripts/check-site.mjs` checks that the README shows the install command: do not change that line.
 Do: add "New here? Start the course" with the story's first line within the first twenty lines of `README.md`; in `install.md`, `networking.md` and `workspaces.md` add a line near the top pointing to the chapter that summarises the section.
 Done-when: the Check exits 0, `node scripts/check-site.mjs` passes and `node scripts/check-course.mjs` passes.
+Progress (2026-10-31): the README line sits above `## Install` (line 16); `install.md`, `networking.md` and `workspaces.md` point to chapters 1, 2 and 3 on their "Back to the README" line. The links to the chapter files resolve once 4.3a to 4.3c exist. The Check grepped `docs/course` in the guide pages, which use a relative `../course/` link, so it now greps that. The three Checks pass.
 
 ### 5.1 Render, review and pick — [ ]
 Class: review · Needs: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 4.3a, 4.3b, 4.3c, 4.3d, 4.3e, 4.3f, 2.3 · Check: `node scripts/docs-media.mjs check docs/course/0*.md && node scripts/check-course.mjs --require-media --catalog catalog.json`
