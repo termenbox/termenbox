@@ -66,6 +66,7 @@ jobs:
     permissions:
       contents: write
       deployments: write
+      packages: read
     uses: ./.github/workflows/release-build.yaml
     secrets: inherit
     with:
