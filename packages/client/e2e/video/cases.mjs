@@ -296,7 +296,8 @@ Object.assign(cases, {
       server.output('build finished\\r\\n$ '); // the real server redraws the screen on attach; the scripted one only says it attached
       await screenHas(page, 'build finished');
       expectThat(await page.getByText('Connected').first().isVisible().catch(() => false) || h.phone, 'the server is not shown as connected again');
-      await h.still('re-attached');
+      await h.still('poster');
+      await h.result();
     },
   },
 });

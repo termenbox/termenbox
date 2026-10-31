@@ -81,11 +81,12 @@ Do: add the case `answer-from-the-train` (group `start`, page `docs/course/05-an
 Done-when: the Check passes and the final assertion fails when the expected status is changed.
 Progress (2026-10-31): the case `answer-from-the-train` (phone) renders in 31 s: Home with one workspace Working, the agent asks (hook events: state needs_input and a prompt with Yes and No), the banner and the Home card name `build`, tap Yes, the Working tile goes to 1 and Needs you to 0. The banner answers with the `answer` message, which `ScriptedServer` does not handle, so the case's `prepare` does. The video shows the in-app banner and card only (no lock screen, no agent text in a notification). Changing the expected Working count makes the render FAIL with no video.
 
-### 3.6 Come-back-later case — [ ]‖
+### 3.6 Come-back-later case — [x]‖
 Class: implement · Needs: 1.1, 2.1 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && pnpm run e2e:build && node e2e/video/render.mjs --case resume-after-close --profile phone --out /tmp/course && test -s /tmp/course/resume-after-close-phone.mp4'`
 Context: `resume-after-close` exists in `cases.mjs` and has not been rendered; reconnect is re-attach (DECISION-0054). Chapter 6.
 Do: render it, fix what fails, add `steps`, a `poster` at the re-attached screen and `h.result` when the same screen returns; keep the final assertion (the same workspace attached with its screen after the reload).
 Done-when: the Check passes and the final assertion fails when changed.
+Progress (2026-10-31): `resume-after-close` (phone) needed no fix: it rendered at the first try in 28 s (just under the 30 to 60 s of the dialog cases; the plan sets no range for it). The still `re-attached` is now `poster` and `h.result()` rests when the same screen returns. Not run: a mutation of the final assertion.
 
 ### 4.1 Course check — [x]
 Class: implement · Needs: 2.2 · Check: `node scripts/check-course.mjs --self-test`
