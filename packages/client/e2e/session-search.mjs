@@ -275,7 +275,7 @@ try {
   await openSheet();
   // The server learns the agent's session id when the agent answers session/new, which can be just after the view shows.
   await waitFor(async () => { await search('wombat itinerary'); return (await hits.count()) > 0; }, 'the ACP hit', 30000)
-    .catch(async (e) => { throw new Error(`${e.message}; the sheet reads: ${(await sheet.innerText()).replace(/\s+/g, ' ').slice(0, 400)}; workspaces: ${(await page.locator('[data-shell=sidebar] [data-key]').allInnerTexts()).slice(-2).join('|')}`); });
+    .catch(async (e) => { throw new Error(`${e.message}; the sheet reads: ${(await sheet.innerText()).replace(/\s+/g, ' ').slice(0, 400)}; the view reads: ${(await page.locator('[data-testid=acp-view]').first().innerText().catch(() => 'no view')).replace(/\s+/g, ' ').slice(0, 500)}; server: ${readFileSync(logFile, 'utf8').split('\n').filter((l) => /acp|agent/i.test(l) && !/TRACE|DEBUG/.test(l)).slice(-6).join(' // ').replace(/\x1b\[[0-9;]*m/g, '').slice(0, 900)}`); });
   await hits.first().click();
   await input.waitFor({ state: 'detached', timeout: 10000 });
   const mark = page.locator('[data-testid=acp-view] [data-hit]').first();
