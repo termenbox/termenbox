@@ -266,8 +266,10 @@ try {
   await dialog.locator('[data-testid=folder-change]').click();
   await dialog.locator('[data-testid=picker-path]').fill(acpDir);
   await dialog.locator('[data-testid=picker-go]').click();
+  await page.waitForFunction(() => /acp-app/.test(document.querySelector('[data-testid="picker-select"] .path')?.textContent ?? ''));
   await dialog.locator('[data-testid=picker-select]:not([disabled])').click();
   await dialog.locator('[data-testid=picker-path]').waitFor({ state: 'detached' });
+  if (!/acp-app/.test(await dialog.locator('[data-testid=folder-value]').innerText())) throw new Error('the Agent view folder is not acp-app');
   await dialog.getByLabel('Name').fill('agent-view');
   await dialog.getByRole('button', { name: 'Create' }).click();
   await dialog.waitFor({ state: 'detached' });
