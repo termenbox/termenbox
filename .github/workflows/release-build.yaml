@@ -91,6 +91,16 @@ jobs:
           TERMENBOX_RELEASE_VERSION: ${{ inputs.version }}
         run: cargo build --release --locked -p termenbox-server --target ${{ matrix.target }}
 
+      - name: Gate - the binary reports the release version, not a dev build
+        run: |
+          bin=target/${{ matrix.target }}/release/termenbox-server
+          if [ "${{ matrix.arch }}" = x86_64 ]; then
+            test "$("$bin" --version)" = "termenbox-server ${{ inputs.version }}"
+          fi
+          # the commit is baked in: a binary run on a host has no TERMENBOX_BUILD to read
+          sha="${{ inputs.sha }}"
+          strings "$bin" | grep -q "${sha:0:7}"
+
       - name: Gate - the binary is fully static
         run: |
           bin=target/${{ matrix.target }}/release/termenbox-server
