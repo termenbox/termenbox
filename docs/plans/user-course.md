@@ -109,11 +109,12 @@ Do: write the chapter following the procedure, with the `<!-- course-steps:insta
 Done-when: the Check passes and the chapter reads aloud without a second reading.
 Progress (2026-10-31): `docs/course/01-install.md` written (steps block generated from the `install` case, media marker for `install-desktop`, two trouble entries, 3 minutes promised). The Check reports only the Next link to chapter 2, which resolves when 4.3b lands, and a warning that the video is not picked yet (5.1). To run the Check before the media exists: `node packages/client/e2e/video/render.mjs --list --json > catalog.json` then `node scripts/check-course.mjs --catalog catalog.json <chapter>`.
 
-### 4.3b Chapter 2, Connect your phone — [ ]‖
+### 4.3b Chapter 2, Connect your phone — [x]‖
 Class: implement · Needs: 3.2, 4.1, 4.2 · Check: `node scripts/check-course.mjs docs/course/02-connect-your-phone.md`
 Context: as 4.3a; reference `docs/guide/install.md` and `docs/guide/networking.md` (paths, LAN only, the tunnel); failures: the QR scanned by another app, a network that blocks UDP (`docs/guide/networking.md`).
 Do: write the chapter with the markers for `add-server` (phone).
 Done-when: the Check passes.
+Progress (2026-10-31): `docs/course/02-connect-your-phone.md` written (steps generated from `add-server`, media marker `add-server-phone`, two trouble entries). The first step's caption in `cases.mjs` now reads "Open the app and add a server" so the generated line does not say "Tap Add Server. Tap Add Server."; re-render when 5.1 runs. The Check reports only the Next link to chapter 3 (lands with 4.3c) and the unpicked video.
 
 ### 4.3c Chapter 3, First workspace — [ ]‖
 Class: implement · Needs: 3.3, 4.1, 4.2 · Check: `node scripts/check-course.mjs docs/course/03-first-workspace.md`

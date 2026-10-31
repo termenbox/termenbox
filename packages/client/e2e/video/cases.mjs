@@ -222,7 +222,7 @@ Object.assign(cases, {
     real: true,
     inputs: ['packages/client/src/AddServerModal.svelte', 'packages/client/src/addserver/**', 'packages/client/src/lib/addServer.ts', 'packages/client/e2e/video/**'],
     steps: [
-      { id: 'tap-add', caption: 'Tap Add Server', label: 'Add Server' },
+      { id: 'tap-add', caption: 'Open the app and add a server', label: 'Add Server' },
       { id: 'install', caption: 'Step 1 installs the server; it announces itself while you run the command', label: 'Next' },
       { id: 'paste', caption: 'Paste the link the installer printed', label: null },
       { id: 'preview', caption: 'Nothing is claimed yet: this says what you are adding', label: null },
