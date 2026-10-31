@@ -67,6 +67,25 @@ esac
 printf '\033Ptmux;\033\033]7770;open;%s\007\033\\' "$1" >"${TERMENBOX_OPEN_TTY:-/dev/tty}"
 "#;
 
+/// The default mouse bindings that draw or create something inside the terminal. With the mouse on, a right-click (a
+/// Ctrl+click on a Mac) opens tmux's menu, and on tmux 3.8 a Ctrl+press with any movement makes a floating pane one
+/// character in size (`new-pane -M`), which a Ctrl/Cmd+click on a link easily is. Alt+drag moves a pane.
+const MOUSE_UNBIND: [&str; 13] = [
+    "MouseDown3Pane",
+    "M-MouseDown3Pane",
+    "MouseDown3Status",
+    "MouseDown3StatusLeft",
+    "M-MouseDown3Status",
+    "M-MouseDown3StatusLeft",
+    "MouseDown3Empty",
+    "M-MouseDown3Empty",
+    "C-MouseDrag1Pane",
+    "C-MouseDrag1Empty",
+    "M-MouseDrag1Pane",
+    "M-MouseDrag1Border",
+    "C-MouseDown1Status",
+];
+
 /// The config of the private server. `term` is the `default-terminal` the host's terminfo supports; `local` is the
 /// optional file the owner may add next to it, which termenbox never writes; `shim` is the `BROWSER` program.
 pub fn render(term: &str, local: Option<&Path>, shim: Option<&Path>) -> String {
@@ -79,14 +98,9 @@ pub fn render(term: &str, local: Option<&Path>, shim: Option<&Path>) -> String {
     out.push_str("set -g mouse on\nset -g set-clipboard on\nset -gq allow-passthrough on\n");
     // The client draws its own workspace chrome, so tmux's status line only costs a row of the terminal.
     out.push_str("set -g status off\n");
-    // With the mouse on, a right-click (a Ctrl+click on a Mac) opens tmux's own menu drawn inside the terminal, which
-    // looks like a broken screen in the browser; the client has its own menus. The owner's file can bind them again.
-    for key in [
-        "MouseDown3Pane",
-        "M-MouseDown3Pane",
-        "MouseDown3Status",
-        "MouseDown3StatusLeft",
-    ] {
+    // The client has its own menus and tabs, so tmux's mouse-made windows only look like a broken screen in the
+    // browser. The owner's file can bind any of them again.
+    for key in MOUSE_UNBIND {
         out.push_str(&format!("unbind -nq {key}\n"));
     }
     if let Some(shim) = shim {
@@ -179,6 +193,34 @@ mod tests {
             "M-MouseDown3Pane",
             "MouseDown3Status",
             "MouseDown3StatusLeft",
+        ] {
+            let line = format!("unbind -nq {key}\n");
+            assert!(c.contains(&line), "{key}");
+            assert!(
+                c.find(&line).unwrap() < c.find("source-file").unwrap(),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_modified_mouse_gesture_never_creates_moves_or_swaps_a_pane() {
+        let c = render(
+            "xterm-256color",
+            Some(Path::new("/c/tmux.local.conf")),
+            None,
+        );
+        // tmux 3.8: Ctrl+drag makes a floating pane (a Ctrl+click on a link is easily one), Alt+drag moves a pane
+        for key in [
+            "C-MouseDrag1Pane",
+            "C-MouseDrag1Empty",
+            "M-MouseDrag1Pane",
+            "M-MouseDrag1Border",
+            "MouseDown3Empty",
+            "M-MouseDown3Empty",
+            "M-MouseDown3Status",
+            "M-MouseDown3StatusLeft",
+            "C-MouseDown1Status",
         ] {
             let line = format!("unbind -nq {key}\n");
             assert!(c.contains(&line), "{key}");
