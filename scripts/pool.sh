@@ -3,6 +3,9 @@
 #
 #   scripts/pool.sh acquire <type>/<slug>   claim a slot on a new branch from origin/develop; prints its path
 #   scripts/pool.sh release [--force] <slot|path>   give a slot back (refuses unsaved work unless --force)
+#   scripts/pool.sh session <id>            claim a slot for an agent session (unnamed, on origin/develop); prints its path
+#   scripts/pool.sh name <type>/<slug>      from inside an unnamed slot: create the branch once the task is clear
+#   scripts/pool.sh end-session <id>        release the session's slot if it is still unnamed and clean
 #   scripts/pool.sh warm                    reap merged slots, refresh free ones; keep POOL_WARM of them, create or remove to match
 #   scripts/pool.sh reap                    release every clean slot whose branch is merged (acquire and warm do this too)
 #   scripts/pool.sh adopt <slot|path>       claim a worktree made by hand in the pool directory
@@ -91,7 +94,7 @@ free_slot() {
   git -C "$2" reset -q --hard
   git -C "$2" clean -fdq
   git -C "$2" switch -q --detach "origin/$BASE"
-  git -C "$main" branch -D "$1" >/dev/null 2>&1 || true
+  [ -z "$1" ] || git -C "$main" branch -D "$1" >/dev/null 2>&1 || true
   rm -f "$(claim_file "$3")"
 }
 
@@ -102,7 +105,12 @@ reap() {
     d=$(slot_dir "$n")
     if exists "$d" && claimed "$n"; then
       b=$(sed -n 1p "$(claim_file "$n")")
-      if clean "$d" && merged "$b" "$n"; then free_slot "$b" "$d" "$n"; echo "pool: released slot $n (merged $b)" >&2; fi
+      if [ -z "$b" ]; then
+        # an unnamed session slot whose session never came back
+        if clean "$d" && [ $(( $(date +%s) - $(sed -n 2p "$(claim_file "$n")") )) -gt "${POOL_SESSION_TTL:-43200}" ]; then
+          free_slot "" "$d" "$n"
+        fi
+      elif clean "$d" && merged "$b" "$n"; then free_slot "$b" "$d" "$n"; echo "pool: released slot $n (merged $b)" >&2; fi
     fi
     n=$((n + 1))
   done
@@ -133,6 +141,24 @@ background_top_up() {
   if [ "${POOL_NO_BG:-}" = 1 ]; then top_up; else (sh "$0" warm >/dev/null 2>&1 &); fi
 }
 
+# the number of a free slot (creating one under the cap), or die when the pool is exhausted
+take_slot() {
+  local n=1 pick=
+  while [ "$n" -le "$MAX" ]; do
+    if is_free "$(slot_dir "$n")" "$n"; then pick=$n; break; fi
+    n=$((n + 1))
+  done
+  if [ -z "$pick" ]; then
+    n=1
+    while [ "$n" -le "$MAX" ]; do
+      if ! exists "$(slot_dir "$n")"; then make_slot "$n"; pick=$n; break; fi
+      n=$((n + 1))
+    done
+  fi
+  [ -n "$pick" ] || die "pool exhausted: all $MAX slots are in use; release one (scripts/pool.sh status)" 3
+  echo "$pick"
+}
+
 cmd_acquire() {
   local branch n pick d
   [ $# -eq 1 ] || die "usage: pool.sh acquire <type>/<slug>"
@@ -147,20 +173,7 @@ cmd_acquire() {
   done
   fetch
   reap
-  pick=
-  n=1
-  while [ "$n" -le "$MAX" ]; do
-    if is_free "$(slot_dir "$n")" "$n"; then pick=$n; break; fi
-    n=$((n + 1))
-  done
-  if [ -z "$pick" ]; then
-    n=1
-    while [ "$n" -le "$MAX" ]; do
-      if ! exists "$(slot_dir "$n")"; then make_slot "$n"; pick=$n; break; fi
-      n=$((n + 1))
-    done
-  fi
-  [ -n "$pick" ] || die "pool exhausted: all $MAX slots are in use; release one (scripts/pool.sh status)" 3
+  pick=$(take_slot) || exit $?
   d=$(slot_dir "$pick")
   refresh_slot "$d"
   if git -C "$d" show-ref -q --verify "refs/heads/$branch"; then
@@ -171,6 +184,62 @@ cmd_acquire() {
   printf '%s\n%s\n%s\n' "$branch" "$(date +%s)" "$(git -C "$d" rev-parse HEAD)" >"$(claim_file "$pick")"
   background_top_up
   echo "$d"
+}
+
+# the slot a session holds, if any: claim line 4 is the session id
+session_slot() {
+  local n=1
+  while [ "$n" -le "$MAX" ]; do
+    if claimed "$n" && [ "$(sed -n 4p "$(claim_file "$n")")" = "$1" ]; then echo "$n"; return; fi
+    n=$((n + 1))
+  done
+}
+
+cmd_session() {
+  local id n d
+  [ $# -eq 1 ] && [ -n "$1" ] || die "usage: pool.sh session <id>"
+  id=$1
+  lock
+  n=$(session_slot "$id")
+  if [ -z "$n" ]; then
+    fetch
+    reap
+    n=$(take_slot) || exit $?
+    d=$(slot_dir "$n")
+    refresh_slot "$d"
+    printf '\n%s\n%s\n%s\n' "$(date +%s)" "$(git -C "$d" rev-parse HEAD)" "$id" >"$(claim_file "$n")"
+    background_top_up
+  fi
+  slot_dir "$n"
+}
+
+cmd_name() {
+  local branch top n d
+  [ $# -eq 1 ] || die "usage: pool.sh name <type>/<slug>"
+  branch=$1
+  printf '%s' "$branch" | grep -Eq "$BRANCH_RE" || die "branch '$branch' does not match $BRANCH_RE"
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || die "run this inside your slot"
+  n=$(slot_of "$top")
+  lock
+  claimed "$n" || die "slot $n is not claimed"
+  [ -z "$(sed -n 1p "$(claim_file "$n")")" ] || die "slot $n already has the branch $(sed -n 1p "$(claim_file "$n")")"
+  d=$(slot_dir "$n")
+  git -C "$d" switch -q -c "$branch" "origin/$BASE"
+  printf '%s\n%s\n%s\n%s\n' "$branch" "$(sed -n 2p "$(claim_file "$n")")" "$(git -C "$d" rev-parse HEAD)" "$(sed -n 4p "$(claim_file "$n")")" >"$(claim_file "$n")"
+  echo "$branch"
+}
+
+# a session that ended without naming a branch or leaving changes gives its slot back
+cmd_end_session() {
+  local n
+  [ $# -eq 1 ] || die "usage: pool.sh end-session <id>"
+  lock
+  n=$(session_slot "$1")
+  [ -n "$n" ] || return 0
+  [ -z "$(sed -n 1p "$(claim_file "$n")")" ] || return 0
+  clean "$(slot_dir "$n")" || return 0
+  free_slot "" "$(slot_dir "$n")" "$n"
+  background_top_up
 }
 
 cmd_release() {
@@ -184,9 +253,9 @@ cmd_release() {
   lock
   claimed "$n" || die "slot $n is not claimed"
   branch=$(sed -n 1p "$(claim_file "$n")")
-  if [ "$force" -ne 1 ] && ! { clean "$d" && merged "$branch" "$n"; }; then
+  if [ "$force" -ne 1 ] && ! { clean "$d" && { [ -z "$branch" ] || merged "$branch" "$n"; }; }; then
     clean "$d" || die "slot $n has uncommitted work; commit it or use --force"
-    if [ -n "$(git -C "$d" rev-list "$branch" --not --remotes 2>/dev/null | head -1)" ]; then
+    if [ -n "$branch" ] && [ -n "$(git -C "$d" rev-list "$branch" --not --remotes 2>/dev/null | head -1)" ]; then
       die "branch $branch has commits that exist nowhere else; push it or use --force"
     fi
   fi
@@ -222,7 +291,7 @@ cmd_status() {
     if ! exists "$d"; then
       printf 'pool-%02d  cold\n' "$n"
     elif claimed "$n"; then
-      printf 'pool-%02d  claimed    %s%s\n' "$n" "$(sed -n 1p "$(claim_file "$n")")" "$(clean "$d" || echo '  (uncommitted)')"
+      printf 'pool-%02d  claimed    %s%s\n' "$n" "$(sed -n 1p "$(claim_file "$n")" | sed 's/^$/(unnamed session)/')" "$(clean "$d" || echo '  (uncommitted)')"
     elif is_free "$d" "$n"; then
       printf 'pool-%02d  free\n' "$n"
     else
@@ -241,6 +310,9 @@ case "$cmd" in
   adopt) cmd_adopt "$@" ;;
   warm) cmd_warm ;;
   reap) cmd_reap ;;
+  session) cmd_session "$@" ;;
+  name) cmd_name "$@" ;;
+  end-session) cmd_end_session "$@" ;;
   status) cmd_status ;;
-  *) die "usage: pool.sh acquire|release|adopt|warm|reap|status" ;;
+  *) die "usage: pool.sh acquire|release|adopt|warm|reap|session|name|end-session|status" ;;
 esac

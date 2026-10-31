@@ -95,6 +95,27 @@ refuse "reap deleted the merged local branch" git -C "$repo" show-ref -q --verif
 pool acquire fix/next >/dev/null 2>&1
 eq "acquire reaps a branch contained in develop" "$(branch_of "$m2")" detached
 
+# --- a session takes a slot by itself, names its branch later ---
+setup
+d1=$(pool session sess-1)
+eq "session hands out a slot" "$(basename "$d1")" pool-01
+eq "a session slot starts detached on develop" "$(branch_of "$d1")" detached
+eq "the same session gets the same slot back" "$(pool session sess-1)" "$d1"
+d2=$(pool session sess-2)
+refuse "another session gets another slot" test "$d2" = "$d1"
+check "name creates the branch from inside the slot" sh -c "cd '$d1' && sh '$pool' name fix/later"
+eq "the slot is now on the named branch" "$(branch_of "$d1")" fix/later
+refuse "a named slot cannot be renamed" sh -c "cd '$d1' && sh '$pool' name fix/other"
+refuse "name rejects a bad branch name" sh -c "cd '$d2' && sh '$pool' name oops"
+pool end-session sess-1 >/dev/null 2>&1
+eq "end-session keeps a named slot" "$(branch_of "$d1")" fix/later
+pool end-session sess-2 >/dev/null 2>&1
+eq "end-session releases an unnamed clean slot" "$(pool session sess-3)" "$d2"
+echo x >"$d2/dirty"
+pool end-session sess-3 >/dev/null 2>&1
+test -f "$d2/dirty" && ok "end-session keeps a slot with changes" || bad "end-session keeps a slot with changes"
+pool status | grep -q "unnamed session" && ok "status shows an unnamed session slot" || bad "status shows an unnamed session slot"
+
 # --- free slots beyond the warm count are removed ---
 setup
 pool warm >/dev/null
