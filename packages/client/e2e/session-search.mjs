@@ -274,7 +274,8 @@ try {
   await page.locator('[data-testid=acp-view]').first().waitFor({ timeout: 30000 });
   await openSheet();
   // The server learns the agent's session id when the agent answers session/new, which can be just after the view shows.
-  await waitFor(async () => { await search('wombat itinerary'); return (await hits.count()) > 0; }, 'the ACP hit', 30000);
+  await waitFor(async () => { await search('wombat itinerary'); return (await hits.count()) > 0; }, 'the ACP hit', 30000)
+    .catch(async (e) => { throw new Error(`${e.message}; the sheet reads: ${(await sheet.innerText()).replace(/\s+/g, ' ').slice(0, 400)}; workspaces: ${(await page.locator('[data-shell=sidebar] [data-key]').allInnerTexts()).slice(-2).join('|')}`); });
   await hits.first().click();
   await input.waitFor({ state: 'detached', timeout: 10000 });
   const mark = page.locator('[data-testid=acp-view] [data-hit]').first();
