@@ -53,13 +53,14 @@ export const cases = {
       { id: 'pick-folder', caption: 'Folders you used before are one tap away', label: '~/code/termenbox' },
       { id: 'summary', caption: 'The summary says what will be created', label: null },
       { id: 'create', caption: 'Create it', label: 'Create' },
+      { id: 'created', caption: 'Your workspace now runs in ~/code/termenbox', label: null },
     ],
     // A returning user: the server's home was remembered from an earlier listing, so folders show as ~/…
     storage: { termenbox_server_homes: JSON.stringify({ one: HOME }), termenbox_recent_dirs: JSON.stringify({ one: [`${HOME}/code/termenbox`, `${HOME}/code/app`] }) },
     async run(c) {
       const { h, q } = c;
       await openDialog(c);
-      await h.still('dialog-open');
+      await h.still('poster');
       await h.step('pick-folder', q('dir-chip').first());
       await q('dir-chip').first().waitFor({ state: 'visible', timeout: 5000 });
       await h.tap(q('dir-chip').first());
@@ -68,6 +69,8 @@ export const cases = {
       await h.still('folder-chosen');
       const made = await create(c);
       expectThat(made.dir === `${HOME}/code/termenbox`, `new_workspace dir was ${made.dir}`);
+      await h.step('created');
+      await h.result();
     },
   },
 

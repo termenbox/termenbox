@@ -60,11 +60,12 @@ Do: render it, fix what fails, add `steps` and a `poster` still at the "ready to
 Done-when: the Check passes on the phone profile and the final assertion fails when changed.
 Progress (2026-10-31): `add-server` renders on the phone profile against the real server binary (63 s, longer than the 30 to 60 s of the dialog cases because the real server announces and the reach check run in real time); the still `pairing-preview` is now `poster`, `h.result()` rests on the ready-to-add screen and on "This device can reach it"; changing that assertion's text makes the render FAIL with no video. Fixed: `real-server.mjs` threw `uv_os_get_passwd ENOENT` in a container whose uid has no passwd entry. Binary: `/cache/target/release/termenbox-server` of the volume `termenbox-sergei_cache` (built earlier today); run with `COMPOSE_PROJECT_NAME=termenbox-sergei`.
 
-### 3.3 First-workspace case — [ ]‖
+### 3.3 First-workspace case — [x]‖
 Class: implement · Needs: 1.1, 2.1 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && pnpm run e2e:build && node e2e/video/render.mjs --case recent-folder --profile phone --out /tmp/course && test -s /tmp/course/recent-folder-phone.mp4'`
 Context: `recent-folder` exists and renders (17 s with flat delays); it opens the New workspace dialog, taps a recent folder and an agent. Chapter 3.
 Do: add `steps`, mark the `poster` still (dialog open), call `h.result` when the workspace opens, keep the final assertion, and add one beat the newcomer needs: the workspace name and the folder chosen are read aloud in the caption.
 Done-when: the Check passes and the video runs 30 to 60 s.
+Progress (2026-10-31): `recent-folder` phone renders in 35.5 s (container, real ffmpeg); the `poster` still is the open dialog (was `dialog-open`), a new last step `created` ("Your workspace now runs in ~/code/termenbox") reads the folder aloud and rests with `h.result()`; the final assertions are unchanged. The workspace name is not in the caption: the dialog has no name field to read, the summary names the agent and folder. Not run: a mutation of the final assertion.
 
 ### 3.4 Talk-to-your-agent case — [ ]‖
 Class: implement · Needs: 1.1, 2.1 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && pnpm run e2e:build && node e2e/video/render.mjs --case talk-to-agent --profile phone --out /tmp/course && test -s /tmp/course/talk-to-agent-phone.mp4'`
