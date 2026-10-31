@@ -42,6 +42,16 @@ describe('FolderBrowser', () => {
     await b.enter('termenbox');
     expect(b.selection).toBe('/home/u/code/termenbox');
   });
+  it('ignores a second click on a row while its folder is still loading (#408)', async () => {
+    const { list, calls } = fake();
+    const b = new FolderBrowser(list);
+    await b.open();
+    const first = b.enter('code');
+    const second = b.enter('code'); // the old rows are still on screen
+    await Promise.all([first, second]);
+    expect(b.state).toMatchObject({ status: 'ready', path: '/home/u/code' });
+    expect(calls.map(c => c.path)).toEqual([undefined, '/home/u/code']);
+  });
   it('shows an error for an unlistable folder and Retry asks again', async () => {
     const f = fake();
     const b = new FolderBrowser(f.list);
