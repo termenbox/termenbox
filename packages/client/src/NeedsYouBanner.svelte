@@ -2,6 +2,7 @@
   import { bannerChoices, bannerKind, bannerText, type Waiting } from './lib/notify';
   import type { WorkspaceAgent } from './lib/agents';
   import AgentBadge from './lib/ds/AgentBadge.svelte';
+  import type { FleetState } from './lib/ds';
 
   export let waiting: Waiting[];
   export let now: number;
@@ -18,6 +19,7 @@
   $: first = waiting[0];
   $: choices = first ? bannerChoices(first.agent, now) : [];
   $: kind = first ? bannerKind(first.agent) : '';
+  let state: FleetState = 'needs-you';
   $: state = kind === 'failed' ? 'failed' : kind === 'finished' ? 'finished' : 'needs-you';
   $: clearable = first?.agent.attention && first.agent.attention.kind !== 'needs_input' ? first.agent.attention.id : '';
 </script>
