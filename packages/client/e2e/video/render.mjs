@@ -54,7 +54,7 @@ try {
   }
   await sleep(800);
   ready = (Date.now() - started) / 1000;
-  h = humanPage(t.page, profile, { pace, caption: captions });
+  h = humanPage(t.page, profile, { pace, caption: captions, seed: caseName });
   await h.say('A rendered walkthrough on scripted data, not a real device');
   const dialog = t.page.locator('dialog[aria-label="New workspace"]');
   await cases[caseName].run({ h, t, page: t.page, dialog, q: (id) => dialog.locator(`[data-testid="${id}"]`), server: t.server, real: t.real });
