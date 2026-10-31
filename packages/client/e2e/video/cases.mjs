@@ -242,7 +242,8 @@ Object.assign(cases, {
       await h.step('preview', group);
       expectThat(/isolated container|on the machine itself/.test(await group.innerText()), 'the preview does not say where workspaces run');
       expectThat(!existsSync(join(real.config, 'owner.json')), 'the server was claimed before Add');
-      await h.still('pairing-preview');
+      await h.still('poster');
+      await h.result();
       await h.type(page.locator('#preview-name'), 'home-server');
       await h.tap(group.getByRole('button', { name: 'Add', exact: true }));
       await page.getByText('Server added').waitFor({ timeout: 20000 });
@@ -252,6 +253,7 @@ Object.assign(cases, {
       await h.step('reach', panel);
       expectThat(/This device can reach it/.test(await panel.innerText()), `result panel said "${(await panel.innerText()).replace(/\s+/g, ' ').slice(0, 100)}"`);
       await h.still('server-added');
+      await h.result();
     },
   },
 

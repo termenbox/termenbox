@@ -77,9 +77,9 @@ export async function launchReal({ viewport, scale, phone, recordDir, overlay })
   await ctx.addInitScript(overlay, phone);
   // The preview names the account the server runs as; a video shows a stand-in name, never the machine's real one.
   await ctx.addInitScript(([real, shown]) => {
-    const swap = (n) => { if (n.nodeType === 3 && n.nodeValue.includes(real)) n.nodeValue = n.nodeValue.split(real).join(shown); else n.childNodes?.forEach(swap); };
+    const swap = (n) => { if (real && n.nodeType === 3 && n.nodeValue.includes(real)) n.nodeValue = n.nodeValue.split(real).join(shown); else n.childNodes?.forEach(swap); };
     setInterval(() => { if (document.body) swap(document.body); }, 150);
-  }, [userInfo().username, 'alex']);
+  }, [(() => { try { return userInfo().username; } catch { return process.env.USER ?? ''; } })(), 'alex']);
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
