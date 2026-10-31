@@ -154,3 +154,5 @@
 | 0153-the-tab-strip-follows-tmuxs-current-window-on-a-control-mode-server | The tab strip follows tmux's current window on a control-mode server | product | active | Sergey Strebulaev | - |
 | 0154-a-new-release-waits-a-grace-period-for-the-owner-then-installs-or-is-skipped | A new release waits a grace period for the owner, then installs or is skipped as the host configured | product | active | Sergey Strebulaev | - |
 | 0155-a-container-install-updates-through-a-host-timer-that-pulls-the-digest-the-signed-manifest-names | A container install updates through a host timer that pulls the digest the signed manifest names | product | active | Sergey Strebulaev | - |
+| 0156-search-covers-every-known-agent-session-from-the-agents-own-files | Search covers every agent session termenbox knows, read from the agents' own files and scanned on demand | product | active | Sergey Strebulaev | - |
+| 0157-agent-session-files-are-read-through-a-session-log-port-with-one-adapter-per-agent | Agent session files are read through a SessionLog port with one adapter per agent, and AcpView reads one unified log | process | active | Sergey Strebulaev | - |

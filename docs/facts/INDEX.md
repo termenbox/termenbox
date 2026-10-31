@@ -53,7 +53,6 @@
 | 0051 | The server needs no external call to accept a connection after claim | transport, auth, network, deployment | active |
 | 0052 | CPace over ristretto255 fits the pairing code on both ends with no WASM; the phone half of the spike is still open | pake, security, client, server, onboarding, spike | draft |
 | 0053 | A server inside a NAT'd VM (WSL2 NAT mode, VirtualBox NAT, Docker Desktop) is reachable from other devices only through port forwarding or a bridged network | network, deployment, wsl, lan, topology | active |
-| 0054 | Release versions compare by SemVer precedence, build metadata is ignored, and a prerelease sorts below its release | release, updater, semver | active |
 | 0055 | A waiting question is pushed again on a ladder until it is answered anywhere, and a push opens its decision card | notifications, agents | active |
 | 0056 | The UX harness builds on existing Playwright pieces, and CI emulates a phone, it does not verify one | client, mobile, ux, ci | active |
 | 0057 | ACP's own extension rules and what the pinned schema crate covers, checked for the extension registry | agents, protocol, client | active |
@@ -63,5 +62,6 @@
 | 0062 | The server logs to a file through a writer thread and builds a scrubbed diagnostics bundle on request | server, observability, performance, privacy | active |
 | 0063 | A browser cannot pick a folder on the server, and a native modal dialog hides overlays that are not inside it | client, mobile, ux, browser-support | active |
 | 0064 | The updater records what it knows in update-state.json and the server only reads it | server, updater, observability | active |
+| 0065 | Agent TUIs can be scrolled to an earlier turn only by their own keys; none has an external jump | agents, terminal, client | active |
 
 <!-- bootstrap-generated: true -->
