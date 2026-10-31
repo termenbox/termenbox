@@ -972,7 +972,8 @@ mod tests {
             Mode::Auto,
             Trigger::Timer,
         );
-        assert!(matches!(u.run().await.unwrap(), Outcome::RolledBack { .. }));
+        let first = u.run().await.unwrap();
+        assert!(matches!(first, Outcome::RolledBack { .. }), "{first:?}");
         assert!(update_state::State::load(&w.dir).is_pinned("9.9.9"));
         assert_eq!(
             crate::requests::available_update(&w.dir.join("requests"), "0.1.0"),
