@@ -24,6 +24,53 @@ export function liveTab(tabs: TabInfo[] | undefined, wanted: string | null | und
   return ordered.find((t) => t.id === wanted) ?? focusedTab(ordered, focus);
 }
 
+/**
+ * The tab a device opens a workspace on. A control-mode server shares one tmux current window between all devices, so
+ * that window's tab wins and a reload never drags the others to a stale remembered tab; without control mode the
+ * server has no current window to report and the device's remembered tab decides (decision 0153).
+ */
+export function openingTab(
+  tabs: TabInfo[] | undefined,
+  remembered: string | null | undefined,
+  focus: string | null | undefined,
+  controlMode: boolean,
+): TabInfo | undefined {
+  return controlMode ? focusedTab(tabs, focus) : liveTab(tabs, remembered, focus);
+}
+
+/**
+ * The tab the shared tmux current window just moved to, or null when this device already shows it. A control-mode
+ * server reports the current window as the workspace focus; a device viewing the workspace follows it, and a focus
+ * that names no live tab changes nothing.
+ */
+export function followFocus(tabs: TabInfo[] | undefined, wanted: string | null | undefined, focus?: string | null): string | null {
+  if (!focus || focus === wanted) return null;
+  return tabOrder(tabs).some((t) => t.id === focus) ? focus : null;
+}
+
+/** What an arriving workspace list does to this device's active tab. */
+export type TabMove = { kind: 'closed'; tab: string | null } | { kind: 'follow'; tab: string } | null;
+
+/**
+ * The move an arriving workspace list makes on this device's active tab. A tab that is gone is `closed`: the caller
+ * opens the tab the server chose. On a control-mode server a focus that moved since `seen` is `follow`; the terminal
+ * already shows tmux's new window, so the caller moves the strip without attaching. `seen` is the focus the previous
+ * list carried, undefined on the first list, which never moves the strip.
+ */
+export function tabMove(
+  tabs: TabInfo[] | undefined,
+  activeTab: string | null,
+  focus: string | null | undefined,
+  seen: string | null | undefined,
+  controlMode: boolean,
+): TabMove {
+  if (!tabs || !activeTab) return null;
+  if (!tabs.some((t) => t.id === activeTab)) return { kind: 'closed', tab: liveTab(tabs, null, focus)?.id ?? null };
+  if (!controlMode || seen === undefined || (focus ?? null) === seen) return null;
+  const moved = followFocus(tabs, activeTab, focus);
+  return moved ? { kind: 'follow', tab: moved } : null;
+}
+
 /** The per-tab state key; PR4 fills the map, the aggregate already understands an empty one. */
 export const tabStateKey = (workspaceKey: string, tabId: string) => `${workspaceKey}/${tabId}`;
 

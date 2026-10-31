@@ -112,7 +112,10 @@ async fn a_workspace_gets_a_first_tab_and_tabs_can_be_added_renamed_moved_and_cl
         .rename_tab(&backend, &id, &second.id, "Build")
         .await
         .unwrap();
-    registry.move_tab(&id, &second.id, 0).await.unwrap();
+    registry
+        .move_tab(&backend, &id, &second.id, 0)
+        .await
+        .unwrap();
     let listed = registry.list(&backend).await.unwrap();
     assert_eq!(listed[0].tabs[0].label.as_str(), "Build");
     assert_eq!(listed[0].tabs[0].id, second.id);
@@ -328,6 +331,51 @@ async fn fake_workspace(
 }
 
 #[tokio::test]
+async fn tmux_current_window_becomes_the_focus_but_only_for_a_known_tab() {
+    let dir = temp("observe-focus");
+    let backend = Fake::new();
+    let registry = Registry::memory();
+    let work = fake_workspace(&registry, &backend, "Work", &dir, "claude").await;
+    let second = registry
+        .new_tab(&backend, &work, "shell", "Logs", "")
+        .await
+        .unwrap();
+    let focus = || registry.record(&work).unwrap().focus;
+    let first = registry.record(&work).unwrap().tabs[0].id.clone();
+
+    assert_eq!(focus().as_deref(), Some(second.id.as_str()));
+    // tmux moved back to its first window: the focus follows the window, not the clock.
+    assert!(registry.observe_focus(&work, &first));
+    assert_eq!(focus().as_deref(), Some(first.as_str()));
+    // The same window again, an unknown tab and an unknown workspace change nothing.
+    assert!(!registry.observe_focus(&work, &first));
+    assert!(!registry.observe_focus(&work, "t99"));
+    assert!(!registry.observe_focus("gone", "t1"));
+    assert!(!registry.observe_focus(&work, ""));
+    assert_eq!(focus().as_deref(), Some(first.as_str()));
+}
+
+#[tokio::test]
+async fn a_light_list_keeps_the_records_and_their_focus_without_asking_for_windows() {
+    let dir = temp("light-list");
+    let backend = Fake::new();
+    let registry = Registry::memory();
+    let work = fake_workspace(&registry, &backend, "Work", &dir, "claude").await;
+    registry
+        .new_tab(&backend, &work, "shell", "Logs", "")
+        .await
+        .unwrap();
+
+    let full = registry.list(&backend).await.unwrap();
+    let light = registry.list_light(&backend).await.unwrap();
+    assert_eq!(light.len(), full.len());
+    assert_eq!(light[0].id, full[0].id);
+    assert_eq!(light[0].focus, full[0].focus);
+    assert_eq!(light[0].tabs.len(), full[0].tabs.len());
+    assert_eq!(light[0].tabs[1].label, full[0].tabs[1].label);
+}
+
+#[tokio::test]
 async fn agent_tabs_are_capped_per_workspace_and_closing_one_frees_a_slot() {
     let dir = temp("cap");
     let backend = Fake::new();
@@ -488,6 +536,107 @@ async fn the_registry_file_keeps_the_order_and_the_labels_across_a_reload() {
     assert_eq!(listed[0].id, id);
     assert_eq!(listed[0].name.as_str(), "Release notes");
     assert_eq!(listed[0].tabs.len(), 1);
+    stop(&tmp).await;
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// Real tmux: the windows are listed as `(index, window id, active)` in index order.
+async fn tmux_windows(dir: &Path, session: &str) -> Vec<(u32, String, bool)> {
+    let socket = dir.to_string_lossy().into_owned();
+    let runner =
+        Runner::default().with_env(&[("TMUX_TMPDIR", Some(socket.as_str())), ("TMUX", None)]);
+    let args = [
+        "list-windows",
+        "-t",
+        &format!("={session}"),
+        "-F",
+        "#{window_index} #{window_id} #{window_active}",
+    ]
+    .map(String::from);
+    let out = runner.run("tmux", &args).await.unwrap();
+    let mut windows: Vec<(u32, String, bool)> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| {
+            let f: Vec<&str> = l.split(' ').collect();
+            (f[0].parse().unwrap(), f[1].to_string(), f[2] == "1")
+        })
+        .collect();
+    windows.sort();
+    windows
+}
+
+#[tokio::test]
+async fn moving_a_tab_reorders_the_tmux_windows_and_closing_one_packs_the_numbers() {
+    let tmp = temp("reorder");
+    let ws = tmp.join("app");
+    std::fs::create_dir_all(&ws).unwrap();
+    let backend = tmux(&tmp).await;
+    let registry = Registry::memory();
+    let root = ws.to_string_lossy().to_string();
+    let id = registry
+        .create_workspace(&backend, "Work", None, Some(&root), "shell")
+        .await
+        .unwrap();
+    for label in ["Logs", "Build", "Test"] {
+        registry
+            .new_tab(&backend, &id, "shell", label, "")
+            .await
+            .unwrap();
+    }
+    let tabs = registry.record(&id).unwrap().tabs;
+    let window = |i: usize| tabs[i].window.clone().unwrap();
+    registry
+        .focus_tab(&backend, &id, &tabs[2].id)
+        .await
+        .unwrap();
+
+    // The second tab moves to the first place: tmux lists the same windows in the new order, with the same ids.
+    registry
+        .move_tab(&backend, &id, &tabs[1].id, 0)
+        .await
+        .unwrap();
+    let after = tmux_windows(&tmp, &id).await;
+    assert_eq!(
+        after.iter().map(|w| (w.0, w.1.clone())).collect::<Vec<_>>(),
+        vec![
+            (0, window(1)),
+            (1, window(0)),
+            (2, window(2)),
+            (3, window(3))
+        ]
+    );
+    // The tab that was current is still the current one, and the registry shows the same order.
+    assert_eq!(
+        after.iter().find(|w| w.2).map(|w| w.1.clone()),
+        Some(window(2))
+    );
+    let order: Vec<String> = registry
+        .record(&id)
+        .unwrap()
+        .tabs
+        .iter()
+        .map(|t| t.id.clone())
+        .collect();
+    assert_eq!(
+        order,
+        vec![
+            tabs[1].id.clone(),
+            tabs[0].id.clone(),
+            tabs[2].id.clone(),
+            tabs[3].id.clone()
+        ]
+    );
+
+    // Closing a tab leaves no gap: Ctrl+B <n> still selects position n.
+    registry
+        .close_tab(&backend, &id, &tabs[0].id)
+        .await
+        .unwrap();
+    let after = tmux_windows(&tmp, &id).await;
+    assert_eq!(
+        after.iter().map(|w| (w.0, w.1.clone())).collect::<Vec<_>>(),
+        vec![(0, window(1)), (1, window(2)), (2, window(3))]
+    );
     stop(&tmp).await;
     let _ = std::fs::remove_dir_all(&tmp);
 }

@@ -229,31 +229,17 @@ impl Registry {
         for record in &mut state.workspaces {
             record.order = positions.get(&record.id).copied().unwrap_or(record.order);
         }
-        let order = state.order.clone();
-        let records = state.workspaces.clone();
         self.save(&state);
-        drop(state);
+        Ok(assemble(&state, &infos, &kinds))
+    }
 
-        let mut out: Vec<WorkspaceInfo> = Vec::new();
-        let mut seen = HashSet::new();
-        for info in &infos {
-            seen.insert(info.id.clone());
-            if kind_of(&kinds, info) == "tmux" {
-                if let Some(record) = records.iter().find(|r| r.id == info.id) {
-                    out.push(record_info(record, info.backend.clone(), &order));
-                    continue;
-                }
-            }
-            out.push(synthetic_info(info, &order));
-        }
-        // A dormant record has no backend entry any more; it stays until the owner closes it.
-        for record in &records {
-            if !seen.contains(&record.id) {
-                out.push(record_info(record, record.backend.clone(), &order));
-            }
-        }
-        out.sort_by(|a, b| a.order.cmp(&b.order).then(a.id.cmp(&b.id)));
-        Ok(out)
+    /// The list as the registry already knows it, without asking every tmux session for its windows: for a message
+    /// that only moved the focus. The tabs and windows are recorded; the next full `list` reconciles.
+    pub async fn list_light(&self, backend: &dyn WorkspaceBackend) -> Result<Vec<WorkspaceInfo>> {
+        let infos = backend.list().await?;
+        let kinds = backend.kinds();
+        let state = self.state.lock().unwrap();
+        Ok(assemble(&state, &infos, &kinds))
     }
 
     /// Creates a workspace; only tmux workspaces are recorded here. ACP and command backends remain supported and are
@@ -531,6 +517,7 @@ impl Registry {
             }
             self.save(&state);
         }
+        self.pack_windows(backend, workspace).await;
         let left = {
             let state = self.state.lock().unwrap();
             state
@@ -591,24 +578,51 @@ impl Registry {
         Ok(())
     }
 
-    pub async fn move_tab(&self, workspace: &str, tab: &str, index: u32) -> Result<()> {
+    /// Moves a tab to `index`. tmux's windows follow first, so a failure leaves the order as it was, and `Ctrl+B <n>`
+    /// selects the tab shown at position `n`.
+    pub async fn move_tab(
+        &self,
+        backend: &dyn WorkspaceBackend,
+        workspace: &str,
+        tab: &str,
+        index: u32,
+    ) -> Result<()> {
+        let windows = {
+            let state = self.state.lock().unwrap();
+            let record = state
+                .workspaces
+                .iter()
+                .find(|r| r.id == workspace)
+                .ok_or_else(|| anyhow!("Unknown workspace"))?;
+            let mut moved = record.clone();
+            move_within(&mut moved, tab, index)?;
+            tab_windows(&moved)
+        };
+        backend.reorder_tabs(workspace, &windows).await?;
         let mut state = self.state.lock().unwrap();
         let record = state
             .workspaces
             .iter_mut()
             .find(|r| r.id == workspace)
             .ok_or_else(|| anyhow!("Unknown workspace"))?;
-        let at = record
-            .tabs
-            .iter()
-            .position(|t| t.id == tab)
-            .ok_or_else(|| anyhow!("Unknown tab"))?;
-        let moved = record.tabs.remove(at);
-        let to = (index as usize).min(record.tabs.len());
-        record.tabs.insert(to, moved);
-        renumber_tabs(record);
+        move_within(record, tab, index)?;
         self.save(&state);
         Ok(())
+    }
+
+    /// Packs the windows of a workspace in its tab order, after a tab went away and left a gap in tmux's numbers.
+    async fn pack_windows(&self, backend: &dyn WorkspaceBackend, workspace: &str) {
+        let windows = {
+            let state = self.state.lock().unwrap();
+            state
+                .workspaces
+                .iter()
+                .find(|r| r.id == workspace)
+                .map(tab_windows)
+        };
+        if let Some(windows) = windows {
+            let _ = backend.reorder_tabs(workspace, &windows).await;
+        }
     }
 
     pub async fn focus_tab(
@@ -640,6 +654,24 @@ impl Registry {
         }
         self.save(&state);
         Ok(())
+    }
+
+    /// tmux's current window is the workspace's focus: every device shows the tab that window carries, and a new
+    /// device opens it. Writes only when the tab is known and the focus actually moves.
+    pub fn observe_focus(&self, workspace: &str, tab: &str) -> bool {
+        if tab.is_empty() {
+            return false;
+        }
+        let mut state = self.state.lock().unwrap();
+        let Some(record) = state.workspaces.iter_mut().find(|r| r.id == workspace) else {
+            return false;
+        };
+        if record.focus.as_deref() == Some(tab) || !record.tabs.iter().any(|t| t.id == tab) {
+            return false;
+        }
+        record.focus = Some(tab.to_string());
+        self.save(&state);
+        true
     }
 
     pub async fn move_workspace(&self, workspace: &str, index: u32) -> Result<()> {
@@ -935,6 +967,31 @@ fn kind_of(kinds: &[String], info: &WorkspaceInfo) -> String {
         .unwrap_or_default()
 }
 
+/// The workspaces a client sees: the live ones with the registry's record where there is one, then the dormant
+/// records no backend lists any more. Shared by the full `list` and the light one.
+fn assemble(state: &State, infos: &[WorkspaceInfo], kinds: &[String]) -> Vec<WorkspaceInfo> {
+    let mut out: Vec<WorkspaceInfo> = Vec::new();
+    let mut seen = HashSet::new();
+    for info in infos {
+        seen.insert(info.id.clone());
+        if kind_of(kinds, info) == "tmux" {
+            if let Some(record) = state.workspaces.iter().find(|r| r.id == info.id) {
+                out.push(record_info(record, info.backend.clone(), &state.order));
+                continue;
+            }
+        }
+        out.push(synthetic_info(info, &state.order));
+    }
+    // A dormant record has no backend entry any more; it stays until the owner closes it.
+    for record in &state.workspaces {
+        if !seen.contains(&record.id) {
+            out.push(record_info(record, record.backend.clone(), &state.order));
+        }
+    }
+    out.sort_by(|a, b| a.order.cmp(&b.order).then(a.id.cmp(&b.id)));
+    out
+}
+
 fn record_info(
     record: &WorkspaceRecord,
     backend: Option<String>,
@@ -1067,6 +1124,29 @@ fn reconcile_record(record: &mut WorkspaceRecord, windows: &[WindowState], label
             .unwrap_or(0)
             + 1,
     );
+}
+
+/// Moves a tab to `index` (clamped) and renumbers.
+fn move_within(record: &mut WorkspaceRecord, tab: &str, index: u32) -> Result<()> {
+    let at = record
+        .tabs
+        .iter()
+        .position(|t| t.id == tab)
+        .ok_or_else(|| anyhow!("Unknown tab"))?;
+    let moved = record.tabs.remove(at);
+    let to = (index as usize).min(record.tabs.len());
+    record.tabs.insert(to, moved);
+    renumber_tabs(record);
+    Ok(())
+}
+
+/// The windows of a workspace's tabs, in tab order; a dormant tab has none.
+fn tab_windows(record: &WorkspaceRecord) -> Vec<String> {
+    record
+        .tabs
+        .iter()
+        .filter_map(|t| t.window.clone())
+        .collect()
 }
 
 fn renumber_tabs(record: &mut WorkspaceRecord) {

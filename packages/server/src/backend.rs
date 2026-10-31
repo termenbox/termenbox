@@ -152,6 +152,13 @@ pub trait WorkspaceBackend: Send + Sync {
     async fn close_tab(&self, _id: &str, _window: &str) -> Result<()> {
         Err(anyhow!("this workspace manager has no tabs"))
     }
+    /// Puts the windows of `windows` (in the order given) first and in that order, packed from the first index, so the
+    /// window order and the numbers `Ctrl+B <n>` selects match the tabs. A window keeps its id, its contents and
+    /// whether it is the current one; windows not named follow in their old order. A manager with no windows has
+    /// nothing to order.
+    async fn reorder_tabs(&self, _id: &str, _windows: &[String]) -> Result<()> {
+        Ok(())
+    }
     /// Starts a terminal attached to one tab's window.
     async fn attach_tab(
         &self,
@@ -788,6 +795,58 @@ impl TmuxBackend {
         format!("={id}:{window}")
     }
 
+    /// A session option as text, inherited values included; empty when tmux does not say.
+    async fn session_text(&self, session: &str, option: &str) -> String {
+        let args = ["show-options", "-Av", "-t", session, option].map(String::from);
+        match self.runner.run("tmux", &args).await {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+            _ => String::new(),
+        }
+    }
+
+    async fn session_number(&self, session: &str, option: &str) -> Option<u32> {
+        self.session_text(session, option).await.parse().ok()
+    }
+
+    async fn set_session_option(&self, session: &str, option: &str, value: &str) {
+        let args = ["set-option", "-t", session, option, value].map(String::from);
+        let _ = self.runner.run("tmux", &args).await;
+    }
+
+    /// Moves every window of `want` to its place in two steps (above all used numbers, then down to `base + i`), so a
+    /// target number is never taken when a window moves to it. The windows keep their ids.
+    async fn place_windows(
+        &self,
+        id: &str,
+        live: &[(String, u32, bool)],
+        want: &[String],
+        base: u32,
+    ) -> Result<()> {
+        let park = live.iter().map(|l| l.1).max().unwrap_or(0) + 1;
+        for second in [false, true] {
+            for (i, window) in want.iter().enumerate() {
+                let to = if second { base } else { park } + i as u32;
+                let args = [
+                    "move-window",
+                    "-d",
+                    "-s",
+                    &Self::window_target(id, window),
+                    "-t",
+                    &format!("={id}:{to}"),
+                ]
+                .map(String::from);
+                let out = self.runner.run("tmux", &args).await?;
+                if !out.status.success() {
+                    return Err(anyhow!(
+                        "could not move a tab: {}",
+                        tmux_stderr(&out.stderr)
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Marks a window as a registry tab: the id the reconciler looks for, the label clients show, and no automatic
     /// rename that would overwrite it.
     async fn set_tab_options(&self, id: &str, window: &str, tab: &str, label: &str) -> Result<()> {
@@ -1070,6 +1129,77 @@ impl WorkspaceBackend for TmuxBackend {
             return Err(anyhow!("that tab is gone"));
         }
         Ok(())
+    }
+
+    async fn reorder_tabs(&self, id: &str, windows: &[String]) -> Result<()> {
+        if !valid_target(id) {
+            return Err(anyhow!("Unknown workspace"));
+        }
+        let session = format!("={id}");
+        let args = [
+            "list-windows",
+            "-t",
+            &session,
+            "-F",
+            "#{window_id} #{window_index} #{window_active}",
+        ]
+        .map(String::from);
+        let out = self.runner.run("tmux", &args).await?;
+        if !out.status.success() {
+            return Err(anyhow!("the workspace has no windows"));
+        }
+        let mut live: Vec<(String, u32, bool)> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| {
+                let mut f = line.split(' ');
+                Some((
+                    f.next()?.to_string(),
+                    f.next()?.parse().ok()?,
+                    f.next()? == "1",
+                ))
+            })
+            .collect();
+        live.sort_by_key(|w| w.1);
+        let mut want: Vec<String> = Vec::new();
+        for w in windows {
+            if live.iter().any(|l| &l.0 == w) && !want.contains(w) {
+                want.push(w.clone());
+            }
+        }
+        for (w, _, _) in &live {
+            if !want.contains(w) {
+                want.push(w.clone());
+            }
+        }
+        let base = self
+            .session_number(&session, "base-index")
+            .await
+            .unwrap_or(0);
+        let packed = live
+            .iter()
+            .zip(&want)
+            .enumerate()
+            .all(|(i, (l, w))| &l.0 == w && l.1 == base + i as u32);
+        if packed {
+            return Ok(());
+        }
+        // Moving a window out of the way must not renumber the rest behind our back.
+        let renumber = self.session_text(&session, "renumber-windows").await == "on";
+        if renumber {
+            self.set_session_option(&session, "renumber-windows", "off")
+                .await;
+        }
+        let result = self.place_windows(id, &live, &want, base).await;
+        if renumber {
+            self.set_session_option(&session, "renumber-windows", "on")
+                .await;
+        }
+        // The window that was current stays current, whichever way it moved.
+        if let Some((active, _, _)) = live.iter().find(|l| l.2) {
+            let args = ["select-window", "-t", &Self::window_target(id, active)].map(String::from);
+            let _ = self.runner.run("tmux", &args).await;
+        }
+        result
     }
 
     async fn attach_tab(&self, id: &str, window: &str, cols: u16, rows: u16) -> Result<Attachment> {
@@ -1506,6 +1636,13 @@ impl WorkspaceBackend for CompositeBackend {
             .split_once(':')
             .ok_or_else(|| anyhow!("Unknown workspace"))?;
         self.part(kind)?.close_tab(name, window).await
+    }
+
+    async fn reorder_tabs(&self, id: &str, windows: &[String]) -> Result<()> {
+        let (kind, name) = id
+            .split_once(':')
+            .ok_or_else(|| anyhow!("Unknown workspace"))?;
+        self.part(kind)?.reorder_tabs(name, windows).await
     }
 
     async fn attach_tab(&self, id: &str, window: &str, cols: u16, rows: u16) -> Result<Attachment> {
