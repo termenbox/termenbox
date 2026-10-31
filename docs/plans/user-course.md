@@ -116,11 +116,12 @@ Do: write the chapter with the markers for `add-server` (phone).
 Done-when: the Check passes.
 Progress (2026-10-31): `docs/course/02-connect-your-phone.md` written (steps generated from `add-server`, media marker `add-server-phone`, two trouble entries). The first step's caption in `cases.mjs` now reads "Open the app and add a server" so the generated line does not say "Tap Add Server. Tap Add Server."; re-render when 5.1 runs. The Check reports only the Next link to chapter 3 (lands with 4.3c) and the unpicked video.
 
-### 4.3c Chapter 3, First workspace — [ ]‖
+### 4.3c Chapter 3, First workspace — [x]‖
 Class: implement · Needs: 3.3, 4.1, 4.2 · Check: `node scripts/check-course.mjs docs/course/03-first-workspace.md`
 Context: as 4.3a; reference `docs/guide/workspaces.md` "Workspaces and tabs" and the New workspace dialog (`docs/plans/new-workspace-dialog-ux.md`); failures: the agent is not installed on the server, the folder is outside the home directory.
 Do: write the chapter with the markers for `recent-folder` (phone).
 Done-when: the Check passes.
+Progress (2026-10-31): `docs/course/03-first-workspace.md` written (steps from `recent-folder`, media marker `recent-folder-phone`, two trouble entries: agent not installed, folder outside the home directory). The Check reports only the Next link to chapter 4 (lands with 4.3d) and the unpicked video.
 
 ### 4.3d Chapter 4, Talk to your agent — [ ]‖
 Class: implement · Needs: 3.4, 4.1, 4.2 · Check: `node scripts/check-course.mjs docs/course/04-talk-to-your-agent.md`
