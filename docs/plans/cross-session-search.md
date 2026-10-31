@@ -93,11 +93,16 @@ Done: wire types in `core/src/protocol.rs` and `client/src/lib/protocol.ts`; `se
 - The log test captures the handler thread plus a direct `session_search::run`; `spawn_blocking` threads do not inherit a test subscriber. The only audit line is `session_search` with the account, never the query. The capture-works control line avoids tracing's callsite cache, which makes a global-callsite check order dependent.
 - `cargo test` can leave stale core artifacts after an edit in the same second: `touch packages/core/src/lib.rs` if variants look missing. On this machine run Docker as `sg docker -c '...'` (the shell predates the group); client deps need `pnpm install` inside `scripts/dev.sh --full`.
 
-### 8 Search sheet — [ ]
+### 8 Search sheet — [x]
 Class: implement · Needs: 7 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test'`
 Context: Decision 0156. Entry point: the desktop sidebar (`packages/client/src/shell/SideNav.svelte`) and the phone header. Look at `FolderPicker.svelte` and `WorkspaceSheet.svelte` for how sheets are built at phone and desktop width. Minimum browser: iOS Safari 16.4.
 Do: Add `SearchSheet.svelte` and a small store: a debounced query input, hits grouped by workspace (agent icon, tab, date, scrubbed snippet with the match highlighted, an `open` or `resume` badge), a note that the query is sent to the server, a "search was cut" line when `cut` is set, and cancel on close or a new query. Empty, loading and error states fit one screen.
 Done-when: component tests cover typing, streaming hits, cut, cancel and the empty state; the sheet shows the server notice.
+
+Done: `lib/sessionSearch.ts` (`SessionSearch`: numbers a search, asks every connected server, drops answers of an older one, caps hits per server, `cuts`/`off`/`lost`; `groupHits`, `parts`, `debounced`) and `SearchSheet.svelte` (bits-ui `Sheet`: right panel wide, bottom sheet on a phone). Entry points: palette action `search-sessions` (the sidebar's Search button opens the palette), a "Search conversations" item in the phone `MenuSheet`. `App.svelte` routes `search_hit`/`search_done` and a dropped connection; closing the sheet cancels and forgets the query and hits.
+- The component prop is `search`, not `state`: `state` collides with the `$state` rune. Tests are SSR renders plus the state module under fake timers, as for `FolderPicker`; there is no DOM-driven component test setup in this package.
+- A tap (`pickHit`) only closes the sheet and attaches the workspace. Step 10 replaces it with the three landings. The tab column shows the tab id; resolve it to the tab's name in step 10 if the hub has it.
+- `ServerUpdatesDialog.test.ts` "scheduled" fails on `develop` too (clock format); not ours. Run client tests as `npx vitest run` in `packages/client` when Docker is not at hand.
 
 ### 9 AcpView history block and scroll-to-turn — [ ]
 Class: implement · Needs: 7 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test'`

@@ -14,6 +14,7 @@
   /** Unread inbox items, and the way into the inbox. */
   export let unread = 0;
   export let oninbox: () => void = () => {};
+  export let onsearch: () => void = () => {};
   export let onlogout: () => void;
   export let onclose: () => void;
   let dialog: HTMLDialogElement;
@@ -29,6 +30,7 @@
     <div class="row"><h2>Termenbox</h2><button class="secondary" aria-label="Close menu" on:click={onclose}>×</button></div>
     <button class="secondary" on:click={() => choose(onservers)}>Servers</button>
     <button class="secondary" on:click={() => choose(oninbox)}>Inbox{#if unread > 0} ({unread} unread){/if}</button>
+    <button class="secondary" on:click={() => choose(onsearch)}>Search conversations</button>
     <button class="secondary" on:click={() => choose(onsettings)}>Settings</button>
     <button class="secondary" on:click={() => choose(onreport)}>Report a problem</button>
     <button class="secondary" on:click={() => choose(ondiagnostics)}>Server diagnostics</button>

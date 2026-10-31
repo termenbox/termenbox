@@ -10,6 +10,8 @@
   import NavigationBar from './NavigationBar.svelte';
   import MenuSheet from './MenuSheet.svelte';
   import InboxSheet from './InboxSheet.svelte';
+  import SearchSheet from './SearchSheet.svelte';
+  import { SessionSearch, IDLE as SEARCH_IDLE, type SearchState } from './lib/sessionSearch';
   import { inbox, mergeAttention, markAllRead, unreadCount } from './lib/inbox';
   import { currentEndpoint, disablePush, enablePush, pushSupported } from './lib/push';
   import WorkspaceActions from './WorkspaceActions.svelte';
@@ -175,11 +177,12 @@
         if (!away && id === activeServerId && key === activeKey) showWorkspace(key, activeTabId ?? undefined);
       });
     },
-    onDrop: (_id, reason, upMs) => { dirClients.get(_id)?.fail('The connection was lost.'); noteError(`connection lost after ${Math.round(upMs / 1000)} s: ${reason}`); },
+    onDrop: (_id, reason, upMs) => { sessionSearch.lost(_id); dirClients.get(_id)?.fail('The connection was lost.'); noteError(`connection lost after ${Math.round(upMs / 1000)} s: ${reason}`); },
     onFatal: (_id, reason) => { noteError(`connection: ${reason}`); showToast(reason, 'error'); },
     onMessage: (_id, msg) => {
       const id = _id;
       dirClients.get(_id)?.handle(msg);
+      if (msg.type === 'search_hit' || msg.type === 'search_done') sessionSearch.handle(_id, msg);
       if (msg.type === 'snapshot') snapshots.apply(workspaceKey(_id, msg.workspace), msg);
       else if (msg.type === 'workspace_attached') { preview = null; if (id === activeServerId && msg.workspace_id === activeWorkspaceId && msg.tab) { activeTab = msg.tab; saveActiveTab(workspaceKey(id, msg.workspace_id), msg.tab); } }
       else if (msg.type === 'workspace_view') { if (id === activeServerId && msg.workspace === activeWorkspaceId) heldView = mergeView(heldView, msg); }
@@ -340,6 +343,16 @@
   let sheetHeld = false;
   let menuOpen = false;
   let inboxOpen = false;
+  // Cross-session search (R78): one query, asked of every connected server; the query is kept only while the sheet is open.
+  let searchOpen = false;
+  let searchState: SearchState = SEARCH_IDLE;
+  const sessionSearch = new SessionSearch({
+    servers: () => $hubServers.filter(s => s.state === 'connected').map(s => ({ id: s.id, name: s.server.server_name || 'Server' })),
+    send: (id, m) => hub.send(id, m),
+    onchange: s => (searchState = s),
+  });
+  function closeSearch() { searchOpen = false; sessionSearch.close(); }
+  function pickHit(h: { serverId: string; workspace: string }) { closeSearch(); void attach(workspaceKey(h.serverId, h.workspace)); }
   let pushInfos: Record<string, Extract<import('./lib/protocol').ServerMessage, { type: 'push_info' }>> = {};
   let pushOn = false;
   void currentEndpoint().then(e => (pushOn = !!e && typeof Notification !== 'undefined' && Notification.permission === 'granted'));
@@ -979,6 +992,7 @@
   function runAction(id: string) {
     const [name, arg] = id.split(':');
     if (name === 'new-workspace') newWorkspace();
+    else if (name === 'search-sessions') searchOpen = true;
     else if (name === 'pause' && arg) hub.pause(arg);
     else if (name === 'resume' && arg) hub.resume(arg);
     else if (['approve-decision', 'deny-decision', 'next-needs-you', 'focus-composer'].includes(name)) setTimeout(() => handleShortcut(name), 0); // after the palette has closed and let go of focus
@@ -1291,7 +1305,8 @@
     </AppFrame>
   {/if}
 
-  {#if menuOpen && user}<MenuSheet {user} {avatar} onservers={leaveServer} onsettings={() => go('settings')} onreport={openReport} ondiagnostics={() => openDiagnostics()} onlogout={logout} onclose={() => menuOpen = false} unread={unreadCount($inbox)} oninbox={() => inboxOpen = true} />{/if}
+  {#if menuOpen && user}<MenuSheet {user} {avatar} onservers={leaveServer} onsettings={() => go('settings')} onreport={openReport} ondiagnostics={() => openDiagnostics()} onlogout={logout} onclose={() => menuOpen = false} unread={unreadCount($inbox)} oninbox={() => inboxOpen = true} onsearch={() => searchOpen = true} />{/if}
+  {#if searchOpen}<SearchSheet bind:open={searchOpen} {wide} search={searchState} {now} nameOf={(sid, w) => hub.findWorkspace(workspaceKey(sid, w))?.name} onquery={(t) => sessionSearch.run(t)} onstop={() => sessionSearch.stop()} onpick={pickHit} onclose={closeSearch} />{/if}
   {#if inboxOpen}<InboxSheet items={$inbox} {now} agents={$allAgents} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} onreply={(key, text) => sendWorkspace({ type: 'reply', workspace: key, text })} onopen={openWaiting} onhome={() => go('home')} onread={() => inbox.update(markAllRead)} onclear={() => inbox.set([])} onclose={() => { inboxOpen = false; inbox.update(markAllRead); }} />{/if}
   {#if actionWorkspace}<WorkspaceActions workspace={actionWorkspace} canClose={['tmux', 'acp'].includes(backendOf(actionWorkspace))} confirmFirst={actionConfirm} onrename={(name) => renameWorkspace(actionWorkspace.key, name)} placement={placementOf($allWorkspaces, actionWorkspace.key)} onmove={(to) => moveWorkspace($allWorkspaces, actionWorkspace.key, to)} ondetach={() => detach(actionWorkspace.key)} oncloseworkspace={() => closeWorkspace(actionWorkspace.key)} onclose={() => actionKey = null} />{/if}
   {#if tabMenuOpen}
