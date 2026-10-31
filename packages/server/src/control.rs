@@ -147,6 +147,15 @@ pub struct WindowUpdate {
 }
 
 impl WindowUpdate {
+    /// Whether two updates show a client the same thing: the generation only says when the read began.
+    fn same_content(&self, other: &WindowUpdate) -> bool {
+        self.workspace == other.workspace
+            && self.windows == other.windows
+            && self.representative == other.representative
+            && self.window_ids == other.window_ids
+            && self.tab_ids == other.tab_ids
+    }
+
     /// The registry tab of the window tmux has current, when that window carries one. A window made in tmux
     /// directly has no tab until the registry adopts it, and a session with no current window names none.
     pub fn active_tab(&self) -> Option<&str> {
@@ -199,6 +208,19 @@ impl WindowHub {
         *generation += 1;
     }
 
+    /// Runs `apply` only while `generation` is still the workspace's current one, and returns `None` otherwise. The
+    /// generations lock is held across `apply`, so a `bump` cannot slip in between the check and the write; `apply`
+    /// must therefore be short and must not call back into the hub.
+    pub fn while_current<T>(
+        &self,
+        workspace: &str,
+        generation: u64,
+        apply: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let generations = self.generations.lock().unwrap();
+        (generation >= generations.get(workspace).copied().unwrap_or(0)).then(apply)
+    }
+
     /// Stores the windows of `session` and tells subscribers only when something a client shows has changed.
     pub fn publish(&self, workspace: &str, states: &[WindowState]) -> bool {
         self.publish_read(workspace, states, self.generation(workspace))
@@ -213,9 +235,6 @@ impl WindowHub {
         states: &[WindowState],
         generation: u64,
     ) -> Option<bool> {
-        if generation < self.generation(workspace) {
-            return None;
-        }
         let update = WindowUpdate {
             workspace: workspace.to_string(),
             windows: states.iter().map(|w| w.info.clone()).collect(),
@@ -224,13 +243,17 @@ impl WindowHub {
             tab_ids: states.iter().map(|w| w.tab.clone()).collect(),
             generation,
         };
-        let mut workspaces = self.workspaces.lock().unwrap();
-        if workspaces.get(workspace) == Some(&update) {
-            return Some(false);
-        }
-        workspaces.insert(workspace.to_string(), update.clone());
-        let _ = self.tx.send(update);
-        Some(true)
+        self.while_current(workspace, generation, || {
+            let mut workspaces = self.workspaces.lock().unwrap();
+            let unchanged = workspaces
+                .get(workspace)
+                .is_some_and(|old| old.same_content(&update));
+            workspaces.insert(workspace.to_string(), update.clone());
+            if !unchanged {
+                let _ = self.tx.send(update);
+            }
+            !unchanged
+        })
     }
 
     pub fn all(&self) -> Vec<WindowUpdate> {
@@ -562,6 +585,31 @@ mod tests {
     }
 
     #[test]
+    fn a_read_that_changes_nothing_a_client_shows_is_not_broadcast_after_a_bump() {
+        let hub = WindowHub::default();
+        let mut rx = hub.subscribe();
+        let windows = parse_windows(&row(0, 1, 100, 1, "bash", "/a", "w"));
+        assert_eq!(hub.publish_read("s", &windows, 0), Some(true));
+        assert!(rx.try_recv().is_ok());
+        hub.bump("s");
+        let generation = hub.generation("s");
+        assert_eq!(hub.publish_read("s", &windows, generation), Some(false));
+        assert!(rx.try_recv().is_err(), "the same windows are not news");
+        // The stored update carries the newer generation, so a replay is not mistaken for a stale read.
+        assert_eq!(hub.all()[0].generation, generation);
+    }
+
+    #[test]
+    fn a_write_is_applied_only_while_its_read_is_current() {
+        let hub = WindowHub::default();
+        let generation = hub.generation("s");
+        assert_eq!(hub.while_current("s", generation, || 7), Some(7));
+        hub.bump("s");
+        assert_eq!(hub.while_current("s", generation, || 7), None);
+        assert_eq!(hub.while_current("s", hub.generation("s"), || 7), Some(7));
+    }
+
+    #[test]
     fn only_window_and_pane_changes_trigger_a_refresh() {
         assert!(is_trigger("%window-add @1"));
         assert!(is_trigger("%unlinked-window-close @1"));
@@ -635,6 +683,67 @@ mod tests {
         tmux(&["kill-window", "-t", "=ctl:second"]).await;
         next(&mut rx, |u| u.windows.len() == 1).await;
         tmux(&["kill-server"]).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A real tmux: `select-window` (what `Ctrl+B <n>` runs) changes which window the update calls current.
+    #[tokio::test]
+    async fn a_real_tmux_reports_the_window_select_window_makes_current() {
+        if std::process::Command::new("tmux")
+            .arg("-V")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("tm-sel-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tmpdir = dir.to_string_lossy().into_owned();
+        let runner =
+            Runner::default().with_env(&[("TMUX_TMPDIR", Some(tmpdir.as_str())), ("TMUX", None)]);
+        let version = runner.run("tmux", &["-V".to_string()]).await.unwrap();
+        if !control_supported(&String::from_utf8_lossy(&version.stdout)) {
+            return;
+        }
+        let tmux = |args: &[&str]| {
+            let runner = runner.clone();
+            let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            async move { runner.run("tmux", &args).await.unwrap() }
+        };
+        assert!(
+            tmux(&["new-session", "-d", "-s", "sel", "-x", "80", "-y", "24"])
+                .await
+                .status
+                .success()
+        );
+        assert!(tmux(&["new-window", "-t", "sel"]).await.status.success());
+        let hub = WindowHub::default();
+        let mut rx = hub.subscribe();
+        spawn(hub.clone(), runner.clone(), String::new());
+
+        async fn current(rx: &mut broadcast::Receiver<WindowUpdate>, index: u32) -> WindowUpdate {
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let u = rx.recv().await.unwrap();
+                    if u.windows.len() == 2 && u.windows[index as usize].active {
+                        return u;
+                    }
+                }
+            })
+            .await
+            .expect("the update arrives")
+        }
+        // The new window is current; the first one is current again after select-window.
+        current(&mut rx, 1).await;
+        let selected = tmux(&["select-window", "-t", "sel:^"]).await;
+        assert!(selected.status.success());
+        let u = current(&mut rx, 0).await;
+        assert_eq!(u.representative, Some(0));
+        let _ = tmux(&["kill-server"]).await;
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -677,22 +677,24 @@ impl WorkspaceManager {
     fn observe_tmux(&self, updates: &[WindowUpdate]) -> bool {
         let mut moved = false;
         for update in updates {
-            // A read that began before the server focused a tab itself describes the window from before it.
-            if self
-                .windows
-                .as_ref()
-                .is_some_and(|hub| update.generation < hub.generation(&update.workspace))
-            {
+            let Some(tab) = update.active_tab() else {
                 continue;
-            }
-            if let Some(tab) = update.active_tab() {
-                moved |= self.registry.observe_focus(&update.workspace, tab);
-            }
+            };
+            let observe = || self.registry.observe_focus(&update.workspace, tab);
+            // A read that began before the server focused a tab itself describes the window from before it; the
+            // check and the write are one step, so the server's own focus cannot land between them.
+            moved |= match &self.windows {
+                Some(hub) => hub
+                    .while_current(&update.workspace, update.generation, observe)
+                    .unwrap_or(false),
+                None => observe(),
+            };
         }
         moved
     }
 
-    /// The server focused a tab itself: control reads already in flight describe the window from before it.
+    /// The server focuses a tab itself: control reads already in flight describe the window from before it. Called
+    /// before the action (a read that starts now already sees the new window) and again after it.
     fn bump_focus(&self, workspace: &str) {
         if let Some(hub) = &self.windows {
             hub.bump(workspace);
@@ -1118,6 +1120,7 @@ impl WorkspaceManager {
                 send_r(tx, &self.window_list_for(&workspace, &live)).await?;
             }
             ClientMessage::SelectWindow { workspace, index } => {
+                self.bump_focus(&workspace);
                 if let Some(tab) = self.tab_at(&workspace, index) {
                     self.registry
                         .focus_tab(self.backend.as_ref(), &workspace, &tab)
@@ -1129,6 +1132,7 @@ impl WorkspaceManager {
             }
             ClientMessage::NewWindow { workspace } => {
                 info!(target: "audit", event = "new_window", provider = %identity.provider, account_id = %identity.id, session = %workspace);
+                self.bump_focus(&workspace);
                 if self.registry.has(&workspace) {
                     self.registry
                         .new_tab(self.backend.as_ref(), &workspace, "shell", "", "")
@@ -1143,6 +1147,7 @@ impl WorkspaceManager {
             }
             ClientMessage::CloseWindow { workspace, index } => {
                 info!(target: "audit", event = "close_window", provider = %identity.provider, account_id = %identity.id, session = %workspace, window = index);
+                self.bump_focus(&workspace);
                 if let Some(tab) = self.tab_at(&workspace, index) {
                     self.registry
                         .close_tab(self.backend.as_ref(), &workspace, &tab)
@@ -1185,6 +1190,7 @@ impl WorkspaceManager {
                 dir,
             } => {
                 info!(target: "audit", event = "new_tab", provider = %identity.provider, account_id = %identity.id, session = %workspace);
+                self.bump_focus(&workspace);
                 self.registry
                     .new_tab(self.backend.as_ref(), &workspace, &template, &label, &dir)
                     .await?;
@@ -1208,6 +1214,7 @@ impl WorkspaceManager {
             }
             ClientMessage::CloseTab { workspace, tab } => {
                 info!(target: "audit", event = "close_tab", provider = %identity.provider, account_id = %identity.id, session = %workspace, tab = %tab);
+                self.bump_focus(&workspace);
                 self.registry
                     .close_tab(self.backend.as_ref(), &workspace, &tab)
                     .await?;
@@ -1230,6 +1237,7 @@ impl WorkspaceManager {
                 let _ = self.list_changed.send(conn);
             }
             ClientMessage::FocusTab { workspace, tab } => {
+                self.bump_focus(&workspace);
                 self.registry
                     .focus_tab(self.backend.as_ref(), &workspace, &tab)
                     .await?;
@@ -1524,6 +1532,7 @@ impl WorkspaceManager {
             ClientMessage::Attach { workspace_id, tab } => {
                 *attachment = None; // detach the previous one first
                 let before = self.registry.record(&workspace_id).and_then(|r| r.focus);
+                self.bump_focus(&workspace_id);
                 if self.registry.has(&workspace_id) {
                     let (attached, att) = self
                         .registry
@@ -1547,8 +1556,10 @@ impl WorkspaceManager {
                     .await?;
                     // Opening a tab makes it tmux's current window: every other device viewing this workspace
                     // follows the shared focus, as it does for `Ctrl+B` in tmux itself.
-                    if before.as_deref() != Some(attached.as_str()) {
-                        let workspaces = self.registry.list(self.backend.as_ref()).await?;
+                    // Only a control-mode server follows the focus, so only it is told; the records are written, so
+                    // the light list is enough.
+                    if self.windows.is_some() && before.as_deref() != Some(attached.as_str()) {
+                        let workspaces = self.registry.list_light(self.backend.as_ref()).await?;
                         send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
                         let _ = self.list_changed.send(conn);
                     }
