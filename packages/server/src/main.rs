@@ -37,6 +37,7 @@ mod events;
 mod health;
 mod helper;
 mod history;
+mod container;
 mod journal;
 mod layout;
 mod legacy;

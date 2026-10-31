@@ -13,6 +13,7 @@ use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
+use crate::container::{self, Applied, Docker};
 use crate::journal::{Change, Journal};
 use crate::release::{Channel, ChannelNotFollowed, Manifest, ReleaseKeys};
 use crate::update_state::{self, Event};
@@ -304,6 +305,12 @@ impl Outcome {
     }
 }
 
+/// A container install (decision 0155): the apply step recreates the container instead of replacing the binary.
+pub struct ContainerApply<'a> {
+    pub docker: &'a dyn Docker,
+    pub spec: container::Spec,
+}
+
 pub struct Updater<'a> {
     pub fetch: &'a dyn Fetch,
     pub service: &'a dyn Service,
@@ -325,6 +332,7 @@ pub struct Updater<'a> {
     pub current: String,
     pub arch: String,
     pub health_wait: Duration,
+    pub container: Option<ContainerApply<'a>>,
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -608,12 +616,30 @@ impl Updater<'_> {
             } else {
                 None
             };
+            let hold_back = hold_back.or_else(|| {
+                self.container
+                    .as_ref()
+                    .is_some_and(|c| c.spec.pinned)
+                    .then_some("TERMENBOX_IMAGE pins this container to one image; the timer does not pull")
+            });
             if let Some(reason) = hold_back {
                 return Ok(Outcome::Available {
                     version: manifest.version,
                     reason,
                 });
             }
+        }
+        if let Some(c) = &self.container {
+            // A release without a signed image digest is not a container release: nothing is pulled or changed.
+            if !manifest.image.contains_key(&self.arch) {
+                return Ok(Outcome::Available {
+                    version: manifest.version,
+                    reason: "this release carries no container image",
+                });
+            }
+            self.note(Event::Installing);
+            installing.set(true);
+            return self.apply_container(c, &manifest).await;
         }
         self.note(Event::Installing);
         installing.set(true);
@@ -714,6 +740,79 @@ impl Updater<'_> {
             to: manifest.version,
             reason: "the service did not become healthy within the time allowed".into(),
         })
+    }
+
+    /// Pull the digest the signed manifest names, recreate the container, and put the old one back if the new one is
+    /// not healthy (decision 0155). The journal says what ran before the container is touched.
+    async fn apply_container(&self, c: &ContainerApply<'_>, manifest: &Manifest) -> Result<Outcome> {
+        let digest = manifest
+            .image
+            .get(&self.arch)
+            .ok_or_else(|| anyhow!("this release carries no container image"))?;
+        let journal = Journal::open(&self.root_dir)?;
+        let mut entry = None;
+        let applied = container::apply(c.docker, &c.spec, digest, self.health_wait, &mut |from, to| {
+            entry = Some(journal.record(Change::ContainerReplaced {
+                name: c.spec.name.clone(),
+                from: from.to_string(),
+                to: to.to_string(),
+            })?);
+            Ok(())
+        })
+        .await?;
+        match applied {
+            Applied::Current => Ok(Outcome::UpToDate),
+            Applied::Updated => {
+                let mut spec = c.spec.clone();
+                spec.digest = Some(digest.clone());
+                spec.store(&self.root_dir.join(container::FILE))?;
+                self.refresh_host_helper(c, digest, &journal).await;
+                Ok(Outcome::Updated {
+                    from: core_version(&self.current).to_string(),
+                    to: manifest.version.clone(),
+                })
+            }
+            Applied::RolledBack(reason) => {
+                if let Some(entry) = entry {
+                    journal.mark_done(entry)?;
+                }
+                Ok(Outcome::RolledBack {
+                    to: manifest.version.clone(),
+                    reason,
+                })
+            }
+        }
+    }
+
+    /// The host helper is the server binary of the image; after an update it is taken from the new image so the
+    /// helper and the container stay one version. Best effort and journaled: a stale helper only sees the same digest
+    /// next time and reports nothing to do.
+    async fn refresh_host_helper(&self, c: &ContainerApply<'_>, digest: &str, journal: &Journal) {
+        let staged = self.sibling(".new");
+        let result = async {
+            c.docker.extract_binary(&c.spec.reference(digest), &staged).await?;
+            let backups = self.root_dir.join("backups");
+            std::fs::create_dir_all(&backups)?;
+            let backup = backups.join(format!(
+                "termenbox-server.{}.{}",
+                core_version(&self.current),
+                &crate::journal::hash_file(&self.binary)?[..12]
+            ));
+            std::fs::copy(&self.binary, &backup)?;
+            journal.record(Change::FileReplaced {
+                path: self.binary.display().to_string(),
+                backup: backup.display().to_string(),
+                sha256: crate::journal::hash_file(&staged)?,
+            })?;
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
+            std::fs::rename(&staged, &self.binary)?;
+            anyhow::Ok(())
+        }
+        .await;
+        if result.is_err() {
+            let _ = std::fs::remove_file(&staged);
+        }
     }
 
     async fn wait_healthy(&self) -> bool {
@@ -876,6 +975,18 @@ mod tests {
         binary: PathBuf,
     }
 
+    thread_local! {
+        /// The image digest the next `world_in` puts in the manifest (a container release), if any.
+        static IMAGE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    }
+
+    fn world_with_image(version: &str, digest: Option<&str>) -> Option<World> {
+        IMAGE.with(|i| *i.borrow_mut() = digest.map(String::from));
+        let w = world(version, false, b"new binary");
+        IMAGE.with(|i| *i.borrow_mut() = None);
+        w
+    }
+
     /// A signed release 9.9.9 whose x86_64 binary is `new_binary`, signed with the real ssh-keygen. None without it.
     fn world(version: &str, freeze: bool, new_binary: &[u8]) -> Option<World> {
         world_with_tmux(version, freeze, new_binary, None)
@@ -902,6 +1013,11 @@ mod tests {
     ) -> Option<World> {
         let dir = std::env::temp_dir().join(format!("termenbox-updater-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).ok()?;
+        let image_entry = IMAGE.with(|i| {
+            i.borrow()
+                .as_ref()
+                .map_or(String::new(), |d| format!(r#","image":{{"x86_64":"{d}"}}"#))
+        });
         let tmux_entry = new_tmux.map_or(String::new(), |t| {
             format!(
                 r#","tmux":{{"x86_64":{{"url":"{BASE}/tmux-x86_64-linux","sha256":"{}"}}}},"tmux_notices":{{"tmux-COPYING":{{"url":"{BASE}/tmux-COPYING","sha256":"{}"}}}}"#,
@@ -910,7 +1026,7 @@ mod tests {
             )
         });
         let manifest = format!(
-            r#"{{"version":"{version}","channel":"{channel}","freeze":{freeze},"notes":"","binaries":{{"x86_64":{{"url":"{BASE}/termenbox-server-x86_64-linux","sha256":"{}"}}}}{tmux_entry}}}"#,
+            r#"{{"version":"{version}","channel":"{channel}","freeze":{freeze},"notes":"","binaries":{{"x86_64":{{"url":"{BASE}/termenbox-server-x86_64-linux","sha256":"{}"}}}}{tmux_entry}{image_entry}}}"#,
             hex(&Sha256::digest(new_binary))
         );
         let key = dir.join("key");
@@ -999,6 +1115,7 @@ mod tests {
             current: current.into(),
             arch: "x86_64".into(),
             health_wait: Duration::from_millis(50),
+            container: None,
         }
     }
 
@@ -2062,6 +2179,71 @@ mod tests {
             .unwrap();
         assert!(matches!(out, Outcome::Available { .. }));
         assert_eq!(update_state::State::load(&w.dir).deadline, 0);
+    }
+
+    fn container_updater<'a>(
+        w: &'a World,
+        f: &'a Fake,
+        s: &'a Svc,
+        docker: &'a crate::container::tests::Fake,
+    ) -> Updater<'a> {
+        let mut u = with_policy(
+            updater(w, f, s, "0.1.36"),
+            Channel::Stable,
+            Mode::Auto,
+            Trigger::Timer,
+        );
+        u.container = Some(ContainerApply {
+            docker,
+            spec: crate::container::tests::spec(),
+        });
+        u
+    }
+
+    #[tokio::test]
+    async fn a_container_release_recreates_the_container_from_the_signed_digest_and_journals_it() {
+        use crate::container::tests::{fake as docker_fake, NEW};
+        let Some(w) = world_with_image("0.2.0", Some(NEW)) else {
+            return;
+        };
+        let (f, s, d) = (fake(&w), svc(&w, 1, true), docker_fake(true));
+        let u = container_updater(&w, &f, &s, &d);
+        let out = u.run().await.unwrap();
+        assert!(matches!(&out, Outcome::Updated { to, .. } if to == "0.2.0"), "{out:?}");
+        assert_eq!(d.state(), vec![("termenbox".into(), NEW.into(), true)]);
+        // the server binary is never swapped or downloaded for a container
+        assert_eq!(std::fs::read(&w.binary).unwrap(), b"old binary");
+        assert!(!f.fetched.lock().unwrap().iter().any(|u| u.contains("x86_64-linux")));
+        assert_eq!(*s.restarts.lock().unwrap(), 0);
+        let journal = std::fs::read_to_string(w.dir.join("root/journal.jsonl")).unwrap_or_default();
+        assert!(journal.contains("container_replaced") || journal.contains("ContainerReplaced") || journal.contains(NEW), "{journal}");
+    }
+
+    #[tokio::test]
+    async fn a_release_without_an_image_or_an_unhealthy_container_changes_nothing_lasting() {
+        use crate::container::tests::{fake as docker_fake, NEW, OLD};
+        let Some(w) = world_with_image("0.2.0", None) else {
+            return;
+        };
+        let (f, s, d) = (fake(&w), svc(&w, 1, true), docker_fake(true));
+        let out = container_updater(&w, &f, &s, &d).run().await.unwrap();
+        assert!(matches!(out, Outcome::Available { reason, .. } if reason.contains("no container image")));
+        assert!(d.log.lock().unwrap().is_empty());
+        let Some(w) = world_with_image("0.2.0", Some(NEW)) else {
+            return;
+        };
+        let (f, s, d) = (fake(&w), svc(&w, 1, true), docker_fake(false));
+        let out = container_updater(&w, &f, &s, &d).run().await.unwrap();
+        assert!(matches!(out, Outcome::RolledBack { .. }), "{out:?}");
+        assert_eq!(d.state(), vec![("termenbox".into(), OLD.into(), true)]);
+        assert!(update_state::State::load(&w.dir).is_pinned("0.2.0"));
+        // a hand-pinned image is not pulled by the timer
+        let (f, s, d) = (fake(&w), svc(&w, 1, true), docker_fake(true));
+        let mut u = container_updater(&w, &f, &s, &d);
+        u.container.as_mut().unwrap().spec.pinned = true;
+        u.trigger = Trigger::Timer;
+        assert!(matches!(u.run().await.unwrap(), Outcome::Available { .. }));
+        assert!(d.log.lock().unwrap().is_empty());
     }
 
     #[test]

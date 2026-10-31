@@ -281,7 +281,7 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   keeps no history and adding one is a schema change for little; fact 0064 says where the longer record is. Fact 0064
   added. NOT RUN: `go-getter:capture` and `go-getter:lint` (they need the user's session; run them before the PR).
 
-### U8 [ ] Container updater (decision 0155, accepted)
+### U8 [x] Container updater (decision 0155, accepted)
 
 - Needs: U5b and an owner decision. Do not start without it; open a decision draft instead.
 - Notes: see "Container mode". Decision 0155 accepted by the owner 2026-10-31; U8 is split into U8a manifest
@@ -301,8 +301,15 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   after its release (`release-nightly.yaml` `image` needs `release`), so a nightly manifest has no `image` and nightly
   containers will not self-update until nightly builds the image first; (2) for stable and beta, a failed or missing
   image now fails the release after 70 min instead of publishing without a container.
-- **U8b [ ]** `container.json` journal and installer timer. **U8c [ ]** helper apply, recreate and rollback.
-  **U8d [ ]** docs and an end-to-end test with a local registry. Release order per 0155: a release carrying `image`
+- **U8b [x]** `container.json` journal and installer timer: `container_updater_prepare`/`_units` in `install.sh` (the host
+  helper is the server binary copied out of the image; `container.json` is journaled 0600 before the container is created;
+  the requests directory moves onto the volume via `TERMENBOX_REQUESTS_DIR`; best effort, a note when it cannot be set up).
+  **U8c [x]** `container.rs` (`Spec::load` refuses a file the installer did not write; `apply`: pull digest, stop, rename to
+  `-previous`, run, health, remove or roll back; a half-done run is repaired first), `Change::ContainerReplaced`, a
+  release without `image` is never applied, a hand-pinned image is not pulled by the timer. **U8d [~]** guide done; tests
+  use a fake Docker. NOT RUN: an end-to-end test against a local registry and a real Docker, and the installer's
+  container-updater path (it needs root, systemd and Docker: the existing stub-based installer tests only cover the path
+  where the host cannot run the binary). Release order per 0155: a release carrying `image`
   must be out before U8b's installer change lands.
 
 ## Risks
@@ -333,3 +340,4 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
 - 2026-10-31 U8a done: signed `image` digests in the manifest and the pipeline step that resolves them; next U8b (a release with `image` must ship before it lands).
 - 2026-10-31 merged develop (decision numbers moved: grace is 0154, container updater 0155); lint fixed a dangling id and two tags; capture found no contradiction (0155 amends 0063, which stays active). Next: land this PR, cut a beta (carries U5a and `image`), then U5b and U8b.
 - 2026-10-31 U5b done (released v0.1.57-beta.11 carried U5a and `image`): grace deadline, tick timer, window snapping, postpone cap; next U8b.
+- 2026-10-31 U8b-d done in the same PR as U5b (one PR was asked for): container.json, host timers, digest apply with rollback; real-Docker and local-registry e2e not run.

@@ -327,7 +327,7 @@ pub fn is_major_bump(from: &str, to: &str) -> Result<bool> {
 }
 
 /// `sha256:` and 64 lowercase hex digits: the only form that is passed to `docker pull` as `repo@digest`.
-fn is_image_digest(d: &str) -> bool {
+pub fn is_image_digest(d: &str) -> bool {
     d.strip_prefix("sha256:")
         .is_some_and(|h| h.len() == 64 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
 }

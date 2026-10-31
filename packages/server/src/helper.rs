@@ -464,6 +464,14 @@ async fn update_outcome(setup: &Setup, trigger: Trigger) -> Result<Outcome> {
         current,
         arch: std::env::consts::ARCH.into(),
         health_wait: Duration::from_secs(30),
+        // A container install has `container.json` beside the journal (decision 0155): the apply step differs.
+        container: match setup.root_dir.join(crate::container::FILE) {
+            path if path.exists() => Some(crate::updater::ContainerApply {
+                docker: &crate::container::Cli,
+                spec: crate::container::Spec::load(&path).map_err(failed)?,
+            }),
+            _ => None,
+        },
     };
     updater.run().await
 }

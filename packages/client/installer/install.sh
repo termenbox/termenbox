@@ -443,11 +443,21 @@ install_container() {
 
   chown -R 1000:1000 "$ROOT/home"
   docker pull -q "$IMAGE" >/dev/null 2>&1 || docker image inspect "$IMAGE" >/dev/null 2>&1 || die "could not download $IMAGE"
+  SERVER_NAME="$(hostname -s 2>/dev/null || hostname)"
+  # The arguments are recorded in container.json for the updater to replay (decision 0155), so a character that would
+  # need escaping in JSON is refused rather than escaped.
+  case "$PORT$ORIGIN$SERVER_NAME$ROOT$NAME" in
+    *[\"\\]*) die "the port, address, server name, data directory and container name must not contain quotes or backslashes" ;;
+  esac
   docker rm -f "$NAME" >/dev/null 2>&1 || true
+  # container_updater_prepare records container.json (journaled) before the container exists; it prints nothing and
+  # never stops the install: without it the container simply has no automatic updates.
+  container_updater_prepare
   docker run -d --name "$NAME" --restart unless-stopped \
     -p "$PORT:$PORT/udp" \
     -e "TERMENBOX_UDP_PORT=$PORT" -e "TERMENBOX_CLIENT_URL=$ORIGIN" \
-    -e "TERMENBOX_SERVER_NAME=$(hostname -s 2>/dev/null || hostname)" \
+    -e "TERMENBOX_SERVER_NAME=$SERVER_NAME" \
+    -e "TERMENBOX_REQUESTS_DIR=/home/node/.config/termenbox/requests" \
     -v "$ROOT/home:/home/node" \
     "$IMAGE" >/dev/null || die "could not start the server"
 
@@ -466,8 +476,59 @@ install_container() {
   fi
   OUT="$(pairing_output docker exec "$NAME" termenbox-server --register --qr)"
   show_pairing "$OUT"
+  container_updater_units
   _opened=1; [ -z "${TERMENBOX_SKIP_FIREWALL:-}" ] || _opened=""
   port_report "$PORT" "$_opened"
+}
+
+# The container updater (decision 0155): the host gets the same root helper and timers as a machine install, with a
+# Docker-aware apply step. The helper is the server binary of the image, copied out of it; the container never gets
+# the Docker socket. Everything here is best effort and says so: a container without it still runs, it just does not
+# update by itself.
+CONTAINER_UPDATER=""
+container_updater_prepare() {
+  CONTAINER_UPDATER=""
+  [ "$(id -u)" -eq 0 ] || return 0
+  _tmp="$(mktemp -d)"
+  _cid="$(docker create "$IMAGE" 2>/dev/null)" || _cid=""
+  if [ -n "$_cid" ]; then
+    docker cp "$_cid:/usr/local/bin/termenbox-server" "$_tmp/termenbox-server" >/dev/null 2>&1 || true
+    docker rm -f "$_cid" >/dev/null 2>&1 || true
+  fi
+  if [ ! -x "$_tmp/termenbox-server" ] && [ -f "$_tmp/termenbox-server" ]; then chmod 755 "$_tmp/termenbox-server"; fi
+  if [ ! -x "$_tmp/termenbox-server" ] || ! "$_tmp/termenbox-server" --help >/dev/null 2>&1; then
+    rm -rf "$_tmp"
+    say "Note: automatic updates for this container were not set up (the host could not run the server binary of $IMAGE). Update it by running this command again."
+    return 0
+  fi
+  TMP="$_tmp"; JBIN="$TMP/termenbox-server"
+  # An image chosen by hand is never pulled by the timer (a pinned image is a choice, like mode = hold).
+  _pinned=false
+  [ "$IMAGE" = "ghcr.io/termenbox/termenbox:$CHANNEL_TAG" ] || _pinned=true
+  _repo="${IMAGE%%@*}"
+  case "${_repo##*/}" in *:*) _repo="${_repo%:*}" ;; esac
+  printf '{"v":1,"name":"%s","image":"%s","args":["--restart","unless-stopped","-p","%s:%s/udp","-e","TERMENBOX_UDP_PORT=%s","-e","TERMENBOX_CLIENT_URL=%s","-e","TERMENBOX_SERVER_NAME=%s","-e","TERMENBOX_REQUESTS_DIR=/home/node/.config/termenbox/requests","-v","%s/home:/home/node"],"pinned":%s}\n' \
+    "$NAME" "$_repo" "$PORT" "$PORT" "$PORT" "$ORIGIN" "$SERVER_NAME" "$ROOT" "$_pinned" > "$TMP/container.json"
+  mkdir -p "$JOURNAL"
+  chmod 700 "$JOURNAL"
+  put_file "$TMP/container.json" "$JOURNAL/container.json" 0600 || { rm -rf "$_tmp"; return 0; }
+  if [ -e "$BIN" ] && [ "$(sha256sum "$BIN" | cut -d' ' -f1)" = "$(sha256sum "$JBIN" | cut -d' ' -f1)" ]; then :; else
+    put_file "$JBIN" "$BIN" 0755
+  fi
+  JBIN="$BIN"
+  CONTAINER_UPDATER=1
+}
+
+# The timers and the request path, once the container runs. The requests directory is on the container's volume so the
+# server can leave a request there; the helper runs on the host as root.
+container_updater_units() {
+  [ -n "$CONTAINER_UPDATER" ] || return 0
+  STATE="$ROOT/home/.config/termenbox"
+  RUN_USER=1000
+  # The server makes this directory as the container's user; if it has not yet, it must not end up owned by root.
+  mkdir -p "$STATE" && chown -R 1000:1000 "$ROOT/home/.config"
+  install_helper_units
+  rm -rf "$TMP"
 }
 
 # ---------------------------------------------------------------------------------------------------------
