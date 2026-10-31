@@ -5,7 +5,7 @@
   import type { TabAgentState } from './lib/protocol';
   import { ageText } from './lib/cards';
   import { workspaceGroups, type Row } from './lib/home';
-  import { moveWorkspace, movedText } from './lib/order';
+  import { dropIndex, moveWorkspace, movedText } from './lib/order';
   import { RowDragger, type DragView } from './lib/dragsort';
 
   /**
@@ -24,16 +24,11 @@
     scroller: () => scroller,
     onview: (v) => (drag = v),
     ondrop: (key, target) => {
-      const targetWorkspace = workspaces.find((s) => s.key === target.key);
-      if (onmove && targetWorkspace) {
-        const mine = workspaces.filter((s) => s.serverId === targetWorkspace.serverId).map((s) => s.key);
-        const from = mine.indexOf(key);
-        const rest = mine.filter((k) => k !== key);
-        const at = rest.indexOf(target.key);
-        if (from >= 0 && at >= 0) {
-          const index = at + (target.side === 'after' ? 1 : 0);
+      if (onmove) {
+        const index = dropIndex(workspaces, key, target);
+        if (index !== null) {
           onmove(key, index);
-          announcement = `${workspaces.find((s) => s.key === key)?.name ?? ''} moved to position ${index + 1} of ${mine.length}`;
+          announcement = `${workspaces.find((s) => s.key === key)?.name ?? ''} moved to position ${index + 1} of ${workspaces.filter((s) => s.serverId === workspaces.find((w) => w.key === key)?.serverId).length}`;
         }
         return;
       }

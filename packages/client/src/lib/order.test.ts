@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyOrder, forgetOrders, loadOrder, moveWorkspace, movedText, orderWorkspaces, placementOf, reorder, saveOrder } from './order';
+import { applyOrder, dropIndex, forgetOrders, loadOrder, moveWorkspace, movedText, orderWorkspaces, placementOf, reorder, saveOrder } from './order';
 import { dropTarget, edgeScroll } from './dragsort';
 
 const w = (serverId: string, id: string) => ({ serverId, key: `${serverId}/${id}`, name: id });
@@ -134,5 +134,18 @@ describe('dragging by the handle', () => {
     expect(edgeScroll(500, 100, 500)).toBe(18);
     expect(edgeScroll(900, 100, 500)).toBe(18);
     expect(edgeScroll(-50, 100, 500)).toBe(-18);
+  });
+});
+
+describe('dropIndex', () => {
+  const list = [{ key: 'a/1', serverId: 'a' }, { key: 'a/2', serverId: 'a' }, { key: 'b/1', serverId: 'b' }, { key: 'a/3', serverId: 'a' }];
+  it('is the place among the server\'s own workspaces once the moved one is out', () => {
+    expect(dropIndex(list, 'a/3', { key: 'a/1', side: 'before' })).toBe(0);
+    expect(dropIndex(list, 'a/1', { key: 'a/2', side: 'after' })).toBe(1);
+    expect(dropIndex(list, 'a/1', { key: 'a/3', side: 'after' })).toBe(2);
+  });
+  it('is null for an unknown row', () => {
+    expect(dropIndex(list, 'a/1', { key: 'zzz', side: 'before' })).toBeNull();
+    expect(dropIndex(list, 'nope', { key: 'a/2', side: 'before' })).toBeNull();
   });
 });

@@ -60,7 +60,7 @@
   import Resizer from './shell/Resizer.svelte';
   import Home from './Home.svelte';
   import WorkspaceGroups from './WorkspaceGroups.svelte';
-  import { moveWorkspace, placementOf } from './lib/order';
+  import { dropIndex, moveWorkspace, placementOf } from './lib/order';
   import { destination, navigate, parseFocusLink, parseFocusTab, startRouter, type Destination } from './lib/router';
   import ReportDialog from './ReportDialog.svelte';
   import ServerDiagnosticsDialog from './ServerDiagnosticsDialog.svelte';
@@ -297,6 +297,12 @@
   $: selected = $hubServers.find(s => s.id === activeServerId);
   $: selectedServer = selected?.server ?? null;
   $: tabsAnywhere = $hubServers.some((s) => s.tabs);
+  /** A drop in the sidebar: the server's own order when it serves tabs, else this device's. */
+  function moveInSidebar(key: string, target: { key: string; side: 'before' | 'after' }) {
+    const index = tabsAnywhere ? dropIndex($allWorkspaces, key, target) : null;
+    if (index !== null) hub.moveWorkspace(key, index);
+    else moveWorkspace($allWorkspaces, key, target.side === 'before' ? { before: target.key } : { after: target.key });
+  }
   /** Use the tab UI for a server that serves tabs; an older server keeps the old strip and Workspaces button. */
   $: tabsCapable = !!selected?.tabs || (!activeKey && tabsAnywhere);
   /** Whether a server can take a new workspace now: the sidebar, the palette and the strip hide their create action rather than offering a toast that says no. */
@@ -1182,7 +1188,7 @@
     </div>
   {:else}
     <AppFrame current={$destination} onnavigate={go} servers={$hubServers} workspaces={$allWorkspaces} agents={$allAgents} tabStates={$allTabStates} {activeKey} chrome={servers.length > 0} inWorkspace={!!activeKey && !away} {keyboardOpen}
-      canCreate={canCreate} bind:wide bind:helpOpen onopen={attach} onserver={openServer} onrename={renameWorkspace} oncloseworkspace={askCloseWorkspace} onaction={runAction} onshortcut={handleShortcut}
+      canCreate={canCreate} bind:wide bind:helpOpen onopen={attach} onserver={openServer} onrename={renameWorkspace} oncloseworkspace={askCloseWorkspace} onmove={moveInSidebar} onaction={runAction} onshortcut={handleShortcut}
       onback={() => { showWorkspaceList(); sheetHeight = 'half'; }}>
     {#if $destination === 'workspaces' || servers.length === 0}
     <NavigationBar workspaces={tabWorkspaces} agents={$allAgents} servers={$hubServers} windows={$allWindows} {expiring} {activeKey} held={!!actionWorkspace || !!menuWorkspace || cardExpanded || sheetHeld} onopen={attach} onpeek={peek} ontabmenu={openWindowMenu} onactions={(key) => { actionConfirm = false; actionKey = key; }}
