@@ -1361,7 +1361,7 @@ async fn choose_tmux_server(args: &Args, mode: &RunMode) -> anyhow::Result<()> {
     }
     if matches!(mode, RunMode::Host { .. }) {
         // The host's terminfo is not visible from here, so take the entry every host has.
-        let conf = tmuxconf::render("xterm-256color", None);
+        let conf = tmuxconf::render("xterm-256color", None, None);
         mode.runner().install_host_tmux_conf(&conf).await?;
         backend::use_private_tmux(backend::Isolation::HostUser);
     } else {
