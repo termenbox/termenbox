@@ -46,7 +46,7 @@ if [ "$(id -u)" -ne 0 ]; then
   if [ -z "$YES" ]; then say ""; say "Nothing was changed. Run again with --yes to remove it."; exit 0; fi
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
-  systemctl --user disable --now termenbox-update.timer termenbox-request.path termenbox.service >/dev/null 2>&1 || true
+  systemctl --user disable --now termenbox-update.timer termenbox-update-tick.timer termenbox-request.path termenbox.service >/dev/null 2>&1 || true
   # Before the state goes: the journal there says which settings file the hooks are in.
   if [ -x "$UBIN" ]; then
     TERMENBOX_CONFIG_DIR="$USTATE" "$UBIN" --disconnect-claude || say "Could not remove Termenbox's hooks from Claude Code's settings; remove the entries that run 'termenbox-server --hook claude' by hand."
@@ -98,7 +98,7 @@ if [ -x "$BIN" ] || [ -d "$JOURNAL" ]; then
   [ ! -x "$BIN" ] || say "  - Termenbox's hooks in Claude Code's settings, if you connected them"
   [ ! -x "$BIN" ] || say "  - Termenbox's plugin in OpenCode's config, if you connected it"
   if [ -n "$YES" ]; then
-    systemctl disable --now termenbox-update.timer termenbox-request.path "$UNIT_NAME" >/dev/null 2>&1 || true
+    systemctl disable --now termenbox-update.timer termenbox-update-tick.timer termenbox-request.path "$UNIT_NAME" >/dev/null 2>&1 || true
     if [ -x "$BIN" ]; then
       TERMENBOX_CONFIG_DIR="$STATE" "$BIN" --disconnect-claude || say "Could not remove Termenbox's hooks from Claude Code's settings; remove the entries that run 'termenbox-server --hook claude' by hand."
       TERMENBOX_CONFIG_DIR="$STATE" "$BIN" --disconnect-opencode || say "Could not remove Termenbox's OpenCode plugin; remove the plugin file it wrote (usually ~/.config/opencode/plugins/termenbox.js) by hand."

@@ -39,6 +39,14 @@ pub enum Change {
     FirewallRuleAdded { tool: String, rule: String },
     /// Lingering we switched on for a user, so their service starts at boot without a login (the no-root install).
     LingerEnabled { user: String },
+    /// A container recreated from another image by the container updater (decision 0155). Recorded before the
+    /// change, so it is the account of what ran; nothing here is reverted (the previous container is kept until the
+    /// new one is healthy, and removing the install removes the container).
+    ContainerReplaced {
+        name: String,
+        from: String,
+        to: String,
+    },
 }
 
 impl Change {
@@ -52,6 +60,7 @@ impl Change {
             Change::UnitInstalled { .. } => "unit_installed",
             Change::FirewallRuleAdded { .. } => "firewall_rule_added",
             Change::LingerEnabled { .. } => "linger_enabled",
+            Change::ContainerReplaced { .. } => "container_replaced",
         }
     }
 
@@ -362,6 +371,9 @@ fn apply_revert(ops: &mut dyn Ops, change: &Change, opts: &RevertOptions) -> Res
             }
             Ok(Outcome::Done)
         }
+        Change::ContainerReplaced { .. } => Ok(Outcome::Skip(
+            "a container update is not undone here; the previous container was kept until the new one was healthy".into(),
+        )),
         Change::LingerEnabled { user } => {
             check_name(user)?;
             if !dry {

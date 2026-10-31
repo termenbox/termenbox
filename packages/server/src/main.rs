@@ -27,6 +27,7 @@ mod cert;
 mod claude_hooks;
 mod cloudflare;
 mod connection;
+mod container;
 mod control;
 mod crash;
 mod directory;
@@ -261,7 +262,8 @@ struct Args {
     release_arch: Option<String>,
 
     /// One-shot, run as root by the systemd units the installer creates: `update` checks for a new signed release and
-    /// applies it (rolling back if the service does not come up); `requests` handles what the server asked for. By
+    /// applies it (rolling back if the service does not come up); `tick` acts on a passed grace deadline (no network
+    /// otherwise); `requests` handles what the server asked for. By
     /// hand: `status` (read-only), `check` (never installs), `apply`, `postpone` and `skip`.
     #[arg(long)]
     root_helper: Option<String>,

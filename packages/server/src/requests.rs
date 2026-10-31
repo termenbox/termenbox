@@ -130,6 +130,11 @@ pub fn write_json(path: &Path, value: &impl Serialize) -> std::io::Result<()> {
     write_json_mode(path, value, 0o644)
 }
 
+/// Like `write_json`, readable by the owner only.
+pub fn write_json_private(path: &Path, value: &impl Serialize) -> std::io::Result<()> {
+    write_json_mode(path, value, 0o600)
+}
+
 fn write_json_mode(path: &Path, value: &impl Serialize, mode: u32) -> std::io::Result<()> {
     use std::io::Write;
     let tmp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
