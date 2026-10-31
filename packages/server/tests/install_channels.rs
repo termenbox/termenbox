@@ -317,9 +317,14 @@ fn a_local_tick_timer_runs_every_five_minutes_without_a_network() {
     let timer = r.unit("termenbox-update-tick.timer");
     assert!(timer.contains("OnUnitActiveSec=5min"), "{timer}");
     let service = r.unit("termenbox-update-tick.service");
-    assert!(service.contains("--root-helper tick --user-helper"), "{service}");
+    assert!(
+        service.contains("--root-helper tick --user-helper"),
+        "{service}"
+    );
     // the 6-hourly checker is a different unit and keeps its own cadence
-    assert!(!r.unit("termenbox-update.timer").contains("5min\nOnUnitActiveSec=5min"));
+    assert!(!r
+        .unit("termenbox-update.timer")
+        .contains("5min\nOnUnitActiveSec=5min"));
 }
 
 #[test]

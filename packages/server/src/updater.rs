@@ -536,7 +536,11 @@ impl Updater<'_> {
         let state = update_state::State::load(dir);
         let now = crate::requests::now_secs();
         if state.deadline == 0 {
-            let first_seen = if state.first_seen_at == 0 { now } else { state.first_seen_at };
+            let first_seen = if state.first_seen_at == 0 {
+                now
+            } else {
+                state.first_seen_at
+            };
             let at = deadline(first_seen, grace, self.policy.window, now, self.now_minute);
             self.note(Event::Scheduled(at));
         }
@@ -620,7 +624,9 @@ impl Updater<'_> {
                 self.container
                     .as_ref()
                     .is_some_and(|c| c.spec.pinned)
-                    .then_some("TERMENBOX_IMAGE pins this container to one image; the timer does not pull")
+                    .then_some(
+                        "TERMENBOX_IMAGE pins this container to one image; the timer does not pull",
+                    )
             });
             if let Some(reason) = hold_back {
                 return Ok(Outcome::Available {
@@ -744,21 +750,31 @@ impl Updater<'_> {
 
     /// Pull the digest the signed manifest names, recreate the container, and put the old one back if the new one is
     /// not healthy (decision 0155). The journal says what ran before the container is touched.
-    async fn apply_container(&self, c: &ContainerApply<'_>, manifest: &Manifest) -> Result<Outcome> {
+    async fn apply_container(
+        &self,
+        c: &ContainerApply<'_>,
+        manifest: &Manifest,
+    ) -> Result<Outcome> {
         let digest = manifest
             .image
             .get(&self.arch)
             .ok_or_else(|| anyhow!("this release carries no container image"))?;
         let journal = Journal::open(&self.root_dir)?;
         let mut entry = None;
-        let applied = container::apply(c.docker, &c.spec, digest, self.health_wait, &mut |from, to| {
-            entry = Some(journal.record(Change::ContainerReplaced {
-                name: c.spec.name.clone(),
-                from: from.to_string(),
-                to: to.to_string(),
-            })?);
-            Ok(())
-        })
+        let applied = container::apply(
+            c.docker,
+            &c.spec,
+            digest,
+            self.health_wait,
+            &mut |from, to| {
+                entry = Some(journal.record(Change::ContainerReplaced {
+                    name: c.spec.name.clone(),
+                    from: from.to_string(),
+                    to: to.to_string(),
+                })?);
+                Ok(())
+            },
+        )
         .await?;
         match applied {
             Applied::Current => Ok(Outcome::UpToDate),
@@ -790,7 +806,9 @@ impl Updater<'_> {
     async fn refresh_host_helper(&self, c: &ContainerApply<'_>, digest: &str, journal: &Journal) {
         let staged = self.sibling(".new");
         let result = async {
-            c.docker.extract_binary(&c.spec.reference(digest), &staged).await?;
+            c.docker
+                .extract_binary(&c.spec.reference(digest), &staged)
+                .await?;
             let backups = self.root_dir.join("backups");
             std::fs::create_dir_all(&backups)?;
             let backup = backups.join(format!(
@@ -2002,7 +2020,10 @@ mod tests {
             "0.1.57",
         )
         .unwrap();
-        assert_eq!((p.grace, p.on_timeout), (Some(12 * 3600), OnTimeout::Install));
+        assert_eq!(
+            (p.grace, p.on_timeout),
+            (Some(12 * 3600), OnTimeout::Install)
+        );
         for bad in [
             "mode = \"auto\"\ngrace = \"12h\"",
             "mode = \"hold\"\non_timeout = \"install\"",
@@ -2036,10 +2057,16 @@ mod tests {
         assert_eq!(deadline(now, 6 * h, Some(night), now, at_22), now + 29 * h);
         // a window that wraps midnight: 22:00 + 0 is outside, 23:00 is the start
         assert_eq!(snap_to_window(now, Some(wrap), now, at_22), now + h);
-        assert_eq!(snap_to_window(now + 2 * h, Some(wrap), now, at_22), now + 2 * h);
+        assert_eq!(
+            snap_to_window(now + 2 * h, Some(wrap), now, at_22),
+            now + 2 * h
+        );
         // no window, no change; seconds inside a minute do not matter
         assert_eq!(deadline(now, 7, None, now, 0), now + 7);
-        assert_eq!(snap_to_window(now + 30, Some(night), now, 3 * 60 + 10), now + 30);
+        assert_eq!(
+            snap_to_window(now + 30, Some(night), now, 3 * 60 + 10),
+            now + 30
+        );
     }
 
     #[test]
@@ -2066,7 +2093,10 @@ mod tests {
             Tick::Skip("0.1.58".into())
         );
         assert_eq!(tick(&install, &state("1.0.0", 100), 500), Tick::Unschedule);
-        assert_eq!(tick(&install, &update_state::State::default(), 500), Tick::Nothing);
+        assert_eq!(
+            tick(&install, &update_state::State::default(), 500),
+            Tick::Nothing
+        );
         // the host took the grace away: the clock is dropped, nothing acts
         let mut gone = install;
         gone.grace = None;
@@ -2112,7 +2142,10 @@ mod tests {
         assert!(matches!(out, Outcome::Updated { .. }), "{out:?}");
         assert_eq!(std::fs::read(&w.binary).unwrap(), b"new binary");
         let after = update_state::State::load(&w.dir);
-        assert_eq!((after.phase, after.deadline), (update_state::Phase::Idle, 0));
+        assert_eq!(
+            (after.phase, after.deadline),
+            (update_state::Phase::Idle, 0)
+        );
     }
 
     #[tokio::test]
@@ -2150,7 +2183,10 @@ mod tests {
             .await
             .unwrap();
         let st = update_state::State::load(&w.dir);
-        assert_eq!((st.phase, st.deadline, st.available), (update_state::Phase::Idle, 0, None));
+        assert_eq!(
+            (st.phase, st.deadline, st.available),
+            (update_state::Phase::Idle, 0, None)
+        );
     }
 
     #[tokio::test]
@@ -2209,14 +2245,27 @@ mod tests {
         let (f, s, d) = (fake(&w), svc(&w, 1, true), docker_fake(true));
         let u = container_updater(&w, &f, &s, &d);
         let out = u.run().await.unwrap();
-        assert!(matches!(&out, Outcome::Updated { to, .. } if to == "0.2.0"), "{out:?}");
+        assert!(
+            matches!(&out, Outcome::Updated { to, .. } if to == "0.2.0"),
+            "{out:?}"
+        );
         assert_eq!(d.state(), vec![("termenbox".into(), NEW.into(), true)]);
         // the server binary is never swapped or downloaded for a container
         assert_eq!(std::fs::read(&w.binary).unwrap(), b"old binary");
-        assert!(!f.fetched.lock().unwrap().iter().any(|u| u.contains("x86_64-linux")));
+        assert!(!f
+            .fetched
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|u| u.contains("x86_64-linux")));
         assert_eq!(*s.restarts.lock().unwrap(), 0);
         let journal = std::fs::read_to_string(w.dir.join("root/journal.jsonl")).unwrap_or_default();
-        assert!(journal.contains("container_replaced") || journal.contains("ContainerReplaced") || journal.contains(NEW), "{journal}");
+        assert!(
+            journal.contains("container_replaced")
+                || journal.contains("ContainerReplaced")
+                || journal.contains(NEW),
+            "{journal}"
+        );
     }
 
     #[tokio::test]
@@ -2227,7 +2276,9 @@ mod tests {
         };
         let (f, s, d) = (fake(&w), svc(&w, 1, true), docker_fake(true));
         let out = container_updater(&w, &f, &s, &d).run().await.unwrap();
-        assert!(matches!(out, Outcome::Available { reason, .. } if reason.contains("no container image")));
+        assert!(
+            matches!(out, Outcome::Available { reason, .. } if reason.contains("no container image"))
+        );
         assert!(d.log.lock().unwrap().is_empty());
         let Some(w) = world_with_image("0.2.0", Some(NEW)) else {
             return;

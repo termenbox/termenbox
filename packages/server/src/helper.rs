@@ -105,9 +105,12 @@ async fn handle(request: Request, setup: &Setup) -> Result<i32> {
         Request::CheckUpdate {} => update(setup, Trigger::Check, None).await,
         Request::UpdatePostpone {} => {
             // One more grace period, placed in the maintenance window like the first.
-            let policy = UpdatePolicy::load(&setup.root_dir.join("update.toml"), &crate::version()).ok();
+            let policy =
+                UpdatePolicy::load(&setup.root_dir.join("update.toml"), &crate::version()).ok();
             let done = change_state(setup, |state| {
-                let grace = policy.and_then(|p| p.grace).ok_or("no grace period is configured")?;
+                let grace = policy
+                    .and_then(|p| p.grace)
+                    .ok_or("no grace period is configured")?;
                 state.postpone(grace)?;
                 state.deadline = updater::snap_to_window(
                     state.deadline,
