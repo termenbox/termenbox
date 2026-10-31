@@ -29,8 +29,9 @@ pub const AGENT: &str = "claude";
 /// The major version of the files this adapter was written against (2.1.308 measured).
 const SUPPORTED_MAJOR: &str = "2";
 const CACHED_CHAINS: usize = 4;
-/// Directory names longer than this are looked up by prefix when the full name is not there.
-const LONG_DIR: usize = 100;
+/// Claude keeps the first 200 characters of an encoded directory name and appends `-` and a short hash (measured on
+/// 2.1.308: 207 characters in all). The hash is not computed here: the directory is found by its head.
+const LONG_DIR: usize = 200;
 const UNMAPPABLE: &str = "A record this version cannot show";
 /// Record types that carry no conversation. A record of another type that sits in the tree is shown as a notice.
 const NOISE: &[&str] = &[
@@ -95,14 +96,13 @@ impl ClaudeLog {
         if direct.exists() || dir.len() <= LONG_DIR {
             return Some(direct);
         }
-        // Claude shortens a very long directory name (a `MAX_SANITIZED_LENGTH` in its binary; the value and the
-        // suffix are not measured). The shortened name still starts with the head of the full one, so look among the
-        // directories that do, for this exact session file.
-        let head = &dir[..LONG_DIR];
+        // A name over 200 characters is stored shortened (`LONG_DIR`), so look among the directories that start with
+        // its first 200, for this exact session file.
+        let head = format!("{}-", &dir[..LONG_DIR]);
         let found = std::fs::read_dir(&self.root)
             .ok()?
             .flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with(head))
+            .filter(|e| e.file_name().to_string_lossy().starts_with(&head))
             .map(|e| e.path().join(&file))
             .find(|p| p.is_file());
         Some(found.unwrap_or(direct))
