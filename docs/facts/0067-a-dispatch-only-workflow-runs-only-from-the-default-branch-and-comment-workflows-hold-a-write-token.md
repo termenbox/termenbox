@@ -3,7 +3,7 @@ id: 0067
 title: A dispatch-only workflow cannot be run until its file is on the default branch, and issue and comment workflows run the default branch's copy with a write token
 status: active
 kind: observation
-governed-by: 0158-documentation-media-comes-from-one-recorder-is-approved-by-the-owner-and-ships-from-a-docs-media-branch
+governed-by: 0158-documentation-media-comes-from-one-recorder-is-picked-by-a-developer-and-lands-in-docs-media-through-a-pull-request
 tags: [ci, github, security]
 date: 2026-10-29
 last-verified: 2026-10-29

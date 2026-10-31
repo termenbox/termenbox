@@ -95,10 +95,9 @@ jobs:
       - name: Check the landing site (metadata, structured data, assets, the install command)
         run: node scripts/check-site.mjs
 
-      - name: Test the docs-media scripts (manifest, review rules, review page, embed markers, input hash)
+      - name: Test the docs-media scripts (review rules, review page, embed markers, input hash)
         run: |
           node --test scripts/docs-media-review.test.mjs
-          node scripts/docs-media-manifest.mjs --self-test
           node scripts/docs-media-review-page.mjs --self-test
           node scripts/docs-media.mjs --self-test
           node packages/client/e2e/video/inputs-hash.mjs --self-test

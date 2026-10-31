@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCommand, parseChecklist, diffChecklist, mayAct, manifestEntry, addEntry, dropEntry } from './docs-media-review.mjs';
+import { parseCommand, parseChecklist, diffChecklist, mayAct } from './docs-media-review.mjs';
 
 const ids = ['recent-folder', 'add-server'];
 const H = 'a'.repeat(16);
@@ -51,37 +51,24 @@ test('only write, maintain and admin may act', () => {
   for (const p of ['read', 'triage', 'none', '', undefined]) assert.equal(mayAct(p), false);
 });
 
-test('manifest entries carry a sha256 per file and replace, never duplicate', () => {
-  const e = manifestEntry({ case: 'add-server', profile: 'phone', hash: H, version: '1.0.0', approver: 'owner', date: '2026-10-31', files: [{ path: 'a.mp4', data: Buffer.from('abc') }] });
-  assert.deepEqual(e.files, [{ path: 'a.mp4', sha256: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad', bytes: 3 }]);
-  assert.throws(() => manifestEntry({ ...e, approver: '', files: [] }));
-  const m = addEntry(addEntry({ version: 1, entries: [] }, e), { ...e, hash: 'c'.repeat(16) });
-  assert.equal(m.entries.length, 1);
-  assert.equal(m.entries[0].hash, 'c'.repeat(16));
-  assert.equal(dropEntry(m, 'add-server', 'phone').entries.length, 0);
-  assert.equal(dropEntry(m, 'nope', 'phone').entries.length, 1);
-});
-
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { approve } from './docs-media-review-cli.mjs';
-import { validate, listMedia } from './docs-media-manifest.mjs';
 
-test('approve copies the render, records the entry and refuses a hash that was not ticked', () => {
-  const art = mkdtempSync(join(tmpdir(), 'tb-art-')), media = mkdtempSync(join(tmpdir(), 'tb-media-'));
+test('approve copies the ticked render into the docs folder and refuses a hash that was not ticked', () => {
+  const art = mkdtempSync(join(tmpdir(), 'tb-art-')), out = mkdtempSync(join(tmpdir(), 'tb-docs-'));
   try {
     writeFileSync(join(art, 'add-server-phone.mp4'), 'v');
     writeFileSync(join(art, 'add-server-phone.gif'), 'g');
     writeFileSync(join(art, 'add-server-phone.render.json'), JSON.stringify({ case: 'add-server', profile: 'phone', hash: H, version: '1.0.0', files: ['add-server-phone.mp4', 'add-server-phone.gif', '../escape.txt'] }));
-    assert.throws(() => approve({ artifactDir: art, mediaDir: media, case: 'add-server', profile: 'phone', hash: 'f'.repeat(16), approver: 'owner', date: '2026-10-31' }), /not the ticked/);
-    assert.equal(existsSync(join(media, 'manifest.json')), false, 'nothing was written');
-    assert.throws(() => approve({ artifactDir: art, mediaDir: media, case: 'add-server', profile: 'phone', hash: H, approver: '', date: '2026-10-31' }), /approver/);
-    assert.equal(listMedia(media).length, 0, 'a refused approval copies nothing');
-    const m = approve({ artifactDir: art, mediaDir: media, case: 'add-server', profile: 'phone', hash: H, approver: 'owner', date: '2026-10-31' });
-    assert.equal(m.entries[0].files.length, 2, 'a path outside the folder is not copied');
-    assert.deepEqual(validate(JSON.parse(readFileSync(join(media, 'manifest.json'), 'utf8')), listMedia(media)), []);
-  } finally { rmSync(art, { recursive: true, force: true }); rmSync(media, { recursive: true, force: true }); }
+    assert.throws(() => approve({ artifactDir: art, mediaDir: out, case: 'add-server', profile: 'phone', hash: 'f'.repeat(16) }), /not the ticked/);
+    assert.equal(existsSync(join(out, 'add-server-phone.mp4')), false, 'nothing was copied');
+    const names = approve({ artifactDir: art, mediaDir: out, case: 'add-server', profile: 'phone', hash: H });
+    assert.deepEqual(names, ['add-server-phone.mp4', 'add-server-phone.gif', 'add-server-phone.render.json'], 'a path outside the folder is not copied');
+    assert.equal(readFileSync(join(out, 'add-server-phone.mp4'), 'utf8'), 'v');
+    assert.equal(JSON.parse(readFileSync(join(out, 'add-server-phone.render.json'), 'utf8')).hash, H, 'the hash travels with the video');
+  } finally { rmSync(art, { recursive: true, force: true }); rmSync(out, { recursive: true, force: true }); }
 });
 
 import { issueBody } from './docs-media-review-cli.mjs';

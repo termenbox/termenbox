@@ -1,7 +1,5 @@
 // The logic of the docs-media review (DECISION-0158), kept free of GitHub so it runs under node --test. The workflows pass
 // the comment and the issue body in through the environment and call the entry points here; nothing is ever evaluated.
-import { sha256 } from './docs-media-manifest.mjs';
-
 export const PACES = ['normal', 'slow'];
 export const PROFILES = ['phone', 'desktop'];
 const NOTE_MAX = 300;
@@ -56,19 +54,3 @@ export function diffChecklist(before, after) {
 
 /** Only a person with write access to the repository may render, approve or regenerate (guardrail on media commands). */
 export const mayAct = (permission) => ['write', 'maintain', 'admin'].includes(permission);
-
-/** A manifest entry; `files` are { path, data } and each gets its sha256 and size. */
-export function manifestEntry({ case: id, profile, hash, version, approver, date, files }) {
-  if (!approver) throw new Error('an entry needs an approver');
-  return { case: id, profile, hash, version, approver, date, files: files.map(({ path, data }) => ({ path, sha256: sha256(data), bytes: data.length })) };
-}
-
-/** The manifest with the entry for case and profile added, replacing an earlier one (never two). */
-export function addEntry(manifest, entry) {
-  return { version: 1, entries: [...dropEntry(manifest, entry.case, entry.profile).entries, entry] };
-}
-
-/** The manifest without the entry for case and profile; a missing entry is not an error. */
-export function dropEntry(manifest, id, profile) {
-  return { version: 1, entries: (manifest?.entries ?? []).filter((e) => !(e.case === id && e.profile === profile)) };
-}

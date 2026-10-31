@@ -2,9 +2,9 @@
 id: media-commands-come-only-from-people-with-write-access
 title: A render, an approval or a regeneration is accepted only from a person with write access to the repository
 status: active
-governed-by: 0158-documentation-media-comes-from-one-recorder-is-approved-by-the-owner-and-ships-from-a-docs-media-branch
-grounded-in: [0158-documentation-media-comes-from-one-recorder-is-approved-by-the-owner-and-ships-from-a-docs-media-branch, 0067, no-paid-services]
-derivation-note: Comment and issue-edit workflows run the default branch's file with a write token and fire for anyone who can comment on a public repository (fact 0067), so the commenter's permission, not the comment text, is the only authority; an unchecked `/regen` would let a stranger spend runner minutes and an unchecked tick would publish to the site.
+governed-by: 0158-documentation-media-comes-from-one-recorder-is-picked-by-a-developer-and-lands-in-docs-media-through-a-pull-request
+grounded-in: [0158-documentation-media-comes-from-one-recorder-is-picked-by-a-developer-and-lands-in-docs-media-through-a-pull-request, 0067, no-paid-services]
+derivation-note: Comment and issue-edit workflows run the default branch's file with a write token and fire for anyone who can comment on a public repository (fact 0067), so the commenter's permission, not the comment text, is the only authority; an unchecked `/regen` would let a stranger spend runner minutes and an unchecked tick would put unreviewed media in the docs.
 tags: [ci, github, security, docs, video]
 ---
 

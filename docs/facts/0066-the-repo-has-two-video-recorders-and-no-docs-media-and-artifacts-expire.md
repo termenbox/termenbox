@@ -3,7 +3,7 @@ id: 0066
 title: The repo has two video recorders and no docs media, and workflow artifacts expire
 status: active
 kind: observation
-governed-by: 0158-documentation-media-comes-from-one-recorder-is-approved-by-the-owner-and-ships-from-a-docs-media-branch
+governed-by: 0158-documentation-media-comes-from-one-recorder-is-picked-by-a-developer-and-lands-in-docs-media-through-a-pull-request
 tags: [docs, ci, video, site]
 date: 2026-10-29
 last-verified: 2026-10-29

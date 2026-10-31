@@ -111,7 +111,7 @@ Next ready step: [R07](roadmap/R07.md).
 | 40 | [R76](roadmap/R76.md) | Native wrappers: Capacitor for iOS and Android, `@capacitor-community/electron` for desktop, PWA kept complete | release | both | pending | 1.2 | 1.2 | - |
 | 41 | [R24](roadmap/R24.md) | Environment profile on the native host (replaces B.4-B.6) | server | both | pending | 1.1 | 1.1 | - |
 | 42 | [R15](roadmap/R15.md) | Session and model connectors (O.5) | connectors | n/a | pending | 1.0 | 1.0 | R10, R11 |
-| 43 | [R79](roadmap/R79.md) | Documentation media pipeline and docs checks: one recorder, owner review, docs-media branch, generated reference | docs | both | pending | 0.8 | 0.8 | - |
+| 43 | [R79](roadmap/R79.md) | Documentation media pipeline and docs checks: one recorder, developer pick, docs/media, generated reference | docs | both | pending | 0.8 | 0.8 | - |
 | 44 | [R40](roadmap/R40.md) | The free gate check (P.1) | paid | n/a | pending | 15.0 | 15.0 | R18, U16 |
 | 45 | [R41](roadmap/R41.md) | Entitlement record and Sponsors webhook (P.2) | paid | n/a | blocked (R40, the free gate) | 2.6 | 2.8 | R40 |
 | 46 | [R46](roadmap/R46.md) | Privacy notice and opt-ins for Pro data (P.7) | paid | both | blocked (R40, the free gate) | 4.7 | 4.7 | R41 |

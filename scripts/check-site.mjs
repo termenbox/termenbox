@@ -4,7 +4,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { validate, listMedia } from './docs-media-manifest.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const here = join(root, 'packages/site');
@@ -39,14 +38,6 @@ for (const f of ['robots.txt', 'sitemap.xml', '_headers']) need(existsSync(join(
 const command = 'curl -fsSL https://app.termenbox.dev/i | sh';
 need(html.includes(`<code id="cmd">${command}</code>`), 'the hero command differs from the documented one');
 need(readFileSync(join(root, 'README.md'), 'utf8').includes(command), 'the README does not show the same command');
-
-// Approved docs media (DECISION-0158) is fetched into media/ by deploy-site. Nothing in it ships unless the manifest lists it
-// with the sha256 of the file and an approver (guardrail nothing-is-published-without-a-matching-approval-record).
-const media = join(here, 'media');
-if (existsSync(media)) {
-  need(existsSync(join(media, 'manifest.json')), 'media/ has no manifest.json');
-  if (existsSync(join(media, 'manifest.json'))) for (const e of validate(JSON.parse(readFileSync(join(media, 'manifest.json'), 'utf8')), listMedia(media))) need(false, `media: ${e}`);
-}
 
 if (errors.length) { console.error(errors.map((e) => `FAIL ${e}`).join('\n')); process.exit(1); }
 console.log('site checks passed');
