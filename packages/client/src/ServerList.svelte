@@ -21,7 +21,7 @@
   export let onrename: (index: number, name: string) => void = () => {};
   /** Asks the server to install its newer release. */
   export let onupdate: (id: string) => void = () => {};
-  /** The Updates card's other actions (decision 0153); the server decides which of them its helper accepts. */
+  /** The Updates card's other actions (decision 0154); the server decides which of them its helper accepts. */
   export let oncheck: (id: string) => void = () => {};
   export let onpostpone: (id: string) => void = () => {};
   export let onskip: (id: string) => void = () => {};

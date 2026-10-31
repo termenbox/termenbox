@@ -16,7 +16,7 @@ It also holds the bundled tmux (decision 0119): tmux-<arch>-linux per architectu
 way, and the licence notices that travel with it (tmux-COPYING, tmux-libevent-LICENSE, tmux-ncurses-COPYING),
 listed under "tmux_notices". They are required unless --no-tmux is given (the installer tests that stub a release).
 
---image-digests FILE (decision 0154) is the JSON image_digests.py wrote, {"x86_64": "sha256:...", "aarch64": "sha256:..."}.
+--image-digests FILE (decision 0155) is the JSON image_digests.py wrote, {"x86_64": "sha256:...", "aarch64": "sha256:..."}.
 It is signed into the manifest as "image", so a container install pulls the digest the release key vouched for. Without
 it the manifest has no "image" and is not a container release.
 """

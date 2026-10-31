@@ -79,7 +79,7 @@ struct UpdateSection {
     channel: Option<Channel>,
     mode: Option<Mode>,
     maintenance_window: Option<String>,
-    /// Read and ignored (decision 0153, U5a): a later release applies them. Accepting the keys first means a rollback
+    /// Read and ignored (decision 0154, U5a): a later release applies them. Accepting the keys first means a rollback
     /// to this release does not refuse a file the installer has already written them to.
     #[allow(dead_code)]
     grace: Option<toml::Value>,
@@ -373,7 +373,7 @@ impl Updater<'_> {
         Ok(())
     }
 
-    /// Records an event in `update-state.json` (decision 0153), stamped with the policy and version of this run.
+    /// Records an event in `update-state.json` (decision 0154), stamped with the policy and version of this run.
     fn note(&self, event: Event) {
         if let Some(dir) = &self.status_dir {
             update_state::record(

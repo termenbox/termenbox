@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { backdropClose } from './lib/backdropClose';
   import { onMount, onDestroy } from 'svelte';
   import { rememberFocus } from './lib/focus';
   import { APP_VERSION } from './lib/appVersion';
@@ -23,7 +24,7 @@
   function choose(action: () => void) { onclose(); action(); }
 </script>
 
-<dialog bind:this={dialog} aria-label="Menu" on:cancel|preventDefault={onclose} on:click={(e) => { if (e.target === dialog) onclose(); }}>
+<dialog bind:this={dialog} aria-label="Menu" on:cancel|preventDefault={onclose} use:backdropClose={() => { onclose(); }}>
   <div class="menu">
     <div class="row"><h2>Termenbox</h2><button class="secondary" aria-label="Close menu" on:click={onclose}>×</button></div>
     <button class="secondary" on:click={() => choose(onservers)}>Servers</button>

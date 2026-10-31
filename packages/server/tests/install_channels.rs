@@ -318,7 +318,7 @@ fn the_update_timer_checks_at_boot_and_every_six_hours_and_an_old_daily_timer_is
     assert!(fresh.contains("OnBootSec=2min"), "{fresh}");
     assert!(fresh.contains("OnUnitActiveSec=6h"), "{fresh}");
     assert!(!fresh.contains("OnCalendar=daily"), "{fresh}");
-    // An install from before decision 0153 has the daily timer; the next run replaces it, with a backup.
+    // An install from before decision 0154 has the daily timer; the next run replaces it, with a backup.
     let timer = r.home.join(".config/systemd/user/termenbox-update.timer");
     let daily = "[Unit]\nDescription=Check for a new Termenbox release every day\n\n[Timer]\nOnCalendar=daily\nRandomizedDelaySec=3600\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n";
     std::fs::write(&timer, daily).unwrap();

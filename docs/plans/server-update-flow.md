@@ -1,6 +1,6 @@
 # Server update flow: watch, notify, check, update, grace
 
-Decision: 0153. Refines decisions 0063 (signed releases, opt-in host updates), 0076 (updater), 0077 (root actions by request file),
+Decision: 0154. Refines decisions 0063 (signed releases, opt-in host updates), 0076 (updater), 0077 (root actions by request file),
 0131 (update policy). Keeps guardrails `updates-are-verified-and-reversible`, `unprivileged-server-never-holds-root`,
 `manifest-url-resolution`, `host-changes-are-journaled`, `notifications-carry-no-agent-text`, `resource-constraints`.
 
@@ -139,7 +139,7 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   deadline-in-window rule; major versions never auto; rollback pins the version; forward-compat order of U5. Add it to
   `docs/decisions/INDEX.md`. Optionally a short fact for the 5-minute-tick cost.
 - Verify: `ls docs/decisions | grep -i 'grace.*owner'` prints a file whose frontmatter has `status: active` and an `accepted-by`.
-- PR: this branch (`docs/server-update-flow-plan`) | Merged: - | Notes: decision 0153, accepted by the owner in chat 2026-10-31 (all six points).
+- PR: this branch (`docs/server-update-flow-plan`) | Merged: - | Notes: decision 0154, accepted by the owner in chat 2026-10-31 (all six points).
 
 ### U1 [x] Cadence and window fix (installer + timers)
 
@@ -281,10 +281,10 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   keeps no history and adding one is a schema change for little; fact 0064 says where the longer record is. Fact 0064
   added. NOT RUN: `go-getter:capture` and `go-getter:lint` (they need the user's session; run them before the PR).
 
-### U8 [ ] Container updater (decision 0154, accepted)
+### U8 [ ] Container updater (decision 0155, accepted)
 
 - Needs: U5b and an owner decision. Do not start without it; open a decision draft instead.
-- Notes: see "Container mode". Decision 0154 accepted by the owner 2026-10-31; U8 is split into U8a manifest
+- Notes: see "Container mode". Decision 0155 accepted by the owner 2026-10-31; U8 is split into U8a manifest
   `image` digests and pipeline, U8b `container.json` journal and installer timer, U8c helper apply with recreate and
   rollback, U8d docs and an end-to-end test with a local registry. 
 
@@ -302,7 +302,7 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   containers will not self-update until nightly builds the image first; (2) for stable and beta, a failed or missing
   image now fails the release after 70 min instead of publishing without a container.
 - **U8b [ ]** `container.json` journal and installer timer. **U8c [ ]** helper apply, recreate and rollback.
-  **U8d [ ]** docs and an end-to-end test with a local registry. Release order per 0154: a release carrying `image`
+  **U8d [ ]** docs and an end-to-end test with a local registry. Release order per 0155: a release carrying `image`
   must be out before U8b's installer change lands.
 
 ## Risks
@@ -320,7 +320,7 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
 
 - 2026-10-31 plan written after a code review; installed 0.1.57+dev on beta follows no update because it is an unreleased
   build newer than `0.1.57-beta.7`; the installed binary also predates `check-update`.
-- 2026-10-31 U0 done: decision 0153 written and accepted by the owner; next step U1.
+- 2026-10-31 U0 done: decision 0154 written and accepted by the owner; next step U1.
 - 2026-10-31 U1 done: cadence, migration and test; install_channels 8/8 pass; tick moved to U5b, ETag spike carried to U3; next step U2.
 - 2026-10-31 U2 done: update-state.json, honest notice, rolled-back pin; server tests pass; next step U3.
 - 2026-10-31 U3 done: helper actions status/check/apply/postpone/skip, two new requests, install guide fixed; next step U4 (client and core; a fresh session is cheaper).
@@ -328,6 +328,6 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
 - 2026-10-31 U5a done: parser accepts and ignores grace/on_timeout; U5b is blocked until a release carries U5a (next unblocked steps: U6 push, U7 observability).
 - 2026-10-31 U6 done: update push (server name and kind only), once per version, quiet hours respected; next step U7 (observability and docs).
 - 2026-10-31 U7 done: audit line, updater section in the diagnostics bundle, fact 0064, guide; U5b and U8 remain, both blocked (a release with U5a; an owner decision).
-- 2026-10-31 U8: decision 0154 drafted (digest in the signed manifest, host timer, recreate and roll back); waiting for the owner to accept it before any code.
-- 2026-10-31 U8: decision 0154 accepted by the owner; next U8a.
+- 2026-10-31 U8: decision 0155 drafted (digest in the signed manifest, host timer, recreate and roll back); waiting for the owner to accept it before any code.
+- 2026-10-31 U8: decision 0155 accepted by the owner; next U8a.
 - 2026-10-31 U8a done: signed `image` digests in the manifest and the pipeline step that resolves them; next U8b (a release with `image` must ship before it lands).

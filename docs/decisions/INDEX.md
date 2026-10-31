@@ -151,5 +151,6 @@
 | 0149-a-workspace-is-a-server-record-and-each-tab-is-a-tmux-window | A workspace is a server record and each tab is a tmux window | product | active | Sergey Strebulaev | - |
 | 0150-all-work-happens-in-a-pool-worktree | All work happens in a worktree from a fixed pool, never in the main checkout | process | draft | - | - |
 | 0152-a-dormant-workspace-resumes-its-agents-when-reopened | A dormant workspace resumes its agents when it is reopened | product | draft | - | - |
-| 0153-a-new-release-waits-a-grace-period-for-the-owner-then-installs-or-is-skipped | A new release waits a grace period for the owner, then installs or is skipped as the host configured | product | active | Sergey Strebulaev | - |
-| 0154-a-container-install-updates-through-a-host-timer-that-pulls-the-digest-the-signed-manifest-names | A container install updates through a host timer that pulls the digest the signed manifest names | product | active | Sergey Strebulaev | - |
+| 0153-the-tab-strip-follows-tmuxs-current-window-on-a-control-mode-server | The tab strip follows tmux's current window on a control-mode server | product | active | Sergey Strebulaev | - |
+| 0154-a-new-release-waits-a-grace-period-for-the-owner-then-installs-or-is-skipped | A new release waits a grace period for the owner, then installs or is skipped as the host configured | product | active | Sergey Strebulaev | - |
+| 0155-a-container-install-updates-through-a-host-timer-that-pulls-the-digest-the-signed-manifest-names | A container install updates through a host timer that pulls the digest the signed manifest names | product | active | Sergey Strebulaev | - |

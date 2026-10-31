@@ -29,7 +29,7 @@ pub enum Request {
     },
     /// Refresh the signed release notice without installing anything.
     CheckUpdate {},
-    /// Ask for one more grace period before the scheduled install (at most three times, decision 0153).
+    /// Ask for one more grace period before the scheduled install (at most three times, decision 0154).
     UpdatePostpone {},
     /// Stop offering this release; a newer one is offered again. The version is the one the owner saw, so a request
     /// made against an older notice cannot skip a newer release.

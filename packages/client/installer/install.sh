@@ -503,7 +503,7 @@ journal() {
   "$JBIN" --journal-dir "$JOURNAL" --journal-record "$_kind" $_args >/dev/null || die "could not write the journal"
 }
 
-# An update timer from before decision 0153 fires once a day, between 00:00 and 01:00, so it never reaches a
+# An update timer from before decision 0154 fires once a day, between 00:00 and 01:00, so it never reaches a
 # maintenance window elsewhere and a fresh install waits for the next midnight. Replace it (backed up and journaled by
 # put_file) with the boot-and-6-hourly cadence. Idempotent: a timer that already has OnBootSec is left alone.
 # migrate_update_timer <timer file> <new content>

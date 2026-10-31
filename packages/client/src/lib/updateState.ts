@@ -1,4 +1,4 @@
-// What the Updates card and the update banner say about a server's updater (decision 0153). Pure, so each phase and
+// What the Updates card and the update banner say about a server's updater (decision 0154). Pure, so each phase and
 // each missing field is tested without a component.
 import type { UpdateInfo } from './protocol';
 

@@ -140,7 +140,7 @@ jobs:
           retention-days: 7
 
   # Stable and beta tags start docker-build.yaml beside this workflow, so the image may still be building: wait for the
-  # multi-architecture tag and record the digests the signed manifest will name (decision 0154). It holds no secret.
+  # multi-architecture tag and record the digests the signed manifest will name (decision 0155). It holds no secret.
   # Nightly pushes its image after the release, so a nightly manifest has no image yet. A dry run pushes none.
   image:
     name: Image digests

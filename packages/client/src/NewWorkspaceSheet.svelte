@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { backdropClose } from './lib/backdropClose';
   import { onMount } from 'svelte';
   import { NativeSelect } from './lib/ui/native-select';
   import AgentRow from './AgentRow.svelte';
@@ -120,8 +121,7 @@
 <dialog
   bind:this={dialog}
   aria-label="New workspace"
-  on:cancel|preventDefault={() => { if (!anyLayer) onclose(); }}
-  on:click={(e) => { if (e.target === dialog && !anyLayer) onclose(); }}
+  on:cancel|preventDefault={() => { if (!anyLayer) onclose(); }} use:backdropClose={() => { if (!anyLayer) onclose(); }}
 >
   <div class="wrap">
     <form on:submit|preventDefault={create}>

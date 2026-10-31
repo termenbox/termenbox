@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { backdropClose } from './lib/backdropClose';
   import { onDestroy, onMount } from 'svelte';
   import AgentIcon from './AgentIcon.svelte';
   import { rememberFocus } from './lib/focus';
@@ -96,7 +97,7 @@
   }
 </script>
 
-<dialog bind:this={dialog} aria-label="Tabs" oncancel={(e) => { e.preventDefault(); onclose(); }} onclick={(e) => { if (e.target === dialog) onclose(); }}>
+<dialog bind:this={dialog} aria-label="Tabs" oncancel={(e) => { e.preventDefault(); onclose(); }} use:backdropClose={() => { onclose(); }}>
   <header>
     <div class="who">
       {#if single}

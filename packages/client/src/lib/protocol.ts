@@ -7,7 +7,7 @@ export type ClientMessage =
   | { type: 'revoke_device'; device: string }
   /** Owner-only: install the newer release now; the answer is `update_requested`, and the service restarts when it is done. */
   | { type: 'update_server' }
-  /** Owner-only (decision 0153): check for a release now without installing it; the answer is `update_check_requested`, then `update_state`. */
+  /** Owner-only (decision 0154): check for a release now without installing it; the answer is `update_check_requested`, then `update_state`. */
   | { type: 'update_check' }
   /** Owner-only: one more grace period before a scheduled install; offered only while `update_state.can_postpone`. */
   | { type: 'update_postpone' }
@@ -117,7 +117,7 @@ export type ServerMessage =
   /** The recorded newer release changed while connected; empty when up to date (same as `auth_ok.update_available`). */
   | { type: 'update_status'; available?: string }
   | { type: 'update_check_requested' }
-  /** What the updater knows (decision 0153), sent after `auth_ok` and on every change. Times are epoch seconds, 0 when unknown. */
+  /** What the updater knows (decision 0154), sent after `auth_ok` and on every change. Times are epoch seconds, 0 when unknown. */
   | ({ type: 'update_state' } & UpdateInfo)
   | { type: 'uninstall_done'; mode: string }
   /** Decision 0123: the server's signed candidate bundle, pushed after `auth_ok`; verify it before use (lib/bundle.ts). */

@@ -115,7 +115,7 @@ describe('ServerHub', () => {
     c.emit({ type: 'update_status', available: '' });
     expect(get(hub.servers)[0].updateAvailable).toBe('');
   });
-  describe('the updater (decision 0153)', () => {
+  describe('the updater (decision 0154)', () => {
     const ready = (caps?: string[]) => {
       const { hub, connections } = setup(); hub.start([server('a')]);
       const c = connections[0];

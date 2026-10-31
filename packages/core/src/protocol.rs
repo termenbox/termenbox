@@ -202,7 +202,7 @@ pub enum ClientMessage {
     /// Owner-only: install the newer release now (decision 0077): the server leaves an `update-now` request for the
     /// root helper and answers `update_requested`. The service restarts when the update is installed.
     UpdateServer {},
-    /// Owner-only: check for a release now without installing it (decision 0153); answered with `update_check_requested`,
+    /// Owner-only: check for a release now without installing it (decision 0154); answered with `update_check_requested`,
     /// then `update_state` when the updater has recorded the outcome.
     UpdateCheck {},
     /// Owner-only: one more grace period before a scheduled install. The helper refuses when none is scheduled or the
@@ -560,7 +560,7 @@ pub enum ServerMessage {
     },
     /// The `update_check` request was handed to the updater; `update_state` follows once it has checked.
     UpdateCheckRequested {},
-    /// What the updater knows (`update-state.json`, decision 0153), sent after `auth_ok` and whenever it changes.
+    /// What the updater knows (`update-state.json`, decision 0154), sent after `auth_ok` and whenever it changes.
     /// Times are seconds since the epoch, 0 when unknown; `phase` is `idle`, `available`, `scheduled`, `installing` or
     /// `rolled-back`; `error` is why the last check failed, empty when it did not.
     UpdateState {

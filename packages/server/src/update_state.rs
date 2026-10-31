@@ -1,5 +1,5 @@
 //! `update-state.json`: what the updater knows, written by the helper (root or user), read by the server, never
-//! written by the server (decision 0153). It replaces the all-or-nothing `update-status.json`, which is still written
+//! written by the server (decision 0154). It replaces the all-or-nothing `update-status.json`, which is still written
 //! beside it for one release so a new helper with an old server (or the reverse after a rollback) shows the notice.
 //!
 //! The file is only ever changed through `State::apply`, one event per outcome, so the transitions are testable

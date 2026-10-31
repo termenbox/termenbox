@@ -240,7 +240,7 @@ pub struct Manifest {
     /// Licence notices that travel with the bundled tmux, by file name.
     #[serde(default)]
     pub tmux_notices: BTreeMap<String, Binary>,
-    /// The container image of this release by architecture, as `sha256:` digests (decision 0154). Absent in a release
+    /// The container image of this release by architecture, as `sha256:` digests (decision 0155). Absent in a release
     /// that is not a container release, and in releases from before it existed.
     #[serde(default)]
     pub image: BTreeMap<String, String>,

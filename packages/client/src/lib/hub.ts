@@ -19,7 +19,7 @@ export interface HubServer {
   version: string;
   /** A newer release the server could install but has not (`auth_ok.update_available`); empty when up to date. */
   updateAvailable?: string;
-  /** What the updater knows (`update_state`, decision 0153); absent from an older server. */
+  /** What the updater knows (`update_state`, decision 0154); absent from an older server. */
   update?: UpdateInfo;
   /** The update actions this server's helper accepts (`auth_ok.update_capabilities`); empty from an older server. */
   updateCapabilities?: string[];

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolves the per-architecture image digests of a release for the signed manifest (decision 0154).
+"""Resolves the per-architecture image digests of a release for the signed manifest (decision 0155).
 
 usage: image_digests.py IMAGE_REF OUT [--wait SECONDS]
 
