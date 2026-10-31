@@ -79,6 +79,12 @@ struct UpdateSection {
     channel: Option<Channel>,
     mode: Option<Mode>,
     maintenance_window: Option<String>,
+    /// Read and ignored (decision 0153, U5a): a later release applies them. Accepting the keys first means a rollback
+    /// to this release does not refuse a file the installer has already written them to.
+    #[allow(dead_code)]
+    grace: Option<toml::Value>,
+    #[allow(dead_code)]
+    on_timeout: Option<toml::Value>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -1704,6 +1710,18 @@ mod tests {
             UpdatePolicy::load(&missing, "0.1.36").unwrap().mode,
             Mode::Auto
         );
+    }
+
+    #[test]
+    fn the_grace_keys_of_a_later_release_parse_and_change_nothing() {
+        let plain = UpdatePolicy::parse("[update]\nmode = \"notify\"\n", "0.1.57").unwrap();
+        let later = UpdatePolicy::parse(
+            "[update]\nmode = \"notify\"\ngrace = \"12h\"\non_timeout = \"install\"\n",
+            "0.1.57",
+        )
+        .unwrap();
+        assert_eq!(later, plain);
+        assert!(UpdatePolicy::parse("[update]\nmodes = \"notify\"\n", "0.1.57").is_err());
     }
 
     #[test]

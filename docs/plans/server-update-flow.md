@@ -244,7 +244,11 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   `install` vs `skip`, postpone x3 then no more, major never installs, owner `update-now` before the deadline,
   a failed install pins the version.
 - Verify: `grep -rq a_major_version_never_installs_at_the_deadline packages/server/src` and the updater tests pass.
-- PR: - | Merged: - | Notes:
+- PR: - | Merged: - | Notes: **U5a done** on this branch (the box stays open for U5b): `UpdateSection` accepts `grace` and
+  `on_timeout` as untyped values and ignores them; test `the_grace_keys_of_a_later_release_parse_and_change_nothing`
+  (also that a misspelt key still fails). **U5b must wait for a release that contains U5a**; no installer or doc may
+  write the keys before then. U5b also takes over the 5-minute tick timer, `update --tick` and the window-reachability
+  test moved from U1, and wires `postpone`'s extension to `grace`.
 
 ### U6 [ ] Push notification for an available update
 
@@ -290,3 +294,4 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
 - 2026-10-31 U2 done: update-state.json, honest notice, rolled-back pin; server tests pass; next step U3.
 - 2026-10-31 U3 done: helper actions status/check/apply/postpone/skip, two new requests, install guide fixed; next step U4 (client and core; a fresh session is cheaper).
 - 2026-10-31 U4 done: update_state and the three owner actions on the wire, Updates dialog, banner, hub and compat tests; next step U5a (parser accepts and ignores grace/on_timeout).
+- 2026-10-31 U5a done: parser accepts and ignores grace/on_timeout; U5b is blocked until a release carries U5a (next unblocked steps: U6 push, U7 observability).
