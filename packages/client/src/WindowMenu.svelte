@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { backdropClose } from './lib/backdropClose';
   import { onDestroy, onMount } from 'svelte';
   import { rememberFocus } from './lib/focus';
   import AgentIcon from './AgentIcon.svelte';
@@ -37,7 +38,7 @@
   }
 </script>
 
-<dialog bind:this={dialog} aria-label="Windows of {workspace.name}" on:cancel|preventDefault={onclose} on:click={(e) => { if (e.target === dialog) onclose(); }}>
+<dialog bind:this={dialog} aria-label="Windows of {workspace.name}" on:cancel|preventDefault={onclose} use:backdropClose={() => { onclose(); }}>
   <header>
     <div class="who"><strong>{workspace.name}</strong>{#if workspace.serverName}<span>{workspace.serverName}</span>{/if}</div>
     <button class="secondary" on:click={() => { onclose(); ondetach(); }}>Detach</button>
