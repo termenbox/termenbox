@@ -338,14 +338,20 @@ apply_udp_pin() {
 # maintenance_window is kept. Needs $TMP, $JOURNAL and the journal helpers.
 write_update_config() {
   _win="$(sed -n 's/^\(maintenance_window *=.*\)$/\1/p' "$JOURNAL/update.toml" 2>/dev/null | head -n 1)"
+  _grace="$(sed -n 's/^\(grace *=.*\)$/\1/p' "$JOURNAL/update.toml" 2>/dev/null | head -n 1)"
+  _ontimeout="$(sed -n 's/^\(on_timeout *=.*\)$/\1/p' "$JOURNAL/update.toml" 2>/dev/null | head -n 1)"
   {
     echo "# How this server updates (decision 0131). Edit it on this machine; nothing in the app changes it."
     echo "# channel: stable | beta | nightly      mode: auto (install at the next check) | notify (say so, install on request) | hold"
     echo "# maintenance_window = \"03:00-04:00\"    local time; limits the automatic install"
+    echo "# grace = \"12h\"  on_timeout = \"install\"   only with mode = \"notify\": the owner has this long to answer a new release;"
+    echo "#                                          then it installs (install) or is skipped (skip, the default). A major version never installs."
     echo "[update]"
     echo "channel = \"$CHANNEL\""
     echo "mode = \"$UPDATE_MODE\""
     [ -z "$_win" ] || echo "$_win"
+    [ -z "$_grace" ] || echo "$_grace"
+    [ -z "$_ontimeout" ] || echo "$_ontimeout"
   } > "$TMP/update.toml"
   put_file "$TMP/update.toml" "$JOURNAL/update.toml" 0600
 }
@@ -519,6 +525,18 @@ Persistent=true
 [Install]
 WantedBy=timers.target"
 
+# The local tick (decision 0154): every five minutes, no network, acts only when a grace deadline has passed.
+TICK_TIMER="[Unit]
+Description=Act on a passed Termenbox update deadline (no network unless one has passed)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target"
+
 migrate_update_timer() {
   [ -f "$1" ] || return 0
   grep -q '^OnBootSec=' "$1" && return 0
@@ -558,6 +576,14 @@ Type=oneshot
 Environment=TERMENBOX_RELEASE_URL=$RELEASE_URL
 ExecStart=$BIN --root-helper update --journal-dir $JOURNAL --requests-dir $STATE/requests"
   add_unit termenbox-update.timer "$UPDATE_TIMER"
+  add_unit termenbox-update-tick.service "[Unit]
+Description=Termenbox update deadline tick
+
+[Service]
+Type=oneshot
+Environment=TERMENBOX_RELEASE_URL=$RELEASE_URL
+ExecStart=$BIN --root-helper tick --journal-dir $JOURNAL --requests-dir $STATE/requests"
+  add_unit termenbox-update-tick.timer "$TICK_TIMER"
   add_unit termenbox-request.service "[Unit]
 Description=Termenbox root helper (requests from the server)
 
@@ -577,7 +603,7 @@ WantedBy=multi-user.target"
   migrate_update_timer /etc/systemd/system/termenbox-update.timer "$UPDATE_TIMER"
   if [ -n "$_added" ]; then
     systemctl daemon-reload
-    systemctl enable --now termenbox-update.timer termenbox-request.path >/dev/null 2>&1 || die "could not start the updater; see: systemctl status termenbox-update.timer"
+    systemctl enable --now termenbox-update.timer termenbox-update-tick.timer termenbox-request.path >/dev/null 2>&1 || die "could not start the updater; see: systemctl status termenbox-update.timer"
     systemctl restart termenbox-update.timer >/dev/null 2>&1 || true
     systemctl start --no-block termenbox-update.service >/dev/null 2>&1 || true # the first check now, not at midnight
   fi
@@ -1089,6 +1115,15 @@ Environment=TERMENBOX_RELEASE_URL=$RELEASE_URL
 Environment=TERMENBOX_BINARY=$BIN
 ExecStart=$BIN --root-helper update --user-helper --journal-dir $JOURNAL --requests-dir $STATE/requests"
   add_user_unit termenbox-update.timer "$UPDATE_TIMER"
+  add_user_unit termenbox-update-tick.service "[Unit]
+Description=Termenbox update deadline tick
+
+[Service]
+Type=oneshot
+Environment=TERMENBOX_RELEASE_URL=$RELEASE_URL
+Environment=TERMENBOX_BINARY=$BIN
+ExecStart=$BIN --root-helper tick --user-helper --journal-dir $JOURNAL --requests-dir $STATE/requests"
+  add_user_unit termenbox-update-tick.timer "$TICK_TIMER"
   add_user_unit termenbox-request.service "[Unit]
 Description=Termenbox helper (requests from the server)
 
@@ -1109,7 +1144,7 @@ WantedBy=default.target"
   migrate_update_timer "$UNIT_DIR/termenbox-update.timer" "$UPDATE_TIMER"
   if [ -n "$_added" ]; then
     systemctl --user daemon-reload
-    systemctl --user enable --now termenbox-update.timer termenbox-request.path >/dev/null 2>&1 || die "could not start the updater; see: systemctl --user status termenbox-update.timer"
+    systemctl --user enable --now termenbox-update.timer termenbox-update-tick.timer termenbox-request.path >/dev/null 2>&1 || die "could not start the updater; see: systemctl --user status termenbox-update.timer"
     systemctl --user restart termenbox-update.timer >/dev/null 2>&1 || true
     systemctl --user start --no-block termenbox-update.service >/dev/null 2>&1 || true # the first check now, not at midnight
   fi

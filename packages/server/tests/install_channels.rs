@@ -309,6 +309,20 @@ fn an_existing_user_install_migrates_its_timer_without_losing_custom_arguments_a
 }
 
 #[test]
+fn a_local_tick_timer_runs_every_five_minutes_without_a_network() {
+    let Some(r) = run("tick-timer", &beta(&["host-me", "--channel", "beta"])) else {
+        return;
+    };
+    assert!(r.out.status.success(), "{}", r.stderr());
+    let timer = r.unit("termenbox-update-tick.timer");
+    assert!(timer.contains("OnUnitActiveSec=5min"), "{timer}");
+    let service = r.unit("termenbox-update-tick.service");
+    assert!(service.contains("--root-helper tick --user-helper"), "{service}");
+    // the 6-hourly checker is a different unit and keeps its own cadence
+    assert!(!r.unit("termenbox-update.timer").contains("5min\nOnUnitActiveSec=5min"));
+}
+
+#[test]
 fn the_update_timer_checks_at_boot_and_every_six_hours_and_an_old_daily_timer_is_replaced_once() {
     let Some(r) = run("timer-cadence", &beta(&["host-me", "--channel", "beta"])) else {
         return;

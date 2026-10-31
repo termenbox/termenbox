@@ -321,6 +321,11 @@ impl Manifest {
     }
 }
 
+/// Whether `to` starts a new major version after `from` (the same rule as `Manifest::is_major_bump_from`).
+pub fn is_major_bump(from: &str, to: &str) -> Result<bool> {
+    Ok(parse_version(to)?.major > parse_version(from)?.major)
+}
+
 /// `sha256:` and 64 lowercase hex digits: the only form that is passed to `docker pull` as `repo@digest`.
 fn is_image_digest(d: &str) -> bool {
     d.strip_prefix("sha256:")

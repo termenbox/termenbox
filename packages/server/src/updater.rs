@@ -79,12 +79,40 @@ struct UpdateSection {
     channel: Option<Channel>,
     mode: Option<Mode>,
     maintenance_window: Option<String>,
-    /// Read and ignored (decision 0154, U5a): a later release applies them. Accepting the keys first means a rollback
-    /// to this release does not refuse a file the installer has already written them to.
-    #[allow(dead_code)]
+    /// Untyped here so that a bad value is reported by `UpdatePolicy::parse` in words, not as a TOML type error.
     grace: Option<toml::Value>,
-    #[allow(dead_code)]
     on_timeout: Option<toml::Value>,
+}
+
+/// What happens when the grace period of a release ends without an answer from the owner (decision 0154).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OnTimeout {
+    /// Pin the release as skipped and stop reminding about it; a newer release starts a new grace.
+    #[default]
+    Skip,
+    /// Run the normal verified flow.
+    Install,
+}
+
+const MIN_GRACE_SECS: u64 = 5 * 60;
+const MAX_GRACE_SECS: u64 = 14 * 24 * 3600;
+/// After a tick-driven install could not even start (no network), the tick waits this long before it tries again.
+const RETRY_SECS: u64 = 30 * 60;
+
+/// `30m`, `12h` or `2d`: whole units only, five minutes to fourteen days.
+fn parse_grace(v: &toml::Value) -> Result<u64> {
+    let bad = || anyhow!("grace is not like 30m, 12h or 2d (5 minutes to 14 days)");
+    let text = v.as_str().ok_or_else(bad)?;
+    let (n, unit) = text.split_at(text.len().saturating_sub(1));
+    let n: u64 = n.parse().map_err(|_| bad())?;
+    let secs = n.checked_mul(match unit {
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86400,
+        _ => return Err(bad()),
+    });
+    secs.filter(|s| (MIN_GRACE_SECS..=MAX_GRACE_SECS).contains(s))
+        .ok_or_else(bad)
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -100,6 +128,9 @@ pub struct UpdatePolicy {
     pub channel: Channel,
     pub mode: Mode,
     pub window: Option<Window>,
+    /// How long the owner has to answer before `on_timeout` acts, in seconds; only with `mode = notify`.
+    pub grace: Option<u64>,
+    pub on_timeout: OnTimeout,
 }
 
 impl UpdatePolicy {
@@ -107,12 +138,25 @@ impl UpdatePolicy {
     pub fn parse(text: &str, running_version: &str) -> Result<Self> {
         let file: PolicyFile =
             toml::from_str(text).map_err(|e| anyhow!("bad update config: {e}"))?;
+        let mode = file.update.mode.unwrap_or_default();
+        let grace = file.update.grace.as_ref().map(parse_grace).transpose()?;
+        if (grace.is_some() || file.update.on_timeout.is_some()) && mode != Mode::Notify {
+            bail!("grace and on_timeout need mode = \"notify\"");
+        }
+        let on_timeout = match file.update.on_timeout.as_ref().map(|v| v.as_str()) {
+            None => OnTimeout::default(),
+            Some(Some("skip")) => OnTimeout::Skip,
+            Some(Some("install")) => OnTimeout::Install,
+            Some(_) => bail!("on_timeout is not \"install\" or \"skip\""),
+        };
         Ok(Self {
             channel: file
                 .update
                 .channel
                 .unwrap_or_else(|| Channel::of_version(running_version)),
-            mode: file.update.mode.unwrap_or_default(),
+            mode,
+            grace,
+            on_timeout,
             window: file
                 .update
                 .maintenance_window
@@ -132,12 +176,65 @@ impl UpdatePolicy {
     }
 }
 
-/// What started this run: the daily timer, or the owner's `Request::UpdateNow`.
+/// What started this run: the timer, the owner's `Request::UpdateNow`, a read-only check, or the tick that found a
+/// grace deadline passed (decision 0154).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
     Timer,
     UpdateNow,
     Check,
+    Deadline,
+}
+
+/// When the grace period of a release first seen at `from` ends, in unix seconds. A deadline outside the
+/// maintenance window moves to the next window start, across midnight too. `now` and `now_minute` (minutes since
+/// local midnight) place the deadline on the local clock; a DST change between them moves it by an hour at most.
+pub fn deadline(from: u64, grace: u64, window: Option<Window>, now: u64, now_minute: u32) -> u64 {
+    snap_to_window(from + grace, window, now, now_minute)
+}
+
+pub fn snap_to_window(at: u64, window: Option<Window>, now: u64, now_minute: u32) -> u64 {
+    let Some(window) = window else { return at };
+    let ahead = (at.saturating_sub(now) / 60) % 1440;
+    let minute = ((u64::from(now_minute) + ahead) % 1440) as u32;
+    if window.contains(minute) {
+        return at;
+    }
+    let wait = (window.start + 1440 - minute) % 1440;
+    // Whole minutes from the start of the minute `at` falls in, so the install lands at HH:MM:00 of the window.
+    at - at % 60 + u64::from(wait) * 60
+}
+
+/// What the tick does with the state it read.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Tick {
+    Nothing,
+    /// `on_timeout = skip`: pin the release.
+    Skip(String),
+    /// `on_timeout = install`: the verified flow.
+    Install,
+    /// The release cannot install by itself (a major version) or the host no longer asks for a grace period.
+    Unschedule,
+}
+
+/// The tick's decision, from local facts only: no network, no clock but the one passed in.
+pub fn tick(policy: &UpdatePolicy, state: &update_state::State, now: u64) -> Tick {
+    if !state.is_due(now) {
+        return Tick::Nothing;
+    }
+    let Some(version) = state.available.clone() else {
+        return Tick::Unschedule;
+    };
+    if policy.mode != Mode::Notify || policy.grace.is_none() {
+        return Tick::Unschedule;
+    }
+    match policy.on_timeout {
+        OnTimeout::Skip => Tick::Skip(version),
+        OnTimeout::Install => match crate::release::is_major_bump(&state.current, &version) {
+            Ok(false) => Tick::Install,
+            _ => Tick::Unschedule,
+        },
+    }
 }
 
 /// Minutes since local midnight, for the maintenance window.
@@ -389,7 +486,8 @@ impl Updater<'_> {
     pub async fn run(&self) -> Result<Outcome> {
         // The previous notice stays while the check runs and when it fails: a failure is recorded as `error`, it does
         // not erase what the owner was told. Only a verified answer that there is nothing to offer clears it.
-        let result = self.run_inner().await;
+        let installing = std::cell::Cell::new(false);
+        let result = self.run_inner(&installing).await;
         match &result {
             Ok(Outcome::UpToDate | Outcome::Frozen | Outcome::OtherChannel) => {
                 let _ = self.record_available(None);
@@ -399,18 +497,54 @@ impl Updater<'_> {
                 let _ = self.record_available(None);
                 self.note(Event::Held);
             }
-            Ok(Outcome::Available { version, .. }) => self.note(Event::Available(version)),
+            Ok(Outcome::Available { version, .. }) => {
+                self.note(Event::Available(version));
+                if self.trigger == Trigger::Deadline {
+                    // Held back at the deadline (pinned, or a major version): the clock stops, the owner decides.
+                    self.note(Event::Unscheduled);
+                } else if let Some(grace) = self.policy.grace {
+                    self.schedule(grace);
+                }
+            }
             Ok(Outcome::Updated { from, to }) => {
                 let _ = self.record_available(None);
                 self.note(Event::Updated { from, to });
             }
             Ok(Outcome::RolledBack { to, reason }) => self.note(Event::RolledBack { to, reason }),
+            Err(e) if installing.get() => self.note(Event::InstallFailed(&format!("{e:#}"))),
+            Err(e) if self.trigger == Trigger::Deadline => {
+                // Not even a check could be made (no network): try again later, not on the next tick.
+                self.note(Event::Failed(&format!("{e:#}")));
+                self.retry_later();
+            }
             Err(e) => self.note(Event::Failed(&format!("{e:#}"))),
         }
         result
     }
 
-    async fn run_inner(&self) -> Result<Outcome> {
+    /// Starts the grace period of the release on offer, once: a later check of the same release keeps its deadline.
+    fn schedule(&self, grace: u64) {
+        let Some(dir) = &self.status_dir else { return };
+        let state = update_state::State::load(dir);
+        let now = crate::requests::now_secs();
+        if state.deadline == 0 {
+            let first_seen = if state.first_seen_at == 0 { now } else { state.first_seen_at };
+            let at = deadline(first_seen, grace, self.policy.window, now, self.now_minute);
+            self.note(Event::Scheduled(at));
+        }
+    }
+
+    fn retry_later(&self) {
+        if let Some(dir) = &self.status_dir {
+            let mut state = update_state::State::load(dir);
+            if state.phase == update_state::Phase::Scheduled {
+                state.deadline = crate::requests::now_secs() + RETRY_SECS;
+                let _ = state.store(dir);
+            }
+        }
+    }
+
+    async fn run_inner(&self, installing: &std::cell::Cell<bool>) -> Result<Outcome> {
         if self.policy.mode == Mode::Hold {
             return Ok(Outcome::Held);
         }
@@ -450,23 +584,25 @@ impl Updater<'_> {
                 reason: "check only",
             });
         }
-        if self.trigger == Trigger::Timer {
-            // A release that was rolled back is not retried by the timer; the owner can ask again, or a newer one
-            // replaces it.
+        if matches!(self.trigger, Trigger::Timer | Trigger::Deadline) {
+            // A release that was rolled back or skipped is not retried by the timer; the owner can ask again, or a
+            // newer one replaces it. At a grace deadline the owner's silence stands for consent, so `notify` and the
+            // window no longer hold it back (the deadline was already placed in the window); a major version still does.
             let pinned = self
                 .status_dir
                 .as_deref()
                 .is_some_and(|dir| update_state::State::load(dir).is_pinned(&manifest.version));
             let hold_back = if pinned {
                 Some("this release was rolled back; it is not retried until a newer one appears")
-            } else if self.policy.mode == Mode::Notify {
+            } else if self.trigger == Trigger::Timer && self.policy.mode == Mode::Notify {
                 Some("notify mode: the owner installs it")
             } else if manifest.is_major_bump_from(&self.current)? {
                 Some("a new major version needs the owner's confirmation")
-            } else if self
-                .policy
-                .window
-                .is_some_and(|w| !w.contains(self.now_minute))
+            } else if self.trigger == Trigger::Timer
+                && self
+                    .policy
+                    .window
+                    .is_some_and(|w| !w.contains(self.now_minute))
             {
                 Some("outside the maintenance window")
             } else {
@@ -480,6 +616,7 @@ impl Updater<'_> {
             }
         }
         self.note(Event::Installing);
+        installing.set(true);
         let binary = manifest.binary(&self.arch)?;
         let expected = binary.sha256.to_ascii_lowercase();
         let bytes = self.fetch.get(&binary.url).await?;
@@ -853,6 +990,8 @@ mod tests {
                 channel: Channel::Stable,
                 mode: Mode::Auto,
                 window: None,
+                grace: None,
+                on_timeout: OnTimeout::Skip,
             },
             trigger: Trigger::UpdateNow,
             now_minute: 3 * 60 + 30,
@@ -1604,13 +1743,21 @@ mod tests {
                 .unwrap();
         assert_eq!(status["available"], "0.2.0");
         assert_eq!(std::fs::read(&w.binary).unwrap(), b"old binary");
-        // A later run installs it and nothing is pending any more.
+        // The failed release is pinned (decision 0154): the timer does not retry it, the owner's request does, and
+        // then nothing is pending any more.
         let s = svc(&w, 1, true);
         let u = with_policy(
             updater(&w, &f, &s, "0.1.36"),
             Channel::Stable,
             Mode::Auto,
             Trigger::Timer,
+        );
+        assert!(matches!(u.run().await.unwrap(), Outcome::Available { .. }));
+        let u = with_policy(
+            updater(&w, &f, &s, "0.1.36"),
+            Channel::Stable,
+            Mode::Auto,
+            Trigger::UpdateNow,
         );
         assert!(matches!(u.run().await.unwrap(), Outcome::Updated { .. }));
         assert!(!w.dir.join("update-status.json").exists());
@@ -1730,15 +1877,191 @@ mod tests {
     }
 
     #[test]
-    fn the_grace_keys_of_a_later_release_parse_and_change_nothing() {
+    fn the_grace_keys_parse_only_under_notify_and_a_typo_still_fails() {
         let plain = UpdatePolicy::parse("[update]\nmode = \"notify\"\n", "0.1.57").unwrap();
-        let later = UpdatePolicy::parse(
+        assert_eq!((plain.grace, plain.on_timeout), (None, OnTimeout::Skip));
+        let p = UpdatePolicy::parse(
             "[update]\nmode = \"notify\"\ngrace = \"12h\"\non_timeout = \"install\"\n",
             "0.1.57",
         )
         .unwrap();
-        assert_eq!(later, plain);
-        assert!(UpdatePolicy::parse("[update]\nmodes = \"notify\"\n", "0.1.57").is_err());
+        assert_eq!((p.grace, p.on_timeout), (Some(12 * 3600), OnTimeout::Install));
+        for bad in [
+            "mode = \"auto\"\ngrace = \"12h\"",
+            "mode = \"hold\"\non_timeout = \"install\"",
+            "mode = \"notify\"\ngrace = \"12\"",
+            "mode = \"notify\"\ngrace = \"1m\"",
+            "mode = \"notify\"\ngrace = \"15d\"",
+            "mode = \"notify\"\ngrace = 12",
+            "mode = \"notify\"\non_timeout = \"maybe\"",
+            "modes = \"notify\"",
+        ] {
+            let text = format!("[update]\n{bad}\n");
+            assert!(UpdatePolicy::parse(&text, "0.1.57").is_err(), "{bad}");
+        }
+        for (text, secs) in [("30m", 1800), ("2d", 172_800), ("5m", 300)] {
+            let t = format!("[update]\nmode = \"notify\"\ngrace = \"{text}\"\n");
+            assert_eq!(UpdatePolicy::parse(&t, "0.1.57").unwrap().grace, Some(secs));
+        }
+    }
+
+    #[test]
+    fn a_deadline_outside_the_window_moves_to_the_next_window_start_across_midnight() {
+        let night = Window::parse("03:00-04:00").unwrap();
+        let wrap = Window::parse("23:00-01:00").unwrap();
+        let (now, at_22) = (1_000_000 * 60, 22 * 60);
+        let h = 3600;
+        // 12 h after 22:00 is 10:00; the next 03:00 is 17 h later
+        assert_eq!(deadline(now, 12 * h, Some(night), now, at_22), now + 29 * h);
+        // 5 h after 22:00 is 03:00, inside
+        assert_eq!(deadline(now, 5 * h, Some(night), now, at_22), now + 5 * h);
+        // the end is exclusive: 04:00 moves to the next 03:00
+        assert_eq!(deadline(now, 6 * h, Some(night), now, at_22), now + 29 * h);
+        // a window that wraps midnight: 22:00 + 0 is outside, 23:00 is the start
+        assert_eq!(snap_to_window(now, Some(wrap), now, at_22), now + h);
+        assert_eq!(snap_to_window(now + 2 * h, Some(wrap), now, at_22), now + 2 * h);
+        // no window, no change; seconds inside a minute do not matter
+        assert_eq!(deadline(now, 7, None, now, 0), now + 7);
+        assert_eq!(snap_to_window(now + 30, Some(night), now, 3 * 60 + 10), now + 30);
+    }
+
+    #[test]
+    fn the_tick_acts_only_on_a_due_deadline_and_never_installs_a_major_version() {
+        let policy = |on_timeout| UpdatePolicy {
+            channel: Channel::Stable,
+            mode: Mode::Notify,
+            window: None,
+            grace: Some(3600),
+            on_timeout,
+        };
+        let state = |available: &str, deadline| update_state::State {
+            phase: update_state::Phase::Scheduled,
+            available: Some(available.into()),
+            deadline,
+            current: "0.1.57".into(),
+            ..Default::default()
+        };
+        let install = policy(OnTimeout::Install);
+        assert_eq!(tick(&install, &state("0.1.58", 100), 99), Tick::Nothing);
+        assert_eq!(tick(&install, &state("0.1.58", 100), 100), Tick::Install);
+        assert_eq!(
+            tick(&policy(OnTimeout::Skip), &state("0.1.58", 100), 500),
+            Tick::Skip("0.1.58".into())
+        );
+        assert_eq!(tick(&install, &state("1.0.0", 100), 500), Tick::Unschedule);
+        assert_eq!(tick(&install, &update_state::State::default(), 500), Tick::Nothing);
+        // the host took the grace away: the clock is dropped, nothing acts
+        let mut gone = install;
+        gone.grace = None;
+        assert_eq!(tick(&gone, &state("0.1.58", 100), 500), Tick::Unschedule);
+    }
+
+    fn grace_updater<'a>(
+        w: &'a World,
+        f: &'a Fake,
+        s: &'a Svc,
+        trigger: Trigger,
+        on_timeout: OnTimeout,
+    ) -> Updater<'a> {
+        let mut u = with_policy(
+            updater(w, f, s, "0.1.36"),
+            Channel::Stable,
+            Mode::Notify,
+            trigger,
+        );
+        u.policy.grace = Some(3600);
+        u.policy.on_timeout = on_timeout;
+        u
+    }
+
+    #[tokio::test]
+    async fn a_new_release_starts_its_grace_once_and_the_deadline_installs_it_in_notify_mode() {
+        let Some(w) = world("0.2.0", false, b"new binary") else {
+            return;
+        };
+        let (f, s) = (fake(&w), svc(&w, 1, true));
+        let u = grace_updater(&w, &f, &s, Trigger::Timer, OnTimeout::Install);
+        assert!(matches!(u.run().await.unwrap(), Outcome::Available { .. }));
+        let first = update_state::State::load(&w.dir);
+        assert_eq!(first.phase, update_state::Phase::Scheduled);
+        assert!(first.deadline >= first.first_seen_at + 3600);
+        // a later check of the same release keeps the deadline
+        assert!(matches!(u.run().await.unwrap(), Outcome::Available { .. }));
+        assert_eq!(update_state::State::load(&w.dir).deadline, first.deadline);
+        assert_eq!(std::fs::read(&w.binary).unwrap(), b"old binary");
+        // the deadline passes: the tick's run installs although the mode is notify
+        let u = grace_updater(&w, &f, &s, Trigger::Deadline, OnTimeout::Install);
+        let out = u.run().await.unwrap();
+        assert!(matches!(out, Outcome::Updated { .. }), "{out:?}");
+        assert_eq!(std::fs::read(&w.binary).unwrap(), b"new binary");
+        let after = update_state::State::load(&w.dir);
+        assert_eq!((after.phase, after.deadline), (update_state::Phase::Idle, 0));
+    }
+
+    #[tokio::test]
+    async fn a_major_version_never_installs_at_the_deadline() {
+        let Some(w) = world("2.0.0", false, b"new binary") else {
+            return;
+        };
+        let (f, s) = (fake(&w), svc(&w, 1, true));
+        let u = grace_updater(&w, &f, &s, Trigger::Timer, OnTimeout::Install);
+        assert!(matches!(u.run().await.unwrap(), Outcome::Available { .. }));
+        let u = grace_updater(&w, &f, &s, Trigger::Deadline, OnTimeout::Install);
+        let out = u.run().await.unwrap();
+        assert!(matches!(out, Outcome::Available { .. }), "{out:?}");
+        assert_eq!(std::fs::read(&w.binary).unwrap(), b"old binary");
+        assert_eq!(*s.restarts.lock().unwrap(), 0);
+        let st = update_state::State::load(&w.dir);
+        assert_eq!((st.phase, st.deadline), (update_state::Phase::Available, 0));
+        // the owner still can
+        let u = grace_updater(&w, &f, &s, Trigger::UpdateNow, OnTimeout::Install);
+        assert!(matches!(u.run().await.unwrap(), Outcome::Updated { .. }));
+    }
+
+    #[tokio::test]
+    async fn an_owner_update_now_before_the_deadline_clears_the_schedule() {
+        let Some(w) = world("0.2.0", false, b"new binary") else {
+            return;
+        };
+        let (f, s) = (fake(&w), svc(&w, 1, true));
+        grace_updater(&w, &f, &s, Trigger::Timer, OnTimeout::Skip)
+            .run()
+            .await
+            .unwrap();
+        grace_updater(&w, &f, &s, Trigger::UpdateNow, OnTimeout::Skip)
+            .run()
+            .await
+            .unwrap();
+        let st = update_state::State::load(&w.dir);
+        assert_eq!((st.phase, st.deadline, st.available), (update_state::Phase::Idle, 0, None));
+    }
+
+    #[tokio::test]
+    async fn a_failed_install_pins_the_version_and_the_deadline_does_not_retry_it() {
+        let Some(w) = world("0.2.0", false, b"new binary") else {
+            return;
+        };
+        let f = fake(&w);
+        let broken = svc(&w, 1, false); // the new binary does not run
+        grace_updater(&w, &f, &broken, Trigger::Timer, OnTimeout::Install)
+            .run()
+            .await
+            .unwrap();
+        let out = grace_updater(&w, &f, &broken, Trigger::Deadline, OnTimeout::Install)
+            .run()
+            .await;
+        assert!(out.is_err());
+        let st = update_state::State::load(&w.dir);
+        assert!(st.is_pinned("0.2.0"));
+        assert_eq!((st.phase, st.deadline), (update_state::Phase::Idle, 0));
+        assert_eq!(st.last.unwrap().result, update_state::Verdict::Failed);
+        // the next check offers nothing new to schedule
+        let out = grace_updater(&w, &f, &broken, Trigger::Timer, OnTimeout::Install)
+            .run()
+            .await
+            .unwrap();
+        assert!(matches!(out, Outcome::Available { .. }));
+        assert_eq!(update_state::State::load(&w.dir).deadline, 0);
     }
 
     #[test]

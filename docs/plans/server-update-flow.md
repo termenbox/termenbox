@@ -234,7 +234,7 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   (client 1053 tests + svelte-check 0 errors; core and server tests). `control::a_real_tmux_pushes_window_and_directory_changes`
   times out in this container, alone and in a full run; `control.rs` is untouched here, baseline on develop not established.
 
-### U5 [ ] Grace period and fallback
+### U5 [x] Grace period and fallback
 
 - Needs: U4 (and U5a before U5b).
 - **U5a**: parser accepts and ignores `grace` and `on_timeout`; release it. Verify: `grep -q on_timeout packages/server/src/updater.rs` and a test that an old key set still parses.
@@ -244,7 +244,7 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   `install` vs `skip`, postpone x3 then no more, major never installs, owner `update-now` before the deadline,
   a failed install pins the version.
 - Verify: `grep -rq a_major_version_never_installs_at_the_deadline packages/server/src` and the updater tests pass.
-- PR: - | Merged: - | Notes: **U5a done** on this branch (the box stays open for U5b): `UpdateSection` accepts `grace` and
+- PR: this branch (U5b) | Merged: - | Notes: **U5b done**: `grace`/`on_timeout` parsed (only with `notify`, `grace` 5m-14d), `deadline`/`snap_to_window`/`tick` in `updater.rs`, `Trigger::Deadline`, `--root-helper tick`, `termenbox-update-tick.timer` in both install kinds, `update.toml` keeps the keys, postpone adds one grace snapped to the window, a failed install pins like a rollback (`Event::InstallFailed`, `last.result = failed`). A tick-driven install that cannot reach the network retries in 30 min. Window reachability is tested with `snap_to_window` (no real clock). Behaviour change: a failed install is no longer retried by the timer. PHONE CHECK: none. **U5a done** earlier (the box stayed open for U5b): `UpdateSection` accepts `grace` and
   `on_timeout` as untyped values and ignores them; test `the_grace_keys_of_a_later_release_parse_and_change_nothing`
   (also that a misspelt key still fails). **U5b must wait for a release that contains U5a**; no installer or doc may
   write the keys before then. U5b also takes over the 5-minute tick timer, `update --tick` and the window-reachability
@@ -332,3 +332,4 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
 - 2026-10-31 U8: decision 0155 accepted by the owner; next U8a.
 - 2026-10-31 U8a done: signed `image` digests in the manifest and the pipeline step that resolves them; next U8b (a release with `image` must ship before it lands).
 - 2026-10-31 merged develop (decision numbers moved: grace is 0154, container updater 0155); lint fixed a dangling id and two tags; capture found no contradiction (0155 amends 0063, which stays active). Next: land this PR, cut a beta (carries U5a and `image`), then U5b and U8b.
+- 2026-10-31 U5b done (released v0.1.57-beta.11 carried U5a and `image`): grace deadline, tick timer, window snapping, postpone cap; next U8b.

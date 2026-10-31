@@ -22,7 +22,7 @@ pub enum Phase {
     #[default]
     Idle,
     Available,
-    /// Reserved for the grace period (U5): a deadline is set.
+    /// The grace period runs: a deadline is set and the tick acts on it (decision 0154).
     Scheduled,
     Installing,
     RolledBack,
@@ -108,6 +108,12 @@ pub enum Event<'a> {
     },
     /// The check or the install failed before anything was changed.
     Failed(&'a str),
+    /// The install started and failed: the release is pinned like a rolled-back one, so nothing retries it.
+    InstallFailed(&'a str),
+    /// The grace period of the release on offer ends at this time (unix seconds). Only an unscheduled offer takes it.
+    Scheduled(u64),
+    /// The deadline passed and the release stays on offer without a clock (a major version needs the owner).
+    Unscheduled,
 }
 
 impl State {
@@ -141,8 +147,8 @@ impl State {
         Ok(())
     }
 
-    /// One more grace period before a scheduled install, at most `MAX_DEFERRALS` times. Nothing is scheduled until
-    /// the grace period lands (U5b), so today this refuses; `extend` is how far the deadline moves.
+    /// One more grace period before a scheduled install, at most `MAX_DEFERRALS` times. `extend` is how far the
+    /// deadline moves; the caller snaps the result to the maintenance window.
     pub fn postpone(&mut self, extend: u64) -> Result<(), &'static str> {
         if self.deadline == 0 {
             return Err("no install is scheduled");
@@ -158,6 +164,11 @@ impl State {
     /// Whether the owner may be offered a postponement: an install is scheduled and the limit is not reached.
     pub fn can_postpone(&self) -> bool {
         self.deadline != 0 && self.deferrals < MAX_DEFERRALS
+    }
+
+    /// Whether the grace period of the release on offer has run out at `now`.
+    pub fn is_due(&self, now: u64) -> bool {
+        self.phase == Phase::Scheduled && self.deadline != 0 && now >= self.deadline
     }
 
     pub fn apply(&mut self, now: u64, event: Event) {
@@ -183,7 +194,11 @@ impl State {
                     self.skipped = None;
                 }
                 self.phase = if !self.is_pinned(version) {
-                    Phase::Available
+                    if self.deadline != 0 {
+                        Phase::Scheduled
+                    } else {
+                        Phase::Available
+                    }
                 } else if self
                     .last
                     .as_ref()
@@ -229,6 +244,34 @@ impl State {
                     } else {
                         Phase::Idle
                     };
+                }
+            }
+            Event::InstallFailed(reason) => {
+                self.checked_at = now;
+                self.error = Some(short(reason));
+                if let Some(version) = self.available.clone() {
+                    self.skipped = Some(version.clone());
+                    self.last = Some(Last {
+                        result: Verdict::Failed,
+                        from: self.current.clone(),
+                        to: version,
+                        at: now,
+                        reason: short(reason),
+                    });
+                }
+                self.deadline = 0;
+                self.phase = Phase::Idle;
+            }
+            Event::Scheduled(deadline) => {
+                if self.phase == Phase::Available && self.deadline == 0 {
+                    self.deadline = deadline;
+                    self.phase = Phase::Scheduled;
+                }
+            }
+            Event::Unscheduled => {
+                self.deadline = 0;
+                if self.phase == Phase::Scheduled {
+                    self.phase = Phase::Available;
                 }
             }
         }

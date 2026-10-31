@@ -10,7 +10,7 @@ use tracing::info;
 use crate::release::{ReleaseKeys, URL_PREFIX};
 use crate::requests::{take_requests, Request};
 use crate::update_state::{self, State};
-use crate::updater::{HttpFetch, Outcome, Systemd, Trigger, UpdatePolicy, Updater};
+use crate::updater::{self, HttpFetch, Outcome, Systemd, Tick, Trigger, UpdatePolicy, Updater};
 
 pub const DEFAULT_RELEASE_URL: &str =
     "https://github.com/termenbox/termenbox/releases/latest/download";
@@ -52,6 +52,7 @@ pub async fn run(action: &str, setup: &Setup, json: bool) -> Result<i32> {
     };
     match action {
         "update" => update(&setup, Trigger::Timer, None).await,
+        "tick" => tick(&setup).await,
         "check" => update(&setup, Trigger::Check, None).await,
         "apply" => update(&setup, Trigger::UpdateNow, None).await,
         "postpone" => handle(Request::UpdatePostpone {}, &setup).await,
@@ -83,7 +84,7 @@ pub async fn run(action: &str, setup: &Setup, json: bool) -> Result<i32> {
             Ok(status)
         }
         other => bail!(
-            "unknown helper action `{other}` (update, requests, status, check, apply, postpone or skip)"
+            "unknown helper action `{other}` (update, tick, requests, status, check, apply, postpone or skip)"
         ),
     }
 }
@@ -103,7 +104,19 @@ async fn handle(request: Request, setup: &Setup) -> Result<i32> {
         }
         Request::CheckUpdate {} => update(setup, Trigger::Check, None).await,
         Request::UpdatePostpone {} => {
-            let done = change_state(setup, |state| state.postpone(0));
+            // One more grace period, placed in the maintenance window like the first.
+            let policy = UpdatePolicy::load(&setup.root_dir.join("update.toml"), &crate::version()).ok();
+            let done = change_state(setup, |state| {
+                let grace = policy.and_then(|p| p.grace).ok_or("no grace period is configured")?;
+                state.postpone(grace)?;
+                state.deadline = updater::snap_to_window(
+                    state.deadline,
+                    policy.and_then(|p| p.window),
+                    crate::requests::now_secs(),
+                    updater::local_minute_of_day(),
+                );
+                Ok(())
+            });
             info!(target: "audit", event = "update_postpone", done = done.is_ok());
             report(done, "postponed")
         }
@@ -116,6 +129,37 @@ async fn handle(request: Request, setup: &Setup) -> Result<i32> {
             info!(target: "audit", event = "helper_uninstall_not_available");
             println!("uninstall through the helper is not available in this version");
             Ok(0)
+        }
+    }
+}
+
+/// The local tick (decision 0154), run every five minutes by `termenbox-update-tick.timer`. It reads the state file and
+/// makes no network call unless a grace deadline has passed and the host asked for `install`.
+async fn tick(setup: &Setup) -> Result<i32> {
+    let Some(dir) = setup.requests_dir.parent() else {
+        return Ok(0);
+    };
+    let (state, now) = (State::load(dir), crate::requests::now_secs());
+    if !state.is_due(now) {
+        return Ok(0);
+    }
+    let policy = UpdatePolicy::load(&setup.root_dir.join("update.toml"), &crate::version())?;
+    match updater::tick(&policy, &state, now) {
+        Tick::Nothing => Ok(0),
+        Tick::Skip(version) => {
+            info!(target: "audit", event = "update_grace_expired", action = "skip");
+            handle(Request::UpdateSkip { version }, setup).await
+        }
+        Tick::Install => {
+            info!(target: "audit", event = "update_grace_expired", action = "install");
+            update(setup, Trigger::Deadline, None).await
+        }
+        Tick::Unschedule => {
+            let done = change_state(setup, |state| {
+                state.apply(now, update_state::Event::Unscheduled);
+                Ok(())
+            });
+            report(done, "unscheduled")
         }
     }
 }
@@ -181,6 +225,13 @@ fn status(setup: &Setup, json: bool) -> Result<i32> {
                 format!("{:?}", p.mode).to_ascii_lowercase(),
                 p.window.map_or(String::new(), |w| format!(", window {w}"))
             );
+            if let Some(grace) = p.grace {
+                println!(
+                    "              grace {} h, then {}",
+                    grace / 3600,
+                    format!("{:?}", p.on_timeout).to_ascii_lowercase()
+                );
+            }
         }
         Err(e) => println!("policy:       unreadable ({e})"),
     }
@@ -199,6 +250,13 @@ fn status(setup: &Setup, json: bool) -> Result<i32> {
         (Some(v), _) if state.is_pinned(v) => println!("available:    {v}, skipped"),
         (Some(v), _) => println!("available:    {v}"),
         (None, _) => println!("available:    nothing newer"),
+    }
+    if state.deadline != 0 {
+        println!(
+            "deadline:     in {} min (postponed {} of 3 times)",
+            state.deadline.saturating_sub(crate::requests::now_secs()) / 60,
+            state.deferrals
+        );
     }
     if let Some(last) = &state.last {
         println!(
@@ -238,6 +296,11 @@ fn status_json(version: &str, policy: &Result<UpdatePolicy>, state: &State) -> s
         "channel": channel,
         "mode": mode,
         "maintenance_window": window,
+        "grace_seconds": policy.as_ref().ok().and_then(|p| p.grace),
+        "on_timeout": policy
+            .as_ref()
+            .ok()
+            .and_then(|p| p.grace.map(|_| format!("{:?}", p.on_timeout).to_ascii_lowercase())),
         "policy_error": policy.as_ref().err().map(|e| e.to_string()),
         "state": state,
         "checked_seconds_ago": seconds_ago(state.checked_at),
