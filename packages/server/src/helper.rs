@@ -421,12 +421,18 @@ async fn update_outcome(setup: &Setup, trigger: Trigger) -> Result<Outcome> {
     if keys.is_empty() {
         return Err(failed(anyhow::anyhow!("no release keys configured")));
     }
-    let port = std::fs::read_to_string(setup.root_dir.join("http_port")).map_err(|_| {
-        failed(anyhow::anyhow!(
-            "no http_port in {}; was this installed by the installer?",
-            setup.root_dir.display()
-        ))
-    })?;
+    // A container install has no systemd service to probe: the container is checked through Docker (decision 0155).
+    let container_install = setup.root_dir.join(crate::container::FILE).exists();
+    let port = if container_install {
+        "8080".to_string()
+    } else {
+        std::fs::read_to_string(setup.root_dir.join("http_port")).map_err(|_| {
+            failed(anyhow::anyhow!(
+                "no http_port in {}; was this installed by the installer?",
+                setup.root_dir.display()
+            ))
+        })?
+    };
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(60))
         .user_agent("termenbox-updater")

@@ -1,9 +1,21 @@
 // A page driven the way a person uses it, for the feature videos: a visible pointer (a cursor on desktop, a translucent touch
-// spot on a phone), eased moves with a settle before the press, typing at a human pace, a pause after each state change so a
-// reader can read it, and a caption bar that stays clear of the control being used. Nothing here asserts the app: the cases do.
-const rand = (lo, hi) => lo + Math.random() * (hi - lo);
+// spot on a phone), moves that overshoot and correct, typing in bursts with stalls, a reading pause after each state change, and
+// a caption bar that stays clear of the control being used. The rhythm is rhythm.mjs, seeded so a render repeats.
+// Nothing here asserts the app: the cases do.
+import { stepTracker } from './steps.mjs';
+import { mulberry32, seedOf, readPause, hesitation, restAfterResult, typingDelays, pointerPath } from './rhythm.mjs';
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2);
+
+let assertions = 0;
+/** Cases call this (through their expectThat) each time a state check passes; a still may only follow one. */
+export const noteAssertion = () => { assertions++; };
+
+/** The multiplier for every human delay: `normal` leaves them as they are, `slow` stretches them (the /regen pace=slow knob). */
+export const paceFactor = (pace = 'normal') => {
+  if (pace === 'normal') return 1;
+  if (pace === 'slow') return 1.6;
+  throw new Error(`pace must be slow or normal, not ${JSON.stringify(pace)}`);
+};
 
 /** Runs in every page: the pointer and the caption live in the top layer (a popover), so they paint above a modal <dialog>. */
 export const overlayScript = (phone) => {
@@ -58,46 +70,72 @@ export const overlayScript = (phone) => {
   };
 };
 
-/** Wraps `page` with human-paced actions. `profile` is 'phone' (touch) or 'desktop' (mouse). */
-export function humanPage(page, profile) {
+/**
+ * Wraps `page` with human-paced actions. `profile` is 'phone' (touch) or 'desktop' (mouse). `pace` is 'normal' or 'slow';
+ * `caption: false` keeps the caption placement logic but draws nothing. `seed` (the case id) with the profile seeds the rhythm.
+ * `steps` are the case's declared steps: `h.step(id)` shows a step's caption and checks the order.
+ */
+export function humanPage(page, profile, { pace = 'normal', caption: drawCaptions = true, seed = '', steps = [] } = {}) {
+  const k = paceFactor(pace);
+  const rng = mulberry32(seedOf(`${seed}:${profile}`));
+  const tracker = stepTracker(steps);
+  const wait = (ms) => sleep(ms * k);
   const phone = profile === 'phone';
   const vp = page.viewportSize();
   let at = { x: vp.width * 0.5, y: vp.height * 0.85 };
   let bottomBar = true;
 
+  let lastStill = 0;
   const h = {
     page, phone,
+    /** Stills taken so far: {name, png}. render.mjs writes them only when the whole case passed. */
+    stills: [],
+    /**
+     * A screenshot of the page at the context's pixel ratio, without the pointer and caption. Call it right after an
+     * expectThat: it throws when no assertion has passed since the last still (GUARDRAIL ux-scenarios-assert-a-state-before-they-capture-it).
+     */
+    async still(name) {
+      if (assertions === lastStill) throw new Error(`still ${name}: no state was asserted before it`);
+      lastStill = assertions;
+      await h.pause(400);
+      await page.evaluate(() => { const r = document.getElementById('__human'); if (r) r.style.visibility = 'hidden'; });
+      const png = await page.screenshot({ type: 'png' });
+      await page.evaluate(() => { const r = document.getElementById('__human'); if (r) r.style.visibility = ''; });
+      h.stills.push({ name, png });
+    },
     top: () => page.evaluate(() => window.__humanTop?.()),
-    /** A reader's pause after something changed. */
-    pause: (ms = rand(600, 1200)) => sleep(ms),
+    /** A reader's pause after something changed: `ms` when given, else the time to read the caption on screen. */
+    pause: (ms = readPause(h.pending ?? '', rng)) => wait(ms),
+    /** A rest on a result worth noticing; cases call it after the state they want the viewer to take in. */
+    result: async (text) => {
+      if (text) await h.caption(text);
+      await wait(restAfterResult(rng));
+    },
     /** Shows `text`; it sits on the side of the screen away from `avoid`, the control about to be used. */
     async caption(text, avoid) {
       if (avoid) {
         const b = await avoid.boundingBox();
         if (b) bottomBar = b.y + b.height / 2 < vp.height * 0.6;
       }
+      if (!drawCaptions) return;
       await h.top();
       await page.evaluate(([t, top]) => window.__humanCaption?.(t, top), [text, !bottomBar]);
     },
     clearCaption: () => page.evaluate(() => window.__humanCaption?.('', false)),
-    /** Moves the pointer to the middle of `locator` in 18 to 30 eased steps, then settles 120 to 350 ms. Returns the point. */
+    /** Moves the pointer to `locator` along an eased curve that may overshoot and correct (rhythm.mjs). Returns the point. */
     async move(locator) {
       await locator.scrollIntoViewIfNeeded();
       const b = await locator.boundingBox();
       if (!b) throw new Error('video: nothing to point at');
-      const to = { x: b.x + b.width * rand(0.4, 0.6), y: b.y + b.height * rand(0.4, 0.6) };
-      const steps = Math.round(rand(18, 30));
-      const from = at;
+      const to = { x: b.x + b.width * (0.4 + rng() * 0.2), y: b.y + b.height * (0.4 + rng() * 0.2) };
       await h.top();
-      for (let i = 1; i <= steps; i++) {
-        const k = ease(i / steps);
-        const x = from.x + (to.x - from.x) * k, y = from.y + (to.y - from.y) * k;
+      for (const { x, y, ms } of pointerPath(at, to, rng)) {
         if (!phone) await page.mouse.move(x, y);
         await page.evaluate(([px, py]) => window.__humanMove?.(px, py), [x, y]);
-        await sleep(rand(10, 22));
+        await wait(ms);
       }
       at = to;
-      await sleep(rand(120, 350));
+      await wait(hesitation(rng));
       return to;
     },
     /** Points at `locator`, then presses it (a touch on a phone, a click on desktop) and waits for the screen to settle. */
@@ -110,18 +148,32 @@ export function humanPage(page, profile) {
       else await page.mouse.click(p.x, p.y);
       await h.pause();
     },
-    /** Types into `locator` at 55 to 140 ms per key, after pointing at it. */
+    /** Types into `locator` in bursts with stalls (rhythm.mjs), after pointing at it. */
     async type(locator, text) {
       await h.tap(locator);
       await locator.fill('');
-      for (const ch of text) { await page.keyboard.type(ch); await sleep(rand(55, 140)); }
+      await h.typeText(text, (ch) => page.keyboard.type(ch));
       await h.pause();
     },
+    /** Types `text` one key at a time at human pace, handing each key to `sink` (a terminal page types into xterm, not an input). */
+    async typeText(text, sink) {
+      const gaps = typingDelays(text, rng);
+      let i = 0;
+      for (const ch of text) { await wait(gaps[i++]); await sink(ch); }
+    },
+    /** Waits `ms`, stretched by the pace knob like every other human delay. */
+    wait,
+    /** Performs the declared step `id`: shows its caption (away from `locator`, the control about to be used). Throws out of order or unknown. */
+    async step(id, locator) {
+      await h.say(tracker.reach(id).caption, locator);
+    },
+    /** Throws when a declared step was never reached; the render calls it after the case ran. */
+    assertSteps: () => tracker.assertComplete(),
     /** Sets the caption for the next move, shows it, and holds it long enough to read. */
     async say(text, locator) {
       h.pending = text;
       await h.caption(text, locator);
-      await sleep(Math.min(1800, 500 + text.length * 35));
+      await wait(readPause(text, rng));
     },
   };
   return h;

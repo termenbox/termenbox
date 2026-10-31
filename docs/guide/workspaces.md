@@ -1,6 +1,6 @@
 # Workspaces, agents and notifications
 
-Back to the [README](../../README.md).
+Back to the [README](../../README.md). New to this? [Chapter 3, First workspace](../course/03-first-workspace.md) walks through it in a few minutes.
 
 ## Workspaces and tabs
 

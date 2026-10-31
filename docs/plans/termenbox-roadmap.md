@@ -110,18 +110,20 @@ Next ready step: [R07](roadmap/R07.md).
 | 39 | [R50](roadmap/R50.md) | Release channels and auto-update policies for server and client | release | both | pending | 1.2 | 1.2 | - |
 | 40 | [R76](roadmap/R76.md) | Native wrappers: Capacitor for iOS and Android, `@capacitor-community/electron` for desktop, PWA kept complete | release | both | pending | 1.2 | 1.2 | - |
 | 41 | [R24](roadmap/R24.md) | Environment profile on the native host (replaces B.4-B.6) | server | both | pending | 1.1 | 1.1 | - |
-| 42 | [R15](roadmap/R15.md) | Session and model connectors (O.5) | connectors | n/a | pending | 1.0 | 1.0 | R10, R11 |
-| 43 | [R40](roadmap/R40.md) | The free gate check (P.1) | paid | n/a | pending | 15.0 | 15.0 | R18, U16 |
-| 44 | [R41](roadmap/R41.md) | Entitlement record and Sponsors webhook (P.2) | paid | n/a | blocked (R40, the free gate) | 2.6 | 2.8 | R40 |
-| 45 | [R46](roadmap/R46.md) | Privacy notice and opt-ins for Pro data (P.7) | paid | both | blocked (R40, the free gate) | 4.7 | 4.7 | R41 |
-| 46 | [R42](roadmap/R42.md) | Pro: managed relay spike (P.3) | paid | n/a | blocked (R40, the free gate) | 4.3 | 4.3 | R41 |
-| 47 | [R43](roadmap/R43.md) | Pro: encrypted history format and recovery key (P.4) | paid | n/a | blocked (R40, the free gate) | 1.4 | 2.4 | R41 |
-| 48 | [R47](roadmap/R47.md) | Team: organisation, seats, merchant of record (P.8) | paid | n/a | blocked (R40, the free gate) | 0.7 | 2.2 | R40, R41 |
-| 49 | [R48](roadmap/R48.md) | Enterprise design note (P.9) | paid | n/a | blocked (R40, the free gate) | 1.5 | 1.5 | R47 |
-| 50 | [R44](roadmap/R44.md) | Pro: reliable push and inbox retention (P.5) | paid | both | blocked (R40, the free gate) | 1.2 | 1.2 | R43 |
-| 51 | [R45](roadmap/R45.md) | Pro: fleet view and usage reports (P.6) | paid | both | blocked (R40, the free gate) | 1.2 | 1.2 | R43 |
+| 42 | [R80](roadmap/R80.md) | User course, Part 1 "Start": six chapters, six natural-paced videos, a cold read on a real phone | docs | mobile | pending | 1.1 | 1.1 | - |
+| 43 | [R15](roadmap/R15.md) | Session and model connectors (O.5) | connectors | n/a | pending | 1.0 | 1.0 | R10, R11 |
+| 44 | [R79](roadmap/R79.md) | Documentation media pipeline and docs checks: one recorder, developer pick, docs/media, generated reference | docs | both | pending | 0.8 | 0.8 | - |
+| 45 | [R40](roadmap/R40.md) | The free gate check (P.1) | paid | n/a | pending | 15.0 | 15.0 | R18, U16 |
+| 46 | [R41](roadmap/R41.md) | Entitlement record and Sponsors webhook (P.2) | paid | n/a | blocked (R40, the free gate) | 2.6 | 2.8 | R40 |
+| 47 | [R46](roadmap/R46.md) | Privacy notice and opt-ins for Pro data (P.7) | paid | both | blocked (R40, the free gate) | 4.7 | 4.7 | R41 |
+| 48 | [R42](roadmap/R42.md) | Pro: managed relay spike (P.3) | paid | n/a | blocked (R40, the free gate) | 4.3 | 4.3 | R41 |
+| 49 | [R43](roadmap/R43.md) | Pro: encrypted history format and recovery key (P.4) | paid | n/a | blocked (R40, the free gate) | 1.4 | 2.4 | R41 |
+| 50 | [R47](roadmap/R47.md) | Team: organisation, seats, merchant of record (P.8) | paid | n/a | blocked (R40, the free gate) | 0.7 | 2.2 | R40, R41 |
+| 51 | [R48](roadmap/R48.md) | Enterprise design note (P.9) | paid | n/a | blocked (R40, the free gate) | 1.5 | 1.5 | R47 |
+| 52 | [R44](roadmap/R44.md) | Pro: reliable push and inbox retention (P.5) | paid | both | blocked (R40, the free gate) | 1.2 | 1.2 | R43 |
+| 53 | [R45](roadmap/R45.md) | Pro: fleet view and usage reports (P.6) | paid | both | blocked (R40, the free gate) | 1.2 | 1.2 | R43 |
 
-51 open steps. 37 done and 9 superseded or folded steps are in `roadmap/archive/` (their text is kept; `grep -h '^Status' roadmap/archive/*.md`).
+53 open steps. 37 done and 9 superseded or folded steps are in `roadmap/archive/` (their text is kept; `grep -h '^Status' roadmap/archive/*.md`).
 <!-- order:end -->
 
 ## Product tiers (free, Pro, Team, Enterprise)

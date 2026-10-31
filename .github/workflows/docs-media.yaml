@@ -1,0 +1,149 @@
+name: Docs Media
+
+# DECISION-0158: renders the documentation videos on scripted data, puts them on a Pages preview and opens a review issue for the
+# owner. Dispatch only (GitHub lets only people with write access run it, FACT-0067); never a pull-request-triggered run with secrets. Inputs reach the
+# steps through env, never spliced into a script. Replaces dialog-videos.yaml once the first publication is approved (plan 7.2).
+on:
+  workflow_dispatch:
+    inputs:
+      case:
+        description: all, or one case id from `render.mjs --list`
+        type: string
+        default: all
+      profile:
+        description: Which screen
+        type: choice
+        options: [both, phone, desktop]
+        default: both
+      pace:
+        description: Speed of the walkthrough
+        type: choice
+        options: [normal, slow]
+        default: normal
+      caption:
+        description: Captions on the video
+        type: choice
+        options: ['on', 'off']
+        default: 'on'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  render:
+    name: Render, preview and open the review
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install the browser
+        working-directory: packages/client
+        run: pnpm exec playwright-core install --with-deps chromium
+
+      - name: Build the client and its e2e pages
+        working-directory: packages/client
+        run: pnpm run e2e:build
+
+      # The case is a free string, so it is checked against the catalog before anything uses it.
+      - name: Choose the cases
+        id: pick
+        working-directory: packages/client
+        env:
+          CASE: ${{ inputs.case }}
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          node e2e/video/render.mjs --list --json > "$RUNNER_TEMP/catalog.json"
+          # a marker that was deleted or renamed would leave the video out of its page without a word
+          node ../../scripts/docs-media.mjs cases --catalog "$RUNNER_TEMP/catalog.json" ../../README.md $(find ../../docs -name '*.md')
+          node -e '
+            const rows = JSON.parse(require("fs").readFileSync(process.env.RUNNER_TEMP + "/catalog.json", "utf8"));
+            const want = process.env.CASE;
+            const pick = want === "all" ? rows : rows.filter((r) => r.id === want);
+            if (!pick.length) { console.error("unknown case; choose all or one of: " + rows.map((r) => r.id).join(" ")); process.exit(1); }
+            const profiles = process.env.PROFILE === "both" ? "phone desktop" : process.env.PROFILE;
+            const out = [`cases=${pick.map((r) => r.id).join(" ")}`, `profiles=${profiles}`, `real=${pick.some((r) => r.real)}`];
+            require("fs").appendFileSync(process.env.GITHUB_OUTPUT, out.join("\n") + "\n");
+          '
+
+      # The add-server walkthrough runs the real server binary (e2e/video/real-server.mjs).
+      - name: Install Rust toolchain
+        if: steps.pick.outputs.real == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.pick.outputs.real == 'true'
+        with:
+          shared-key: rust-release
+          save-if: false
+
+      - name: Build the server
+        if: steps.pick.outputs.real == 'true'
+        run: cargo build --release -p termenbox-server
+
+      - name: Render
+        working-directory: packages/client
+        env:
+          CASES: ${{ steps.pick.outputs.cases }}
+          PROFILES: ${{ steps.pick.outputs.profiles }}
+          PACE: ${{ inputs.pace }}
+          CAPTION: ${{ inputs.caption }}
+        run: |
+          flags="--pace $PACE"; [ "$CAPTION" = off ] && flags="$flags --no-caption"
+          for c in $CASES; do
+            for p in $PROFILES; do
+              # shellcheck disable=SC2086
+              node e2e/video/render.mjs --case "$c" --profile "$p" --out "$GITHUB_WORKSPACE/media" $flags
+            done
+          done
+          ls -l "$GITHUB_WORKSPACE/media"
+
+      - name: Build the review page
+        run: node scripts/docs-media-review-page.mjs media
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: docs-media-${{ github.run_id }}
+          path: media
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Install Wrangler
+        run: npm install -g wrangler
+
+      # A preview deployment on its own branch alias, never production (the site deploys from master).
+      - name: Publish the preview
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PROJECT: ${{ vars.TERMENBOX_SITE_PROJECT_NAME || 'termenbox-site' }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          wrangler pages deploy media --project-name="$PROJECT" --branch="media-$RUN_ID"
+          echo "PREVIEW_URL=https://media-$RUN_ID.$PROJECT.pages.dev" >> "$GITHUB_ENV"
+
+      - name: Open the review issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          node scripts/docs-media-review-cli.mjs issue-body media > "$RUNNER_TEMP/body.md"
+          gh label create docs-media --color 1d76db --description "Docs media review" 2>/dev/null || true
+          title="Docs media review $RUN_ID"
+          n=$(gh issue list --label docs-media --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$n" ]; then gh issue edit "$n" --body-file "$RUNNER_TEMP/body.md"
+          else gh issue create --title "$title" --label docs-media --body-file "$RUNNER_TEMP/body.md"; fi

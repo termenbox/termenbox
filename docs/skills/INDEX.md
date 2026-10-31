@@ -12,3 +12,7 @@ browser-support-check,"Tell engine automation from real-browser and real-iPhone 
 improve-the-ux-from-ci,"Analyse the mobile and desktop UX from the CI report, change it, and prove the change helped","client, mobile, ux, ci, procedural",active
 render-a-feature-video,"Render a captioned feature video from a UX scenario","client, mobile, ux, ci, video, procedural",active
 add-a-session-log-adapter,"Add a session-log adapter for an agent","agents, server, procedural",active
+review-and-publish-docs-media,"Review rendered documentation videos, send some back, and publish the approved ones to the site","docs, ci, video, ux, procedural",active
+write-a-course-chapter,"Write one course chapter from a recorded case, with its story, trouble box and generated steps","docs, onboarding, video, procedural",active
+run-a-cold-read-test,"Run a cold-read test of a course part on a real phone and record what the newcomer stumbled on","docs, onboarding, mobile, ux, procedural",active
+regenerate-the-user-course,"Re-run the course interview and regenerate the user course when an answer changes","docs, onboarding, video, ux, procedural",active

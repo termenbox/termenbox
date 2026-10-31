@@ -80,7 +80,7 @@ use websocket::handle_websocket;
 use workspaces::WorkspaceManager;
 
 #[derive(Parser, Debug)]
-#[command(name = "termenbox-server", version)]
+#[command(name = "termenbox-server", version = RELEASE_VERSION)]
 struct Args {
     #[arg(long, env = "TERMENBOX_HOST", default_value = "0.0.0.0")]
     host: String,
@@ -361,16 +361,26 @@ pub struct AppState {
     pub paths: Arc<std::sync::OnceLock<Arc<candidates::PathHub>>>,
 }
 
-/// `0.1.0+abc1234`: the version and, in the Docker image, the commit it was built from. The version is the crate's,
-/// unless a release build sets `TERMENBOX_RELEASE_VERSION` to the full SemVer (`0.1.36-nightly.20261022`), so a
-/// prerelease needs no change to `Cargo.toml`.
+/// The crate's version, unless a release build sets `TERMENBOX_RELEASE_VERSION` to the full SemVer
+/// (`0.1.36-nightly.20261022`), so a prerelease needs no change to `Cargo.toml`.
+const RELEASE_VERSION: &str = match option_env!("TERMENBOX_RELEASE_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
+/// `0.1.0+abc1234`: the version and the commit it was built from. A release binary has the commit baked in at build
+/// time (`TERMENBOX_BUILD`); the Docker image sets it in the environment instead. Neither: `dev`, which compares newer
+/// than a prerelease of the same core, so a release build must never lack it.
 pub fn version() -> String {
-    let build = std::env::var("TERMENBOX_BUILD").unwrap_or_else(|_| "dev".into());
-    format!(
-        "{}+{}",
-        option_env!("TERMENBOX_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
-        build.chars().take(7).collect::<String>()
-    )
+    let build = option_env!("TERMENBOX_BUILD")
+        .map(str::to_string)
+        .or_else(|| std::env::var("TERMENBOX_BUILD").ok())
+        .unwrap_or_else(|| "dev".into());
+    format_version(RELEASE_VERSION, &build)
+}
+
+fn format_version(release: &str, build: &str) -> String {
+    format!("{release}+{}", build.chars().take(7).collect::<String>())
 }
 
 fn parse_field(s: &str) -> Result<(String, String), String> {
@@ -1365,7 +1375,7 @@ async fn choose_tmux_server(args: &Args, mode: &RunMode) -> anyhow::Result<()> {
     }
     if matches!(mode, RunMode::Host { .. }) {
         // The host's terminfo is not visible from here, so take the entry every host has.
-        let conf = tmuxconf::render("xterm-256color", None);
+        let conf = tmuxconf::render("xterm-256color", None, None);
         mode.runner().install_host_tmux_conf(&conf).await?;
         backend::use_private_tmux(backend::Isolation::HostUser);
     } else {
@@ -1416,6 +1426,24 @@ async fn runner_prefix(mode: &RunMode) -> String {
             }
         }
         _ => "C-b".into(),
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::{format_version, version, RELEASE_VERSION};
+
+    #[test]
+    fn the_build_is_cut_to_seven_characters_after_the_full_semver() {
+        assert_eq!(
+            format_version("0.1.57-beta.11", "a11fc10deadbeef"),
+            "0.1.57-beta.11+a11fc10"
+        );
+    }
+
+    #[test]
+    fn the_running_version_starts_from_the_release_version() {
+        assert!(version().starts_with(&format!("{RELEASE_VERSION}+")));
     }
 }
 

@@ -63,5 +63,8 @@
 | 0063 | A browser cannot pick a folder on the server, and a native modal dialog hides overlays that are not inside it | client, mobile, ux, browser-support | active |
 | 0064 | The updater records what it knows in update-state.json and the server only reads it | server, updater, observability | active |
 | 0065 | Agent TUIs can be scrolled to an earlier turn only by their own keys; none has an external jump | agents, terminal, client | active |
+| 0066 | The repo has two video recorders and no docs media, and workflow artifacts expire | docs, ci, video, site | active |
+| 0067 | A dispatch-only workflow cannot be run until its file is on the default branch, and issue and comment workflows run the default branch's copy with a write token | ci, github, security | active |
+| 0068 | GitHub Markdown does not play a repository MP4 inline, and a chapter-length GIF is several megabytes | docs, video, github | active |
 
 <!-- bootstrap-generated: true -->

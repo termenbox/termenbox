@@ -1,6 +1,6 @@
 # How it connects, and home servers
 
-Back to the [README](../../README.md).
+Back to the [README](../../README.md). New to this? [Chapter 2, Connect your phone](../course/02-connect-your-phone.md) walks through it in a few minutes.
 
 ```
  Browser (client)  ── WebRTC data channel, direct, end-to-end encrypted ──►  Your VPS

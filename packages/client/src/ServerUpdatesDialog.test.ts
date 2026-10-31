@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'svelte/server';
 import ServerUpdatesDialog from './ServerUpdatesDialog.svelte';
 import type { HubServer } from './lib/hub';
@@ -22,8 +22,13 @@ describe('the Updates card', () => {
     expect(out).toContain('v0.1.58 is available.');
     expect([has(out, 'updates-now'), has(out, 'updates-skip'), has(out, 'updates-postpone')]).toEqual([true, true, false]);
   });
+  afterEach(() => vi.useRealTimers());
   it('scheduled: names the deadline and the choices, with Postpone while allowed', () => {
-    const out = draw({ updateAvailable: '0.1.58', update: { phase: 'scheduled', available: '0.1.58', deadline: sec + 7200, can_postpone: true, checked_ok_at: sec } });
+    // A deadline on another day reads "Sun 00:16", so the test must not depend on the hour it runs at.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(2026, 9, 31, 12, 0, 0));
+    const now = Math.floor(Date.now() / 1000);
+    const out = draw({ updateAvailable: '0.1.58', update: { phase: 'scheduled', available: '0.1.58', deadline: now + 7200, can_postpone: true, checked_ok_at: now } });
     expect(out).toMatch(/v0\.1\.58 installs at \d\d:\d\d unless you postpone or skip\./);
     expect(has(out, 'updates-postpone')).toBe(true);
   });

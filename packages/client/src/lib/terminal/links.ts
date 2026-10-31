@@ -28,17 +28,36 @@ export function urlInText(text: string, offset: number): string | null {
   return null;
 }
 
-/** The web address under cell (`col`, `row`) of the buffer, following rows that wrap into each other. */
+const OPEN_URL = /https?:\/\/\S*$/;
+/** Most rows looked back over for the start of a link that no row is marked as wrapping into. */
+const LOOKBACK = 50;
+
+/**
+ * The web address under cell (`col`, `row`) of the buffer, following rows that wrap into each other. tmux and the TUIs
+ * in it (Claude Code) repaint long lines without the wrap mark, so a row that is full to the last column while its text
+ * ends inside an address also continues on a next row that starts with a non-space.
+ */
 export function linkAt(buffer: LineBuffer, cols: number, row: number, col: number): string | null {
+  const rowText = (y: number) => (buffer.getLine(y)?.translateToString(false) ?? '').padEnd(cols, ' ').slice(0, cols);
+  const fills = (y: number) => rowText(y)[cols - 1] !== ' ';
+  const marked = (y: number) => !!buffer.getLine(y)?.isWrapped && !!buffer.getLine(y - 1);
   let first = row;
-  while (buffer.getLine(first)?.isWrapped && buffer.getLine(first - 1)) first--;
+  while (first > 0 && row - first < LOOKBACK && (marked(first) || (buffer.getLine(first - 1) && fills(first - 1) && rowText(first)[0] !== ' '))) first--;
+  let start = first;
   let text = '';
-  let offset = 0;
   for (let y = first; ; y++) {
-    const line = buffer.getLine(y);
-    if (!line || (y > first && !line.isWrapped)) break;
-    if (y < row) offset += cols;
-    text += line.translateToString(false).padEnd(cols, ' ').slice(0, cols);
+    if (!buffer.getLine(y)) break;
+    if (y > start && !marked(y) && !(OPEN_URL.test(text) && fills(y - 1) && rowText(y)[0] !== ' ')) {
+      if (y > row) break;
+      start = y;
+      text = '';
+    }
+    text += rowText(y);
   }
-  return urlInText(text, offset + col);
+  return urlInText(text, (row - start) * cols + col);
+}
+
+/** A click that opens the web address under it: Ctrl or Cmd held, so a plain click stays with the terminal or its app. */
+export function isOpenClick(e: { button: number; ctrlKey: boolean; metaKey: boolean }): boolean {
+  return e.button === 0 && (e.ctrlKey || e.metaKey);
 }
