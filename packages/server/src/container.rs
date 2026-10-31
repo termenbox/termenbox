@@ -515,4 +515,165 @@ pub(crate) mod tests {
         std::os::unix::fs::symlink(&path, &link).unwrap();
         assert!(Spec::load(&link).is_err());
     }
+
+    /// The real `Cli` against a real Docker and a local registry. Runs only with `TERMENBOX_E2E_DOCKER=1` (CI sets it;
+    /// `scripts/dev.sh` does not reach a Docker daemon). The images are tiny stand-ins: a `termenbox-server` that
+    /// answers `--help` and a `curl` that answers the health probe unless the image says otherwise.
+    mod e2e {
+        use super::*;
+        use std::process::{Command, Stdio};
+
+        fn sh(args: &[&str]) -> String {
+            let out = Command::new("docker")
+                .args(args)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "docker {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+
+        /// Builds, pushes and returns the manifest digest of an image whose health probe `ok` answers.
+        fn push(repo: &str, tag: &str, ok: bool) -> String {
+            let dir = std::env::temp_dir().join(format!("termenbox-e2e-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let healthy = if ok { "exit 0" } else { "exit 1" };
+            std::fs::write(
+                dir.join("Dockerfile"),
+                format!(
+                    "FROM busybox:1.36\nRUN mkdir -p /usr/local/bin && printf '#!/bin/sh\\nexit 0\\n' > /usr/local/bin/termenbox-server && printf '#!/bin/sh\\n{healthy}\\n' > /usr/local/bin/curl && chmod 755 /usr/local/bin/*\nLABEL e2e={tag}\nENV PATH=/usr/local/bin:$PATH\nCMD [\"sleep\", \"3600\"]\n"
+                ),
+            )
+            .unwrap();
+            let image = format!("{repo}:{tag}");
+            sh(&["build", "-q", "-t", &image, dir.to_str().unwrap()]);
+            sh(&["push", "-q", &image]);
+            let digests = sh(&["image", "inspect", "-f", "{{json .RepoDigests}}", &image]);
+            let list: Vec<String> = serde_json::from_str(&digests).unwrap();
+            let digest = list
+                .iter()
+                .find_map(|d| d.strip_prefix(&format!("{repo}@")))
+                .unwrap()
+                .to_string();
+            // Forget the local copy so the update has to pull the digest from the registry.
+            sh(&["rmi", "-f", &image]);
+            digest
+        }
+
+        #[tokio::test]
+        async fn the_cli_updates_a_container_from_a_registry_and_rolls_a_bad_image_back() {
+            if std::env::var_os("TERMENBOX_E2E_DOCKER").is_none() {
+                return;
+            }
+            let id = uuid::Uuid::new_v4().simple().to_string();
+            let (registry, name) = (
+                format!("tm-e2e-registry-{}", &id[..8]),
+                format!("tm-e2e-{}", &id[..8]),
+            );
+            let port = "5127";
+            sh(&[
+                "run",
+                "-d",
+                "--name",
+                &registry,
+                "-p",
+                &format!("127.0.0.1:{port}:5000"),
+                "registry:2",
+            ]);
+            let repo = format!("localhost:{port}/termenbox-e2e");
+            let cleanup = || {
+                for n in [name.clone(), format!("{name}-previous"), registry.clone()] {
+                    let _ = Command::new("docker").args(["rm", "-f", &n]).output();
+                }
+            };
+            let result = std::panic::AssertUnwindSafe(async {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let (v1, v2) = (push(&repo, "one", true), push(&repo, "two", true));
+                let bad = push(&repo, "bad", false);
+                let spec = Spec {
+                    v: 1,
+                    name: name.clone(),
+                    image: repo.clone(),
+                    args: vec![
+                        "--restart".into(),
+                        "no".into(),
+                        "-e".into(),
+                        "TERMENBOX_E2E=1".into(),
+                    ],
+                    digest: None,
+                    pinned: false,
+                };
+                let wait = Duration::from_secs(10);
+                let mut recorded = Vec::new();
+                let mut record = |a: &str, b: &str| {
+                    recorded.push((a.to_string(), b.to_string()));
+                    Ok(())
+                };
+                // The installer's container: created from the first digest.
+                Cli.pull(&spec.reference(&v1)).await.unwrap();
+                Cli.run(&name, &spec.args, &spec.reference(&v1))
+                    .await
+                    .unwrap();
+                assert!(wait_healthy(&Cli, &name, wait).await);
+                assert_eq!(
+                    Cli.running_digest(&name, &repo).await.unwrap(),
+                    Some(v1.clone())
+                );
+                // An update to the second digest.
+                assert_eq!(
+                    apply(&Cli, &spec, &v2, wait, &mut record).await.unwrap(),
+                    Applied::Updated
+                );
+                assert_eq!(
+                    Cli.running_digest(&name, &repo).await.unwrap(),
+                    Some(v2.clone())
+                );
+                assert!(
+                    !Cli.exists(&format!("{name}-previous")).await,
+                    "the old container is removed"
+                );
+                // A bad image is rolled back and the working container runs again.
+                let short = Duration::from_secs(2);
+                let r = apply(&Cli, &spec, &bad, short, &mut record).await.unwrap();
+                assert!(matches!(r, Applied::RolledBack(_)), "{r:?}");
+                assert_eq!(
+                    Cli.running_digest(&name, &repo).await.unwrap(),
+                    Some(v2.clone())
+                );
+                assert!(wait_healthy(&Cli, &name, wait).await);
+                assert!(!Cli.exists(&format!("{name}-previous")).await);
+                // The digest that already runs changes nothing.
+                assert_eq!(
+                    apply(&Cli, &spec, &v2, wait, &mut record).await.unwrap(),
+                    Applied::Current
+                );
+                assert_eq!(recorded.len(), 2, "{recorded:?}");
+                assert_eq!(recorded[0], (v1, v2.clone()));
+                assert_eq!(recorded[1], (v2, bad));
+                // The server binary the host helper is copied from is in the image.
+                let dest = std::env::temp_dir().join(format!("tm-e2e-bin-{id}"));
+                Cli.extract_binary(&spec.reference(&recorded[1].0), &dest)
+                    .await
+                    .unwrap();
+                assert!(dest.exists());
+                let _ = std::fs::remove_file(dest);
+            });
+            let outcome = futures_catch(result).await;
+            cleanup();
+            if let Err(panic) = outcome {
+                std::panic::resume_unwind(panic);
+            }
+        }
+
+        async fn futures_catch<F: std::future::Future<Output = ()>>(
+            f: std::panic::AssertUnwindSafe<F>,
+        ) -> std::thread::Result<()> {
+            use futures_util::FutureExt;
+            f.catch_unwind().await
+        }
+    }
 }

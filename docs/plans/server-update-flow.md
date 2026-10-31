@@ -306,10 +306,11 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   the requests directory moves onto the volume via `TERMENBOX_REQUESTS_DIR`; best effort, a note when it cannot be set up).
   **U8c [x]** `container.rs` (`Spec::load` refuses a file the installer did not write; `apply`: pull digest, stop, rename to
   `-previous`, run, health, remove or roll back; a half-done run is repaired first), `Change::ContainerReplaced`, a
-  release without `image` is never applied, a hand-pinned image is not pulled by the timer. **U8d [~]** guide done; tests
-  use a fake Docker. NOT RUN: an end-to-end test against a local registry and a real Docker, and the installer's
-  container-updater path (it needs root, systemd and Docker: the existing stub-based installer tests only cover the path
-  where the host cannot run the binary). Release order per 0155: a release carrying `image`
+  release without `image` is never applied, a hand-pinned image is not pulled by the timer. **U8d [x]** guide done; `container::tests::e2e` drives the real
+  `Cli` against a real Docker and a local `registry:2` (update, bad image rolled back, same digest changes nothing, binary
+  extraction); it runs only with `TERMENBOX_E2E_DOCKER=1`, which CI sets on the Rust test job. To run it here the dev
+  container needs the host's docker socket and binary mounted. NOT RUN: the installer's container-updater path (it needs
+  root, systemd and Docker: the stub-based installer tests only cover the path where the host cannot run the binary). Release order per 0155: a release carrying `image`
   must be out before U8b's installer change lands.
 
 ## Risks
@@ -341,3 +342,4 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
 - 2026-10-31 merged develop (decision numbers moved: grace is 0154, container updater 0155); lint fixed a dangling id and two tags; capture found no contradiction (0155 amends 0063, which stays active). Next: land this PR, cut a beta (carries U5a and `image`), then U5b and U8b.
 - 2026-10-31 U5b done (released v0.1.57-beta.11 carried U5a and `image`): grace deadline, tick timer, window snapping, postpone cap; next U8b.
 - 2026-10-31 U8b-d done in the same PR as U5b (one PR was asked for): container.json, host timers, digest apply with rollback; real-Docker and local-registry e2e not run.
+- 2026-10-31 U5b and U8 merged in #417; U8d end-to-end test against a local registry added (follow-up PR).

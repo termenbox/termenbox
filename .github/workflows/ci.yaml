@@ -181,6 +181,9 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace
+        env:
+          # The container updater's test uses the runner's Docker and a local registry (decision 0155).
+          TERMENBOX_E2E_DOCKER: "1"
 
       - name: Test the release manifest script
         run: |
