@@ -31,11 +31,12 @@ Do: add `steps: [{ id, caption, label }]` to every case (`caption` is what the s
 Done-when: the Check passes and `node packages/client/e2e/video/render.mjs --list --json` (container) prints `steps` for the four dialog cases.
 Progress (2026-10-31): `steps.mjs` (declaration check, order tracker) and `steps.test.mjs` (6 tests, pass on host node with another slot's `node_modules`); all six cases declare `steps` and call `h.step(id, avoid)`, which shows the declared caption, so the caption lives once; `render.mjs` fails when a step was never reached and writes `steps` and `seconds` (ffprobe) to `render.json`, and `--list --json` includes `steps`. Not run: `--list --json` itself (it imports Playwright, no container) and any render. Labels that I could not confirm from the Svelte source and that a render must confirm: `Choose` (folder-change when no folder is set), `More`, `Next` (install-next), `shell`.
 
-### 2.2 Generate and check the steps block — [ ]‖
+### 2.2 Generate and check the steps block — [x]‖
 Class: implement · Needs: 2.1 · Check: `node scripts/docs-course.mjs --self-test`
 Context: DECISION-0161; guardrail `course-chapters-keep-the-fixed-anatomy-and-generated-steps`. The block sits between `<!-- course-steps:<case> -->` and `<!-- /course-steps -->` in a chapter. `scripts/docs-media.mjs` is the model for marker handling (idempotent, relative paths). Reading the catalog must not need Playwright: the script takes the catalog as a JSON file that CI writes with `render.mjs --list --json > catalog.json`.
 Do: create `scripts/docs-course.mjs` with `steps --catalog <json> <chapter.md>...` (replaces each block with a numbered list, one line per step: `1. <caption>. Tap **<label>**.` or just the caption when there is no label) and `check --catalog <json> <chapter.md>...` (fails on a stale block, a marker naming an unknown case, or a block missing), and `--self-test` (fresh, stale, unknown case, second run changes nothing, a label with Markdown characters is escaped).
 Done-when: the Check passes.
+Progress (2026-10-31): `scripts/docs-course.mjs` with `steps`, `check` and `--self-test` (fresh, stale, unknown case, idempotent, escaped label, no block, empty steps); the self-test runs in the `ci.yaml` docs-media step. Markdown-special characters in a label are backslash-escaped, so `+ New` renders as `\+ New` in the source.
 
 ### 2.3 Still poster instead of a GIF — [ ]
 Class: implement · Needs: 2.1 · Check: `node --test scripts/docs-media-review.test.mjs && node scripts/docs-media.mjs --self-test && node scripts/docs-media-review-page.mjs --self-test && ! grep -n "gif" scripts/docs-media.mjs scripts/docs-media-review-cli.mjs scripts/docs-media-review-page.mjs packages/client/e2e/video/render.mjs`
