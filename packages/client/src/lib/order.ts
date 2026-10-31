@@ -103,6 +103,16 @@ export function moveWorkspace(workspaces: { key: string; serverId: string }[], k
   return { position: next.indexOf(key) + 1, count: next.length };
 }
 
+/** The index `key` takes among its server's workspaces once it is lifted out and dropped beside `target`; null when either is unknown. */
+export function dropIndex(workspaces: { key: string; serverId: string }[], key: string, target: { key: string; side: 'before' | 'after' }): number | null {
+  const me = workspaces.find((w) => w.key === key);
+  const there = workspaces.find((w) => w.key === target.key);
+  if (!me || !there) return null;
+  const rest = workspaces.filter((w) => w.serverId === there.serverId && w.key !== key).map((w) => w.key);
+  const at = rest.indexOf(target.key);
+  return at < 0 ? null : at + (target.side === 'after' ? 1 : 0);
+}
+
 /** The words for a screen reader. */
 export const movedText = (name: string, p: Placement) => `${name} moved to position ${p.position} of ${p.count}`;
 

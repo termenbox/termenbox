@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
+  import { RowDragger, type DragView } from '../lib/dragsort';
   import { DESTINATIONS, type Destination } from '../lib/router';
   import { HeldView, type NavGroup } from '../lib/navlist';
   import { STATES } from '../lib/ds/states';
@@ -11,9 +12,9 @@
    * The desktop sidebar: destinations, then every server with its workspaces and their state. The list holds still while a
    * pointer is down and for 2 s after it scrolls (ui-never-moves-under-the-finger); a state change shows in place.
    */
-  let { current, onnavigate, groups, activeKey = null, onopen, onserver, onnew, onrename, oncloseworkspace, onsearch, searchHint, splitOpen = false, onsplit, width, id, class: className = '' }: {
+  let { current, onnavigate, groups, activeKey = null, onopen, onserver, onnew, onrename, oncloseworkspace, onmove, onsearch, searchHint, splitOpen = false, onsplit, width, id, class: className = '' }: {
     current: Destination; onnavigate: (d: Destination) => void; groups: NavGroup[]; activeKey?: string | null; onopen: (key: string) => void; onserver: (id: string) => void;
-    onnew?: () => void; onrename?: (key: string, name: string) => void; oncloseworkspace?: (key: string) => void; onsearch: () => void; searchHint: string; splitOpen?: boolean; onsplit?: () => void; width?: number; id?: string; class?: string;
+    onnew?: () => void; onrename?: (key: string, name: string) => void; oncloseworkspace?: (key: string) => void; /** Drop `key` beside `target.key`: the sidebar's own drag, or the arrow keys on a row's handle. */ onmove?: (key: string, target: { key: string; side: 'before' | 'after' }) => void; onsearch: () => void; searchHint: string; splitOpen?: boolean; onsplit?: () => void; width?: number; id?: string; class?: string;
   } = $props();
 
   const held = new HeldView();
@@ -58,6 +59,23 @@
   function rowKey(e: KeyboardEvent, key: string, name: string) {
     if (e.key === 'F2' && onrename) { e.preventDefault(); startEdit(key, name); }
   }
+  // Reordering by the handle (the same dragger as the phone list): the row follows the pointer and the list changes on release.
+  let scroller: HTMLElement | undefined = $state();
+  let drag: DragView | null = $state(null);
+  let announcement = $state('');
+  const dragger = new RowDragger({
+    scroller: () => scroller,
+    onview: (v) => (drag = v),
+    ondrop: (key, target) => {
+      onmove?.(key, target);
+      const name = groups.flatMap((g) => g.workspaces).find((s) => s.key === key)?.name ?? '';
+      const mine = groups.find((g) => g.workspaces.some((s) => s.key === key))?.workspaces ?? [];
+      const rest = mine.filter((s) => s.key !== key);
+      const at = rest.findIndex((s) => s.key === target.key);
+      if (at >= 0) announcement = `${name} moved to position ${at + (target.side === 'after' ? 2 : 1)} of ${mine.length}`;
+    },
+  });
+  $effect(() => () => dragger.destroy());
   const needs = $derived(groups.reduce((n, g) => n + g.workspaces.filter((s) => s.state === 'needs-you').length, 0));
 </script>
 
@@ -75,7 +93,7 @@
     </button>
   </nav>
 
-  <div class="min-h-0 flex-1 overflow-y-auto border-t border-line px-2 pb-2" data-workspaces-scroll onscroll={scrolled} onpointerdowncapture={down}>
+  <div class="min-h-0 flex-1 overflow-y-auto border-t border-line px-2 pb-2" data-workspaces-scroll bind:this={scroller} onscroll={scrolled} onpointerdowncapture={down}>
     {#if onnew}
       <div class="flex items-center justify-between pt-3 pl-1"><h2 class="text-xs font-semibold tracking-wider text-soft uppercase">Servers</h2>
         <button type="button" onclick={onnew} class="h-11 rounded-control bg-transparent px-3 text-base font-semibold text-accent-text">+ New</button></div>
@@ -87,7 +105,17 @@
           <span class="truncate text-base font-semibold text-fg">{g.server.server.server_name || 'Server'}</span>
         </button>
         {#each g.workspaces as s (s.key)}
-          <div data-row={s.key} class={cn('group relative flex h-11 w-full items-center rounded-control', s.key === activeKey && 'bg-raised')}>
+          {@const grip = !!onmove && g.workspaces.length > 1}
+          {@const dragging = drag?.key === s.key}
+          <div data-row={s.key} data-list={g.server.id} class={cn('group relative flex h-11 w-full items-center rounded-control', s.key === activeKey && 'bg-raised')} class:dragging
+            class:drop-before={drag?.target?.key === s.key && drag?.target?.side === 'before'} class:drop-after={drag?.target?.key === s.key && drag?.target?.side === 'after'}
+            style:transform={dragging ? `translateY(${drag?.dy ?? 0}px)` : undefined}>
+            {#if grip && editing !== s.key}
+              <button type="button" class="grip row-action" data-testid="workspace-grip" data-grip aria-label={`Reorder ${s.name}. Drag, or use the up and down arrow keys`}
+                onpointerdown={(e) => dragger.down(e, s.key)} onpointermove={(e) => dragger.move(e)} onpointerup={(e) => dragger.up(e)} onpointercancel={(e) => dragger.up(e, true)} onkeydown={(e) => dragger.key(e, s.key)} oncontextmenu={(e) => e.preventDefault()}>
+                <svg viewBox="0 0 12 18" width="10" height="15" aria-hidden="true" fill="currentColor"><circle cx="3" cy="3" r="1.5" /><circle cx="9" cy="3" r="1.5" /><circle cx="3" cy="9" r="1.5" /><circle cx="9" cy="9" r="1.5" /><circle cx="3" cy="15" r="1.5" /><circle cx="9" cy="15" r="1.5" /></svg>
+              </button>
+            {/if}
             {#if editing === s.key}
               <div class="flex min-w-0 flex-1 items-center gap-2 pr-3 pl-6">
                 <AgentBadge agent={s.agent} state={s.state} size={20} />
@@ -97,7 +125,7 @@
               </div>
             {:else}
               <button type="button" data-key={s.key} aria-current={s.key === activeKey ? 'true' : undefined} onclick={() => onopen(s.key)} onkeydown={(e) => rowKey(e, s.key, s.name)}
-                class="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-control bg-transparent pr-3 pl-6 text-left">
+                class={cn('flex h-11 min-w-0 flex-1 items-center gap-2 rounded-control bg-transparent pr-3 text-left', grip ? 'pl-1' : 'pl-6')}>
                 <AgentBadge agent={s.agent} state={s.state} size={20} />
                 <span class="min-w-0 flex-1 truncate text-base text-fg" role="presentation">{s.name}</span>
                 <span class={cn('shrink-0 text-xs', STATES[s.state].text)}>{STATES[s.state].label}</span>
@@ -117,6 +145,7 @@
         {/each}
       </section>
     {/each}
+    <div class="sr-only" role="status" aria-live="polite">{announcement}</div>
   </div>
 
   {#if onsplit}
@@ -130,6 +159,12 @@
   /* Row actions show on hover and keyboard focus, and always where there is no hover (a touch screen). */
   .row-action { opacity: 0; }
   :global([data-row]:hover) .row-action, :global([data-row]:focus-within) .row-action { opacity: 1; }
+  .grip { flex: 0 0 24px; width: 24px; height: 44px; margin-left: 2px; padding: 0; display: flex; align-items: center; justify-content: center; background: transparent; color: var(--fg-muted); border: 0; touch-action: none; user-select: none; -webkit-user-select: none; cursor: grab; }
+  .dragging { z-index: 3; opacity: 0.95; filter: drop-shadow(0 4px 10px #0006); }
+  .dragging .grip { cursor: grabbing; }
+  .drop-before::before, .drop-after::after { content: ''; position: absolute; left: 0; right: 0; height: 2px; background: var(--accent, currentColor); }
+  .drop-before::before { top: -1px; }
+  .drop-after::after { bottom: -1px; }
   .row-action:hover { color: var(--fg); }
   @media (hover: none) { .row-action { opacity: 1; } }
 </style>

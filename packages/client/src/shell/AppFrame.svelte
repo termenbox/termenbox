@@ -21,10 +21,10 @@
    * same at both widths. The frame never sizes the app: AppShell does (soft-keyboard-never-hides-input).
    */
   let { current, onnavigate, servers, workspaces, agents, tabStates = {}, activeKey = null, chrome = true, inWorkspace = false, keyboardOpen = false, wide = $bindable(false), helpOpen = $bindable(false),
-    canCreate = true, onopen, onserver, onrename, oncloseworkspace, onaction = () => {}, onshortcut = () => {}, onback, children }: {
+    canCreate = true, onopen, onserver, onrename, oncloseworkspace, onmove, onaction = () => {}, onshortcut = () => {}, onback, children }: {
     current: Destination; onnavigate: (d: Destination) => void; servers: HubServer[]; workspaces: HubWorkspace[]; agents: AgentMap; tabStates?: Record<string, TabAgentState>; activeKey?: string | null; chrome?: boolean;
     inWorkspace?: boolean; keyboardOpen?: boolean; wide?: boolean; helpOpen?: boolean; canCreate?: boolean; onopen: (key: string) => void; onserver: (id: string) => void;
-    onrename?: (key: string, name: string) => void; oncloseworkspace?: (key: string) => void; onaction?: (id: string) => void; onshortcut?: (id: string) => void; onback?: () => void; children: Snippet;
+    onrename?: (key: string, name: string) => void; oncloseworkspace?: (key: string) => void; onmove?: (key: string, target: { key: string; side: 'before' | 'after' }) => void; onaction?: (id: string) => void; onshortcut?: (id: string) => void; onback?: () => void; children: Snippet;
   } = $props();
 
   let viewport = $state(typeof innerWidth === 'number' ? innerWidth : 1280);
@@ -89,7 +89,7 @@
 
 <div class="flex min-h-0 min-w-0 flex-1" data-shell="frame" data-wide={wide} data-bar={bar} data-sidebar={sidebarShown ? 'open' : 'closed'}>
   {#if sidebarShown}
-    <SideNav id="workspace-sidebar" width={sidebarWidth} {current} {onnavigate} {groups} {activeKey} {onopen} {onserver} {onrename} {oncloseworkspace} onnew={canCreate ? () => onaction('new-workspace') : undefined} onsearch={openPalette} searchHint={hint}
+    <SideNav id="workspace-sidebar" width={sidebarWidth} {current} {onnavigate} {groups} {activeKey} {onopen} {onserver} {onrename} {oncloseworkspace} {onmove} onnew={canCreate ? () => onaction('new-workspace') : undefined} onsearch={openPalette} searchHint={hint}
       splitOpen={$layout.splitOpen} onsplit={toggleSplit} />
     <Resizer label="Sidebar width" controls="workspace-sidebar" value={sidebarWidth} min={SIDEBAR.min} max={sidebarMax} def={Math.min(SIDEBAR.def, sidebarMax)} step={SIDEBAR.step}
       onchange={(w) => patchLayout({ sidebarWidth: w }, false)} oncommit={commitLayout} />
