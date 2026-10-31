@@ -517,6 +517,7 @@ impl Registry {
             }
             self.save(&state);
         }
+        self.pack_windows(backend, workspace).await;
         let left = {
             let state = self.state.lock().unwrap();
             state
@@ -577,24 +578,51 @@ impl Registry {
         Ok(())
     }
 
-    pub async fn move_tab(&self, workspace: &str, tab: &str, index: u32) -> Result<()> {
+    /// Moves a tab to `index`. tmux's windows follow first, so a failure leaves the order as it was, and `Ctrl+B <n>`
+    /// selects the tab shown at position `n`.
+    pub async fn move_tab(
+        &self,
+        backend: &dyn WorkspaceBackend,
+        workspace: &str,
+        tab: &str,
+        index: u32,
+    ) -> Result<()> {
+        let windows = {
+            let state = self.state.lock().unwrap();
+            let record = state
+                .workspaces
+                .iter()
+                .find(|r| r.id == workspace)
+                .ok_or_else(|| anyhow!("Unknown workspace"))?;
+            let mut moved = record.clone();
+            move_within(&mut moved, tab, index)?;
+            tab_windows(&moved)
+        };
+        backend.reorder_tabs(workspace, &windows).await?;
         let mut state = self.state.lock().unwrap();
         let record = state
             .workspaces
             .iter_mut()
             .find(|r| r.id == workspace)
             .ok_or_else(|| anyhow!("Unknown workspace"))?;
-        let at = record
-            .tabs
-            .iter()
-            .position(|t| t.id == tab)
-            .ok_or_else(|| anyhow!("Unknown tab"))?;
-        let moved = record.tabs.remove(at);
-        let to = (index as usize).min(record.tabs.len());
-        record.tabs.insert(to, moved);
-        renumber_tabs(record);
+        move_within(record, tab, index)?;
         self.save(&state);
         Ok(())
+    }
+
+    /// Packs the windows of a workspace in its tab order, after a tab went away and left a gap in tmux's numbers.
+    async fn pack_windows(&self, backend: &dyn WorkspaceBackend, workspace: &str) {
+        let windows = {
+            let state = self.state.lock().unwrap();
+            state
+                .workspaces
+                .iter()
+                .find(|r| r.id == workspace)
+                .map(tab_windows)
+        };
+        if let Some(windows) = windows {
+            let _ = backend.reorder_tabs(workspace, &windows).await;
+        }
     }
 
     pub async fn focus_tab(
@@ -1096,6 +1124,29 @@ fn reconcile_record(record: &mut WorkspaceRecord, windows: &[WindowState], label
             .unwrap_or(0)
             + 1,
     );
+}
+
+/// Moves a tab to `index` (clamped) and renumbers.
+fn move_within(record: &mut WorkspaceRecord, tab: &str, index: u32) -> Result<()> {
+    let at = record
+        .tabs
+        .iter()
+        .position(|t| t.id == tab)
+        .ok_or_else(|| anyhow!("Unknown tab"))?;
+    let moved = record.tabs.remove(at);
+    let to = (index as usize).min(record.tabs.len());
+    record.tabs.insert(to, moved);
+    renumber_tabs(record);
+    Ok(())
+}
+
+/// The windows of a workspace's tabs, in tab order; a dormant tab has none.
+fn tab_windows(record: &WorkspaceRecord) -> Vec<String> {
+    record
+        .tabs
+        .iter()
+        .filter_map(|t| t.window.clone())
+        .collect()
 }
 
 fn renumber_tabs(record: &mut WorkspaceRecord) {

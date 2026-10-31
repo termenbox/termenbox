@@ -1231,7 +1231,14 @@ impl WorkspaceManager {
                 tab,
                 index,
             } => {
-                self.registry.move_tab(&workspace, &tab, index).await?;
+                // tmux moves its windows, and the window that was current stays so; reads begun before are stale.
+                self.bump_focus(&workspace);
+                let moved = self
+                    .registry
+                    .move_tab(self.backend.as_ref(), &workspace, &tab, index)
+                    .await;
+                self.bump_focus(&workspace);
+                moved?;
                 let workspaces = self.registry.list(self.backend.as_ref()).await?;
                 send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
                 let _ = self.list_changed.send(conn);
