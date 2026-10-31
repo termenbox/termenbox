@@ -175,7 +175,13 @@ pub struct WindowHub {
     /// Bumped whenever the server focuses a tab itself (an attach, a new tab, a tap). A control read that began
     /// before the bump describes the window from before that focus and must not move the focus back.
     generations: Arc<Mutex<HashMap<String, u64>>>,
+    /// Told of every update that changes what a client shows, before any subscriber sees it: the one place tmux's
+    /// current window is turned into the workspace focus (decision 0153).
+    observer: Arc<Mutex<Option<Observer>>>,
 }
+
+/// What reacts to a window update the moment the hub accepts it.
+pub type Observer = Arc<dyn Fn(&WindowUpdate) + Send + Sync>;
 
 impl Default for WindowHub {
     fn default() -> Self {
@@ -183,6 +189,7 @@ impl Default for WindowHub {
             workspaces: Arc::default(),
             tx: broadcast::channel(256).0,
             generations: Arc::default(),
+            observer: Arc::default(),
         }
     }
 }
@@ -190,6 +197,12 @@ impl Default for WindowHub {
 impl WindowHub {
     pub fn subscribe(&self) -> broadcast::Receiver<WindowUpdate> {
         self.tx.subscribe()
+    }
+
+    /// Sets what reacts to an accepted update. It runs with the hub's locks held, so it must be short and must not
+    /// call back into the hub.
+    pub fn observe(&self, observer: Observer) {
+        *self.observer.lock().unwrap() = Some(observer);
     }
 
     pub fn generation(&self, workspace: &str) -> u64 {
@@ -250,6 +263,9 @@ impl WindowHub {
                 .is_some_and(|old| old.same_content(&update));
             workspaces.insert(workspace.to_string(), update.clone());
             if !unchanged {
+                if let Some(observer) = self.observer.lock().unwrap().as_ref() {
+                    observer(&update);
+                }
                 let _ = self.tx.send(update);
             }
             !unchanged
@@ -290,6 +306,14 @@ pub fn is_trigger(line: &str) -> bool {
             | "%session-window-changed"
             | "%window-pane-changed"
             | "%subscription-changed"
+    )
+}
+
+/// Control-mode lines that mean "the current window changed", which a person is waiting to see.
+fn is_focus_trigger(line: &str) -> bool {
+    matches!(
+        line.split_whitespace().next(),
+        Some("%session-window-changed")
     )
 }
 
@@ -344,7 +368,11 @@ async fn watch(hub: WindowHub, runner: Runner, prefix: String, name: String) {
     loop {
         tokio::select! {
             line = lines.next_line() => match line {
-                Ok(Some(l)) => if is_trigger(&l) { dirty = true },
+                Ok(Some(l)) => if is_trigger(&l) {
+                    dirty = true;
+                    // The user switched windows: the tab strip should follow at once, not after the throttle.
+                    if is_focus_trigger(&l) { next_allowed = Instant::now(); }
+                },
                 _ => break,
             },
             _ = tokio::time::sleep_until(next_allowed), if dirty => {
@@ -607,6 +635,30 @@ mod tests {
         hub.bump("s");
         assert_eq!(hub.while_current("s", generation, || 7), None);
         assert_eq!(hub.while_current("s", hub.generation("s"), || 7), Some(7));
+    }
+
+    #[test]
+    fn only_a_current_window_change_skips_the_refresh_throttle() {
+        assert!(is_focus_trigger("%session-window-changed $1 @2"));
+        assert!(!is_focus_trigger("%window-add @1"));
+        assert!(!is_focus_trigger(
+            "%subscription-changed termenbox $0 @0 0 %0 : bash|/tmp|1"
+        ));
+        assert!(is_trigger("%session-window-changed $1 @2"));
+    }
+
+    #[test]
+    fn the_observer_hears_a_change_before_subscribers_and_not_a_stale_or_repeated_read() {
+        let hub = WindowHub::default();
+        let heard = Arc::new(Mutex::new(Vec::<u64>::new()));
+        let seen = heard.clone();
+        hub.observe(Arc::new(move |u| seen.lock().unwrap().push(u.generation)));
+        let windows = parse_windows(&row(0, 1, 100, 1, "bash", "/a", "w"));
+        assert_eq!(hub.publish_read("s", &windows, 0), Some(true));
+        assert_eq!(hub.publish_read("s", &windows, 0), Some(false));
+        hub.bump("s");
+        assert_eq!(hub.publish_read("s", &windows, 0), None);
+        assert_eq!(*heard.lock().unwrap(), vec![0]);
     }
 
     #[test]

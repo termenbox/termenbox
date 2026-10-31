@@ -11,7 +11,7 @@ tags: [workspaces, tabs, client, server]
 
 ## Decision
 
-- **tmux's current window is the workspace focus.** With control mode (tmux 3.2+), the server writes the tab of the window tmux has current into the registry as `workspace.focus` whenever it moves, and sends the fresh workspace list to every connection. `window_list.active` and `representative` name the same tab.
+- **tmux's current window is the workspace focus.** With control mode (tmux 3.2+), the window hub writes the tab of the window tmux has current into the registry as `workspace.focus` the moment it accepts a read, whether or not a device is connected, and every connection is told the list moved. A current-window change is read at once, not after the 1 s refresh throttle. `window_list.active` and `representative` name the same tab.
 - **A device viewing the workspace follows that focus.** The desktop strip and the phone plaque follow the shared current window without re-attaching the terminal: the attached tmux client already shows the new window, so only the selection moves. A device viewing another workspace is unaffected.
 - **Opening a tab is a focus move too.** Attaching a tab makes it tmux's current window, and every other device viewing the workspace follows it.
 - **A server without control mode keeps 0149's per-device behaviour.** An older server, or a tmux older than 3.2, reports no current window, so the focus stays where the server last set it and the strip does not move by itself.
