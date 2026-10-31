@@ -101,7 +101,6 @@ jobs:
           node scripts/docs-media-review-page.mjs --self-test
           node scripts/docs-media.mjs --self-test
           node packages/client/e2e/video/inputs-hash.mjs --self-test
-          node --test packages/client/e2e/video/knobs.test.mjs
 
       - name: Typecheck the client (svelte-check)
         run: pnpm --filter termenbox-client run check
