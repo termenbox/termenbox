@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Writes manifest.json for a release (decision 0076).
 
-usage: make_manifest.py VERSION ASSET_DIR OUT [--channel stable|beta|nightly] [--tag TAG] [--base-url URL] [--freeze] [--notes TEXT] [--no-tmux]
+usage: make_manifest.py VERSION ASSET_DIR OUT [--channel stable|beta|nightly] [--tag TAG] [--base-url URL] [--freeze] [--notes TEXT] [--no-tmux] [--image-digests FILE]
 
 VERSION is the manifest version, full SemVer with an optional prerelease (1.2.3, 1.2.3-beta.1,
 1.2.3-nightly.20261022). --tag names the release the assets are downloaded from (default v<VERSION>), because a
@@ -15,6 +15,10 @@ written here, so the output is deterministic (sorted keys, no timestamps).
 It also holds the bundled tmux (decision 0119): tmux-<arch>-linux per architecture, listed under "tmux" the same
 way, and the licence notices that travel with it (tmux-COPYING, tmux-libevent-LICENSE, tmux-ncurses-COPYING),
 listed under "tmux_notices". They are required unless --no-tmux is given (the installer tests that stub a release).
+
+--image-digests FILE (decision 0154) is the JSON image_digests.py wrote, {"x86_64": "sha256:...", "aarch64": "sha256:..."}.
+It is signed into the manifest as "image", so a container install pulls the digest the release key vouched for. Without
+it the manifest has no "image" and is not a container release.
 """
 import hashlib
 import json
@@ -58,6 +62,7 @@ def main(argv):
     channel = option("--channel", "stable")
     tag = option("--tag", None)
     base_url = option("--base-url", None)
+    image_file = option("--image-digests", None)
     if len(args) != 3:
         sys.exit(__doc__)
     version, asset_dir, out = args[0], Path(args[1]), Path(args[2])
@@ -72,6 +77,11 @@ def main(argv):
     if with_tmux:
         manifest["tmux"] = {arch: entry(base, asset_dir / f"tmux-{arch}-linux") for arch in ARCHES}
         manifest["tmux_notices"] = {name: entry(base, asset_dir / name) for name in TMUX_NOTICES}
+    if image_file:
+        image = json.loads(Path(image_file).read_text())
+        if sorted(image) != sorted(ARCHES) or not all(re.fullmatch(r"sha256:[0-9a-f]{64}", d) for d in image.values()):
+            sys.exit(f"{image_file} must hold a sha256 digest for each of {', '.join(ARCHES)}")
+        manifest["image"] = image
     out.write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
     print(f"wrote {out} for {version} ({channel}, tag {tag})")
 

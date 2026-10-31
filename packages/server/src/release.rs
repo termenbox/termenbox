@@ -240,6 +240,10 @@ pub struct Manifest {
     /// Licence notices that travel with the bundled tmux, by file name.
     #[serde(default)]
     pub tmux_notices: BTreeMap<String, Binary>,
+    /// The container image of this release by architecture, as `sha256:` digests (decision 0154). Absent in a release
+    /// that is not a container release, and in releases from before it existed.
+    #[serde(default)]
+    pub image: BTreeMap<String, String>,
 }
 
 impl Manifest {
@@ -282,7 +286,17 @@ impl Manifest {
                 bail!("the {what} hash is not a SHA-256");
             }
         }
+        for (arch, digest) in &manifest.image {
+            if !matches!(arch.as_str(), "x86_64" | "aarch64") || !is_image_digest(digest) {
+                bail!("the {arch} image is not a sha256 digest");
+            }
+        }
         Ok((manifest, kid))
+    }
+
+    /// The image digest for `arch`, when this release is a container release.
+    pub fn image(&self, arch: &str) -> Option<&str> {
+        self.image.get(arch).map(String::as_str)
     }
 
     pub fn binary(&self, arch: &str) -> Result<&Binary> {
@@ -305,6 +319,12 @@ impl Manifest {
     pub fn is_newer_than(&self, current: &str) -> Result<bool> {
         Ok(parse_version(&self.version)? > parse_version(current)?)
     }
+}
+
+/// `sha256:` and 64 lowercase hex digits: the only form that is passed to `docker pull` as `repo@digest`.
+fn is_image_digest(d: &str) -> bool {
+    d.strip_prefix("sha256:")
+        .is_some_and(|h| h.len() == 64 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
 }
 
 /// SemVer with build metadata dropped (`0.1.36+abc1234` is the same release as `0.1.36`), so a prerelease sorts
@@ -459,6 +479,49 @@ mod tests {
     }
 
     #[test]
+    fn the_image_key_is_optional_and_only_sha256_digests_for_known_architectures_pass() {
+        let url = format!("{PREFIX}v1.2.3/termenbox-server-x86_64-linux");
+        let plain = manifest_json("1.2.3", &url);
+        let digest = format!("sha256:{}", "c".repeat(64));
+        let with = |image: &str| {
+            plain.replacen(
+                r#""binaries""#,
+                &format!(r#""image":{image},"binaries""#),
+                1,
+            )
+        };
+        let verify = |m: &str| {
+            let (keys, sig) = sign_with_ssh_keygen(m, NAMESPACE)?;
+            Some(Manifest::verify(
+                m.as_bytes(),
+                &sig,
+                &keys,
+                PREFIX,
+                Channel::Stable,
+            ))
+        };
+        let Some(old) = verify(&plain) else { return };
+        assert!(old.unwrap().0.image("x86_64").is_none());
+        let good = verify(&with(&format!(r#"{{"x86_64":"{digest}"}}"#)))
+            .unwrap()
+            .unwrap()
+            .0;
+        assert_eq!(good.image("x86_64"), Some(digest.as_str()));
+        assert!(good.image("aarch64").is_none());
+        // a tag, an uppercase or short digest, a flag-looking value and an unknown architecture are all refused
+        for bad in [
+            r#"{"x86_64":"latest"}"#.to_string(),
+            format!(r#"{{"x86_64":"sha256:{}"}}"#, "C".repeat(64)),
+            r#"{"x86_64":"sha256:abc"}"#.to_string(),
+            r#"{"x86_64":"--privileged"}"#.to_string(),
+            format!(r#"{{"riscv64":"{digest}"}}"#),
+        ] {
+            let err = verify(&with(&bad)).unwrap().unwrap_err().to_string();
+            assert!(err.contains("image is not a sha256 digest"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
     fn a_manifest_pointing_elsewhere_or_with_a_bad_hash_is_refused_even_when_signed() {
         for (m, why) in [
             (
@@ -498,6 +561,7 @@ mod tests {
             binaries: BTreeMap::new(),
             tmux: BTreeMap::new(),
             tmux_notices: BTreeMap::new(),
+            image: BTreeMap::new(),
         };
         assert!(m("0.10.0").is_newer_than("0.9.9").unwrap());
         assert!(!m("1.0.0").is_newer_than("1.0.0").unwrap());
@@ -515,6 +579,7 @@ mod tests {
             binaries: BTreeMap::new(),
             tmux: BTreeMap::new(),
             tmux_notices: BTreeMap::new(),
+            image: BTreeMap::new(),
         };
         let (a, b, rel) = (
             "0.1.36-nightly.20261022",

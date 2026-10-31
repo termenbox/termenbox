@@ -141,7 +141,9 @@ jobs:
         run: cargo test --workspace
 
       - name: Test the release manifest script
-        run: python3 .github/scripts/test_make_manifest.py
+        run: |
+          python3 .github/scripts/test_make_manifest.py
+          cd .github/scripts && python3 test_image_digests.py
 
       - name: Test the release tag rules, the alias update and the nightly pruning
         run: |

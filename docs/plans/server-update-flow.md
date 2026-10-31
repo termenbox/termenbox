@@ -281,12 +281,29 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   keeps no history and adding one is a schema change for little; fact 0064 says where the longer record is. Fact 0064
   added. NOT RUN: `go-getter:capture` and `go-getter:lint` (they need the user's session; run them before the PR).
 
-### U8 [ ] Container updater (go/no-go)
+### U8 [ ] Container updater (decision 0154, accepted)
 
 - Needs: U5b and an owner decision. Do not start without it; open a decision draft instead.
 - Notes: see "Container mode". Decision 0154 accepted by the owner 2026-10-31; U8 is split into U8a manifest
   `image` digests and pipeline, U8b `container.json` journal and installer timer, U8c helper apply with recreate and
   rollback, U8d docs and an end-to-end test with a local registry. 
+
+- **U8a [x] manifest `image` and pipeline.** Needs: U5a released is NOT required (old servers ignore the key; the
+  parser has no `deny_unknown_fields`). Done: `Manifest.image` (arch to `sha256:` digest, validated: known arch, 64
+  lowercase hex, so it is safe as `repo@digest`); `make_manifest.py --image-digests`; `image_digests.py` (reads the
+  per-arch digests from the multi-arch tag, skips attestations, polls with `--wait`); a new `image` job in
+  `release-build.yaml` (no secrets, 75 min) that the manifest job needs. Tests: Rust
+  `the_image_key_is_optional_and_only_sha256_digests_for_known_architectures_pass`, python `test_image_digests.py`
+  and an `image` case in `test_make_manifest.py`, both in CI. Verify:
+  `grep -q image-digests .github/workflows/release-build.yaml` and
+  `scripts/dev.sh cargo test -p termenbox-server -- release::`.
+  NOT RUN: the workflow itself (it needs a tag push; only YAML-parsed here). LIMITS: (1) nightly's image is pushed
+  after its release (`release-nightly.yaml` `image` needs `release`), so a nightly manifest has no `image` and nightly
+  containers will not self-update until nightly builds the image first; (2) for stable and beta, a failed or missing
+  image now fails the release after 70 min instead of publishing without a container.
+- **U8b [ ]** `container.json` journal and installer timer. **U8c [ ]** helper apply, recreate and rollback.
+  **U8d [ ]** docs and an end-to-end test with a local registry. Release order per 0154: a release carrying `image`
+  must be out before U8b's installer change lands.
 
 ## Risks
 
@@ -313,3 +330,4 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
 - 2026-10-31 U7 done: audit line, updater section in the diagnostics bundle, fact 0064, guide; U5b and U8 remain, both blocked (a release with U5a; an owner decision).
 - 2026-10-31 U8: decision 0154 drafted (digest in the signed manifest, host timer, recreate and roll back); waiting for the owner to accept it before any code.
 - 2026-10-31 U8: decision 0154 accepted by the owner; next U8a.
+- 2026-10-31 U8a done: signed `image` digests in the manifest and the pipeline step that resolves them; next U8b (a release with `image` must ship before it lands).
