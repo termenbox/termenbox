@@ -62,47 +62,54 @@ Context: `e2e/failures.mjs` scripts the failed-connection states and the path re
 Do: add both cases (group `diagnostics`, pages `docs/guide/networking.md` and `docs/guide/install.md`), final assertions on the visible fix hint and on the "up to date after restart" status. No real addresses: use documentation-range addresses.
 Done-when: the Check exits 0 and no real address or name appears in captions or frames (grep the case source for IPs outside `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`).
 
-### 3.1 Review page generator — [ ]‖
+### 3.1 Review page generator — [x]‖
 Class: implement · Needs: 1.2 · Check: `node scripts/docs-media-review-page.mjs --self-test`
 Context: DECISION-0158: one mobile-first static page plays every video of a render inline and shows case, profile, input hash and the "rendered walkthrough on scripted data" label. It is deployed as a Pages preview, so it must be plain HTML with no external script.
 Do: create `scripts/docs-media-review-page.mjs` that takes a folder of `.mp4`, `.gif`, `.png` and `.render.json` files and writes `index.html` beside them: a card per video (`<video controls playsinline muted loop preload="metadata" poster=…>`), the stills, the metadata, a 16 px gutter, no horizontal scroll at 360 px, dark and light via `prefers-color-scheme`, and a `<meta name="robots" content="noindex">`. `--self-test` builds a page from fixtures and asserts the card count, the label and the absence of `<script src`.
 Done-when: the Check passes and the page opened at 360 px shows no horizontal overflow (assert with the same Playwright harness in the self-test, or note that it was checked by hand).
+Progress: done 2026-10-31; self-test passes (card per render, label, no script, escaped text). The 360 px overflow was not opened in a browser (no Playwright on this host): the layout is one column with overflow-wrap, check it on the first preview.
 
-### 3.2 Render workflow `docs-media.yaml` — [ ]
+### 3.2 Render workflow `docs-media.yaml` — [~]
 Class: implement · Needs: 1.3, 3.1 · Check: `python3 -c "import yaml; w=yaml.safe_load(open('.github/workflows/docs-media.yaml')); on=w.get(True) or w.get('on'); assert list(on.keys())==['workflow_dispatch'], on; s=open('.github/workflows/docs-media.yaml').read(); assert 'pull_request_target' not in s and 'wrangler pages deploy' in s; print('ok')"`
 Context: `.github/workflows/dialog-videos.yaml` is the model (dispatch only, `case` and `profile` choice inputs passed through `env`, pinned action versions as in `ci.yaml`, ffmpeg, Playwright, `render.mjs`, artifact upload 30 days). `deploy-site.yaml` shows Wrangler and the secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` and the project name `vars.TERMENBOX_SITE_PROJECT_NAME || 'termenbox-site'`. Guardrail `media-commands-come-only-from-people-with-write-access` applies: dispatch needs write access by GitHub's own rules, no `pull_request_target`.
 Do: create `.github/workflows/docs-media.yaml`: inputs `case` (all or one id from `render.mjs --list`, passed as free string validated against the list in the first step), `profile` (phone, desktop, both), `pace` (normal, slow), `caption` (on, off); render each selected case and profile; build the review page (3.1); upload the folder as artifact `docs-media-<run_id>` (30 days); deploy the folder to Pages with `wrangler pages deploy <dir> --project-name=… --branch=media-<run_id>` (a preview, not production); create or update the issue titled `Docs media review <run_id>` (label `docs-media`) with the preview URL, the `hashInputs` of each case and one checklist line per case and profile in the fixed form `- [ ] <case> <profile> <hash>`; permissions `contents: read`, `issues: write`. Never interpolate inputs into the script. Keep `dialog-videos.yaml` until 7.2.
 Done-when: the Check prints `ok`; after the pull request merges, `gh workflow run docs-media.yaml -f case=recent-folder -f profile=phone` yields an issue with the preview link and one line, and the preview plays the video on an iPhone.
+Progress: file written 2026-10-31 and the Check prints ok; it can only be dispatched after the merge (FACT-0067), then run `gh workflow run docs-media.yaml -f case=recent-folder -f profile=phone`.
 
-### 3.3 Review logic with tests — [ ]‖
+### 3.3 Review logic with tests — [x]‖
 Class: implement · Needs: 1.2 · Check: `node --test scripts/docs-media-review.test.mjs`
 Context: guardrails `media-commands-come-only-from-people-with-write-access` and `nothing-is-published-without-a-matching-approval-record`; the issue ledger format from 3.2 (`- [ ] <case> <profile> <hash>`); commands `/regen <case> [pace=slow|normal] [profile=phone|desktop] [caption=off] <note>` and `/approve <case|all>`. GitHub-facing code is kept thin so this logic runs without GitHub.
 Do: create `scripts/docs-media-review.mjs` exporting `parseCommand(text, catalogIds)` (fixed grammar; unknown case, unknown knob, extra lines, shell metacharacters in the note are data, never executed), `diffChecklist(before, after)` (newly ticked and newly unticked lines), `mayAct(permission)` (true only for write, maintain, admin), `manifestEntry({case, profile, hash, approver, date, files})` with sha256 per file, and `dropEntry`. Write `scripts/docs-media-review.test.mjs` for each, including a hostile note and a case id not in the catalog.
 Done-when: the Check passes.
+Progress: done 2026-10-31; `node --test scripts/docs-media-review.test.mjs` passes 11 tests, including a hostile note, an unknown case, a hash that differs from the ticked one, and a refused approval that copies nothing. Entry points are in `scripts/docs-media-review-cli.mjs` (parse, ticked, approve, issue-body).
 
-### 3.4 Review workflow `docs-media-review.yaml` — [ ]
+### 3.4 Review workflow `docs-media-review.yaml` — [~]
 Class: implement · Needs: 3.2, 3.3, 4.1 · Check: `python3 -c "import yaml; s=open('.github/workflows/docs-media-review.yaml').read(); w=yaml.safe_load(s); on=w.get(True) or w.get('on'); assert set(on.keys())=={'issues','issue_comment'}, on; assert 'pull_request_target' not in s and 'collaborators' in s; print('ok')"`
 Context: FACT-0067: these events run the default branch's file with the repo token for anyone who can comment, so the actor's permission is checked first (`gh api repos/$GITHUB_REPOSITORY/collaborators/$ACTOR/permission`). Only issues labelled `docs-media` are handled. Approval copies the render artifact's files to the `docs-media` branch (4.1) and writes a manifest entry; regeneration dispatches `docs-media.yaml` with the knobs and unticks the line; the note is posted back and the issue gets the label `video-needs-edit`.
 Do: create the workflow with `on: issues: types: [edited]` and `issue_comment: types: [created]`, `permissions: contents: write, issues: write, actions: write`, a first step that exits quietly unless `mayAct`, the comment or body passed only through `env`, and steps that call `scripts/docs-media-review.mjs` entry points (`approve`, `regen`) and push to `docs-media` with a bot identity. After an approval it dispatches `deploy-site.yaml --ref master`.
 Done-when: the Check prints `ok`; after the merge a tick by the owner adds a manifest entry on `docs-media`, a tick by a non-collaborator account does nothing, and `/regen recent-folder pace=slow too fast` re-renders slow and labels the issue.
+Progress: file written 2026-10-31 and the Check prints ok; untried until it is on `develop`, and it needs the `docs-media` branch (4.1).
 
-### 4.1 `docs-media` branch, manifest schema and validator — [ ]
+### 4.1 `docs-media` branch, manifest schema and validator — [~]
 Class: implement · Needs: 1.2 · Check: `node scripts/docs-media-manifest.mjs --self-test`
 Context: DECISION-0158: approved MP4s, GIFs, stills and `manifest.json` live on the orphan branch `docs-media`, which shares no history with `develop`. The manifest is `{ "version": 1, "entries": [ { case, profile, hash, version, approver, date, files: [ { path, sha256, bytes } ] } ] }`. Creating the branch is an outward push.
 Do: create `scripts/docs-media-manifest.mjs` with `validate(manifest, dir)` (every file on the branch is listed, every listed file exists and matches its sha256, every entry has approver and date, no duplicates), a `--check <dir>` mode, and a `--self-test`. Then, with the owner's go-ahead, create the orphan branch with an empty `manifest.json` and a README saying what the branch is (`git switch --orphan docs-media`, commit, push). 
 Done-when: the Check passes, `git ls-remote --heads origin docs-media` prints the branch, and `git merge-base develop origin/docs-media` prints nothing.
+Progress: `scripts/docs-media-manifest.mjs` done and self-tested 2026-10-31; the orphan branch is not created yet (an outward push, wait for the owner).
 
-### 4.2 `deploy-site` fetches and gates the media — [ ]
+### 4.2 `deploy-site` fetches and gates the media — [~]
 Class: implement · Needs: 4.1 · Check: `python3 -c "import yaml; s=open('.github/workflows/deploy-site.yaml').read(); yaml.safe_load(s); assert 'docs-media' in s and 'docs-media-manifest.mjs' in s; print('ok')"`
 Context: `deploy-site.yaml` runs on a push to `master` touching `packages/site/**`, `scripts/check-site.mjs` or `README.md`, and on dispatch; it runs `node scripts/check-site.mjs` then `wrangler pages deploy packages/site --branch=master`. `master` moves only for a release (DECISION-0129), so this change reaches production with the next release; approvals dispatch it with `--ref master`. Guardrail `nothing-is-published-without-a-matching-approval-record`.
 Do: add a step before the check that checks out `docs-media` into `packages/site/media`, runs `node scripts/docs-media-manifest.mjs --check packages/site/media` (fail on any mismatch, copy nothing on failure), and removes `manifest.json` and the README from the deployed folder. Extend `scripts/check-site.mjs` so a site with `media/` also needs every file in it referenced from the manifest, and add the new paths to the workflow's `paths` filter.
 Done-when: the Check prints `ok`, a seeded unlisted file in a scratch copy of the branch makes the validator exit 1, and `node scripts/check-site.mjs` still passes with no `media/` folder.
+Progress: done in the workflow and `scripts/check-site.mjs` 2026-10-31: a seeded unlisted file makes check-site exit 1, and it passes with no `media/`. Reaches production with the next release.
 
-### 4.3 Embed markers and `docs-media.mjs` — [ ]
+### 4.3 Embed markers and `docs-media.mjs` — [~]
 Class: implement · Needs: 4.1 · Check: `node scripts/docs-media.mjs --self-test`
 Context: DECISION-0158 and DECISION-0159: docs mark a place with `<!-- media:<id> -->`; the script fills a block from the manifest. The site origin for media is the production Pages URL (read it from `scripts/check-site.mjs` / `packages/site/index.html`, never guess). The README renders on GitHub, which plays no MP4 inline, so the block is a poster image linking to the video.
 Do: create `scripts/docs-media.mjs` with `embed` (replaces `<!-- media:<id> -->…<!-- /media -->` with `[![<title>](<site>/media/<case>-<profile>.gif)](<site>/media/<case>-<profile>.mp4)` plus a one-line caption saying it is a rendered walkthrough on scripted data) and `check` (every marker names a case whose manifest entry exists and has an approver; a stale input hash only warns). `--self-test` covers a missing id, an unapproved id and an idempotent second `embed`.
 Done-when: the Check passes and `check` is wired into `scripts/check-docs.mjs` (6.2).
+Progress: `scripts/docs-media.mjs` done and self-tested 2026-10-31; wiring `check` into `scripts/check-docs.mjs` waits for 6.2.
 
 ### 5.1 Staleness comment and re-render — [ ]
 Class: implement · Needs: 1.2, 3.2, 4.1 · Check: `node scripts/docs-media-stale.mjs --self-test`

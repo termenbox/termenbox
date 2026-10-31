@@ -3,7 +3,7 @@ name: Deploy landing site
 on:
   push:
     branches: [master]
-    paths: ['packages/site/**', 'scripts/check-site.mjs', 'README.md', '.github/workflows/deploy-site.yaml']
+    paths: ['packages/site/**', 'scripts/check-site.mjs', 'scripts/docs-media-manifest.mjs', 'README.md', '.github/workflows/deploy-site.yaml']
   workflow_dispatch:
 
 permissions:
@@ -21,10 +21,24 @@ jobs:
         with:
           node-version: '20'
 
+      # DECISION-0158: only media the owner approved is published. The orphan docs-media branch holds the files and a manifest
+      # with their sha256; check-site fails the job on any file the manifest does not list or that does not match, so a bad
+      # branch deploys nothing. The manifest and README stay out of the deployed folder.
+      - name: Fetch the approved media
+        run: |
+          if git ls-remote --exit-code --heads origin docs-media >/dev/null 2>&1; then
+            git fetch --depth 1 origin docs-media
+            mkdir packages/site/media
+            git archive FETCH_HEAD | tar -x -C packages/site/media
+          fi
+
       # The page is static; this keeps it from shipping with a missing asset, a title past its length or a command that
       # differs from the README's.
       - name: Check the site
         run: node scripts/check-site.mjs
+
+      - name: Keep the audit files out of the site
+        run: rm -f packages/site/media/manifest.json packages/site/media/README.md
 
       - name: Install Wrangler
         run: npm install -g wrangler
