@@ -22,7 +22,9 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 
 use crate::events::sanitize_block;
+use scan::{Budget, Cancel, Limits, Scanner};
 
+pub mod claude;
 #[cfg(test)]
 mod contract;
 pub mod scan;
@@ -269,6 +271,63 @@ impl fmt::Display for LogError {
 
 impl std::error::Error for LogError {}
 
+/// Most bytes of entries a window carries: a reply must fit the 64 KiB a direct-transport message allows.
+pub const WINDOW_BYTES: usize = 48 * 1024;
+/// Most entries a window or a page reads on each side, whatever the caller asks.
+pub const MAX_SIDE: usize = 200;
+
+/// What a search carries from one session to the next: the reusable scan buffers and the caps shared by all of them.
+pub struct SearchRun {
+    pub scanner: Scanner,
+    pub budget: Budget,
+}
+
+impl SearchRun {
+    pub fn new(limits: Limits, cancel: Cancel) -> Self {
+        SearchRun {
+            scanner: Scanner::new(),
+            budget: Budget::new(limits, cancel),
+        }
+    }
+
+    /// A run for one session that ends after `max_hits`.
+    pub fn single(max_hits: usize) -> Self {
+        let limits = Limits {
+            max_hits,
+            per_session: max_hits,
+            ..Limits::default()
+        };
+        Self::new(limits, Cancel::default())
+    }
+}
+
+/// Drops the entries furthest from `entries[anchor]` until the rest fit `cap` bytes, and returns where the anchor is
+/// now. The anchor itself is cut to fit when it alone is too big.
+pub fn fit_window(entries: &mut Vec<Entry>, mut anchor: usize, cap: usize) -> usize {
+    let size = |e: &Entry| e.text.len() + e.turn.len() + 48;
+    let mut total: usize = entries.iter().map(size).sum();
+    while total > cap && entries.len() > 1 {
+        let gone = if entries.len() - 1 - anchor >= anchor {
+            entries.pop().unwrap()
+        } else {
+            anchor -= 1;
+            entries.remove(0)
+        };
+        total -= size(&gone);
+    }
+    if total > cap {
+        let e = &mut entries[anchor];
+        let room = cap.saturating_sub(e.turn.len() + 48);
+        let mut end = room.min(e.text.len());
+        while !e.text.is_char_boundary(end) {
+            end -= 1;
+        }
+        e.text.truncate(end);
+        e.truncated = true;
+    }
+    anchor
+}
+
 pub trait SessionLog: Send + Sync {
     /// The agent name this adapter serves, as the registry keys it.
     fn agent(&self) -> &str;
@@ -279,6 +338,16 @@ pub trait SessionLog: Send + Sync {
         query: &str,
         max_hits: usize,
     ) -> Result<Vec<Hit>, LogError>;
+    /// `search` under caps shared with other sessions (`run.budget`): stops at `per_session` hits, counts the hits
+    /// it keeps against the budget, and leaves the reason for any cut there. The default ignores the sharing.
+    fn search_in(
+        &self,
+        session: &SessionRef,
+        query: &str,
+        run: &mut SearchRun,
+    ) -> Result<Vec<Hit>, LogError> {
+        self.search(session, query, run.budget.limits().per_session)
+    }
     /// `before` entries, the anchor turn and `after` entries.
     fn window(
         &self,

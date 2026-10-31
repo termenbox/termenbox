@@ -1,6 +1,6 @@
 # Session-log fixtures
 
-Fixtures for the `session_log` adapters (decision 0157). Each agent directory holds the same six cases:
+Fixtures for the `session_log` adapters (decision 0157). Each agent directory holds the same six cases (Claude also has `secret-text` and `unmappable`, which the contract suite needs):
 `short`, `rewind` (Claude) or `fork` (Codex), `torn`, `truncated`, `unknown-version`, `tool-secret`.
 
 They are hand-built from session files measured on 2026-10-31 (Claude Code 2.1.308, Codex 0.166.0): the record

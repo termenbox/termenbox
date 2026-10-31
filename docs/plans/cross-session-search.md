@@ -44,11 +44,19 @@ Progress: done. `session_log/scan.rs` (+ `scan/tests.rs`); 21 scan tests pass in
 - Benchmark (debug build, shared container): 200 MB full scan 12 s, heap peak under 2 KB above the buffers, RSS +0.5 MB. So in a debug build the default 2 s cap cuts it (the test accepts `Cut::Time` or `Cut::Bytes`); a release figure is not measured yet. Step 7's e2e uses a release server, so measure there.
 - Build env: the shared cargo home in the dev container is not writable by another uid, so adding a crate fails. Copy it: `cp -r /cache/cargo/. /cache/cargo-<user>/` and set `CARGO_HOME=/cache/cargo-<user>` (the first build downloads again, about 4 min).
 
-### 4 Claude Code adapter — [ ]
+### 4 Claude Code adapter — [x]
 Class: implement · Needs: 2, 3 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log::claude`
 Context: Fixtures from step 1. The JSONL is a tree (parent ids), so a rewind or fork leaves abandoned branches; the adapter shows the active branch only. Claude's format is internal and can change.
 Do: Add `session_log/claude.rs` implementing the port: locate the file for a session id and directory, `search` through the scan engine, `window` returning the entries around a hit's turn within the 48 KiB cap, `page` with fingerprinted cursors. An unknown version or unreadable file disables Claude search only.
 Done-when: the contract suite passes over the Claude fixtures, including the rewind case, and a window around a hit returns the hit's turn id and fits 48 KiB.
+Progress: done. `session_log/claude.rs` (+ `claude/tests.rs`); 39 `session_log` tests pass in the container, clippy and rustfmt clean for the module. Notes for later steps:
+- Trait: `SessionLog::search_in(session, query, &mut SearchRun)` is the call step 7 makes for each session with one `SearchRun` (scan buffers + shared `Budget`); `search` is the single-session form. It counts kept hits against the budget and leaves any `cut` there. The scan closure cannot hold the budget, so hits are recorded after the file's scan.
+- `ClaudeLog::new(projects_dir)` / `from_env()` (`$CLAUDE_CONFIG_DIR` or `~/.claude`, then `projects`). Only `<projects>/<dir with non-alphanumerics as "->/<id>.jsonl` is opened, and an id that is not `[A-Za-z0-9_-]+` reaches nothing. Not measured: Claude's rule for very long directory names (it may shorten them with a hash); such a session reads as `Missing`.
+- Active branch = chain from the last user/assistant record to the root via `parentUuid` (or `logicalParentUuid` over a compaction); sidechains are dropped. `Chain` (offsets only) is cached for 4 files by exact fingerprint and rebuilt after an append. This replaced `LineIndex` for Claude: the branch needs a full pass anyway. Codex can still use `LineIndex`/`IndexCache`.
+- Turn ids: the record `uuid`, or `<uuid>:<n>` for a later block of one record. A page cursor's `pos` is a record place on the branch, a page may hold more than `count` (a record's entries come together). A rewind appended after a cursor was taken can move records under it; the fingerprint allows growth, so this is not caught.
+- `fit_window` + `WINDOW_BYTES` (48 KiB) + `MAX_SIDE` (200) are in `mod.rs` for the Codex adapter and step 7. Pages are not size-capped here: step 7 caps the reply.
+- Head check: first line not JSON, or the first `version` is not major 2 -> `Disabled`. A file with one unfinished line and no newline reads as empty (a session being born), not off.
+- Fixtures changed: `torn` is cut inside the message text; `tool-secret` no longer says "token" in user text (the scrubber's `[secret]` is not idempotent, which the suite checks). Added `secret-text` and `unmappable` (README).
 
 ### 5 Codex adapter — [ ]
 Class: implement · Needs: 2, 3 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log::codex`
