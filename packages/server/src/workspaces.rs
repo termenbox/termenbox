@@ -1756,7 +1756,7 @@ impl WorkspaceManager {
                 let before = self.registry.record(&workspace_id).and_then(|r| r.focus);
                 self.bump_focus(&workspace_id);
                 if self.registry.has(&workspace_id) {
-                    let (attached, att) = self
+                    let (attached, att, resumed) = self
                         .registry
                         .attach(
                             self.backend.as_ref(),
@@ -1773,6 +1773,7 @@ impl WorkspaceManager {
                         &ServerMessage::WorkspaceAttached {
                             workspace_id: workspace_id.clone(),
                             tab: Some(attached.clone()),
+                            resumed,
                         },
                     )
                     .await?;
@@ -1801,6 +1802,7 @@ impl WorkspaceManager {
                         &ServerMessage::WorkspaceAttached {
                             workspace_id,
                             tab: None,
+                            resumed: vec![],
                         },
                     )
                     .await?;

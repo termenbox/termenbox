@@ -196,6 +196,8 @@ async fn a_migrated_tmux_session_keeps_its_windows_as_tabs_and_comes_back_as_she
 struct Fake {
     windows: Mutex<HashMap<String, Vec<String>>>,
     next: Mutex<u32>,
+    /// Every tab the registry asked for, in order: the template and the resume command each was started with.
+    specs: Mutex<Vec<(String, Option<String>)>>,
 }
 
 impl Fake {
@@ -203,6 +205,7 @@ impl Fake {
         Self {
             windows: Mutex::new(HashMap::new()),
             next: Mutex::new(0),
+            specs: Mutex::new(Vec::new()),
         }
     }
 
@@ -285,14 +288,22 @@ impl WorkspaceBackend for Fake {
             .collect())
     }
 
-    async fn new_tab(&self, id: &str, _: &TabSpec) -> Result<String> {
+    async fn new_tab(&self, id: &str, spec: &TabSpec) -> Result<String> {
+        self.specs
+            .lock()
+            .unwrap()
+            .push((spec.kind.clone(), spec.resume.clone()));
         if !self.windows.lock().unwrap().contains_key(id) {
             return Err(anyhow!("no session"));
         }
         Ok(self.mint(id))
     }
 
-    async fn ensure_session(&self, id: &str, _: &str, _: &str, _: &TabSpec) -> Result<String> {
+    async fn ensure_session(&self, id: &str, _: &str, _: &str, spec: &TabSpec) -> Result<String> {
+        self.specs
+            .lock()
+            .unwrap()
+            .push((spec.kind.clone(), spec.resume.clone()));
         self.windows
             .lock()
             .unwrap()
@@ -736,4 +747,103 @@ fn a_session_id_survives_a_reload_and_is_not_in_debug_output() {
     let known = again.known_sessions();
     assert_eq!(known[0].session_id, "secret-id-123");
     assert!(!format!("{known:?}").contains("secret-id-123"));
+}
+
+#[tokio::test]
+async fn reopening_a_dormant_workspace_resumes_the_agents_that_can_and_says_so_per_tab() {
+    let tmp = temp("reopen");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let root = tmp.to_string_lossy().into_owned();
+    let registry = Registry::memory();
+    registry.state.lock().unwrap().workspaces = vec![workspace(
+        "ws-down",
+        &root,
+        vec![
+            tab("t1", "shell", "", None),
+            tab("t2", "claude", "", None),
+            tab("t3", "codex", "", None),
+            tab("t4", "opencode", "", None),
+            tab("t5", "gemini", "", None),
+            tab("t6", "claude", "", None),
+        ],
+    )];
+    assert!(registry.set_agent_session("ws-down", "t2", "c-1"));
+    assert!(registry.set_agent_session("ws-down", "t3", "x-1"));
+    assert!(registry.set_agent_session("ws-down", "t5", "g-1"));
+    // A token that is not plain is never put on a command line.
+    assert!(registry.set_agent_session("ws-down", "t4", "a b; rm -rf /"));
+    let backend = Fake::new();
+    let record = registry.record("ws-down").unwrap();
+    let said = registry
+        .ensure_windows(&backend, &record, true)
+        .await
+        .unwrap();
+    let got: Vec<(&str, &str, Option<&str>)> = said
+        .iter()
+        .map(|r| (r.tab.as_str(), r.outcome.as_str(), r.reason.as_deref()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("t2", "resumed", None),
+            ("t3", "resumed", None),
+            (
+                "t4",
+                "shell",
+                Some("this agent cannot resume a conversation")
+            ),
+            (
+                "t5",
+                "shell",
+                Some("this agent cannot resume a conversation")
+            ),
+            (
+                "t6",
+                "shell",
+                Some("no conversation was recorded for this tab")
+            ),
+        ]
+    );
+    let specs = backend.specs.lock().unwrap().clone();
+    assert_eq!(
+        specs,
+        [
+            ("shell".to_string(), None),
+            (
+                "claude".to_string(),
+                Some("claude --resume c-1".to_string())
+            ),
+            ("codex".to_string(), Some("codex resume x-1".to_string())),
+            ("shell".to_string(), None),
+            ("shell".to_string(), None),
+            ("shell".to_string(), None),
+        ]
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn a_peek_or_a_new_tab_never_resumes_an_agent() {
+    let tmp = temp("noreopen");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let root = tmp.to_string_lossy().into_owned();
+    let registry = Registry::memory();
+    registry.state.lock().unwrap().workspaces = vec![workspace(
+        "ws-down",
+        &root,
+        vec![tab("t1", "claude", "", None)],
+    )];
+    assert!(registry.set_agent_session("ws-down", "t1", "c-1"));
+    let backend = Fake::new();
+    let record = registry.record("ws-down").unwrap();
+    let said = registry
+        .ensure_windows(&backend, &record, false)
+        .await
+        .unwrap();
+    assert!(said.is_empty());
+    assert_eq!(
+        backend.specs.lock().unwrap().clone(),
+        [("shell".to_string(), None)]
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
 }

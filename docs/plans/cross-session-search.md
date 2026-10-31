@@ -115,11 +115,15 @@ Done: `lib/acpHistory.ts` (file entries become negative-id `Entry`s that `AcpEnt
 - A changed fingerprint says so (`history-changed` note) but does not re-run the search: the query is forgotten when the sheet closes (the privacy rule). Step 10 may reopen the sheet with the query if it wants a re-run.
 - The window asked is 12 turns before and 6 after. `e2e/dist` is rebuilt by `pnpm e2e:build`; locally `npx vite build -c e2e/vite.config.ts` then `CHROME_PATH=/usr/bin/google-chrome node e2e/acp-history.mjs`.
 
-### 10 Tap actions: switch or resume — [ ]
+### 10 Tap actions: switch or resume — [ ] (10a server resume done, 10b client landings open)
 Class: implement · Needs: 8, 9 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test'`
 Context: Decision 0156. Resume is an explicit action and reuses 0152's command table (`claude --resume <id>`, `codex resume <id>`, `opencode --session <id>`) on the server; the reopen reply says `resumed` or `shell` per tab. Nothing in the client types text into an agent.
 Do: A tap on a hit in an open workspace switches to the tab; in an ACP workspace it then runs step 9's jump. A tap on a hit in a dormant workspace shows a Resume action, and after it completes does the same landing. A terminal tab only switches. If the resume fell back to a shell, say so and do not claim the hit is shown.
 Done-when: component tests cover the three landings (ACP open, terminal open, dormant resume) and the resume fallback message.
+
+10a done (server half of decision 0152, which did not exist yet): `adapters::resume_command` (claude, codex, opencode; the id must be a plain token of at most 128 characters, else `None`), `TabSpec.resume`, `start_template` types the resume command line in place of the bare name, `Registry::ensure_windows(.., reopen)` plans each dormant tab (`reopen_plan`) and `attach` returns the per-tab `TabResumed` list, sent as `workspace_attached.resumed` (core `TabResumed`, client `protocol.ts`). Only `attach` reopens (`reopen = true`); a peek, a prompt answer or a new tab in a dormant workspace recreates shells as before. Tests: `registry::tests::reopening_a_dormant_workspace_*`, `a_peek_or_a_new_tab_never_resumes_an_agent`, `adapters::tests::a_resume_command_*`.
+- `resumed` means the resume command was *started* in the tab. The command is typed into the fresh shell, so a missing session file or an uninstalled agent leaves a shell with the agent's error visible, and the reply cannot say so. `shell` is reported only when the server knows beforehand (no recorded session, no resume command for the agent, an id that is not a plain token).
+- On this machine: `sg docker -c 'scripts/dev.sh sh -c "export CARGO_HOME=/cache/cargo-sergei CARGO_TARGET_DIR=/cache/target/sergei; cargo test ..."'`; the shared `/cache/cargo` belongs to another uid. `cargo fmt` needs `HOME=/tmp`. `cargo clippy -D warnings` fails on `bridge-contract` and `WorkspaceInfo` with the local toolchain (1.99), not on this change.
 
 ### 11 End-to-end test and privacy check — [ ]
 Class: review · Needs: 10 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && node e2e/run.mjs'`

@@ -132,7 +132,8 @@ export type ServerMessage =
   | { type: 'dir_listing'; path: string; parent?: string | null; entries: DirEntry[]; truncated?: boolean; home: string }
   /** `list_dir` was refused or failed; `reason` is a short sentence to show. */
   | { type: 'dir_error'; reason: string }
-  | { type: 'workspace_attached'; workspace_id: string; tab?: string | null }
+  /** `resumed`: set when this attach reopened a dormant workspace (decision 0152): per tab that held an agent conversation, whether its resume command was started or the tab is a shell again (`reason` says why). */
+  | { type: 'workspace_attached'; workspace_id: string; tab?: string | null; resumed?: TabResumed[] }
   | { type: 'output'; data: string }
   /** Never on the wire as JSON: terminal bytes from the `term` lane, as `Connection` hands them to listeners. */
   | { type: 'term'; bytes: Uint8Array }
@@ -169,6 +170,9 @@ export type ServerMessage =
   | { type: 'previous_exit'; at_ms: number; streak: number; crashed: boolean }
   /** One part (from 0, in order) of the answer to `diagnostics_bundle`: the direct transport carries 64 KiB a message. */
   | { type: 'diagnostics_bundle'; part: number; parts: number; text: string };
+
+/** What reopening a dormant workspace did to one tab. */
+export interface TabResumed { tab: string; outcome: 'resumed' | 'shell' | string; reason?: string }
 
 /** One match of a search. `up` false: the workspace is dormant and the hit offers Resume. `snippet` is scrubbed; `highlight` is [start, end) in characters of `snippet`. */
 export interface SearchHitMessage {

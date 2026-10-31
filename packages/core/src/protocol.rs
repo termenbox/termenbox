@@ -540,6 +540,16 @@ impl ClientMessage {
     }
 }
 
+/// What reopening a dormant workspace did to one tab that held an agent conversation (decision 0152). `outcome` is
+/// `resumed` (the agent's resume command was started in the tab) or `shell` (the tab is a shell again, `reason` says why).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TabResumed {
+    pub tab: String,
+    pub outcome: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// Server → Client (WebSocket)
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -682,6 +692,10 @@ pub enum ServerMessage {
         /// The tab the terminal is attached to; absent from an older server.
         #[serde(default)]
         tab: Option<String>,
+        /// Set when this attach reopened a dormant workspace: what became of each tab that held an agent conversation
+        /// (decision 0152). Absent from an older server and when nothing was reopened.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        resumed: Vec<TabResumed>,
     },
     Output {
         data: String,
@@ -1680,6 +1694,7 @@ mod tests {
         let v = serde_json::to_value(ServerMessage::WorkspaceAttached {
             workspace_id: "x".into(),
             tab: None,
+            resumed: vec![],
         })
         .unwrap();
         assert_eq!(v["type"], "workspace_attached");

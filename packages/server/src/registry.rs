@@ -15,7 +15,7 @@ use std::sync::Mutex;
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use termenbox_core::protocol::{Label, TabInfo, WorkspaceInfo};
+use termenbox_core::protocol::{Label, TabInfo, TabResumed, WorkspaceInfo};
 
 use crate::backend::{
     clean_label, tab_label, valid_dir, valid_template, CreatedWorkspace, TabSpec, WorkspaceBackend,
@@ -290,6 +290,7 @@ impl Registry {
             kind: kind.into(),
             // A workspace without a directory starts where tmux starts; the real path is read back below.
             dir: explicit.clone().unwrap_or_default(),
+            resume: None,
         };
         let kinds = backend.kinds();
         let chosen = backend_kind
@@ -398,7 +399,7 @@ impl Registry {
         if record.tabs.iter().any(|t| t.window.is_none())
             || backend.windows(&record.id).await.is_err()
         {
-            self.ensure_windows(backend, &record).await?;
+            self.ensure_windows(backend, &record, false).await?;
         }
         let absolute = resolve_tab_dir(&root, dir)?;
         let (tab, window) = self
@@ -439,6 +440,7 @@ impl Registry {
             label: unique_label(&label, &record.tabs),
             kind: kind.into(),
             dir: absolute.into(),
+            resume: None,
         };
         let window = backend.new_tab(&record.id, &spec).await?;
         Ok((
@@ -575,6 +577,7 @@ impl Registry {
             label: label.clone(),
             kind: "shell".into(),
             dir: record.dir.clone(),
+            resume: None,
         };
         let window = backend
             .ensure_session(&record.id, record.label.as_str(), &record.dir, &spec)
@@ -729,7 +732,7 @@ impl Registry {
         tab: Option<&str>,
         cols: u16,
         rows: u16,
-    ) -> Result<(String, Attachment)> {
+    ) -> Result<(String, Attachment, Vec<TabResumed>)> {
         let (record, tab) = {
             let state = self.state.lock().unwrap();
             let record = state
@@ -745,7 +748,7 @@ impl Registry {
                 .ok_or_else(|| anyhow!("This workspace has no tabs"))?;
             (record, id)
         };
-        self.ensure_windows(backend, &record).await?;
+        let resumed = self.ensure_windows(backend, &record, true).await?;
         let record = self
             .state
             .lock()
@@ -764,18 +767,23 @@ impl Registry {
             }
             self.save(&state);
         }
-        Ok((tab, attachment))
+        Ok((tab, attachment, resumed))
     }
 
-    /// Recreates the tmux session and every tab as a shell when it is dormant (decision 0149).
+    /// Recreates the tmux session and every tab when it is dormant (decision 0149). A tab that held an agent
+    /// conversation starts that agent's resume command (decision 0152) and is reported as `resumed`; one that cannot
+    /// is a shell again and says why. Nothing else resumes an agent: `reopen` is true only when a person attaches to the
+    /// workspace, never for a peek, a prompt answer or a new tab.
+    /// An empty list when the session was alive.
     async fn ensure_windows(
         &self,
         backend: &dyn WorkspaceBackend,
         record: &WorkspaceRecord,
-    ) -> Result<()> {
+        reopen: bool,
+    ) -> Result<Vec<TabResumed>> {
         if backend.windows(&record.id).await.is_ok() {
             // The session is alive; a tab whose window was closed outside is recreated alone, by window_for_tab.
-            return Ok(());
+            return Ok(vec![]);
         }
         if record.tabs.is_empty() {
             let id = format!("t{}", record.next_tab.max(1));
@@ -784,6 +792,7 @@ impl Registry {
                 label: "Shell".into(),
                 kind: "shell".into(),
                 dir: record.dir.clone(),
+                resume: None,
             };
             let window = backend
                 .ensure_session(&record.id, record.label.as_str(), &record.dir, &spec)
@@ -803,15 +812,22 @@ impl Registry {
                 renumber_tabs(r);
                 self.save(&state);
             }
-            return Ok(());
+            return Ok(vec![]);
         }
         let mut windows = HashMap::new();
+        let mut resumed = Vec::new();
         for (i, tab) in record.tabs.iter().enumerate() {
+            let (kind, resume) = if reopen {
+                self.reopen_plan(tab, &mut resumed)
+            } else {
+                ("shell".into(), None)
+            };
             let spec = TabSpec {
                 id: tab.id.clone(),
                 label: tab.label.as_str().to_string(),
-                kind: "shell".into(),
+                kind,
                 dir: resolve_tab_dir(&record.dir, &tab.dir)?,
+                resume,
             };
             let window = if i == 0 {
                 backend
@@ -831,7 +847,35 @@ impl Registry {
             }
             self.save(&state);
         }
-        Ok(())
+        Ok(resumed)
+    }
+
+    /// The template and resume command a dormant tab reopens with, and what is said about it. The session id is never
+    /// logged or sent: the reply names the tab only.
+    fn reopen_plan(&self, tab: &TabRecord, said: &mut Vec<TabResumed>) -> (String, Option<String>) {
+        if tab.kind == "shell" {
+            return ("shell".into(), None);
+        }
+        let why = match tab.agent_session.as_deref() {
+            None => "no conversation was recorded for this tab",
+            Some(id) => match crate::adapters::resume_command(&tab.kind, id) {
+                Some(command) => {
+                    said.push(TabResumed {
+                        tab: tab.id.clone(),
+                        outcome: "resumed".into(),
+                        reason: None,
+                    });
+                    return (tab.kind.clone(), Some(command));
+                }
+                None => "this agent cannot resume a conversation",
+            },
+        };
+        said.push(TabResumed {
+            tab: tab.id.clone(),
+            outcome: "shell".into(),
+            reason: Some(why.into()),
+        });
+        ("shell".into(), None)
     }
 
     /// The window of a tab, for a peek or a prompt answer.
@@ -856,7 +900,7 @@ impl Registry {
             (record, id)
         };
         if backend.windows(&record.id).await.is_err() {
-            self.ensure_windows(backend, &record).await?;
+            self.ensure_windows(backend, &record, false).await?;
         }
         let Some(tab) = tab else {
             return Ok(None);
@@ -897,6 +941,7 @@ impl Registry {
             label: known.label.as_str().to_string(),
             kind: "shell".into(),
             dir: resolve_tab_dir(&record.dir, &known.dir)?,
+            resume: None,
         };
         let window = backend.new_tab(&record.id, &spec).await?;
         let mut state = self.state.lock().unwrap();

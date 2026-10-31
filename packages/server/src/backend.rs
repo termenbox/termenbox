@@ -20,6 +20,9 @@ pub struct TabSpec {
     pub label: String,
     pub kind: String,
     pub dir: String,
+    /// The command line that resumes the tab's agent conversation (decision 0152), typed in place of the bare template
+    /// name. Only a reopened dormant workspace sets it.
+    pub resume: Option<String>,
 }
 
 /// What creating a workspace produced: the id the host chose (a minted one for tmux and ACP, the typed name for a
@@ -884,14 +887,20 @@ impl TmuxBackend {
     }
 
     /// Types the template's command into a tab's shell, so quitting the agent leaves the shell (and the tab) alive.
-    async fn start_template(&self, id: &str, window: &str, kind: &str) -> Result<()> {
+    async fn start_template(
+        &self,
+        id: &str,
+        window: &str,
+        kind: &str,
+        resume: Option<&str>,
+    ) -> Result<()> {
         if kind == "shell" {
             return Ok(());
         }
         if !crate::adapters::AGENTS.contains(&kind) {
             return Err(anyhow!("Unknown agent template"));
         }
-        self.send_text_to_window(id, window, &format!("{kind}\r"))
+        self.send_text_to_window(id, window, &format!("{}\r", resume.unwrap_or(kind)))
             .await
     }
 }
@@ -978,7 +987,7 @@ impl WorkspaceBackend for TmuxBackend {
             let _ = self.kill(&id).await;
             return Err(e);
         }
-        if let Err(e) = self.start_template(&id, &window, &first.kind).await {
+        if let Err(e) = self.start_template(&id, &window, &first.kind, None).await {
             let _ = self.kill(&id).await;
             return Err(e);
         }
@@ -1045,7 +1054,8 @@ impl WorkspaceBackend for TmuxBackend {
         self.rename(id, label).await?;
         self.set_tab_options(id, &window, &first.id, &first.label)
             .await?;
-        self.start_template(id, &window, &first.kind).await?;
+        self.start_template(id, &window, &first.kind, first.resume.as_deref())
+            .await?;
         Ok(window)
     }
 
@@ -1081,7 +1091,10 @@ impl WorkspaceBackend for TmuxBackend {
         }
         self.set_tab_options(id, &window, &spec.id, &spec.label)
             .await?;
-        if let Err(e) = self.start_template(id, &window, &spec.kind).await {
+        if let Err(e) = self
+            .start_template(id, &window, &spec.kind, spec.resume.as_deref())
+            .await
+        {
             let _ = self.close_tab(id, &window).await;
             return Err(e);
         }
