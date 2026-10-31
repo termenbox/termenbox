@@ -23,10 +23,20 @@ export function handleOpenRequests(parser: OscParser, open: (url: string) => voi
   return { dispose: () => handle.dispose() };
 }
 
-/** Opens a web address in a new window without an opener; false when it is not a web address or the browser blocked it. */
-export function openWeb(url: string, win: { open(url: string, target: string, features: string): Window | null } = window): boolean {
+/**
+ * Opens a web address in a new window; false when it is not a web address or the browser blocked the window. `noopener`
+ * cannot be asked for here: the browser then returns null for a window it did open, which looks like a block.
+ */
+export function openWeb(url: string, win: { open(url: string, target: string, features?: string): Window | null } = window): boolean {
   if (!/^https?:\/\/[^/?#\s]+/.test(url)) return false;
-  return win.open(url, '_blank', 'noopener,noreferrer') !== null;
+  const opened = win.open(url, '_blank');
+  if (!opened) return false;
+  try {
+    opened.opener = null;
+  } catch {
+    /* a window we cannot reach is one that has no link back to us */
+  }
+  return true;
 }
 
 /**
