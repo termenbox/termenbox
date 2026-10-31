@@ -1,7 +1,8 @@
 ---
 id: 0154-a-container-install-updates-through-a-host-timer-that-pulls-the-digest-the-signed-manifest-names
 title: A container install updates through a host timer that pulls the digest the signed manifest names
-status: draft
+status: active
+accepted-by: Sergey Strebulaev <s@vivantel.dev>
 date: 2026-10-31
 track: product
 tags: [release, updater, container, security]

@@ -284,9 +284,9 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
 ### U8 [ ] Container updater (go/no-go)
 
 - Needs: U5b and an owner decision. Do not start without it; open a decision draft instead.
-- Notes: see "Container mode". Decision 0154 is drafted (not accepted); on acceptance this splits into U8a manifest
+- Notes: see "Container mode". Decision 0154 accepted by the owner 2026-10-31; U8 is split into U8a manifest
   `image` digests and pipeline, U8b `container.json` journal and installer timer, U8c helper apply with recreate and
-  rollback, U8d docs and an end-to-end test with a local registry. No code before the owner's `accepted-by`.
+  rollback, U8d docs and an end-to-end test with a local registry. 
 
 ## Risks
 
@@ -312,3 +312,4 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
 - 2026-10-31 U6 done: update push (server name and kind only), once per version, quiet hours respected; next step U7 (observability and docs).
 - 2026-10-31 U7 done: audit line, updater section in the diagnostics bundle, fact 0064, guide; U5b and U8 remain, both blocked (a release with U5a; an owner decision).
 - 2026-10-31 U8: decision 0154 drafted (digest in the signed manifest, host timer, recreate and roll back); waiting for the owner to accept it before any code.
+- 2026-10-31 U8: decision 0154 accepted by the owner; next U8a.
