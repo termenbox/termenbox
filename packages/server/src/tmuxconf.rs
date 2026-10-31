@@ -79,6 +79,16 @@ pub fn render(term: &str, local: Option<&Path>, shim: Option<&Path>) -> String {
     out.push_str("set -g mouse on\nset -g set-clipboard on\nset -gq allow-passthrough on\n");
     // The client draws its own workspace chrome, so tmux's status line only costs a row of the terminal.
     out.push_str("set -g status off\n");
+    // With the mouse on, a right-click (a Ctrl+click on a Mac) opens tmux's own menu drawn inside the terminal, which
+    // looks like a broken screen in the browser; the client has its own menus. The owner's file can bind them again.
+    for key in [
+        "MouseDown3Pane",
+        "M-MouseDown3Pane",
+        "MouseDown3Status",
+        "MouseDown3StatusLeft",
+    ] {
+        out.push_str(&format!("unbind -nq {key}\n"));
+    }
     if let Some(shim) = shim {
         out.push_str(&format!(
             "set-environment -g BROWSER \"{}\"\n",
@@ -155,6 +165,28 @@ mod tests {
         assert!(c.contains("set -g set-clipboard on\n"));
         assert!(c.find("set -g status off").unwrap() < c.find("source-file").unwrap());
         assert!(!render("xterm-256color", None, None).contains("source-file"));
+    }
+
+    #[test]
+    fn tmux_s_own_mouse_menus_are_off_and_the_owner_can_bring_them_back() {
+        let c = render(
+            "xterm-256color",
+            Some(Path::new("/c/tmux.local.conf")),
+            None,
+        );
+        for key in [
+            "MouseDown3Pane",
+            "M-MouseDown3Pane",
+            "MouseDown3Status",
+            "MouseDown3StatusLeft",
+        ] {
+            let line = format!("unbind -nq {key}\n");
+            assert!(c.contains(&line), "{key}");
+            assert!(
+                c.find(&line).unwrap() < c.find("source-file").unwrap(),
+                "{key}"
+            );
+        }
     }
 
     #[test]
