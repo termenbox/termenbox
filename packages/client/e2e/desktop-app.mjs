@@ -530,19 +530,12 @@ async function phone(shared) {
  * The same copy, in the terminal a full-screen TUI makes: the program reports the mouse (opencode, vim, tmux with
  * `mouse on`), so xterm hands the pointer to the program and only a Shift-drag makes a local selection.
  */
-/** The Needs you card floats over the top rows of the terminal; these tests select text there, so they put it away first. */
-const dismissCard = async (page) => {
-  const x = page.getByRole('status').getByRole('button', { name: 'Dismiss' }).first();
-  if (await x.count()) await x.click();
-};
-
 async function copySelectionWithMouseMode(shared) {
   const t = await startApp(shared, { viewport: { width: 1280, height: 800 }, clipboard: true });
   const { page, server } = t;
   const LINE = 'MOUSE-MODE-67890';
   await t.open();
   await t.openWorkspace('s1');
-  await dismissCard(t.page);
   // What tmux sends the browser when the pane app (here opencode) reports the mouse: SGR, all motion.
   server.output('\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h');
   server.output(`${LINE}\r\n`);
@@ -615,7 +608,6 @@ async function copySelection(shared) {
   const LINE = 'COPY-TARGET-12345';
   await t.open();
   await t.openWorkspace('s1');
-  await dismissCard(t.page);
   server.output(`${LINE}\r\n`);
   await page.waitForFunction((want) => [...document.querySelectorAll('.xterm-rows > div')].some((d) => d.textContent.includes(want)), LINE);
   const row = page.locator('.xterm-rows > div').filter({ hasText: LINE }).first();
@@ -714,7 +706,6 @@ async function clipboardDenied(shared) {
   const LINE = 'DENIED-TARGET-777';
   await t.open();
   await t.openWorkspace('s1');
-  await dismissCard(t.page);
   server.output(`${LINE}\r\n`);
   await page.waitForFunction((want) => [...document.querySelectorAll('.xterm-rows > div')].some((d) => d.textContent.includes(want)), LINE);
   const box = await page.locator('.xterm-rows > div').filter({ hasText: LINE }).first().boundingBox();
