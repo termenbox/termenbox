@@ -320,6 +320,31 @@ struct Ring {
     task: Option<Task>,
 }
 
+/// The workspace's state from its tabs' reducers: a wait beats work, work beats a result, and with nothing live the
+/// tab that spoke last decides how things ended.
+fn aggregate(reducers: &HashMap<(String, String), Reducer>, workspace: &str) -> Option<AgentState> {
+    let mut tabs = reducers
+        .iter()
+        .filter(|((w, _), _)| w == workspace)
+        .map(|(_, r)| r);
+    let mut working = false;
+    let mut latest: Option<&Reducer> = None;
+    for r in tabs.by_ref() {
+        if r.blocked() {
+            return Some(AgentState::NeedsInput);
+        }
+        working |= r.working();
+        if latest.is_none_or(|l| r.last_edge_at() > l.last_edge_at()) {
+            latest = Some(r);
+        }
+    }
+    if working {
+        Some(AgentState::Working)
+    } else {
+        latest.and_then(Reducer::state)
+    }
+}
+
 /// The reducer edge an event stands for. Tool events count only from hooks: an ACP tool call is not a turn edge.
 fn edge_of(source: Source, kind: &EventKind) -> Option<Edge> {
     match kind {
@@ -436,7 +461,8 @@ pub struct EventHub {
     /// The Activity last announced per workspace, so only a change is sent.
     derived: Arc<Mutex<HashMap<String, WorkspaceActivity>>>,
     /// The turn-and-obligation reducer of each workspace whose agent reports turns (hooks, ACP).
-    reducers: Arc<Mutex<HashMap<String, Reducer>>>,
+    /// One reducer per (workspace, tab); a pane the hooks could not place has the tab "".
+    reducers: Arc<Mutex<HashMap<(String, String), Reducer>>>,
     status_tx: broadcast::Sender<StatusChange>,
     /// The tasks agents worked on, kept on disk (U12); absent in tests that do not need it.
     history: Option<Arc<crate::history::History>>,
@@ -734,51 +760,121 @@ impl EventHub {
         if matches!(kind, EventKind::Tool { .. }) {
             self.push_tab(workspace, source, confidence, kind, now, tab);
         }
-        let next = {
+        let key = (workspace.to_string(), tab.unwrap_or("").to_string());
+        let (next, prev, derived, before, after) = {
             let mut reducers = self.reducers.lock().unwrap();
-            if !reducers.contains_key(workspace) && reducers.len() >= MAX_SESSIONS {
+            if !reducers.contains_key(&key) && reducers.len() >= MAX_SESSIONS {
                 return;
             }
-            reducers
-                .entry(workspace.to_string())
-                .or_default()
-                .apply(edge, now)
+            let before = aggregate(&reducers, workspace);
+            let r = reducers.entry(key).or_default();
+            let prev = r.state();
+            let next = r.apply(edge, now);
+            let derived = r.state();
+            (next, prev, derived, before, aggregate(&reducers, workspace))
         };
-        if let Some(state) = next {
-            self.push_tab(
-                workspace,
-                source,
-                confidence,
-                EventKind::State { state },
-                now,
-                tab,
-            );
+        // The turn and obligation edges are not states, so the tab hears the state the reducer holds after each of
+        // them, changed or not: a second tab starting a turn while the first works changes nothing workspace-wide.
+        if let (Some(tab), Some(state), Some(status)) = (tab, derived, &self.tab_status) {
+            status.set_hook_state(workspace, tab, state, now);
         }
+        // A tab's own change raises and clears the tab's own attention; the workspace shows the aggregate.
+        if let Some(state) = next {
+            self.settle_tab(workspace, tab, prev, state, source, confidence, now);
+        }
+        if let Some(state) = after.filter(|_| next.is_some() || before != after) {
+            self.push_reduced(workspace, source, confidence, state, now, tab);
+        }
+    }
+
+    /// The workspace's state, as the aggregate of its tabs, goes through the ring; attention was settled per tab.
+    fn push_reduced(
+        &self,
+        workspace: &str,
+        source: Source,
+        confidence: Confidence,
+        state: AgentState,
+        now: u64,
+        tab: Option<&str>,
+    ) {
+        self.push_event(
+            workspace,
+            source,
+            confidence,
+            EventKind::State { state },
+            now,
+            tab,
+            true,
+        );
+    }
+
+    /// The attention a tab's own state change raises or clears. Only a hook (a fact) raises; a reconciliation
+    /// clears a wait but is no fact that something finished or failed.
+    #[allow(clippy::too_many_arguments)]
+    fn settle_tab(
+        &self,
+        workspace: &str,
+        tab: Option<&str>,
+        prev: Option<AgentState>,
+        state: AgentState,
+        source: Source,
+        confidence: Confidence,
+        now: u64,
+    ) {
+        if state != AgentState::NeedsInput {
+            self.clear_where(workspace, |a| {
+                a.kind == AttentionKind::NeedsInput && a.tab.as_deref() == tab
+            });
+        }
+        let raise = match state {
+            AgentState::NeedsInput => Some(AttentionKind::NeedsInput),
+            AgentState::Done => Some(AttentionKind::FinishedUnseen),
+            AgentState::Idle if prev == Some(AgentState::Working) => {
+                Some(AttentionKind::FinishedUnseen)
+            }
+            AgentState::Error => Some(AttentionKind::Failed),
+            _ => None,
+        };
+        if let Some(k) = raise.filter(|_| confidence == Confidence::High) {
+            self.raise(workspace, k, source, now, tab);
+        }
+        self.refresh(now);
     }
 
     /// What the screen of an agent workspace shows now, against what the reducer believes. Closes an obligation or a
     /// turn that ended without telling anyone (Esc sends no hook); never opens one.
-    pub fn reconcile(&self, workspace: &str, screen: Screen) {
-        self.reconcile_at(workspace, screen, now_ms());
+    pub fn reconcile(&self, workspace: &str, tab: Option<&str>, screen: Screen) {
+        self.reconcile_at(workspace, tab, screen, now_ms());
     }
 
-    fn reconcile_at(&self, workspace: &str, screen: Screen, now: u64) {
-        let next = {
+    fn reconcile_at(&self, workspace: &str, tab: Option<&str>, screen: Screen, now: u64) {
+        let key = (workspace.to_string(), tab.unwrap_or("").to_string());
+        let (next, prev, after) = {
             let mut reducers = self.reducers.lock().unwrap();
-            reducers
-                .get_mut(workspace)
-                .and_then(|r| r.reconcile(screen, now))
+            let Some(r) = reducers.get_mut(&key) else {
+                return;
+            };
+            let prev = r.state();
+            let next = r.reconcile(screen, now);
+            (next, prev, aggregate(&reducers, workspace))
         };
         if let Some(state) = next {
+            if let (Some(tab), Some(status)) = (tab, &self.tab_status) {
+                status.set_hook_state(workspace, tab, state, now);
+            }
             // A reconciliation is a fact about the screen, not a finished turn: it clears a wait but raises nothing.
-            self.push_tab(
+            self.settle_tab(
                 workspace,
+                tab,
+                prev,
+                state,
                 Source::Hook,
                 Confidence::Medium,
-                EventKind::State { state },
                 now,
-                None,
             );
+            if let Some(state) = after {
+                self.push_reduced(workspace, Source::Hook, Confidence::Medium, state, now, tab);
+            }
         }
     }
 
@@ -787,8 +883,8 @@ impl EventHub {
         self.reducers
             .lock()
             .unwrap()
-            .get(workspace)
-            .is_some_and(|r| r.pins_at(now))
+            .iter()
+            .any(|((w, _), r)| w == workspace && r.pins_at(now))
     }
 
     pub fn push(
@@ -811,6 +907,21 @@ impl EventHub {
         kind: EventKind,
         now: u64,
         tab: Option<&str>,
+    ) {
+        self.push_event(workspace, source, confidence, kind, now, tab, false);
+    }
+
+    /// `reduced`: the state is the aggregate of the workspace's reducers, whose tabs already settled their attention.
+    #[allow(clippy::too_many_arguments)]
+    fn push_event(
+        &self,
+        workspace: &str,
+        source: Source,
+        confidence: Confidence,
+        kind: EventKind,
+        now: u64,
+        tab: Option<&str>,
+        reduced: bool,
     ) {
         let kind = sanitize_kind(kind);
         if matches!(kind, EventKind::Unknown) {
@@ -883,7 +994,9 @@ impl EventHub {
                 // The merged state may already say this because a screen guess got there first; the agent's own
                 // report still opens or ends the task.
                 self.note_history(workspace, source, confidence, &kind, now);
-                self.settle(workspace, source, confidence, &kind, prev_hook, now, tab);
+                self.settle(
+                    workspace, source, confidence, &kind, prev_hook, now, tab, reduced,
+                );
                 return;
             }
             if confidence == Confidence::Low && !matches!(source, Source::Screen | Source::Hook) {
@@ -897,7 +1010,9 @@ impl EventHub {
                         && now.saturating_sub(last.ts) < STALE_AFTER_MS
                     {
                         drop(rings);
-                        self.settle(workspace, source, confidence, &kind, prev_hook, now, tab);
+                        self.settle(
+                            workspace, source, confidence, &kind, prev_hook, now, tab, reduced,
+                        );
                         return;
                     }
                 }
@@ -950,6 +1065,7 @@ impl EventHub {
             prev_hook,
             now,
             tab,
+            reduced,
         );
         let _ = self.tx.send(event);
     }
@@ -965,10 +1081,11 @@ impl EventHub {
         prev_hook: Option<AgentState>,
         now: u64,
         tab: Option<&str>,
+        reduced: bool,
     ) {
         if tier(source) == Some(0) && confidence != Confidence::Low {
             match kind {
-                EventKind::State { state } if prev_hook != Some(*state) => {
+                EventKind::State { state } if prev_hook != Some(*state) && !reduced => {
                     if *state != AgentState::NeedsInput {
                         self.clear_where(workspace, |a| a.kind == AttentionKind::NeedsInput);
                     }
@@ -1030,8 +1147,8 @@ impl EventHub {
             .get(workspace)
             .and_then(|r| r.task.clone());
         let mut list = self.attention.lock().unwrap();
-        // One open item per workspace and kind: a newer one replaces the older.
-        list.retain(|a| !(a.workspace == workspace && a.kind == kind));
+        // One open item per tab and kind: a newer one replaces the older.
+        list.retain(|a| !(a.workspace == workspace && a.kind == kind && a.tab.as_deref() == tab));
         let id = self
             .next_attention
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -1061,6 +1178,26 @@ impl EventHub {
             status.forget_tab(workspace, tab);
         }
         self.clear_where(workspace, |a| a.tab.as_deref() == Some(tab));
+        let after = {
+            let mut reducers = self.reducers.lock().unwrap();
+            if reducers
+                .remove(&(workspace.to_string(), tab.to_string()))
+                .is_none()
+            {
+                return;
+            }
+            aggregate(&reducers, workspace)
+        };
+        if let Some(state) = after {
+            self.push_reduced(
+                workspace,
+                Source::Hook,
+                Confidence::Medium,
+                state,
+                now_ms(),
+                None,
+            );
+        }
     }
 
     fn clear_where(&self, workspace: &str, pred: impl Fn(&Attention) -> bool) {
@@ -1088,6 +1225,10 @@ impl EventHub {
         let gone = list.remove(pos);
         let snapshot = list.clone();
         drop(list);
+        // Looking at a finished or failed tab ends the result it showed (decision 0095: a result is not a state).
+        if let (Some(tab), Some(status)) = (&gone.tab, &self.tab_status) {
+            status.clear_result(&gone.workspace, tab);
+        }
         tracing::info!(target: "audit", event = "attention_cleared", session = %gone.workspace, by = "ack");
         let _ = self.status_tx.send(StatusChange::Attention(snapshot));
         true
@@ -1176,7 +1317,7 @@ impl EventHub {
         self.reducers
             .lock()
             .unwrap()
-            .retain(|k, _| !k.starts_with(prefix) || live.contains(k));
+            .retain(|(w, _), _| !w.starts_with(prefix) || live.contains(w));
         let mut list = self.attention.lock().unwrap();
         let before = list.len();
         list.retain(|a| !a.workspace.starts_with(prefix) || live.contains(&a.workspace));
@@ -2535,15 +2676,15 @@ mod tests {
             idle: true,
             blocked: false,
         };
-        h.reconcile_at("s", gone, 3_000);
-        h.reconcile_at("s", gone, 5_000);
+        h.reconcile_at("s", None, gone, 3_000);
+        h.reconcile_at("s", None, gone, 5_000);
         assert_eq!(
             now_state(&h),
             AgentState::NeedsInput,
             "inside the grace window"
         );
-        h.reconcile_at("s", gone, 7_000);
-        h.reconcile_at("s", gone, 9_000);
+        h.reconcile_at("s", None, gone, 7_000);
+        h.reconcile_at("s", None, gone, 9_000);
         assert_eq!(now_state(&h), AgentState::Idle);
         assert!(h.attention_items().is_empty());
         // Nothing "finished": the owner interrupted it.
@@ -2564,7 +2705,7 @@ mod tests {
             blocked: true,
         };
         for t in (10_000..500_000).step_by(2_000) {
-            h.reconcile_at("s", shown, t);
+            h.reconcile_at("s", None, shown, t);
         }
         assert_eq!(now_state(&h), AgentState::NeedsInput);
     }
@@ -3028,6 +3169,287 @@ mod tests {
         assert_eq!(
             (u.cost_micros, u.cost_currency.as_deref()),
             (Some(250_000), Some("USD"))
+        );
+    }
+
+    // ---- the tab a hook ran in hears what the reducer derives (decisions 0122, 0149) ----
+
+    fn tab_hub() -> (EventHub, Arc<crate::tabstatus::TabStatus>) {
+        let status = Arc::new(crate::tabstatus::TabStatus::default());
+        let h = EventHub::new([1; 32]).with_tab_status(status.clone());
+        status.set_pane("%1", "s", "t1");
+        status.set_pane("%2", "s", "t2");
+        (h, status)
+    }
+
+    /// One recorded Claude Code hook payload, delivered the way `deliver` does for a pane.
+    fn tab_hook(h: &EventHub, tab: &str, name: &str, extra: serde_json::Value, now: u64) {
+        let mut d =
+            serde_json::json!({"hook_event_name": name, "tool_name": "Bash", "prompt": "do it"});
+        for (k, v) in extra.as_object().unwrap() {
+            d[k] = v.clone();
+        }
+        let (src, conf, kinds) = crate::adapters::claude(&d).unwrap_or_else(|| panic!("{name}"));
+        let pane = if tab == "t1" { "%1" } else { "%2" };
+        for k in kinds.clone() {
+            h.feed("s", src, conf, k, now, Some(tab));
+        }
+        h.apply_hook_tab(pane, "s", &kinds, now);
+    }
+
+    fn tab_state(status: &crate::tabstatus::TabStatus, tab: &str) -> AgentState {
+        status
+            .snapshot()
+            .into_iter()
+            .find(|s| s.tab == tab)
+            .map_or(AgentState::Unknown, |s| s.state)
+    }
+
+    #[test]
+    fn a_hook_turn_works_the_tab_and_its_end_finishes_it() {
+        let (h, status) = tab_hub();
+        tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 1_000);
+        assert_eq!(tab_state(&status, "t1"), AgentState::Working);
+        tab_hook(&h, "t1", "Stop", quiet(), 5_000);
+        assert_eq!(tab_state(&status, "t1"), AgentState::Done);
+    }
+
+    #[test]
+    fn a_question_makes_the_tab_wait_and_the_answer_resumes_it() {
+        let (h, status) = tab_hub();
+        tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 1_000);
+        tab_hook(&h, "t1", "PermissionRequest", ask(), 2_000);
+        assert_eq!(tab_state(&status, "t1"), AgentState::NeedsInput);
+        tab_hook(&h, "t1", "PostToolUse", ask(), 9_000);
+        assert_eq!(tab_state(&status, "t1"), AgentState::Working);
+    }
+
+    #[test]
+    fn a_failed_turn_shows_error_until_the_next_prompt() {
+        let (h, status) = tab_hub();
+        tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 1_000);
+        tab_hook(
+            &h,
+            "t1",
+            "StopFailure",
+            serde_json::json!({"error": "rate_limit"}),
+            5_000,
+        );
+        assert_eq!(tab_state(&status, "t1"), AgentState::Error);
+        tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 60_000);
+        assert_eq!(
+            tab_state(&status, "t1"),
+            AgentState::Working,
+            "a new prompt ends the error"
+        );
+    }
+
+    #[test]
+    fn seeing_a_failed_tab_clears_its_error() {
+        let (h, status) = tab_hub();
+        tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 1_000);
+        tab_hook(
+            &h,
+            "t1",
+            "StopFailure",
+            serde_json::json!({"error": "rate_limit"}),
+            5_000,
+        );
+        let item = h
+            .attention_items()
+            .into_iter()
+            .find(|a| a.kind == AttentionKind::Failed);
+        let item = item.expect("a failed turn raises attention");
+        assert_eq!(item.tab.as_deref(), Some("t1"));
+        assert!(h.ack(&item.id));
+        assert_eq!(
+            tab_state(&status, "t1"),
+            AgentState::Idle,
+            "the error stayed after the owner saw it"
+        );
+    }
+
+    #[test]
+    fn one_tabs_finish_does_not_end_the_other_tabs_turn() {
+        let (h, status) = tab_hub();
+        tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 1_000);
+        tab_hook(&h, "t2", "UserPromptSubmit", quiet(), 1_500);
+        tab_hook(&h, "t2", "Stop", quiet(), 5_000);
+        assert_eq!(tab_state(&status, "t2"), AgentState::Done);
+        assert_eq!(
+            tab_state(&status, "t1"),
+            AgentState::Working,
+            "t1 is still inferring"
+        );
+    }
+
+    #[test]
+    fn a_second_tab_starting_a_turn_works_too() {
+        let (h, status) = tab_hub();
+        tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 1_000);
+        tab_hook(&h, "t2", "UserPromptSubmit", quiet(), 1_500);
+        assert_eq!(tab_state(&status, "t2"), AgentState::Working);
+    }
+
+    // ---- several tabs in one workspace: each tab has its own turn and waits (decision 0149) ----
+
+    fn items(h: &EventHub, kind: AttentionKind) -> Vec<Option<String>> {
+        let mut tabs: Vec<_> = h
+            .attention_items()
+            .into_iter()
+            .filter(|a| a.kind == kind)
+            .map(|a| a.tab)
+            .collect();
+        tabs.sort();
+        tabs
+    }
+
+    fn some(tabs: &[&str]) -> Vec<Option<String>> {
+        tabs.iter().map(|t| Some(t.to_string())).collect()
+    }
+
+    fn workspace_state(h: &EventHub, at: u64) -> AgentState {
+        h.snapshot_at(at)[0].state
+    }
+
+    #[test]
+    fn the_workspace_works_while_any_tab_works() {
+        let (h, _) = tab_hub();
+        tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 1_000);
+        tab_hook(&h, "t2", "UserPromptSubmit", quiet(), 1_500);
+        tab_hook(&h, "t2", "Stop", quiet(), 5_000);
+        assert_eq!(
+            workspace_state(&h, 5_100),
+            AgentState::Working,
+            "t1 still works"
+        );
+        tab_hook(&h, "t1", "Stop", quiet(), 9_000);
+        assert_eq!(workspace_state(&h, 9_100), AgentState::Done);
+    }
+
+    #[test]
+    fn a_wait_beats_work_across_tabs_and_ends_with_its_own_tab() {
+        let (h, _) = tab_hub();
+        tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 1_000);
+        tab_hook(&h, "t2", "UserPromptSubmit", quiet(), 1_500);
+        tab_hook(&h, "t1", "PermissionRequest", ask(), 2_000);
+        assert_eq!(workspace_state(&h, 2_100), AgentState::NeedsInput);
+        tab_hook(&h, "t2", "Stop", quiet(), 5_000);
+        assert_eq!(
+            workspace_state(&h, 5_100),
+            AgentState::NeedsInput,
+            "t2 ending does not answer t1"
+        );
+        tab_hook(&h, "t1", "PostToolUse", ask(), 9_000);
+        assert_eq!(workspace_state(&h, 9_100), AgentState::Working);
+    }
+
+    #[test]
+    fn another_tabs_finish_does_not_clear_a_tabs_question() {
+        let (h, _) = tab_hub();
+        tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 1_000);
+        tab_hook(&h, "t1", "PermissionRequest", ask(), 2_000);
+        tab_hook(&h, "t2", "UserPromptSubmit", quiet(), 2_500);
+        tab_hook(&h, "t2", "Stop", quiet(), 5_000);
+        assert_eq!(
+            items(&h, AttentionKind::NeedsInput),
+            some(&["t1"]),
+            "t1 still asks"
+        );
+        assert_eq!(items(&h, AttentionKind::FinishedUnseen), some(&["t2"]));
+    }
+
+    #[test]
+    fn each_tab_raises_and_clears_its_own_question() {
+        let (h, _) = tab_hub();
+        tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 1_000);
+        tab_hook(&h, "t2", "UserPromptSubmit", quiet(), 1_100);
+        tab_hook(&h, "t1", "PermissionRequest", ask(), 2_000);
+        tab_hook(&h, "t2", "PermissionRequest", ask(), 2_100);
+        assert_eq!(items(&h, AttentionKind::NeedsInput), some(&["t1", "t2"]));
+        tab_hook(&h, "t1", "PostToolUse", ask(), 9_000);
+        assert_eq!(
+            items(&h, AttentionKind::NeedsInput),
+            some(&["t2"]),
+            "only t1 was answered"
+        );
+    }
+
+    #[test]
+    fn two_tabs_finishing_one_after_the_other_each_raise_an_item() {
+        let (h, _) = tab_hub();
+        tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 1_000);
+        tab_hook(&h, "t2", "UserPromptSubmit", quiet(), 1_100);
+        tab_hook(&h, "t1", "Stop", quiet(), 5_000);
+        tab_hook(&h, "t2", "Stop", quiet(), 6_000);
+        assert_eq!(
+            items(&h, AttentionKind::FinishedUnseen),
+            some(&["t1", "t2"])
+        );
+    }
+
+    #[test]
+    fn acknowledging_one_tabs_failure_leaves_the_others() {
+        let (h, status) = tab_hub();
+        for (tab, at) in [("t1", 1_000), ("t2", 1_100)] {
+            tab_hook(&h, tab, "UserPromptSubmit", quiet(), at);
+            tab_hook(
+                &h,
+                tab,
+                "StopFailure",
+                serde_json::json!({"error": "rate_limit"}),
+                at + 4_000,
+            );
+        }
+        let failed = h
+            .attention_items()
+            .into_iter()
+            .filter(|a| a.kind == AttentionKind::Failed);
+        let first = failed
+            .clone()
+            .find(|a| a.tab.as_deref() == Some("t1"))
+            .expect("t1 failed");
+        assert_eq!(failed.count(), 2, "one item per failed tab");
+        assert!(h.ack(&first.id));
+        assert_eq!(tab_state(&status, "t1"), AgentState::Idle);
+        assert_eq!(tab_state(&status, "t2"), AgentState::Error);
+    }
+
+    #[test]
+    fn the_screen_closes_one_tabs_turn_and_not_the_others() {
+        let (h, status) = tab_hub();
+        tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 1_000);
+        tab_hook(&h, "t2", "UserPromptSubmit", quiet(), 1_100);
+        let idle = Screen {
+            working: false,
+            idle: true,
+            blocked: false,
+        };
+        h.reconcile_at("s", Some("t1"), idle, 10_000);
+        h.reconcile_at("s", Some("t1"), idle, 12_000);
+        assert_eq!(
+            workspace_state(&h, 12_100),
+            AgentState::Working,
+            "t2 still works"
+        );
+        h.reconcile_at("s", Some("t2"), idle, 14_000);
+        h.reconcile_at("s", Some("t2"), idle, 16_000);
+        assert_eq!(workspace_state(&h, 16_100), AgentState::Idle);
+        assert_eq!(tab_state(&status, "t1"), AgentState::Idle);
+    }
+
+    #[test]
+    fn closing_a_tab_drops_its_wait_from_the_workspace() {
+        let (h, _) = tab_hub();
+        tab_hook(&h, "t2", "UserPromptSubmit", quiet(), 1_000);
+        tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 1_100);
+        tab_hook(&h, "t1", "PermissionRequest", ask(), 2_000);
+        assert_eq!(workspace_state(&h, 2_100), AgentState::NeedsInput);
+        h.forget_tab("s", "t1");
+        assert_eq!(
+            workspace_state(&h, 3_000),
+            AgentState::Working,
+            "only t2 is left"
         );
     }
 }
