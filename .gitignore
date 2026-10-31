@@ -51,6 +51,15 @@ packages/client/wrangler.toml
 /.go-getter/cli/
 /.agents/skills/go-getter-init/cli/
 
+# Native icons and splash are generated from packages/native/assets/icon.svg
+packages/native/android/app/src/main/res/mipmap-*/ic_launcher*.png
+packages/native/android/app/src/main/res/drawable*/splash.png
+packages/native/ios/App/App/Assets.xcassets/AppIcon.appiconset/*.png
+packages/native/ios/App/App/Assets.xcassets/Splash.imageset/*.png
+packages/native/electron/assets/appIcon.png
+packages/native/electron/assets/appIcon.ico
+packages/native/electron/assets/splash.png
+
 # npm lockfiles: this repo uses pnpm (pnpm-lock.yaml)
 package-lock.json
 
