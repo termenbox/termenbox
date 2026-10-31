@@ -1,4 +1,4 @@
-// Renders one New workspace dialog walkthrough as a captioned MP4 (H.264) and a GIF poster.
+// Renders one New workspace dialog walkthrough as a captioned MP4 (H.264) and a still poster (DECISION-0161).
 //   node e2e/video/render.mjs --list [--json]   prints the case ids (or their metadata)
 //   --pace slow|normal (slow stretches every delay by 1.6) and --no-caption (nothing drawn) go with --case
 //   node e2e/video/render.mjs --case recent-folder|other-agent|browse-folder|type-path --profile phone|desktop --out DIR
@@ -11,7 +11,7 @@ import { cases } from './cases.mjs';
 import { launchReal } from './real-server.mjs';
 import { appVersion, hashInputs } from './inputs-hash.mjs';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -79,14 +79,12 @@ if (failure || !webm) {
 
 mkdirSync(out, { recursive: true });
 const base = `${caseName}-${profile}`;
-const mp4 = join(out, `${base}.mp4`), gif = join(out, `${base}.gif`);
+const mp4 = join(out, `${base}.mp4`);
 // Start where the app is ready (not on the blank load); even dimensions for H.264; faststart so it plays while it downloads.
 const trim = ['-ss', String(Math.max(0, ready - 0.3))];
 const comment = `Rendered walkthrough "${cases[caseName].title}" on ${cases[caseName].real ? 'a local test server' : 'scripted data'} (${profile}); not a recording of a real device or agent.`;
-const run = (args) => { const r = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', ...args], { stdio: 'inherit' }); if (r.status !== 0) { console.error(`FAIL ffmpeg ${args.slice(0, 4).join(' ')}`); rmSync(work, { recursive: true, force: true }); rmSync(mp4, { force: true }); rmSync(gif, { force: true }); process.exit(1); } };
+const run = (args) => { const r = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', ...args], { stdio: 'inherit' }); if (r.status !== 0) { console.error(`FAIL ffmpeg ${args.slice(0, 4).join(' ')}`); rmSync(work, { recursive: true, force: true }); rmSync(mp4, { force: true }); process.exit(1); } };
 run([...trim, '-i', webm, '-vf', `scale=${viewport.width * scale}:${viewport.height * scale}:flags=lanczos,fps=30`, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '23', '-movflags', '+faststart', '-an', '-metadata', `comment=${comment}`, mp4]);
-const gifWidth = phone ? 320 : 640;
-run([...trim, '-i', webm, '-vf', `fps=10,scale=${gifWidth}:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96[p];[b][p]paletteuse=dither=bayer`, '-loop', '0', gif]);
 rmSync(work, { recursive: true, force: true });
 // The length the chapter shows next to the poster ("Watch, N s").
 const probe = spawnSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', mp4], { encoding: 'utf8' });
@@ -94,7 +92,14 @@ const seconds = Math.round(Number.parseFloat(probe.stdout));
 if (probe.status !== 0 || !Number.isFinite(seconds)) { console.error(`FAIL ffprobe could not read the length of ${mp4}`); process.exit(1); }
 const stillFiles = [];
 for (const { name, png } of h.stills) { const f = `${base}-${name}.png`; writeFileSync(join(out, f), png); stillFiles.push(f); }
+// The poster is the still a case names `poster`, else its first still, else a frame one second into the video; always `<base>-poster.png`.
+const poster = `${base}-poster.png`;
+if (!stillFiles.includes(poster)) {
+  if (stillFiles.length) copyFileSync(join(out, stillFiles[0]), join(out, poster));
+  else run(['-ss', '1', '-i', mp4, '-frames:v', '1', join(out, poster)]);
+  stillFiles.push(poster);
+}
 // What the review ledger and the staleness check read (DECISION-0158): the hash says which inputs this video was made from.
 const meta = join(out, `${base}.render.json`);
-writeFileSync(meta, JSON.stringify({ case: caseName, profile, pace, captions, steps: cases[caseName].steps, seconds, hash: await hashInputs(caseName), version: appVersion(), run: process.env.GITHUB_RUN_ID ?? null, renderedAt: new Date().toISOString(), files: [`${base}.mp4`, `${base}.gif`, ...stillFiles] }, null, 2) + '\n');
-console.log(`ok  ${base}: ${mp4}, ${gif}`);
+writeFileSync(meta, JSON.stringify({ case: caseName, profile, pace, captions, steps: cases[caseName].steps, seconds, hash: await hashInputs(caseName), version: appVersion(), run: process.env.GITHUB_RUN_ID ?? null, renderedAt: new Date().toISOString(), poster, files: [`${base}.mp4`, ...stillFiles] }, null, 2) + '\n');
+console.log(`ok  ${base}: ${mp4}, ${join(out, poster)}`);
