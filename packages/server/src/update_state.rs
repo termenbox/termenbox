@@ -155,6 +155,11 @@ impl State {
         Ok(())
     }
 
+    /// Whether the owner may be offered a postponement: an install is scheduled and the limit is not reached.
+    pub fn can_postpone(&self) -> bool {
+        self.deadline != 0 && self.deferrals < MAX_DEFERRALS
+    }
+
     pub fn apply(&mut self, now: u64, event: Event) {
         match event {
             Event::UpToDate => {

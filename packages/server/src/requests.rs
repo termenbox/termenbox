@@ -91,6 +91,33 @@ pub fn leave_update_check(dir: &Path) -> std::io::Result<()> {
     )
 }
 
+/// The owner's choice to wait: one fixed file per server, so repeated taps leave one request.
+pub fn leave_update_postpone(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    write_json_mode(
+        &dir.join("update-postpone.json"),
+        &serde_json::json!({"action":"update-postpone"}),
+        0o600,
+    )
+}
+
+/// The owner's choice to skip `version`. Refused here for a version the helper would refuse, so a bad value never
+/// reaches the request directory.
+pub fn leave_update_skip(dir: &Path, version: &str) -> std::io::Result<()> {
+    if !is_release_version(version) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid version",
+        ));
+    }
+    std::fs::create_dir_all(dir)?;
+    write_json_mode(
+        &dir.join("update-skip.json"),
+        &serde_json::json!({"action":"update-skip", "version":version}),
+        0o600,
+    )
+}
+
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -590,5 +617,25 @@ mod tests {
             Some("held")
         );
         std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn the_owners_postpone_and_skip_are_fixed_files_the_helper_reads_back() {
+        let requests = dir();
+        leave_update_postpone(&requests).unwrap();
+        leave_update_skip(&requests, "0.1.58").unwrap();
+        let mut taken = take_requests(&requests);
+        taken.sort_by_key(|r| r.name());
+        assert_eq!(
+            taken,
+            vec![
+                Request::UpdatePostpone {},
+                Request::UpdateSkip {
+                    version: "0.1.58".into()
+                }
+            ]
+        );
+        assert!(leave_update_skip(&requests, "../../etc").is_err());
+        assert!(take_requests(&requests).is_empty());
     }
 }

@@ -202,6 +202,36 @@ impl WorkspaceManager {
             .unwrap_or_default()
     }
 
+    /// The update actions the helper behind this server accepts, empty when there is no helper.
+    pub fn update_capabilities(&self) -> Vec<String> {
+        if self.requests_dir.is_none() {
+            return Vec::new();
+        }
+        ["check", "postpone", "skip"].map(String::from).to_vec()
+    }
+
+    /// What the updater knows, as the message a client is sent (decision 0153).
+    pub fn update_state(&self) -> ServerMessage {
+        let state = self
+            .requests_dir
+            .as_deref()
+            .and_then(|dir| dir.parent())
+            .map(crate::update_state::State::load)
+            .unwrap_or_default();
+        ServerMessage::UpdateState {
+            phase: serde_json::to_value(state.phase)
+                .ok()
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_default(),
+            available: self.update_available(),
+            deadline: state.deadline,
+            checked_at: state.checked_at,
+            checked_ok_at: state.checked_ok_at,
+            error: state.error.clone().unwrap_or_default(),
+            can_postpone: state.can_postpone(),
+        }
+    }
+
     fn check_update(&self) {
         let Some(dir) = &self.requests_dir else {
             return;
@@ -385,6 +415,7 @@ impl WorkspaceManager {
         let mut update_tick = tokio::time::interval(UPDATE_POLL);
         update_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut update_sent = self.update_available();
+        let mut state_sent = None;
         let mut update_pending = if auth
             .owner()
             .is_some_and(|o| o.provider == identity.provider && o.id == identity.id)
@@ -569,6 +600,9 @@ impl WorkspaceManager {
                         if done { self.finish_update(id); update_pending = None; }
                     }
                     if let Some(msg) = update_change(&mut update_sent, self.update_available()) {
+                        if !send(&link.tx, &msg).await { break; }
+                    }
+                    if let Some(msg) = state_change(&mut state_sent, self.update_state()) {
                         if !send(&link.tx, &msg).await { break; }
                     }
                 }
@@ -818,6 +852,38 @@ impl WorkspaceManager {
                     },
                 )
                 .await?;
+            }
+            ClientMessage::UpdateCheck {}
+            | ClientMessage::UpdatePostpone {}
+            | ClientMessage::UpdateSkip { .. } => {
+                let is_owner = auth
+                    .owner()
+                    .is_some_and(|o| o.provider == identity.provider && o.id == identity.id);
+                let Some(dir) = self.requests_dir.as_deref().filter(|_| is_owner) else {
+                    info!(target: "audit", event = "update_refused", provider = %identity.provider, account_id = %identity.id);
+                    return Err(anyhow::anyhow!(
+                        "Server update: Only the owner can update this server"
+                    ));
+                };
+                let (event, left) = match &msg {
+                    ClientMessage::UpdateCheck {} => {
+                        ("update_check_requested", crate::requests::leave_update_check(dir))
+                    }
+                    ClientMessage::UpdatePostpone {} => {
+                        ("update_postpone_requested", crate::requests::leave_update_postpone(dir))
+                    }
+                    ClientMessage::UpdateSkip { version } => {
+                        ("update_skip_requested", crate::requests::leave_update_skip(dir, version))
+                    }
+                    _ => unreachable!(),
+                };
+                left.map_err(|_| {
+                    anyhow::anyhow!("Server update: Could not contact the update helper.")
+                })?;
+                info!(target: "audit", event, provider = %identity.provider, account_id = %identity.id, login = %identity.login);
+                if matches!(msg, ClientMessage::UpdateCheck {}) {
+                    send_r(tx, &ServerMessage::UpdateCheckRequested {}).await?;
+                }
             }
             ClientMessage::DiagnosticsBundle {} => {
                 let is_owner = auth
@@ -1644,6 +1710,16 @@ fn update_change(sent: &mut String, now: String) -> Option<ServerMessage> {
     }
     sent.clone_from(&now);
     Some(ServerMessage::UpdateStatus { available: now })
+}
+
+/// The `update_state` message owed to a client when the updater's state differs from the one it was last sent. The
+/// first call always sends, so a new connection learns the state without waiting for a change.
+fn state_change(sent: &mut Option<ServerMessage>, now: ServerMessage) -> Option<ServerMessage> {
+    if sent.as_ref() == Some(&now) {
+        return None;
+    }
+    *sent = Some(now.clone());
+    Some(now)
 }
 
 fn pending_superseded(
@@ -2880,6 +2956,23 @@ mod update_change_tests {
         assert!(pending_superseded(&one, &None));
         assert!(!pending_superseded(&one, &one));
         assert!(!pending_superseded(&None, &one));
+    }
+
+    #[test]
+    fn a_connection_is_sent_the_update_state_first_and_then_only_when_it_changes() {
+        let state = |checked_at| ServerMessage::UpdateState {
+            phase: "idle".into(),
+            available: String::new(),
+            deadline: 0,
+            checked_at,
+            checked_ok_at: 0,
+            error: String::new(),
+            can_postpone: false,
+        };
+        let mut sent = None;
+        assert_eq!(state_change(&mut sent, state(0)), Some(state(0)));
+        assert_eq!(state_change(&mut sent, state(0)), None);
+        assert_eq!(state_change(&mut sent, state(9)), Some(state(9)));
     }
 
     #[test]
