@@ -5,13 +5,14 @@ import { HOME } from '../fake-tree.mjs';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { noteAssertion } from './lib.mjs';
+import { checkDeclared } from './steps.mjs';
 
 const expectThat = (cond, what) => { if (!cond) throw new Error(`final state: ${what}`); noteAssertion(); };
 
 /** Opens the dialog the way the profile's user does: the visible New button, else the command palette. */
 async function openDialog({ h, page, dialog, q }) {
   const plus = page.getByRole('button', { name: /^(\+ New|New workspace( on .*)?)$/ }).first();
-  await h.say('Start a new workspace');
+  await h.step('open');
   if (await plus.isVisible()) await h.tap(plus);
   else {
     await page.keyboard.press('Control+K');
@@ -26,7 +27,7 @@ async function openDialog({ h, page, dialog, q }) {
 
 async function create({ h, dialog, server }) {
   const before = server.of('new_workspace').length;
-  await h.say('Create it');
+  await h.step('create');
   await h.tap(dialog.getByRole('button', { name: 'Create' }));
   await dialog.waitFor({ state: 'detached', timeout: 5000 });
   expectThat(server.of('new_workspace').length === before + 1, 'Create sent no new_workspace');
@@ -47,16 +48,22 @@ export const cases = {
     group: 'dialog',
     page: 'docs/guide/workspaces.md',
     inputs: dialogInputs,
+    steps: [
+      { id: 'open', caption: 'Start a new workspace', label: '+ New' },
+      { id: 'pick-folder', caption: 'Folders you used before are one tap away', label: '~/code/termenbox' },
+      { id: 'summary', caption: 'The summary says what will be created', label: null },
+      { id: 'create', caption: 'Create it', label: 'Create' },
+    ],
     // A returning user: the server's home was remembered from an earlier listing, so folders show as ~/…
     storage: { termenbox_server_homes: JSON.stringify({ one: HOME }), termenbox_recent_dirs: JSON.stringify({ one: [`${HOME}/code/termenbox`, `${HOME}/code/app`] }) },
     async run(c) {
       const { h, q } = c;
       await openDialog(c);
       await h.still('dialog-open');
-      await h.say('Folders you used before are one tap away', q('dir-chip').first());
+      await h.step('pick-folder', q('dir-chip').first());
       await q('dir-chip').first().waitFor({ state: 'visible', timeout: 5000 });
       await h.tap(q('dir-chip').first());
-      await h.say('The summary says what will be created', q('summary'));
+      await h.step('summary', q('summary'));
       expectThat(/in ~\/code\/termenbox$/.test(await q('summary').innerText()), `summary was "${await q('summary').innerText()}"`);
       await h.still('folder-chosen');
       const made = await create(c);
@@ -70,21 +77,28 @@ export const cases = {
     group: 'dialog',
     page: 'docs/guide/workspaces.md',
     inputs: dialogInputs,
+    steps: [
+      { id: 'open', caption: 'Start a new workspace', label: '+ New' },
+      { id: 'more', caption: 'Three agents are one tap; the rest are under More', label: 'More' },
+      { id: 'narrow', caption: 'Type a few letters to narrow the list', label: null },
+      { id: 'chosen', caption: 'Gemini is now the chosen agent', label: null },
+      { id: 'create', caption: 'Create it', label: 'Create' },
+    ],
     storage: {},
     async run(c) {
       const { h, q, dialog } = c;
       await openDialog(c);
-      await h.say('Three agents are one tap; the rest are under More', q('agents-more'));
+      await h.step('more', q('agents-more'));
       await h.tap(q('agents-more'));
       await q('agents-layer').waitFor({ state: 'visible', timeout: 5000 });
-      await h.say('Type a few letters to narrow the list', q('agents-layer').locator('input').first());
+      await h.step('narrow', q('agents-layer').locator('input').first());
       await h.type(q('agents-layer').locator('input').first(), 'gem');
       const gemini = q('agents-layer').getByRole('option', { name: /Gemini/ });
       await gemini.waitFor({ state: 'visible', timeout: 5000 });
       await h.tap(gemini);
       await q('agents-layer').waitFor({ state: 'detached', timeout: 5000 });
       expectThat(/^Gemini in /.test(await q('summary').innerText()), `summary was "${await q('summary').innerText()}"`);
-      await h.say('Gemini is now the chosen agent', q('summary'));
+      await h.step('chosen', q('summary'));
       void dialog;
       const made = await create(c);
       expectThat(made.template === 'gemini', `new_workspace template was ${made.template}`);
@@ -97,18 +111,24 @@ export const cases = {
     group: 'dialog',
     page: 'docs/guide/workspaces.md',
     inputs: dialogInputs,
+    steps: [
+      { id: 'open', caption: 'Start a new workspace', label: '+ New' },
+      { id: 'browse', caption: 'Choose the folder from your server', label: 'Choose' },
+      { id: 'select', caption: 'Select this folder', label: 'Select this folder' },
+      { id: 'create', caption: 'Create it', label: 'Create' },
+    ],
     storage: {},
     async run(c) {
       const { h, q } = c;
       await openDialog(c);
-      await h.say('Choose the folder from your server', q('folder-change'));
+      await h.step('browse', q('folder-change'));
       await h.tap(q('folder-change'));
       await q('picker-list').waitFor({ state: 'visible', timeout: 5000 });
       await h.tap(q('picker-list').locator('[data-dir="code"]'));
       await q('picker-list').locator('[data-dir="termenbox"]').waitFor({ state: 'visible', timeout: 5000 });
       await h.tap(q('picker-list').locator('[data-dir="termenbox"]'));
       await q('picker-list').locator('[data-dir="packages"]').waitFor({ state: 'visible', timeout: 5000 });
-      await h.say('Select this folder', q('picker-select'));
+      await h.step('select', q('picker-select'));
       await h.tap(q('picker-select'));
       await q('picker-list').waitFor({ state: 'detached', timeout: 5000 });
       expectThat(/code\/termenbox$/.test(await q('folder-value').innerText()), `folder was "${await q('folder-value').innerText()}"`);
@@ -123,17 +143,23 @@ export const cases = {
     group: 'dialog',
     page: 'docs/guide/workspaces.md',
     inputs: dialogInputs,
+    steps: [
+      { id: 'open', caption: 'Start a new workspace', label: '+ New' },
+      { id: 'browse', caption: 'Know the path? Type it in the folder picker', label: 'Choose' },
+      { id: 'select', caption: 'Select this folder', label: 'Select this folder' },
+      { id: 'create', caption: 'Create it', label: 'Create' },
+    ],
     storage: {},
     async run(c) {
       const { h, q } = c;
       await openDialog(c);
-      await h.say('Know the path? Type it in the folder picker', q('folder-change'));
+      await h.step('browse', q('folder-change'));
       await h.tap(q('folder-change'));
       await q('picker-path').waitFor({ state: 'visible', timeout: 5000 });
       await h.type(q('picker-path'), `${HOME}/code/app`);
       await h.tap(q('picker-go'));
       await q('picker-trail').waitFor({ state: 'visible', timeout: 5000 });
-      await h.say('Select this folder', q('picker-select'));
+      await h.step('select', q('picker-select'));
       await h.tap(q('picker-select'));
       await q('picker-path').waitFor({ state: 'detached', timeout: 5000 });
       expectThat(/code\/app$/.test(await q('folder-value').innerText()), `folder was "${await q('folder-value').innerText()}"`);
@@ -161,13 +187,20 @@ Object.assign(cases, {
     server: 'real',
     real: true,
     inputs: ['packages/client/src/AddServerModal.svelte', 'packages/client/src/addserver/**', 'packages/client/src/lib/addServer.ts', 'packages/client/e2e/video/**'],
+    steps: [
+      { id: 'tap-add', caption: 'Tap Add Server', label: 'Add Server' },
+      { id: 'install', caption: 'Step 1 installs the server; it announces itself while you run the command', label: 'Next' },
+      { id: 'paste', caption: 'Paste the link the installer printed', label: null },
+      { id: 'preview', caption: 'Nothing is claimed yet: this says what you are adding', label: null },
+      { id: 'reach', caption: 'Then it checks that this device can reach the server', label: null },
+    ],
     async run({ h, page, real }) {
-      await h.say('Tap Add Server');
+      await h.step('tap-add');
       await h.tap(page.getByRole('button', { name: 'Add Server', exact: true }).first());
       await page.getByRole('dialog').waitFor();
-      await h.say('Step 1 installs the server; it announces itself while you run the command');
+      await h.step('install');
       await h.tap(page.getByTestId('install-next'));
-      await h.say('Paste the link the installer printed', page.locator('#have-link'));
+      await h.step('paste', page.locator('#have-link'));
       await h.tap(page.locator('#have-link'));
       await page.locator('#have-link').fill(real.claim);
       await h.pause();
@@ -175,7 +208,7 @@ Object.assign(cases, {
       await page.getByText('This server is ready to add').waitFor({ timeout: 40000 });
       const group = page.getByRole('group', { name: 'What you are adding' });
       await group.scrollIntoViewIfNeeded();
-      await h.say('Nothing is claimed yet: this says what you are adding', group);
+      await h.step('preview', group);
       expectThat(/isolated container|on the machine itself/.test(await group.innerText()), 'the preview does not say where workspaces run');
       expectThat(!existsSync(join(real.config, 'owner.json')), 'the server was claimed before Add');
       await h.still('pairing-preview');
@@ -185,7 +218,7 @@ Object.assign(cases, {
       await page.getByText(/This device can reach it|could not reach it|Could not tell/).first().waitFor({ timeout: 60000 });
       const panel = page.locator('.done[role=status]');
       await panel.scrollIntoViewIfNeeded();
-      await h.say('Then it checks that this device can reach the server', panel);
+      await h.step('reach', panel);
       expectThat(/This device can reach it/.test(await panel.innerText()), `result panel said "${(await panel.innerText()).replace(/\s+/g, ' ').slice(0, 100)}"`);
       await h.still('server-added');
     },
@@ -198,22 +231,28 @@ Object.assign(cases, {
     page: 'docs/guide/workspaces.md',
     server: 'scripted',
     inputs: ['packages/client/src/App.svelte', 'packages/client/src/lib/hub.ts', 'packages/client/src/lib/connection.ts', 'packages/client/e2e/video/**'],
+    steps: [
+      { id: 'open', caption: 'Open a workspace', label: 'shell' },
+      { id: 'live', caption: 'Its screen is live on the server', label: null },
+      { id: 'lose', caption: 'Lose the signal: a tunnel, a lock screen, a dropped Wi-Fi', label: null },
+      { id: 'back', caption: 'The app reconnects by itself and re-attaches', label: null },
+    ],
     storage: {},
     async run(c) {
       const { h, page, server } = c;
-      await h.say('Open a workspace');
+      await h.step('open');
       await openWorkspace(c, 'shell');
       await screenHas(page, 'attached to s3');
       expectThat(server.of('attach').at(-1)?.workspace_id === 's3', 'the first attach was not for the shell workspace');
-      await h.say('Its screen is live on the server');
+      await h.step('live');
       server.output('npm run build\r\nbuild finished\r\n$ ');
       await screenHas(page, 'build finished');
       await h.pause(1500);
-      await h.say('Lose the signal: a tunnel, a lock screen, a dropped Wi-Fi');
+      await h.step('lose');
       await h.pause(1000);
       const attaches = server.of('attach').length;
       for (const ws of server.sockets) ws.close();
-      await h.say('The app reconnects by itself and re-attaches');
+      await h.step('back');
       const back = Date.now() + 15000;
       while (server.of('attach').length === attaches && Date.now() < back) await page.waitForTimeout(100);
       expectThat(server.of('attach').length > attaches && server.of('attach').at(-1).workspace_id === 's3', 'the app did not re-attach to the shell workspace');
@@ -225,3 +264,5 @@ Object.assign(cases, {
     },
   },
 });
+
+for (const [id, c] of Object.entries(cases)) checkDeclared(id, c.steps);

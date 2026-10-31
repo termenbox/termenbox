@@ -2,6 +2,7 @@
 // spot on a phone), moves that overshoot and correct, typing in bursts with stalls, a reading pause after each state change, and
 // a caption bar that stays clear of the control being used. The rhythm is rhythm.mjs, seeded so a render repeats.
 // Nothing here asserts the app: the cases do.
+import { stepTracker } from './steps.mjs';
 import { mulberry32, seedOf, readPause, hesitation, restAfterResult, typingDelays, pointerPath } from './rhythm.mjs';
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -72,10 +73,12 @@ export const overlayScript = (phone) => {
 /**
  * Wraps `page` with human-paced actions. `profile` is 'phone' (touch) or 'desktop' (mouse). `pace` is 'normal' or 'slow';
  * `caption: false` keeps the caption placement logic but draws nothing. `seed` (the case id) with the profile seeds the rhythm.
+ * `steps` are the case's declared steps: `h.step(id)` shows a step's caption and checks the order.
  */
-export function humanPage(page, profile, { pace = 'normal', caption: drawCaptions = true, seed = '' } = {}) {
+export function humanPage(page, profile, { pace = 'normal', caption: drawCaptions = true, seed = '', steps = [] } = {}) {
   const k = paceFactor(pace);
   const rng = mulberry32(seedOf(`${seed}:${profile}`));
+  const tracker = stepTracker(steps);
   const wait = (ms) => sleep(ms * k);
   const phone = profile === 'phone';
   const vp = page.viewportSize();
@@ -154,6 +157,12 @@ export function humanPage(page, profile, { pace = 'normal', caption: drawCaption
       for (const ch of text) { await wait(gaps[i++]); await page.keyboard.type(ch); }
       await h.pause();
     },
+    /** Performs the declared step `id`: shows its caption (away from `locator`, the control about to be used). Throws out of order or unknown. */
+    async step(id, locator) {
+      await h.say(tracker.reach(id).caption, locator);
+    },
+    /** Throws when a declared step was never reached; the render calls it after the case ran. */
+    assertSteps: () => tracker.assertComplete(),
     /** Sets the caption for the next move, shows it, and holds it long enough to read. */
     async say(text, locator) {
       h.pending = text;

@@ -17,17 +17,19 @@ Do: create `packages/client/e2e/video/rhythm.mjs` exporting pure functions that 
 Done-when: the Check passes and `grep -n "rand(" packages/client/e2e/video/lib.mjs` shows no flat delay left in the human actions.
 Progress (2026-10-31): `rhythm.mjs`, `rhythm.test.mjs` added; `humanPage` uses them, `render.mjs` passes the case id as seed; `h.result(text)` added. Vitest: 10 tests pass (run on host node with another pool slot's `node_modules`; `scripts/dev.sh` could not reach Docker: permission denied on the socket). Deviation: the typing base is 230 to 340 ms, not 140 to 230, because 0.6 of 140 to 230 cannot give the required median of 120 to 230 ms; 1.2 tunes it by ear. `h.pause()` now defaults to the reading time of the pending caption, and `move` ends with a hesitation before the press.
 
-### 1.2 Re-time the four dialog cases and look at one — [ ]
+### 1.2 Re-time the four dialog cases and look at one — [!]
 Class: review · Needs: 1.1 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && pnpm run e2e:build && node e2e/video/render.mjs --case recent-folder --profile phone --out /tmp/rhythm && ffprobe -v error -show_entries format=duration -of csv=p=0 /tmp/rhythm/recent-folder-phone.mp4'`
 Context: the first rendered video, `recent-folder-phone`, is 17.4 s with flat delays (PR #427). A person judges the new rhythm; a session cannot.
 Do: render the four dialog cases on the phone profile with the new model, report each duration, and give the owner the files to watch. Adjust the constants in `rhythm.mjs` from their words (too fast, too slow, where). Close PR #427 as superseded once a new render exists.
 Done-when: the Check prints a duration between 30 and 60, and the owner has said the pace feels natural (quote them in the step's Progress).
+Progress (2026-10-31): blocked. `scripts/dev.sh` cannot reach Docker here (permission denied on the socket) and the owner has not judged a render. Needs a machine with Docker and ffmpeg, then the owner's words. Steps 2.x and 3.x do not depend on it.
 
-### 2.1 Cases declare their steps — [ ]‖
+### 2.1 Cases declare their steps — [x]‖
 Class: implement · Needs: none · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm exec vitest run e2e/video/steps.test.mjs'`
 Context: DECISION-0161: a case lists its steps once and the chapter's numbered steps are generated from that list. `cases.mjs` exports `cases`, an object keyed by case id with `title`, `group`, `page`, `inputs`, `run`; `render.mjs --list --json` prints the metadata; `render.json` is written beside each video.
 Do: add `steps: [{ id, caption, label }]` to every case (`caption` is what the screen says, `label` the exact text or accessible name that is tapped, or null for a non-tap step). Add `h.step(id)` that a case calls as it performs each step; it throws when called out of order or with an id not declared, and the render fails when a declared step was never reached. `render.json` records `steps` and `seconds` (the video length). `--list --json` includes `steps`. Write `steps.test.mjs` (vitest) with a fake `h`: out of order, unknown id and a missing step each throw.
 Done-when: the Check passes and `node packages/client/e2e/video/render.mjs --list --json` (container) prints `steps` for the four dialog cases.
+Progress (2026-10-31): `steps.mjs` (declaration check, order tracker) and `steps.test.mjs` (6 tests, pass on host node with another slot's `node_modules`); all six cases declare `steps` and call `h.step(id, avoid)`, which shows the declared caption, so the caption lives once; `render.mjs` fails when a step was never reached and writes `steps` and `seconds` (ffprobe) to `render.json`, and `--list --json` includes `steps`. Not run: `--list --json` itself (it imports Playwright, no container) and any render. Labels that I could not confirm from the Svelte source and that a render must confirm: `Choose` (folder-change when no folder is set), `More`, `Next` (install-next), `shell`.
 
 ### 2.2 Generate and check the steps block — [ ]‖
 Class: implement · Needs: 2.1 · Check: `node scripts/docs-course.mjs --self-test`

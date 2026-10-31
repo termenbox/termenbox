@@ -17,7 +17,7 @@ import { join, resolve } from 'node:path';
 
 const arg = (name) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : undefined; };
 if (process.argv.includes('--list')) {
-  const rows = Object.entries(cases).map(([id, c]) => ({ id, title: c.title, group: c.group, page: c.page, inputs: c.inputs, real: !!c.real }));
+  const rows = Object.entries(cases).map(([id, c]) => ({ id, title: c.title, group: c.group, page: c.page, inputs: c.inputs, real: !!c.real, steps: c.steps }));
   console.log(process.argv.includes('--json') ? JSON.stringify(rows, null, 2) : rows.map((c) => c.id).join('\n'));
   process.exit(0);
 }
@@ -54,10 +54,11 @@ try {
   }
   await sleep(800);
   ready = (Date.now() - started) / 1000;
-  h = humanPage(t.page, profile, { pace, caption: captions, seed: caseName });
+  h = humanPage(t.page, profile, { pace, caption: captions, seed: caseName, steps: cases[caseName].steps });
   await h.say('A rendered walkthrough on scripted data, not a real device');
   const dialog = t.page.locator('dialog[aria-label="New workspace"]');
   await cases[caseName].run({ h, t, page: t.page, dialog, q: (id) => dialog.locator(`[data-testid="${id}"]`), server: t.server, real: t.real });
+  h.assertSteps();
   await h.clearCaption();
   await h.pause(1200);
   if (t.errors.length) throw new Error(`console errors: ${t.errors.join(' | ')}`);
@@ -87,9 +88,13 @@ run([...trim, '-i', webm, '-vf', `scale=${viewport.width * scale}:${viewport.hei
 const gifWidth = phone ? 320 : 640;
 run([...trim, '-i', webm, '-vf', `fps=10,scale=${gifWidth}:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96[p];[b][p]paletteuse=dither=bayer`, '-loop', '0', gif]);
 rmSync(work, { recursive: true, force: true });
+// The length the chapter shows next to the poster ("Watch, N s").
+const probe = spawnSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', mp4], { encoding: 'utf8' });
+const seconds = Math.round(Number.parseFloat(probe.stdout));
+if (probe.status !== 0 || !Number.isFinite(seconds)) { console.error(`FAIL ffprobe could not read the length of ${mp4}`); process.exit(1); }
 const stillFiles = [];
 for (const { name, png } of h.stills) { const f = `${base}-${name}.png`; writeFileSync(join(out, f), png); stillFiles.push(f); }
 // What the review ledger and the staleness check read (DECISION-0158): the hash says which inputs this video was made from.
 const meta = join(out, `${base}.render.json`);
-writeFileSync(meta, JSON.stringify({ case: caseName, profile, pace, captions, hash: await hashInputs(caseName), version: appVersion(), run: process.env.GITHUB_RUN_ID ?? null, renderedAt: new Date().toISOString(), files: [`${base}.mp4`, `${base}.gif`, ...stillFiles] }, null, 2) + '\n');
+writeFileSync(meta, JSON.stringify({ case: caseName, profile, pace, captions, steps: cases[caseName].steps, seconds, hash: await hashInputs(caseName), version: appVersion(), run: process.env.GITHUB_RUN_ID ?? null, renderedAt: new Date().toISOString(), files: [`${base}.mp4`, `${base}.gif`, ...stillFiles] }, null, 2) + '\n');
 console.log(`ok  ${base}: ${mp4}, ${gif}`);
