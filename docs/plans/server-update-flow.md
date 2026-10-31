@@ -309,8 +309,10 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   release without `image` is never applied, a hand-pinned image is not pulled by the timer. **U8d [x]** guide done; `container::tests::e2e` drives the real
   `Cli` against a real Docker and a local `registry:2` (update, bad image rolled back, same digest changes nothing, binary
   extraction); it runs only with `TERMENBOX_E2E_DOCKER=1`, which CI sets on the Rust test job. To run it here the dev
-  container needs the host's docker socket and binary mounted. NOT RUN: the installer's container-updater path (it needs
-  root, systemd and Docker: the stub-based installer tests only cover the path where the host cannot run the binary). Release order per 0155: a release carrying `image`
+  container needs the host's docker socket and binary mounted. The installer's container-updater path now runs in CI
+  (job `container-installer`, `.github/scripts/test-container-install.sh`): a systemd machine on the runner's Docker, a
+  local registry, signed manifests naming the images; install, check, apply, an unhealthy image rolled back, tick,
+  uninstall. It found a real bug (the helper demanded `http_port`, which a container install does not have). Release order per 0155: a release carrying `image`
   must be out before U8b's installer change lands.
 
 ## Risks
@@ -343,3 +345,4 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
 - 2026-10-31 U5b done (released v0.1.57-beta.11 carried U5a and `image`): grace deadline, tick timer, window snapping, postpone cap; next U8b.
 - 2026-10-31 U8b-d done in the same PR as U5b (one PR was asked for): container.json, host timers, digest apply with rollback; real-Docker and local-registry e2e not run.
 - 2026-10-31 U5b and U8 merged in #417; U8d end-to-end test against a local registry added (follow-up PR).
+- 2026-10-31 the container installer path runs in CI (job `container-installer`); fixed the helper requiring http_port on a container install.
