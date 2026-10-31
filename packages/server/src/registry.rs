@@ -42,6 +42,27 @@ pub struct TabRecord {
     /// The tmux window it runs in; absent while the workspace is dormant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<String>,
+    /// The id the tab's agent reports in its own hook events (decision 0152). The id only, never logged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session: Option<String>,
+}
+
+/// An agent conversation the server has a record of, and where it ran.
+#[derive(Clone, PartialEq, Eq)]
+pub struct KnownSession {
+    pub agent: String,
+    pub session_id: String,
+    pub dir: PathBuf,
+    pub workspace: String,
+    pub tab: String,
+    /// False while the workspace is dormant: its agent is not running, and Resume applies.
+    pub up: bool,
+}
+
+impl std::fmt::Debug for KnownSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "KnownSession({})", self.agent) // the id is not logged
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -323,6 +344,7 @@ impl Registry {
                 dir: String::new(),
                 order: 0,
                 window: made.window,
+                agent_session: None,
             }],
             next_tab: 2,
         };
@@ -427,6 +449,7 @@ impl Registry {
                 dir: relative.into(),
                 order: record.tabs.len() as u32,
                 window: Some(window.clone()),
+                agent_session: None,
             },
             window,
         ))
@@ -570,6 +593,7 @@ impl Registry {
             dir: String::new(),
             order: 0,
             window: Some(window),
+            agent_session: None,
         });
         record.focus = record.tabs.last().map(|t| t.id.clone());
         record.next_tab = record.next_tab.max(record.tabs.len() as u32 + 1);
@@ -773,6 +797,7 @@ impl Registry {
                     dir: String::new(),
                     order: 0,
                     window: Some(window),
+                    agent_session: None,
                 });
                 r.focus = Some(id);
                 renumber_tabs(r);
@@ -897,6 +922,57 @@ impl Registry {
                 tabs
             })
             .unwrap_or_default()
+    }
+
+    /// Keeps the id an agent reported on the tab it runs in (decision 0152); a new session in the same tab replaces
+    /// it. True when the record changed. The id is never logged.
+    pub fn set_agent_session(&self, workspace: &str, tab: &str, id: &str) -> bool {
+        let mut state = self.state.lock().unwrap();
+        let Some(t) = state
+            .workspaces
+            .iter_mut()
+            .find(|r| r.id == workspace)
+            .and_then(|r| r.tabs.iter_mut().find(|t| t.id == tab))
+        else {
+            return false;
+        };
+        if t.kind == "shell" || t.agent_session.as_deref() == Some(id) {
+            return false;
+        }
+        t.agent_session = Some(id.to_string());
+        self.save(&state);
+        true
+    }
+
+    /// The agent sessions the registry has a record of, for cross-session search (decision 0156): one per tab that
+    /// has an `agent_session`, with the directory the tab runs in. Nothing outside a known workspace's tabs is
+    /// returned, so a search can only read sessions of directories the owner opened. ACP workspaces keep their
+    /// session id in the ACP manager, which adds them (step 7).
+    pub fn known_sessions(&self) -> Vec<KnownSession> {
+        let state = self.state.lock().unwrap();
+        let mut out = Vec::new();
+        for r in &state.workspaces {
+            let up = r.tabs.iter().any(|t| t.window.is_some());
+            for t in &r.tabs {
+                let Some(id) = t.agent_session.clone() else {
+                    continue;
+                };
+                let dir = if t.dir.is_empty() {
+                    PathBuf::from(&r.dir)
+                } else {
+                    Path::new(&r.dir).join(&t.dir)
+                };
+                out.push(KnownSession {
+                    agent: t.kind.clone(),
+                    session_id: id,
+                    dir,
+                    workspace: r.id.clone(),
+                    tab: t.id.clone(),
+                    up,
+                });
+            }
+        }
+        out
     }
 
     pub fn has(&self, workspace: &str) -> bool {
@@ -1104,6 +1180,7 @@ fn reconcile_record(record: &mut WorkspaceRecord, windows: &[WindowState], label
             dir: relative_to(&record.dir, &window.info.path),
             order: record.tabs.len() as u32,
             window: Some(window.window_id.clone()),
+            agent_session: None,
         });
     }
     if record.focus.is_none()

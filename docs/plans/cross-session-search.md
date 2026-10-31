@@ -70,11 +70,15 @@ Done: `session_log/codex.rs` + `codex/tests.rs`; `SessionLogs::standard()` regis
 - Fixtures changed: `torn` is cut inside a message text; `tool-secret` user text no longer says "token" (scrubber not idempotent).
 - Dev machine note: `COMPOSE_PROJECT_NAME=termenbox-sergei scripts/dev.sh ...` uses the cache volume owned by uid 1004; the default `docker_cache` volume is not writable. `cargo clippy --workspace` fails in `bridge-contract` already on develop, so lint `-p termenbox-server`.
 
-### 6 Known sessions: tab to session id to file — [ ]
+### 6 Known sessions: tab to session id to file — [x]
 Class: implement · Needs: 2 · Check: `scripts/dev.sh cargo test -p termenbox-server registry`
 Context: Decision 0152 adds `TabRecord.agent_session` in `packages/server/src/registry.rs`, written from hook events (`adapters::agent_session_id`). Run `grep -n agent_session packages/server/src/registry.rs` first: if the field is absent, implement that part of 0152 here (the id only, in the registry file, never logged). The server must also know the ACP `sessionId` of ACP workspaces.
 Do: Add a function that lists the known sessions: for each workspace and tab, the agent, directory, session id, workspace id, tab id and whether the workspace is up or dormant. Only sessions whose directory belongs to a known workspace or tab are returned, so the scan can never read outside them. Never log the ids.
 Done-when: a test with one open and one dormant workspace lists both sessions with the right state, and a session file whose directory is not a known one is not returned.
+Done: `agent_session` was absent, so 0152's id part is implemented here. `TabRecord.agent_session` (registry file, id only); `Registry::set_agent_session` and `Registry::known_sessions() -> Vec<KnownSession>` (agent, session id, absolute dir = workspace dir + tab dir, workspace, tab, `up`; `Debug` prints the agent only). `up` = any tab has a window. The id is written in `events::deliver` from the hook's `session_id` on the tab `tab_status.tab_of` resolved; `EventHub::with_registry` (main.rs now builds the registry before the hub). Shell tabs never hold one.
+- Left for step 7: ACP workspaces. Their session id is `acp.rs` `layout(id).1`; the handler adds those to the `known_sessions()` list (agent and dir come from the ACP workspace). Resume (0152's command table and reopen) is step 10.
+- The directory boundary is by construction: only tab dirs of recorded workspaces are returned; adapters then check the file's own `cwd` (Codex) or look only in that directory's folder (Claude).
+- A test in `control` (`a_real_tmux_pushes_window_and_directory_changes`) failed once in the full run and passed alone: flaky, unrelated.
 
 ### 7 Protocol: `search` and `window` messages and handlers — [ ]
 Class: implement · Needs: 4, 5, 6 · Check: `scripts/dev.sh cargo test --workspace`

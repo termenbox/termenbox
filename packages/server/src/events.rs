@@ -470,6 +470,8 @@ pub struct EventHub {
     usage: Arc<crate::transcript::UsageTracker>,
     /// Per-tab state (decision 0149); absent in tests that do not need it.
     tab_status: Option<Arc<TabStatus>>,
+    /// Where a tab's agent session id is kept (decision 0152); absent in tests that do not need it.
+    registry: Option<Arc<crate::registry::Registry>>,
 }
 
 impl EventHub {
@@ -488,6 +490,7 @@ impl EventHub {
             history: None,
             usage: Arc::default(),
             tab_status: None,
+            registry: None,
         }
     }
 
@@ -500,6 +503,18 @@ impl EventHub {
     pub fn with_tab_status(mut self, status: Arc<TabStatus>) -> Self {
         self.tab_status = Some(status);
         self
+    }
+
+    pub fn with_registry(mut self, registry: Arc<crate::registry::Registry>) -> Self {
+        self.registry = Some(registry);
+        self
+    }
+
+    /// Records the agent's own session id on the tab an event came from.
+    pub fn note_agent_session(&self, workspace: &str, tab: &str, id: &str) {
+        if let Some(r) = &self.registry {
+            r.set_agent_session(workspace, tab, id);
+        }
     }
 
     pub fn tab_status(&self) -> Option<Arc<TabStatus>> {
@@ -1701,6 +1716,12 @@ async fn deliver(
         .is_ok()
     {
         hub.apply_hook_tab(&w.pane, workspace, &for_tab, now_ms());
+        if let (Some(tab), Some(id)) = (
+            tab.as_deref(),
+            crate::adapters::agent_session_id(&w.adapter, &w.data),
+        ) {
+            hub.note_agent_session(workspace, tab, &id);
+        }
         if w.adapter == "claude" {
             if let Some(path) = w.data.get("transcript_path").and_then(|p| p.as_str()) {
                 hub.set_transcript(workspace, path);

@@ -817,7 +817,11 @@ async fn main() -> anyhow::Result<()> {
             None
         }
     };
+    let registry = Arc::new(registry::Registry::load(
+        args.config_dir.join("workspaces.json"),
+    ));
     let mut hub = events::EventHub::load_or_create(&args.config_dir)?;
+    hub = hub.with_registry(registry.clone());
     hub = hub.with_tab_status(Arc::new(tabstatus::TabStatus::default()));
     if let Some(history) = &history {
         hub = hub.with_history(history.clone());
@@ -915,9 +919,6 @@ async fn main() -> anyhow::Result<()> {
         build_backend(&args, &kinds[0], &mode, env, "")?
     };
     info!("Workspace backend: {}", backend.name());
-    let registry = Arc::new(registry::Registry::load(
-        args.config_dir.join("workspaces.json"),
-    ));
     // Server health (U14): sampled every 10 s into memory; the data directory is the disk it reports.
     let health = Arc::new(HealthCollector::new());
     health.spawn(args.config_dir.clone());

@@ -62,6 +62,7 @@ fn every_tab_id_is_unique_and_labels_do_not_collide() {
             dir: String::new(),
             order: 0,
             window: Some("@1".into()),
+            agent_session: None,
         }],
         next_tab: 2,
     };
@@ -74,6 +75,7 @@ fn every_tab_id_is_unique_and_labels_do_not_collide() {
         dir: String::new(),
         order: 1,
         window: Some("@2".into()),
+        agent_session: None,
     });
     assert_eq!(record.tabs[1].label.as_str(), "Shell 2");
     assert_eq!(record.tabs[0].id, "t1");
@@ -639,4 +641,99 @@ async fn moving_a_tab_reorders_the_tmux_windows_and_closing_one_packs_the_number
     );
     stop(&tmp).await;
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+fn tab(id: &str, kind: &str, dir: &str, window: Option<&str>) -> TabRecord {
+    TabRecord {
+        id: id.into(),
+        label: id.into(),
+        kind: kind.into(),
+        dir: dir.into(),
+        order: 0,
+        window: window.map(Into::into),
+        agent_session: None,
+    }
+}
+
+fn workspace(id: &str, dir: &str, tabs: Vec<TabRecord>) -> WorkspaceRecord {
+    WorkspaceRecord {
+        id: id.into(),
+        label: id.into(),
+        dir: dir.into(),
+        backend: None,
+        order: 0,
+        focus: None,
+        tabs,
+        next_tab: 9,
+    }
+}
+
+#[test]
+fn known_sessions_list_an_open_and_a_dormant_workspace_and_only_tabs_with_a_session() {
+    let registry = Registry::memory();
+    registry.state.lock().unwrap().workspaces = vec![
+        workspace(
+            "ws-up",
+            "/home/o/app",
+            vec![
+                tab("t1", "shell", "", Some("@1")),
+                tab("t2", "claude", "", Some("@2")),
+                tab("t3", "codex", "api", Some("@3")),
+                tab("t4", "claude", "", Some("@4")),
+            ],
+        ),
+        workspace("ws-down", "/home/o/lib", vec![tab("t1", "codex", "", None)]),
+    ];
+    assert!(registry.set_agent_session("ws-up", "t2", "c-1"));
+    assert!(registry.set_agent_session("ws-up", "t3", "x-1"));
+    assert!(registry.set_agent_session("ws-down", "t1", "x-2"));
+    assert!(
+        !registry.set_agent_session("ws-up", "t1", "sh-1"),
+        "a shell has no agent session"
+    );
+    assert!(
+        !registry.set_agent_session("ws-up", "t2", "c-1"),
+        "an unchanged id is not a write"
+    );
+    assert!(!registry.set_agent_session("ws-nope", "t1", "z"));
+    let got: Vec<(String, String, String, bool)> = registry
+        .known_sessions()
+        .into_iter()
+        .map(|k| {
+            (
+                k.agent,
+                k.session_id,
+                k.dir.to_string_lossy().into_owned(),
+                k.up,
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("claude".into(), "c-1".into(), "/home/o/app".into(), true),
+            ("codex".into(), "x-1".into(), "/home/o/app/api".into(), true),
+            ("codex".into(), "x-2".into(), "/home/o/lib".into(), false),
+        ]
+    );
+    // A new session in the same tab replaces the old one.
+    assert!(registry.set_agent_session("ws-up", "t2", "c-2"));
+    assert_eq!(registry.known_sessions()[0].session_id, "c-2");
+}
+
+#[test]
+fn a_session_id_survives_a_reload_and_is_not_in_debug_output() {
+    let dir = temp("sessions");
+    let path = dir.join("workspaces.json");
+    let registry = Registry::load(path.clone());
+    registry.state.lock().unwrap().workspaces = vec![workspace(
+        "ws-1",
+        "/w",
+        vec![tab("t1", "claude", "", Some("@1"))],
+    )];
+    registry.set_agent_session("ws-1", "t1", "secret-id-123");
+    let again = Registry::load(path);
+    let known = again.known_sessions();
+    assert_eq!(known[0].session_id, "secret-id-123");
+    assert!(!format!("{known:?}").contains("secret-id-123"));
 }
