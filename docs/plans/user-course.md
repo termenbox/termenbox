@@ -137,11 +137,12 @@ Do: write the chapter with the markers for `answer-from-the-train` (phone).
 Done-when: the Check passes.
 Progress (2026-10-31): `docs/course/05-answer-from-the-train.md` written (steps from `answer-from-the-train`, media marker `answer-from-the-train-phone`, trouble entries: notifications not allowed or no push key, iOS needs the Home Screen app). Prose says a notification never carries agent text. The Check reports only the Next link to chapter 6 and the unpicked video.
 
-### 4.3f Chapter 6, Come back later — [ ]‖
+### 4.3f Chapter 6, Come back later — [x]‖
 Class: implement · Needs: 3.6, 4.1, 4.2 · Check: `node scripts/check-course.mjs docs/course/06-come-back-later.md`
 Context: as 4.3a; reference `docs/guide/workspaces.md` "Restore"; failures: the workspace shows dormant after the tmux server was gone, the server is unreachable.
 Do: write the chapter with the markers for `resume-after-close` (phone) and a Next link to the Master note in the index.
 Done-when: the Check passes.
+Progress (2026-10-31): `docs/course/06-come-back-later.md` written (steps from `resume-after-close`, media marker `resume-after-close-phone`, trouble entries: dormant workspace, server unreachable); its Next link goes to the Master note in the index. `node scripts/check-course.mjs --catalog catalog.json` now reports `ok  6 chapter(s)` (only warnings: no picked video yet, which `--require-media` turns into errors for 5.1). Every relative link in `docs/course/README.md` resolves.
 
 ### 4.4 README entry and reference back-links — [x]
 Class: implement · Needs: 4.2 · Check: `head -20 README.md | grep -q "docs/course/README.md" && grep -l "../course/" docs/guide/*.md | wc -l | awk '$1>=3{exit 0} {exit 1}'`
