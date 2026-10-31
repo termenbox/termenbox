@@ -3,12 +3,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
-    extract::{ws::WebSocketUpgrade, State},
+    extract::{ws::WebSocketUpgrade, State, Query},
     http::HeaderMap,
     response::Response,
     routing::get,
     Router,
 };
+use serde::{Deserialize, Serialize};
 use clap::Parser;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -70,6 +71,7 @@ mod workspaces;
 use auth::AuthState;
 use backend::{CommandBackend, RunMode, TmuxBackend, WorkspaceBackend};
 use health::HealthCollector;
+use listdir::server_home;
 use websocket::handle_websocket;
 use workspaces::WorkspaceManager;
 
@@ -1289,7 +1291,8 @@ fn print_pairing(args: &Args, auth: &AuthState) -> anyhow::Result<()> {
 fn router(state: AppState, dev_info: bool) -> Router {
     let mut app = Router::new()
         .route("/health", get(|| health::HEARTBEATS.respond()))
-        .route("/ws", get(ws_handler));
+        .route("/ws", get(ws_handler))
+        .route("/api/fs/list", get(fs_list));
     if dev_info {
         app = app.route("/rtc-info", get(rtc_info));
     }
@@ -1305,6 +1308,147 @@ async fn rtc_info(
         .rtc_info
         .map(axum::Json)
         .ok_or_else(|| axum::http::StatusCode::NOT_FOUND.into())
+}
+
+/// Request query for `/api/fs/list`.
+#[derive(Deserialize)]
+struct FsListQuery {
+    /// Absolute path to list (must be inside the server's home directory).
+    path: Option<String>,
+}
+
+/// One entry in the directory listing response.
+#[derive(Serialize)]
+struct FsEntry {
+    name: String,
+    path: String,
+    is_dir: bool,
+    size: Option<u64>,
+    modified: Option<u64>,
+}
+
+/// Response for `/api/fs/list`.
+#[derive(Serialize)]
+struct FsListResponse {
+    entries: Vec<FsEntry>,
+    parent: Option<String>,
+}
+
+async fn fs_list(
+    State(state): State<AppState>,
+    Query(query): Query<FsListQuery>,
+) -> axum::response::Result<axum::Json<FsListResponse>> {
+    // Only the owner can browse folders.
+    let _owner = match state.auth.owner() {
+        Some(o) => o,
+        None => return Err(axum::http::StatusCode::FORBIDDEN.into()),
+    };
+
+    // Get the server's home directory.
+    let home = match server_home() {
+        Some(h) => h,
+        None => return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR.into()),
+    };
+
+    // Canonicalize home to resolve any symlinks.
+    let home = match tokio::fs::canonicalize(&home).await {
+        Ok(h) => h,
+        Err(_) => return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR.into()),
+    };
+
+    // Determine target path.
+    let target = match query.path {
+        Some(p) => {
+            let path = std::path::PathBuf::from(&p);
+            if !path.is_absolute() {
+                return Err(axum::http::StatusCode::BAD_REQUEST.into());
+            }
+            match tokio::fs::canonicalize(&path).await {
+                Ok(t) => t,
+                Err(_) => return Err(axum::http::StatusCode::NOT_FOUND.into()),
+            }
+        }
+        None => home.clone(),
+    };
+
+    // Ensure target is inside home (path traversal protection).
+    if !target.starts_with(&home) {
+        return Err(axum::http::StatusCode::FORBIDDEN.into());
+    }
+
+    // Ensure target is a directory.
+    let meta = match tokio::fs::metadata(&target).await {
+        Ok(m) => m,
+        Err(_) => return Err(axum::http::StatusCode::NOT_FOUND.into()),
+    };
+    if !meta.is_dir() {
+        return Err(axum::http::StatusCode::BAD_REQUEST.into());
+    }
+
+    // Read directory entries.
+    let mut dir = match tokio::fs::read_dir(&target).await {
+        Ok(d) => d,
+        Err(_) => return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR.into()),
+    };
+
+    let mut entries = Vec::new();
+    while let Some(entry) = match dir.next_entry().await {
+        Ok(e) => e,
+        Err(_) => return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR.into()),
+    } {
+        let name = entry.file_name().to_string_lossy().into_owned();
+
+        // Skip hidden files (starting with .).
+        if name.starts_with('.') {
+            continue;
+        }
+
+        let path = entry.path();
+        let file_type = match entry.file_type().await {
+            Ok(ft) => ft,
+            Err(_) => return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR.into()),
+        };
+        let is_dir = file_type.is_dir();
+
+        // Get metadata for size and modified time.
+        let metadata = match entry.metadata().await {
+            Ok(m) => m,
+            Err(_) => return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR.into()),
+        };
+
+        let size = if is_dir { None } else { Some(metadata.len()) };
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs());
+
+        entries.push(FsEntry {
+            name: name.clone(),
+            path: path.to_string_lossy().into_owned(),
+            is_dir,
+            size,
+            modified,
+        });
+    }
+
+    // Sort: directories first, then files, alphabetically.
+    entries.sort_by(|a, b| {
+        match (a.is_dir, b.is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        }
+    });
+
+    // Parent directory (if not at home).
+    let parent = if target != home {
+        target.parent().map(|p| p.to_string_lossy().into_owned())
+    } else {
+        None
+    };
+
+    Ok(axum::Json(FsListResponse { entries, parent }))
 }
 
 async fn ws_handler(

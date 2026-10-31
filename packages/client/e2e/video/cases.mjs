@@ -2,6 +2,8 @@
 // assertion of its final state, so a walkthrough that did not reach it fails instead of producing a video of something else
 // (GUARDRAIL ux-scenarios-assert-a-state-before-they-capture-it). They run on the scripted server and its fake home.
 import { HOME } from '../fake-tree.mjs';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { noteAssertion } from './lib.mjs';
 
 const expectThat = (cond, what) => { if (!cond) throw new Error(`final state: ${what}`); noteAssertion(); };
@@ -140,3 +142,86 @@ export const cases = {
     },
   },
 };
+
+/** Opens the workspace named `name` the way the profile's user does: from the Workspaces list on a phone, the sidebar on desktop. */
+async function openWorkspace({ h, page }, name) {
+  if (h.phone) await h.tap(page.getByRole('button', { name: /^Workspaces/ }).first());
+  const row = h.phone ? page.getByRole('button').filter({ hasText: new RegExp(`^\\s*${name}\\s+one`) }).first() : page.locator('[data-shell=sidebar] [data-key]').filter({ hasText: name }).first();
+  await h.tap(row);
+  await page.locator('.xterm').first().waitFor({ state: 'visible', timeout: 5000 });
+}
+const screenHas = (page, text) => page.waitForFunction((x) => [...document.querySelectorAll('.xterm-rows > div')].some((d) => d.textContent.includes(x)), text, { timeout: 8000 });
+
+Object.assign(cases, {
+  /** Add a server: paste the link, read what is being added, name it, see that this device can reach it. Real server binary. */
+  'add-server': {
+    title: 'Add your server',
+    group: 'core',
+    page: 'docs/guide/install.md',
+    server: 'real',
+    real: true,
+    inputs: ['packages/client/src/AddServerModal.svelte', 'packages/client/src/addserver/**', 'packages/client/src/lib/addServer.ts', 'packages/client/e2e/video/**'],
+    async run({ h, page, real }) {
+      await h.say('Tap Add Server');
+      await h.tap(page.getByRole('button', { name: 'Add Server', exact: true }).first());
+      await page.getByRole('dialog').waitFor();
+      await h.say('Step 1 installs the server; it announces itself while you run the command');
+      await h.tap(page.getByTestId('install-next'));
+      await h.say('Paste the link the installer printed', page.locator('#have-link'));
+      await h.tap(page.locator('#have-link'));
+      await page.locator('#have-link').fill(real.claim);
+      await h.pause();
+      await h.tap(page.getByRole('button', { name: 'Add', exact: true }).first());
+      await page.getByText('This server is ready to add').waitFor({ timeout: 40000 });
+      const group = page.getByRole('group', { name: 'What you are adding' });
+      await group.scrollIntoViewIfNeeded();
+      await h.say('Nothing is claimed yet: this says what you are adding', group);
+      expectThat(/isolated container|on the machine itself/.test(await group.innerText()), 'the preview does not say where workspaces run');
+      expectThat(!existsSync(join(real.config, 'owner.json')), 'the server was claimed before Add');
+      await h.still('pairing-preview');
+      await h.type(page.locator('#preview-name'), 'home-server');
+      await h.tap(group.getByRole('button', { name: 'Add', exact: true }));
+      await page.getByText('Server added').waitFor({ timeout: 20000 });
+      await page.getByText(/This device can reach it|could not reach it|Could not tell/).first().waitFor({ timeout: 60000 });
+      const panel = page.locator('.done[role=status]');
+      await panel.scrollIntoViewIfNeeded();
+      await h.say('Then it checks that this device can reach the server', panel);
+      expectThat(/This device can reach it/.test(await panel.innerText()), `result panel said "${(await panel.innerText()).replace(/\s+/g, ' ').slice(0, 100)}"`);
+      await h.still('server-added');
+    },
+  },
+
+  /** The connection drops; the app reconnects and re-attaches to the workspace it had open (DECISION-0054). A page reload lands on Home. */
+  'resume-after-close': {
+    title: 'Lose the connection and keep your place',
+    group: 'core',
+    page: 'docs/guide/workspaces.md',
+    server: 'scripted',
+    inputs: ['packages/client/src/App.svelte', 'packages/client/src/lib/hub.ts', 'packages/client/src/lib/connection.ts', 'packages/client/e2e/video/**'],
+    storage: {},
+    async run(c) {
+      const { h, page, server } = c;
+      await h.say('Open a workspace');
+      await openWorkspace(c, 'shell');
+      await screenHas(page, 'attached to s3');
+      expectThat(server.of('attach').at(-1)?.workspace_id === 's3', 'the first attach was not for the shell workspace');
+      await h.say('Its screen is live on the server');
+      server.output('npm run build\r\nbuild finished\r\n$ ');
+      await screenHas(page, 'build finished');
+      await h.pause(1500);
+      await h.say('Lose the signal: a tunnel, a lock screen, a dropped Wi-Fi');
+      await h.pause(1000);
+      const attaches = server.of('attach').length;
+      for (const ws of server.sockets) ws.close();
+      await h.say('The app reconnects by itself and re-attaches');
+      const back = Date.now() + 15000;
+      while (server.of('attach').length === attaches && Date.now() < back) await page.waitForTimeout(100);
+      expectThat(server.of('attach').length > attaches && server.of('attach').at(-1).workspace_id === 's3', 'the app did not re-attach to the shell workspace');
+      await screenHas(page, 'attached to s3');
+      server.output('build finished\\r\\n$ '); // the real server redraws the screen on attach; the scripted one only says it attached
+      await screenHas(page, 'build finished');
+      expectThat(await page.getByText('Connected').first().isVisible().catch(() => false) || h.phone, 'the server is not shown as connected again');
+      await h.still('re-attached');
+    },
+  },
+});

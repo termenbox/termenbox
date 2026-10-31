@@ -8,6 +8,7 @@
 import { startShared, startApp } from '../app-lib.mjs';
 import { humanPage, overlayScript, paceFactor, sleep } from './lib.mjs';
 import { cases } from './cases.mjs';
+import { launchReal } from './real-server.mjs';
 import { appVersion, hashInputs } from './inputs-hash.mjs';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -40,18 +41,23 @@ const started = Date.now();
 let t;
 let h;
 try {
-  t = await startApp(shared, {
-    viewport, deviceScaleFactor: scale, storage: { termenbox_ios_hint: '1', ...cases[caseName].storage },
-    contextExtra: { ...(phone ? { isMobile: true, hasTouch: true } : {}), recordVideo: { dir: work, size: viewport } },
-  });
-  await t.ctx.addInitScript(overlayScript, phone);
-  await t.open();
+  if (cases[caseName].real) {
+    // The real server binary and the add-server wizard: the case brings its own browser (real-server.mjs).
+    t = await launchReal({ viewport, scale, phone, recordDir: work, overlay: overlayScript });
+  } else {
+    t = await startApp(shared, {
+      viewport, deviceScaleFactor: scale, storage: { termenbox_ios_hint: '1', ...cases[caseName].storage },
+      contextExtra: { ...(phone ? { isMobile: true, hasTouch: true } : {}), recordVideo: { dir: work, size: viewport } },
+    });
+    await t.ctx.addInitScript(overlayScript, phone);
+    await t.open();
+  }
   await sleep(800);
   ready = (Date.now() - started) / 1000;
   h = humanPage(t.page, profile, { pace, caption: captions });
   await h.say('A rendered walkthrough on scripted data, not a real device');
   const dialog = t.page.locator('dialog[aria-label="New workspace"]');
-  await cases[caseName].run({ h, page: t.page, dialog, q: (id) => dialog.locator(`[data-testid="${id}"]`), server: t.server });
+  await cases[caseName].run({ h, t, page: t.page, dialog, q: (id) => dialog.locator(`[data-testid="${id}"]`), server: t.server, real: t.real });
   await h.clearCaption();
   await h.pause(1200);
   if (t.errors.length) throw new Error(`console errors: ${t.errors.join(' | ')}`);
@@ -61,11 +67,12 @@ try {
 const video = t?.page.video();
 await t?.ctx.close().catch(() => {});
 const webm = video ? await video.path().catch(() => null) : null;
+await t?.stop?.();
 await shared.stop();
 
 if (failure || !webm) {
   rmSync(work, { recursive: true, force: true });
-  console.error(`FAIL ${caseName} (${profile}): ${failure?.message ?? 'no video was recorded'}`);
+  console.error(`FAIL ${caseName} (${profile}): ${process.env.VIDEO_DEBUG ? failure?.stack : failure?.message ?? 'no video was recorded'}`);
   process.exit(1);
 }
 
@@ -74,7 +81,7 @@ const base = `${caseName}-${profile}`;
 const mp4 = join(out, `${base}.mp4`), gif = join(out, `${base}.gif`);
 // Start where the app is ready (not on the blank load); even dimensions for H.264; faststart so it plays while it downloads.
 const trim = ['-ss', String(Math.max(0, ready - 0.3))];
-const comment = `Rendered walkthrough of the New workspace dialog on scripted data (${profile}); not a recording of a real device or agent.`;
+const comment = `Rendered walkthrough "${cases[caseName].title}" on ${cases[caseName].real ? 'a local test server' : 'scripted data'} (${profile}); not a recording of a real device or agent.`;
 const run = (args) => { const r = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', ...args], { stdio: 'inherit' }); if (r.status !== 0) { console.error(`FAIL ffmpeg ${args.slice(0, 4).join(' ')}`); rmSync(work, { recursive: true, force: true }); rmSync(mp4, { force: true }); rmSync(gif, { force: true }); process.exit(1); } };
 run([...trim, '-i', webm, '-vf', `scale=${viewport.width * scale}:${viewport.height * scale}:flags=lanczos,fps=30`, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '23', '-movflags', '+faststart', '-an', '-metadata', `comment=${comment}`, mp4]);
 const gifWidth = phone ? 320 : 640;
