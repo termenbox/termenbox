@@ -620,13 +620,48 @@ jobs:
         if: failure()
         run: docker exec machine journalctl -u termenbox --no-pager | tail -50
 
+  # The container install and its updater (decision 0155) run for real: a machine with systemd and the runner's Docker
+  # daemon, a local registry, and signed manifests that name the images by digest.
+  container-installer:
+    name: Container installer
+    needs: [static]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: termenbox-server-musl-x86_64
+          path: release
+
+      - name: Start a machine with systemd and the runner's Docker
+        run: |
+          mkdir -p "$RUNNER_TEMP/work"
+          chmod +x release/termenbox-server
+          # The socket is mounted outside /var/run, which the machine's systemd replaces with a tmpfs.
+          docker run -d --name machine --privileged --cgroupns=host --network host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v /var/run/docker.sock:/docker.sock -v "$(readlink -f "$(which docker)")":/usr/local/bin/docker:ro \
+            -v "$RUNNER_TEMP/work:$RUNNER_TEMP/work" -v "$PWD/.github/scripts:/scripts:ro" \
+            -v "$PWD/packages/client/installer/install.sh:/install.sh:ro" -v "$PWD/packages/client/public/uninstall.sh:/uninstall.sh:ro" \
+            -v "$PWD/release/termenbox-server:/server:ro" jrei/systemd-debian:12
+          sleep 8
+          docker exec machine sh -c 'apt-get update -qq && apt-get install -y -qq curl openssh-client ca-certificates iproute2 python3 >/dev/null'
+
+      - name: Install, update by digest, roll back an unhealthy image, uninstall
+        run: docker exec -e DOCKER_HOST=unix:///docker.sock machine sh /scripts/test-container-install.sh /server "$RUNNER_TEMP/work"
+
+      - name: Logs (on failure)
+        if: failure()
+        run: docker logs termenbox-ci 2>&1 | tail -50
+
   # One result for branch protection: require this check instead of the individual jobs, and the graph above can be
   # reshaped without touching the repository settings again. A skipped job is a failure unless `changes` said the pull
   # request cannot affect it: `code` false skips everything, `scripted` false skips the scripted-server browser matrix.
   ci:
     name: CI result
     if: ${{ always() }}
-    needs: [changes, client, rust-lint, rust-build, rust-test, e2e, browsers, browsers-real, static, e2e-static, tmux, installer]
+    needs: [changes, client, rust-lint, rust-build, rust-test, e2e, browsers, browsers-real, static, e2e-static, tmux, installer, container-installer]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
