@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { handleOpenRequests, openWeb, OPEN_OSC, openRequestUrl } from './openRequest';
+import { handleOpenRequests, hyperlinkHandler, openWeb, OPEN_OSC, openRequestUrl } from './openRequest';
 
 describe('openRequestUrl', () => {
   it('takes the web address of an open request', () => {
@@ -46,5 +46,26 @@ describe('openWeb', () => {
     let called = false;
     expect(openWeb('javascript:alert(1)', { open: () => ((called = true), {} as Window) })).toBe(false);
     expect(called).toBe(false);
+  });
+});
+
+describe('hyperlinkHandler', () => {
+  const range = {} as never;
+
+  it('opens the target of an OSC 8 hyperlink and takes the click', () => {
+    const opened: string[] = [];
+    const h = hyperlinkHandler((u) => opened.push(u));
+    let prevented = false;
+    h.activate({ preventDefault: () => (prevented = true) } as unknown as MouseEvent, 'https://example.com/a?b=1', range);
+    expect(opened).toEqual(['https://example.com/a?b=1']);
+    expect(prevented).toBe(true);
+  });
+
+  it('ignores other schemes and keeps xterm from opening them itself', () => {
+    const opened: string[] = [];
+    const h = hyperlinkHandler((u) => opened.push(u));
+    for (const bad of ['file:///etc/passwd', 'javascript:alert(1)', 'ftp://a.b', 'example.com']) h.activate({ preventDefault() {} } as unknown as MouseEvent, bad, range);
+    expect(opened).toEqual([]);
+    expect(h.allowNonHttpProtocols).toBe(false);
   });
 });

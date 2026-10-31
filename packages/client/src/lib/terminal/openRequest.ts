@@ -28,3 +28,20 @@ export function openWeb(url: string, win: { open(url: string, target: string, fe
   if (!/^https?:\/\/[^/?#\s]+/.test(url)) return false;
   return win.open(url, '_blank', 'noopener,noreferrer') !== null;
 }
+
+/**
+ * xterm's handler for OSC 8 hyperlinks (Claude Code prints long URLs as a shortened text with the address behind it).
+ * Its own default asks `confirm()` first; this opens an `http(s)` target at once and ignores every other scheme.
+ */
+export function hyperlinkHandler(open: (url: string) => void): {
+  activate(event: MouseEvent, text: string, range: unknown): void;
+  allowNonHttpProtocols: boolean;
+} {
+  return {
+    allowNonHttpProtocols: false,
+    activate(event, text) {
+      event.preventDefault();
+      if (/^https?:\/\/[^/?#\s]+/.test(text)) open(text);
+    },
+  };
+}
