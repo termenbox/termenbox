@@ -832,6 +832,9 @@ async fn main() -> anyhow::Result<()> {
     });
     let push = push::Push::load(&args.config_dir);
     push::spawn_watcher(push.clone(), hub.clone());
+    if let Some(dir) = args.requests_dir.parent() {
+        push::spawn_update_watcher(push.clone(), dir.to_path_buf(), args.server_name.clone());
+    }
     // A `working` signal that goes quiet decays to `unknown` without any event to trigger it.
     tokio::spawn({
         let hub = hub.clone();

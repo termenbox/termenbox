@@ -250,7 +250,7 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   write the keys before then. U5b also takes over the 5-minute tick timer, `update --tick` and the window-reachability
   test moved from U1, and wires `postpone`'s extension to `grace`.
 
-### U6 [ ] Push notification for an available update
+### U6 [x] Push notification for an available update
 
 - Needs: U4. Spike first: `push.rs` builds payloads from an `AttentionKind` per workspace; confirm whether a server-level
   kind fits or a second builder is needed, and record it in Notes.
@@ -258,7 +258,14 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   is within an hour; respects the user's existing push escalation settings.
 - Tests: the marker-absent test for every builder (the guardrail's Check), once-per-version dedupe.
 - Verify: `grep -rq 'update' packages/server/src/push.rs` and the push tests pass.
-- PR: - | Merged: - | Notes:
+- PR: this branch | Merged: - | Notes: SPIKE: `AttentionKind` is per workspace and `notify_tab` derives the topic and deep
+  link from one, so a server-level kind does not fit; a second builder `update_payload` ({session = server name,
+  kind = update, at, tag, deep_link = /#/home}, no version) and `Push::notify_update` share a new `send_all`.
+  `spawn_update_watcher` (main.rs) reads `update-state.json` every 60 s with nobody connected; `update_push_key` gives
+  `<version>` and `<version>#soon` (deadline within an hour, so only once U5b sets a deadline). Quiet hours hold a push
+  back and do not count it as sent; muted agents and the ladder do not apply (not an agent). Dedupe is in memory, so a
+  restart can repeat one announcement. `sw.js` shows "<name> has an update". Verify passed (27 push/update tests).
+  PHONE CHECK: none; no push was received on a real device (`a-phone-check-names-its-platform`).
 
 ### U7 [ ] Observability and docs
 
@@ -295,3 +302,4 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
 - 2026-10-31 U3 done: helper actions status/check/apply/postpone/skip, two new requests, install guide fixed; next step U4 (client and core; a fresh session is cheaper).
 - 2026-10-31 U4 done: update_state and the three owner actions on the wire, Updates dialog, banner, hub and compat tests; next step U5a (parser accepts and ignores grace/on_timeout).
 - 2026-10-31 U5a done: parser accepts and ignores grace/on_timeout; U5b is blocked until a release carries U5a (next unblocked steps: U6 push, U7 observability).
+- 2026-10-31 U6 done: update push (server name and kind only), once per version, quiet hours respected; next step U7 (observability and docs).
