@@ -9,6 +9,7 @@ import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, extname, resolve } from 'node:path';
 import { randomBytes, generateKeyPairSync, sign, createPrivateKey, createPublicKey } from 'node:crypto';
+import { freeTcpPort, freeUdpPort } from './ports.mjs';
 
 const here = import.meta.dirname;
 const BIN = process.env.TERMENBOX_BIN ?? resolve(here, '../../../target/release/termenbox-server');
@@ -21,7 +22,6 @@ const fail = (msg) => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const listen = (server) => new Promise((r) => server.listen(0, '127.0.0.1', () => r(server.address().port)));
-const randomPort = () => 30000 + Math.floor(Math.random() * 30000);
 
 // --- stand-ins and helpers ---------------------------------------------------------------------------
 // Stand-in for the Pages function: mints device certificates exactly like functions/api/oauth/exchange.ts.
@@ -79,8 +79,8 @@ if (!existsSync(join(dist, 'index.html'))) throw new Error('harness not built: r
 const webPort = await listen(statics);
 const appPort = await listen(appServer);
 const home = mkdtempSync(join(tmpdir(), 'termenbox-e2e-'));
-const httpPort = randomPort();
-const udpPort = randomPort();
+const httpPort = await freeTcpPort();
+const udpPort = await freeUdpPort();
 const claim = randomBytes(32).toString('base64url');
 
 const server = spawn(BIN, [], {

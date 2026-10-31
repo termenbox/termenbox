@@ -13,11 +13,11 @@ import { tmpdir } from 'node:os';
 import { join, extname, resolve } from 'node:path';
 import { randomBytes, generateKeyPairSync, sign, createPrivateKey, createPublicKey } from 'node:crypto';
 import { launch, viewport, contextOptions } from './browser.mjs';
+import { freeTcpPort, freeUdpPort } from './ports.mjs';
 
 const here = import.meta.dirname;
 const BIN = process.env.TERMENBOX_BIN ?? resolve(here, '../../../target/release/termenbox-server');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const randomPort = () => 30000 + Math.floor(Math.random() * 30000);
 async function waitFor(fn, what, ms = 20000) {
   const start = Date.now();
   for (;;) {
@@ -57,7 +57,7 @@ const home = realpathSync(root);
 const userHome = join(home, 'user');
 for (const d of ['code/termenbox', 'code/app', 'docs']) mkdirSync(join(userHome, d), { recursive: true });
 writeFileSync(join(userHome, 'code', 'notes.txt'), 'a file is not a folder\n');
-const httpPort = randomPort();
+const httpPort = await freeTcpPort();
 const claim = randomBytes(32).toString('base64url');
 const env = {
   ...process.env,
@@ -66,7 +66,7 @@ const env = {
   TERMENBOX_CONFIG_DIR: join(home, 'config'),
   TERMENBOX_HOST: '127.0.0.1',
   TERMENBOX_PORT: String(httpPort),
-  TERMENBOX_UDP_PORT: String(randomPort()),
+  TERMENBOX_UDP_PORT: String(await freeUdpPort()),
   TERMENBOX_PUBLIC_IP: '127.0.0.1',
   TERMENBOX_DIRECTORY_URL: '',
   TERMENBOX_CERT_KEYS: `e2e=${signerPublic}`,
