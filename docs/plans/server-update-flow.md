@@ -141,7 +141,7 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
 - Verify: `ls docs/decisions | grep -i 'grace.*owner'` prints a file whose frontmatter has `status: active` and an `accepted-by`.
 - PR: this branch (`docs/server-update-flow-plan`) | Merged: - | Notes: decision 0153, accepted by the owner in chat 2026-10-31 (all six points).
 
-### U1 [ ] Cadence and window fix (installer + timers)
+### U1 [x] Cadence and window fix (installer + timers)
 
 - Needs: U0.
 - Do: both unit sets in `packages/client/installer/install.sh` (system and user): replace `OnCalendar=daily` with the
@@ -155,13 +155,14 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   grep -q 'OnBootSec' packages/client/installer/install.sh && ! grep -q 'OnCalendar=daily' packages/client/installer/install.sh
   scripts/dev.sh cargo test -p termenbox-server --test install_channels
   ```
-- PR: - | Merged: - | Notes: IN PROGRESS, not ticked. Done on the branch: new cadence in both unit sets via one `UPDATE_TIMER`,
-  `migrate_update_timer` (put_file: backup and journal, idempotent), a first check after install/upgrade, test
-  `the_update_timer_checks_at_boot_and_every_six_hours_and_an_old_daily_timer_is_replaced_once`. Still to do: run
-  `scripts/dev.sh cargo test -p termenbox-server --test install_channels` (the session had no cargo and no docker
-  access, so the test is written but unrun); the conditional-GET spike. MOVED to U5b: the 5-minute tick timer and the
-  window-reachability test, because the tick needs a no-network `update --tick` command that does not exist yet; until
-  then a 03:00-04:00 window is hit only if a 6-hourly check lands in it.
+- PR: this branch | Merged: - | Notes: cadence in both unit sets via one `UPDATE_TIMER`; `migrate_update_timer` (put_file:
+  backup and journal, idempotent); a first check after install/upgrade; test
+  `the_update_timer_checks_at_boot_and_every_six_hours_and_an_old_daily_timer_is_replaced_once`. Verify passed (8/8).
+  NOT DONE, carried to U3: the conditional-GET spike (the ETag is not relied on, so nothing depends on it).
+  MOVED to U5b: the 5-minute tick timer and the window-reachability test; the tick needs a no-network `update --tick`
+  that does not exist yet. Until then a `03:00-04:00` window is hit only if a 6-hourly check lands in it.
+  Running tests without the `docker` group on this machine: `sg docker -c "COMPOSE_PROJECT_NAME=termenbox-sergei scripts/dev.sh ..."`
+  (the shared `docker_cache` volume belongs to another uid).
 
 ### U2 [ ] State file and honest notice
 
@@ -253,4 +254,4 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
 - 2026-10-31 plan written after a code review; installed 0.1.57+dev on beta follows no update because it is an unreleased
   build newer than `0.1.57-beta.7`; the installed binary also predates `check-update`.
 - 2026-10-31 U0 done: decision 0153 written and accepted by the owner; next step U1.
-- 2026-10-31 U1 started: cadence, migration and test written; unverified (no cargo/docker in the session); tick moved to U5b.
+- 2026-10-31 U1 done: cadence, migration and test; install_channels 8/8 pass; tick moved to U5b, ETag spike carried to U3; next step U2.
