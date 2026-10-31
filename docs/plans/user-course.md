@@ -81,11 +81,12 @@ Context: `resume-after-close` exists in `cases.mjs` and has not been rendered; r
 Do: render it, fix what fails, add `steps`, a `poster` at the re-attached screen and `h.result` when the same screen returns; keep the final assertion (the same workspace attached with its screen after the reload).
 Done-when: the Check passes and the final assertion fails when changed.
 
-### 4.1 Course check — [ ]
+### 4.1 Course check — [x]
 Class: implement · Needs: 2.2 · Check: `node scripts/check-course.mjs --self-test`
 Context: guardrail `course-chapters-keep-the-fixed-anatomy-and-generated-steps`. A chapter is a file `docs/course/NN-*.md` (not `README.md`). `scripts/docs-course.mjs check` covers a stale steps block; `scripts/docs-media.mjs check` covers a poster whose video is missing; `scripts/check-site.mjs` is the model for a repository check that CI runs. `.github/workflows/ci.yaml` has a step "Test the docs-media scripts".
 Do: create `scripts/check-course.mjs`: for every chapter, the parts in order (a first line that starts with "In " and names a time, a `<!-- media:<id> -->` block, a `<!-- course-steps:<case> -->` block, a heading `If it doesn't work` with exactly two entries, a heading `You can now`, a final `Next` link), the word count of prose outside the generated and media blocks at most 250, every relative link resolves to a file, and it calls the two checks above. `--self-test` builds good and bad chapters in a temp folder (missing part, 251 words, broken link, stale steps) and asserts each failure. Wire into `ci.yaml` next to the docs-media tests (a chapter folder that does not exist yet passes).
 Done-when: the Check passes and the CI step is present.
+Progress (2026-10-31): `scripts/check-course.mjs` checks the promise line, the part order, two entries in the trouble box, the final Next link, 250 words, relative links, the steps block (needs `--catalog`, fails without it) and the poster block. Deviation: a missing video in `docs/media/` is a warning unless `--require-media`, because the 4.3 chapters must pass their Check before the media is picked in 5.1; step 5.1 runs it with `--require-media` (add that to its Check). CI runs the self-test always and the chapters, with a catalog from `render.mjs --list --json`, once `docs/course` exists; the catalog step needs Playwright installed in that job, which is unconfirmed.
 
 ### 4.2 Course index, story and task index — [ ]
 Class: implement · Needs: 2.2 · Check: `test -f docs/course/README.md && grep -c "0[1-6]-" docs/course/README.md | awk '$1>=6{exit 0} {exit 1}'`
@@ -136,7 +137,7 @@ Do: add "New here? Start the course" with the story's first line within the firs
 Done-when: the Check exits 0, `node scripts/check-site.mjs` passes and `node scripts/check-course.mjs` passes.
 
 ### 5.1 Render, review and pick — [ ]
-Class: review · Needs: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 4.3a, 4.3b, 4.3c, 4.3d, 4.3e, 4.3f, 2.3 · Check: `node scripts/docs-media.mjs check docs/course/0*.md`
+Class: review · Needs: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 4.3a, 4.3b, 4.3c, 4.3d, 4.3e, 4.3f, 2.3 · Check: `node scripts/docs-media.mjs check docs/course/0*.md && node scripts/check-course.mjs --require-media --catalog catalog.json`
 Context: needs the pull requests A to D merged. A developer with write access reviews on an iPhone with the procedure `review-and-publish-docs-media`; their word decides and nothing here ticks for them (guardrail `media-commands-come-only-from-people-with-write-access`).
 Do: dispatch `gh workflow run docs-media.yaml --ref develop -f case=all -f profile=both` (or the six cases on the profiles above), give the reviewer the issue and the preview link, record their ticks and any `/regen` notes, apply the notes with the procedure, open the pull request from the compare link the workflow posts, and merge it when green.
 Done-when: the Check exits 0 (every chapter's video, poster and `render.json` are in `docs/media/` on `develop`) and the reviewer has replied with the result.
