@@ -94,6 +94,7 @@ jobs:
     if: needs.select.outputs.run == 'true'
     permissions:
       contents: write
+      deployments: write
     uses: ./.github/workflows/release-build.yaml
     secrets: inherit
     with:
