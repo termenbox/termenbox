@@ -76,7 +76,7 @@
 </script>
 <AppShell pinned>
   <NavigationBar workspaces={tabs} agents={$agents} servers={$servers} windows={$wins} ontabmenu={key => { menuKey = key; hub.sendToWorkspace(key, { type: 'windows', workspace: key }); }} {activeKey} held={!!actions || expanded || sheetHeld} onopen={key => { activeKey = key; height = 'closed'; }} onactions={key => actions = key} onmenu={() => menu = true} onworkspaces={() => { settings = false; height = height === 'closed' ? 'half' : 'closed'; }} />
-  <NeedsYouBanner {waiting} now={Date.now()} onopen={key => { activeKey = key; }} onanswer={(key, choice, prompt) => hub.sendToWorkspace(key, { type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} />
+  <div class="banner-layer"><NeedsYouBanner {waiting} now={Date.now()} onopen={key => { activeKey = key; }} onanswer={(key, choice, prompt) => hub.sendToWorkspace(key, { type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} /></div>
   <main class:mobile>
     <div class="terminal"><p>{activeKey}</p><div class="screen"><textarea class="xterm-helper-textarea" aria-label="Terminal input"></textarea></div><KeyRow bind:mods onkey={() => {}} onpaste={() => {}} oncopy={() => {}} /></div>
     {#if settings}<div class="settings"><SettingsView user="test" onservers={() => {}} onshortcuts={() => {}} onreport={() => {}} onlogout={() => {}} ondeletedata={async () => 0} historyServers={0} ondeletehistory={async () => ({ servers: 0, removed: 0, failedNames: [] })} /></div>{/if}
@@ -92,4 +92,4 @@
       ondetach={() => { hidden = new Set(hidden).add(menuWorkspace.key); }} oncloseworkspace={() => { confirmClose = true; actions = menuWorkspace.key; }} onclose={() => menuKey = null} />
   {/if}
 </AppShell>
-<style>main { position: relative; display: flex; flex: 1; min-height: 0; overflow: hidden; } main.mobile { flex-direction: column; } .terminal { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; } .screen { flex: 1; min-height: 0; } .settings { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; background: var(--bg, #000); }</style>
+<style>.banner-layer { position: relative; height: 0; z-index: 30; } main { position: relative; display: flex; flex: 1; min-height: 0; overflow: hidden; } main.mobile { flex-direction: column; } .terminal { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; } .screen { flex: 1; min-height: 0; } .settings { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; background: var(--bg, #000); }</style>
