@@ -1,0 +1,16 @@
+{
+  "case": "recent-folder",
+  "profile": "phone",
+  "pace": "normal",
+  "captions": true,
+  "hash": "b2460ad948329cb5fc34037cdf5b977dc838e71b1c2ca33c8e28568902cdd814",
+  "version": "0.1.57",
+  "run": "41226740814",
+  "renderedAt": "2026-10-31T17:55:10.745Z",
+  "files": [
+    "recent-folder-phone.mp4",
+    "recent-folder-phone.gif",
+    "recent-folder-phone-dialog-open.png",
+    "recent-folder-phone-folder-chosen.png"
+  ]
+}
