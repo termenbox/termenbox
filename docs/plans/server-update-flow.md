@@ -342,6 +342,7 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
 - 2026-10-31 U8: decision 0155 accepted by the owner; next U8a.
 - 2026-10-31 U8a done: signed `image` digests in the manifest and the pipeline step that resolves them; next U8b (a release with `image` must ship before it lands).
 - 2026-10-31 merged develop (decision numbers moved: grace is 0154, container updater 0155); lint fixed a dangling id and two tags; capture found no contradiction (0155 amends 0063, which stays active). Next: land this PR, cut a beta (carries U5a and `image`), then U5b and U8b.
+- 2026-10-31 PRs #404 and #407 merged; `v0.1.57-beta.11` published from master `a11fc10` with U5a and signed `image` digests (both match the registry index). U5b and U8b are unblocked (Needs: a release with U5a / with `image`). The first release run from develop failed at startup because the `image` job needs `packages: read` and the callers did not grant it (#407). Next: U5b, then U8b (fresh sessions).
 - 2026-10-31 U5b done (released v0.1.57-beta.11 carried U5a and `image`): grace deadline, tick timer, window snapping, postpone cap; next U8b.
 - 2026-10-31 U8b-d done in the same PR as U5b (one PR was asked for): container.json, host timers, digest apply with rollback; real-Docker and local-registry e2e not run.
 - 2026-10-31 U5b and U8 merged in #417; U8d end-to-end test against a local registry added (follow-up PR).
