@@ -51,6 +51,9 @@ cd packages/core && wasm-pack build --target web --release
 # Docker
 docker build -t termenbox -f docker/Dockerfile .
 
+# Work only in a pool worktree, never in this folder (DECISION-0150): 10 slots, 3 kept warm
+sh scripts/pool.sh acquire fix/my-change   # prints the slot path; also: release, status, warm
+
 # No compiler on this machine? Run any command in the pinned build container (DECISION-0114)
 scripts/dev.sh cargo test --workspace
 scripts/dev.sh --full sh -c 'cd packages/client && node e2e/run.mjs'
@@ -78,6 +81,7 @@ lint
 
 ## Guardrail Highlights
 
+- Work happens only in a pool worktree, never in the main checkout; a hook enforces it (GUARDRAIL-work-happens-in-pool-worktrees)
 - Wrappers optional; the web client stays complete (GUARDRAIL-native-wrapper-keeps-web-parity)
 - No paid services (GUARDRAIL-no-paid-services; developer accounts and signing certificates excepted)
 - 512MB RAM / 1 vCPU limit (GUARDRAIL-resource-constraints)
