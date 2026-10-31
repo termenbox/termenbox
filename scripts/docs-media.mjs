@@ -53,6 +53,12 @@ export function check(text, { mediaDir, hashes = {} }) {
   return { errors, warnings };
 }
 
+/** Cases that no page marks: every case outside the `dialog` group (those are optional extras) needs a media marker in some page. */
+export function unmarked(catalog, texts) {
+  const marked = new Set(texts.flatMap((x) => markers(x).map((id) => splitId(id).case)));
+  return catalog.filter((c) => c.group !== 'dialog' && !marked.has(c.id)).map((c) => c.id);
+}
+
 function selfTest() {
   const root = mkdtempSync(join(tmpdir(), 'tb-media-'));
   try {
@@ -74,6 +80,9 @@ function selfTest() {
     assert.match(check('<!-- media:missing -->', { mediaDir: media }).errors[0], /no approved video/);
     assert.match(check(once, { mediaDir: media, hashes: { 'add-server': 'h2' } }).warnings[0], /stale/);
     assert.equal(check('no markers here', { mediaDir: media }).errors.length, 0);
+    const cat = [{ id: 'add-server', group: 'core' }, { id: 'gone', group: 'start' }, { id: 'extra', group: 'dialog' }];
+    assert.deepEqual(unmarked(cat, ['<!-- media:add-server-phone -->']), ['gone'], 'a case without a marker is reported, a dialog case is not');
+    assert.deepEqual(unmarked(cat, ['<!-- media:add-server -->', '<!-- media:gone-desktop -->']), []);
     assert.deepEqual(splitId('add-server-desktop'), { case: 'add-server', profile: 'desktop' });
   } finally { rmSync(root, { recursive: true, force: true }); }
   console.log('ok  docs-media self-test');
@@ -82,7 +91,16 @@ function selfTest() {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   if (args.includes('--self-test')) selfTest();
-  else {
+  else if (args[0] === 'cases') {
+    // cases --catalog <json> <file.md>...: fail when a case that needs a marker has none in any page
+    const ci = args.indexOf('--catalog');
+    const files = args.slice(1).filter((_, i) => i + 1 !== ci && i + 1 !== ci + 1);
+    if (ci < 0 || !files.length) { console.error('usage: docs-media.mjs cases --catalog <json> <file.md>...'); process.exit(2); }
+    const missing = unmarked(JSON.parse(readFileSync(args[ci + 1], 'utf8')), files.map((f) => readFileSync(f, 'utf8')));
+    missing.forEach((id) => console.error(`FAIL case "${id}" has no <!-- media:${id} --> marker in any page`));
+    if (missing.length) process.exit(1);
+    console.log('ok  every case that needs a marker has one');
+  } else {
     const [mode, ...rest] = args;
     const mi = rest.indexOf('--media');
     const mediaDir = resolve(mi >= 0 ? rest.splice(mi, 2)[1] : 'docs/media');

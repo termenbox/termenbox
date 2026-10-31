@@ -68,6 +68,8 @@ jobs:
           PROFILE: ${{ inputs.profile }}
         run: |
           node e2e/video/render.mjs --list --json > "$RUNNER_TEMP/catalog.json"
+          # a marker that was deleted or renamed would leave the video out of its page without a word
+          node ../../scripts/docs-media.mjs cases --catalog "$RUNNER_TEMP/catalog.json" ../../README.md $(find ../../docs -name '*.md')
           node -e '
             const rows = JSON.parse(require("fs").readFileSync(process.env.RUNNER_TEMP + "/catalog.json", "utf8"));
             const want = process.env.CASE;
