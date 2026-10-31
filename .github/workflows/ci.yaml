@@ -27,6 +27,7 @@ concurrency:
 # branch and never writes, so PR branches cannot evict the 10 GB budget that master/develop caches live in.
 #
 # Job graph (the critical path is rust-build -> e2e / browsers-real; lint and tests run beside it, not before it):
+#   changes                                       (what the pull request touches: docs only skips every job, server-only skips `browsers`)
 #   client                                        (typecheck, build, unit tests, bundle gate)
 #   rust-lint | rust-build | rust-test            (three cargo jobs in parallel instead of one long chain)
 #   browsers                                      (scripted servers, no binary: starts immediately)
@@ -35,8 +36,43 @@ concurrency:
 #   ci                                            (single result for branch protection)
 
 jobs:
+  # Decides which jobs a pull request needs, from the paths it changes (.github/scripts/ci-scope.sh holds the lists).
+  # Every push to master/develop runs everything: those runs write the caches and are what a release gate and the
+  # nightly look for. A job that is skipped here skips the jobs that need it as well; the result job at the end
+  # accepts exactly those skips and nothing else.
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.scope.outputs.code }}
+      scripted: ${{ steps.scope.outputs.scripted }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+      - name: Scope
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [ "$EVENT" != pull_request ]; then
+            printf 'code=true\nscripted=true\n' | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A failed or empty lookup reads as "everything changed": the script then turns every job on.
+          gh api --paginate "repos/${{ github.repository }}/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)' > paths.txt || : > paths.txt
+          sh .github/scripts/ci-scope.sh < paths.txt | tee -a "$GITHUB_OUTPUT"
+
   client:
     name: Client (typecheck, build)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -71,6 +107,8 @@ jobs:
 
   rust-lint:
     name: Rust (fmt, clippy)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -96,6 +134,8 @@ jobs:
   # soon as it is compiled instead of waiting for clippy and the debug test build.
   rust-build:
     name: Rust (release build)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -121,6 +161,8 @@ jobs:
 
   rust-test:
     name: Rust (tests)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -150,14 +192,22 @@ jobs:
           python3 .github/scripts/test_release_plan.py
           sh .github/scripts/test-prune-nightlies.sh
           sh .github/scripts/test-update-alias.sh
+          sh .github/scripts/test-ci-scope.sh
 
   # Real Chrome against the real server binary: login and claim over WebRTC, typing, reconnect with screen replay,
   # plus the resource gates (server RSS with 10 sessions, CPU while output streams). Only GitHub is a stand-in.
+  #
+  # The script list is spread over the shards by suite.mjs (heaviest first, weights in that file): to use more machines,
+  # add a number to `shard`.
   e2e:
-    name: Browser end-to-end and resource gates
+    name: Browser end-to-end and resource gates (${{ matrix.shard }}/${{ strategy.job-total }})
     needs: rust-build
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v7
 
@@ -189,12 +239,12 @@ jobs:
         env:
           TERMENBOX_BIN: ${{ github.workspace }}/bin/termenbox-server
           E2E_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
-        run: node e2e/suite.mjs server
+        run: node e2e/suite.mjs server --shard ${{ matrix.shard }}/${{ strategy.job-total }}
 
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
-          name: e2e-failure-chromium-server
+          name: e2e-failure-chromium-server-${{ matrix.shard }}
           path: ${{ runner.temp }}/e2e-artifacts
           if-no-files-found: ignore
           retention-days: 7
@@ -205,16 +255,24 @@ jobs:
   # longer runs at all. Chromium is the runner's Chrome, so the chromium leg stays on the bare
   # runner and skips the container.
   browsers:
-    name: Browser matrix (${{ matrix.engine }})
+    name: Browser matrix (${{ matrix.engine }}, ${{ matrix.runs }})
+    needs: changes
+    if: needs.changes.outputs.scripted == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
+        # One leg per run (`suite:size:ratio`; a leg may list several, separated by spaces): the legs are the unit of
+        # parallelism, so a new engine or viewport is one more line.
         include:
-          - { engine: chromium, runs: 'desktop:1024x768:1 desktop:1440x900:2' }
-          - { engine: firefox, runs: 'desktop:1024x768:1 desktop:1440x900:2' }
-          - { engine: webkit, runs: 'desktop:1024x768:1 desktop:1440x900:2 phone:390x844:3' }
+          - { engine: chromium, runs: 'desktop:1024x768:1' }
+          - { engine: chromium, runs: 'desktop:1440x900:2' }
+          - { engine: firefox, runs: 'desktop:1024x768:1' }
+          - { engine: firefox, runs: 'desktop:1440x900:2' }
+          - { engine: webkit, runs: 'desktop:1024x768:1' }
+          - { engine: webkit, runs: 'desktop:1440x900:2' }
+          - { engine: webkit, runs: 'phone:390x844:3' }
     container: ${{ matrix.engine != 'chromium' && 'ghcr.io/termenbox/termenbox-ci:latest' || '' }}
     steps:
       - uses: actions/checkout@v7
@@ -260,7 +318,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
-          name: e2e-failure-${{ matrix.engine }}
+          name: e2e-failure-${{ matrix.engine }}-${{ strategy.job-index }}
           path: ${{ runner.temp }}/e2e-artifacts
           if-no-files-found: ignore
           retention-days: 7
@@ -360,6 +418,8 @@ jobs:
   # nothing to install. Build both on the native runners and fail if anything is linked dynamically.
   static:
     name: Static binary (${{ matrix.arch }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
     strategy:
@@ -459,6 +519,8 @@ jobs:
   # (or add the other files to the hash below), or a change to them will not rebuild.
   tmux:
     name: Bundled tmux (static, ${{ matrix.arch }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     strategy:
@@ -556,14 +618,33 @@ jobs:
         run: docker exec machine journalctl -u termenbox --no-pager | tail -50
 
   # One result for branch protection: require this check instead of the individual jobs, and the graph above can be
-  # reshaped without touching the repository settings again.
+  # reshaped without touching the repository settings again. A skipped job is a failure unless `changes` said the pull
+  # request cannot affect it: `code` false skips everything, `scripted` false skips the scripted-server browser matrix.
   ci:
     name: CI result
     if: ${{ always() }}
-    needs: [client, rust-lint, rust-build, rust-test, e2e, browsers, browsers-real, static, e2e-static, tmux, installer]
+    needs: [changes, client, rust-lint, rust-build, rust-test, e2e, browsers, browsers-real, static, e2e-static, tmux, installer]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Fail unless every job succeeded
-        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
-        run: exit 1
+      - name: Fail unless every job succeeded or was rightly skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | python3 -c '
+          import json, sys
+          needs = json.load(sys.stdin)
+          out = needs["changes"]["outputs"]
+          bad = []
+          for name, job in needs.items():
+              result = job["result"]
+              if result == "success":
+                  continue
+              allowed = result == "skipped" and (out.get("code") == "false" or (name == "browsers" and out.get("scripted") == "false"))
+              if not allowed:
+                  bad.append(name + ": " + result)
+          print("code=%s scripted=%s" % (out.get("code"), out.get("scripted")))
+          if bad:
+              print("not green: " + ", ".join(bad))
+              sys.exit(1)
+          '
