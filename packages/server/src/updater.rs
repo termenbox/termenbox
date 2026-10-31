@@ -191,6 +191,22 @@ pub enum Outcome {
     },
 }
 
+impl Outcome {
+    /// What the audit line says: the kind of outcome and, when there is one, the release. Never the rollback reason,
+    /// which is free text (`audit-logging-no-secrets`).
+    pub fn audit(&self) -> (&'static str, &str) {
+        match self {
+            Outcome::UpToDate => ("up_to_date", ""),
+            Outcome::Frozen => ("frozen", ""),
+            Outcome::Held => ("held", ""),
+            Outcome::OtherChannel => ("other_channel", ""),
+            Outcome::Updated { to, .. } => ("installed", to),
+            Outcome::RolledBack { to, .. } => ("rolled_back", to),
+            Outcome::Available { version, .. } => ("available", version),
+        }
+    }
+}
+
 pub struct Updater<'a> {
     pub fetch: &'a dyn Fetch,
     pub service: &'a dyn Service,

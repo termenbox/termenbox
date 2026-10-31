@@ -903,6 +903,11 @@ impl WorkspaceManager {
                 let mode = self.mode.label();
                 let previous = self.previous_exit.clone();
                 let health = self.health.as_ref().map(|h| h.history());
+                let update = self
+                    .requests_dir
+                    .as_deref()
+                    .and_then(|dir| dir.parent())
+                    .map(crate::update_state::State::load);
                 // Names a user chose are in no field name or token shape: the bundle scrubs the live ones from free text.
                 let names: Vec<String> = self
                     .backend
@@ -922,6 +927,7 @@ impl WorkspaceManager {
                         mode: &mode,
                         previous_exit: previous.as_ref(),
                         health,
+                        update,
                         names: &names,
                     })
                 })

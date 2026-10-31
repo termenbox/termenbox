@@ -299,7 +299,8 @@ async fn update(setup: &Setup, trigger: Trigger, id: Option<&str>) -> Result<i32
         }
     }
     let outcome = result?;
-    info!(target: "audit", event = "update", outcome = ?outcome);
+    let (kind, version) = outcome.audit();
+    info!(target: "audit", event = "update", trigger = ?trigger, outcome = kind, version = version);
     match &outcome {
         Outcome::UpToDate => println!("already up to date"),
         Outcome::Frozen => println!("updates are paused by the maintainers (a signed freeze)"),

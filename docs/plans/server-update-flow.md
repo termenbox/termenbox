@@ -267,14 +267,19 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
   restart can repeat one announcement. `sw.js` shows "<name> has an update". Verify passed (27 push/update tests).
   PHONE CHECK: none; no push was received on a real device (`a-phone-check-names-its-platform`).
 
-### U7 [ ] Observability and docs
+### U7 [x] Observability and docs
 
 - Needs: U2.
 - Do: audit lines for check, defer, postpone, skip, install, rollback (no secrets, `audit-logging-no-secrets`); the state
   file and the last 20 results in the diagnostics bundle (0144); `docs/guide/install.md` and a new fact for the update
   state file; capture (`go-getter:capture`) and lint (`go-getter:lint`) pass over the touched docs.
 - Verify: `grep -q update-state docs/guide/install.md` and the diagnostics bundle test lists the file.
-- PR: - | Merged: - | Notes:
+- PR: this branch | Merged: - | Notes: audit: check, postpone, skip, install and rollback were mostly there; the `update`
+  line now carries `trigger`, an outcome kind and the release instead of the Debug of the outcome (the rollback reason
+  was free text). Bundle: an "updater (update-state.json)" section, scrubbed; test
+  `the_bundle_shows_what_the_updater_knows_and_scrubs_its_error`. DEVIATION: "last 20 results" is one, `last`: the state
+  keeps no history and adding one is a schema change for little; fact 0064 says where the longer record is. Fact 0064
+  added. NOT RUN: `go-getter:capture` and `go-getter:lint` (they need the user's session; run them before the PR).
 
 ### U8 [ ] Container updater (go/no-go)
 
@@ -303,3 +308,4 @@ Statuses: `[ ]` todo, `[x]` done and verified. Update inside the step's own PR.
 - 2026-10-31 U4 done: update_state and the three owner actions on the wire, Updates dialog, banner, hub and compat tests; next step U5a (parser accepts and ignores grace/on_timeout).
 - 2026-10-31 U5a done: parser accepts and ignores grace/on_timeout; U5b is blocked until a release carries U5a (next unblocked steps: U6 push, U7 observability).
 - 2026-10-31 U6 done: update push (server name and kind only), once per version, quiet hours respected; next step U7 (observability and docs).
+- 2026-10-31 U7 done: audit line, updater section in the diagnostics bundle, fact 0064, guide; U5b and U8 remain, both blocked (a release with U5a; an owner decision).
