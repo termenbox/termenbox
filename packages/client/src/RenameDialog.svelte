@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { backdropClose } from './lib/backdropClose';
   import { onDestroy, onMount } from 'svelte';
   import { rememberFocus } from './lib/focus';
   /** The one rename field, for a workspace or a tab. Top-aligned so the soft keyboard never covers it. */
@@ -23,7 +24,7 @@
   }
 </script>
 
-<dialog bind:this={dialog} aria-label={title} oncancel={(e) => { e.preventDefault(); onclose(); }} onclick={(e) => { if (e.target === dialog) onclose(); }}>
+<dialog bind:this={dialog} aria-label={title} oncancel={(e) => { e.preventDefault(); onclose(); }} use:backdropClose={() => { onclose(); }}>
   <form onsubmit={(e) => { e.preventDefault(); save(); }}>
     <h2>{title}</h2>
     <label>{field}

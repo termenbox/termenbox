@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { backdropClose } from './lib/backdropClose';
   import { onMount } from 'svelte';
   import AgentIcon from './AgentIcon.svelte';
   import { TEMPLATES } from './lib/newworkspace';
@@ -28,7 +29,7 @@
   }
 </script>
 
-<dialog bind:this={dialog} aria-label="New tab" oncancel={(e) => { e.preventDefault(); onclose(); }} onclick={(e) => { if (e.target === dialog) onclose(); }}>
+<dialog bind:this={dialog} aria-label="New tab" oncancel={(e) => { e.preventDefault(); onclose(); }} use:backdropClose={() => { onclose(); }}>
   <form onsubmit={(e) => { e.preventDefault(); create(); }}>
     <h2>New tab in {workspace.name}</h2>
     <div class="templates" role="radiogroup" aria-label="Start with">

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { backdropClose } from './lib/backdropClose';
   import { onMount, onDestroy } from 'svelte';
   import { rememberFocus } from './lib/focus';
   import { ageText } from './lib/cards';
@@ -34,7 +35,7 @@
   function home() { onclose(); onhome(); }
 </script>
 
-<dialog bind:this={dialog} aria-label="Inbox" on:cancel|preventDefault={onclose} on:click={(e) => { if (e.target === dialog) onclose(); }}>
+<dialog bind:this={dialog} aria-label="Inbox" on:cancel|preventDefault={onclose} use:backdropClose={() => { onclose(); }}>
   <div class="box">
     <div class="row"><h2>Inbox</h2><button class="secondary" aria-label="Close inbox" on:click={onclose}>×</button></div>
     {#if items.length === 0}
