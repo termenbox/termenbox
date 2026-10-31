@@ -39,9 +39,21 @@ describe('linkAt', () => {
     expect(linkAt(b, 28, 1, 3)).toBe('https://example.com/long/path/here');
     expect(linkAt(b, 28, 1, 14)).toBeNull();
   });
-  it('does not join rows that did not wrap', () => {
-    const b = buffer(['https://a.dev/x', 'tail'], 15);
-    expect(linkAt(b, 15, 1, 1)).toBeNull();
+  it('does not join rows that did not wrap and the link does not fill', () => {
+    const b = buffer(['https://a.dev/x', 'tail'], 20);
+    expect(linkAt(b, 20, 0, 1)).toBe('https://a.dev/x');
+    expect(linkAt(b, 20, 1, 1)).toBeNull();
+  });
+  it('joins a link a program or tmux repainted over full rows without marking them wrapped', () => {
+    const url = 'https://example.com/login?session=3f9c&redirect=%2Fdash&utm_source=termenbox&ref=beta14';
+    const cols = 30;
+    const rows = [url.slice(0, 30), url.slice(30, 60), url.slice(60)];
+    const b = buffer(rows, cols);
+    for (const [row, col] of [[0, 3], [1, 10], [2, 2]]) expect(linkAt(b, cols, row, col)).toBe(url);
+  });
+  it('stops joining at a row that does not start with the link', () => {
+    const b = buffer(['see https://a.dev/aaaaaaaaaaaaaa', ' next words'], 32);
+    expect(linkAt(b, 32, 0, 6)).toBe('https://a.dev/aaaaaaaaaaaaaa');
   });
 });
 
