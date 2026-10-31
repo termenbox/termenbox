@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Termenbox</string>
+    <string name="title_activity_main">Termenbox</string>
+    <string name="package_name">dev.termenbox.app</string>
+    <string name="custom_url_scheme">dev.termenbox.app</string>
+</resources>
