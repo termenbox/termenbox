@@ -6,7 +6,7 @@ date: 2026-10-31
 track: product
 tags: [workspaces, tabs, agents, hooks, server]
 amends: [0149-a-workspace-is-a-server-record-and-each-tab-is-a-tmux-window]
-related: [0122-agent-state-comes-from-one-turn-and-obligation-reducer, 0079-connector-settings-are-edited-with-a-backup, 0054-server-owns-workspaces-through-a-backend-trait]
+related: [0122-agent-state-comes-from-one-turn-and-obligation-reducer, 0079-agent-hooks-are-opt-in, 0054-session-backends]
 ---
 
 ## Decision

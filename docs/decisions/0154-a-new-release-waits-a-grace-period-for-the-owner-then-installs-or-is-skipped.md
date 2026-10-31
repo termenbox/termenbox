@@ -27,5 +27,5 @@ Not chosen: a fourth mode `ask` (a second way to say `notify`); changing the pol
 ## Consequences
 
 - Refines decision 0131 (policy and window) and decision 0076 (the timer); decisions 0063 and 0077 are unchanged.
-- Container installs have no updater yet; that is a separate decision, not covered here.
+- Container installs update through the host timer of decision 0155, which reuses this grace period, the state file and the app card unchanged.
 - Plan: `docs/plans/server-update-flow.md`.
