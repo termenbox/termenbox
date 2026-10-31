@@ -7,6 +7,6 @@
   const s = $derived(STATES[state]);
 </script>
 
-<span class={cn('inline-flex shrink-0 rounded-full p-0.5 ring-2', s.ring, className)} role="img" aria-label={s.label}>
+<span class={cn('inline-flex shrink-0 rounded-[8px] p-0.5 ring-2', s.ring, className)} role="img" aria-label={s.label}>
   <AgentIcon {agent} {command} {size} />
 </span>
