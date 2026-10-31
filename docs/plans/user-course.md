@@ -102,11 +102,12 @@ Do: write `docs/course/README.md`: the running story in a short paragraph (you s
 Done-when: the Check exits 0 and every relative link in the file resolves (`node scripts/check-course.mjs` once 4.1 exists).
 Progress (2026-10-31): `docs/course/README.md` written: the story, the six chapters with what each ends with (no times yet: a chapter's promise carries the real time, set in 4.3), 13 tasks, the Master line. The Check exits 0. The links to the six chapter files do not resolve until 4.3a to 4.3f create them; every other link does. `check-course.mjs` does not check the README (it is not a chapter), so run a link check on it again after 4.3f.
 
-### 4.3a Chapter 1, Install — [ ]‖
+### 4.3a Chapter 1, Install — [x]‖
 Class: implement · Needs: 3.1, 4.1, 4.2 · Check: `node scripts/check-course.mjs docs/course/01-install.md`
 Context: procedure `write-a-course-chapter`; reference `docs/guide/install.md` (the one command, firewalls, where agents run; DECISIONS 0058, 0075, 0078, 0113, 0118, 0126). The two likeliest failures: a firewall blocking the UDP port (the installer opens `ufw` or `firewalld` itself but not a provider firewall) and running as root vs user (`docs/guide/install.md`, DECISION-0118).
 Do: write the chapter following the procedure, with the `<!-- course-steps:install -->` and `<!-- media:install-desktop -->` markers.
 Done-when: the Check passes and the chapter reads aloud without a second reading.
+Progress (2026-10-31): `docs/course/01-install.md` written (steps block generated from the `install` case, media marker for `install-desktop`, two trouble entries, 3 minutes promised). The Check reports only the Next link to chapter 2, which resolves when 4.3b lands, and a warning that the video is not picked yet (5.1). To run the Check before the media exists: `node packages/client/e2e/video/render.mjs --list --json > catalog.json` then `node scripts/check-course.mjs --catalog catalog.json <chapter>`.
 
 ### 4.3b Chapter 2, Connect your phone — [ ]‖
 Class: implement · Needs: 3.2, 4.1, 4.2 · Check: `node scripts/check-course.mjs docs/course/02-connect-your-phone.md`
