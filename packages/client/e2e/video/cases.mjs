@@ -203,9 +203,8 @@ Object.assign(cases, {
       await replay.enter();
       await h.step('wait', replay.bottom());
       await replay.play(h.wait);
-      const lines = await replay.lines();
-      expectThat(lines.some((l) => /^\s*https:\/\/app\.termenbox\.dev\/#\/pair\/\S+$/.test(l)), 'the terminal does not show the pairing link line');
-      expectThat(lines.some((l) => l.startsWith('Scan this, open the link')), 'the terminal does not say to scan the code');
+      expectThat(await replay.waitForLine(/^\s*https:\/\/app\.termenbox\.dev\/#\/pair\/\S+$/), 'the terminal does not show the pairing link line');
+      expectThat(await replay.waitForLine(/^Scan this, open the link/), 'the terminal does not say to scan the code');
       await h.still('poster');
       await h.result();
     },

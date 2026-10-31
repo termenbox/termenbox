@@ -51,7 +51,7 @@ export async function launchReplay({ viewport, scale, phone, recordDir, overlay 
   await page.addScriptTag({ path: addonDir('webgl') });
   await page.evaluate(() => {
     const term = new window.Terminal({
-      cols: 80, rows: 24, fontSize: 14, lineHeight: 1.2, fontFamily: '"DejaVu Sans Mono", "Liberation Mono", monospace',
+      cols: 80, rows: 24, fontSize: 12, lineHeight: 1.0, fontFamily: '"DejaVu Sans Mono", "Liberation Mono", monospace',
       cursorBlink: false, scrollback: 500, theme: { background: '#1b1d23', foreground: '#d6dae2', cursor: '#d6dae2' },
     });
     const fit = new window.FitAddon.FitAddon();
@@ -94,6 +94,15 @@ export async function launchReplay({ viewport, scale, phone, recordDir, overlay 
         }
         return out;
       });
+    },
+    /** Polls until some line matches `re` (the terminal parses writes after they are queued); null after `ms`. */
+    async waitForLine(re, ms = 5000) {
+      const until = Date.now() + ms;
+      for (;;) {
+        const hit = (await replay.lines()).find((l) => re.test(l));
+        if (hit || Date.now() > until) return hit ?? null;
+        await new Promise((r) => setTimeout(r, 100));
+      }
     },
     /** A zero-size element at the bottom of the page: captions avoid it, so they sit at the top, clear of the pairing block. */
     bottom: () => page.locator('#bottom'),
