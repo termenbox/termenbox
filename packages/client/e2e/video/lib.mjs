@@ -152,11 +152,17 @@ export function humanPage(page, profile, { pace = 'normal', caption: drawCaption
     async type(locator, text) {
       await h.tap(locator);
       await locator.fill('');
-      const gaps = typingDelays(text, rng);
-      let i = 0;
-      for (const ch of text) { await wait(gaps[i++]); await page.keyboard.type(ch); }
+      await h.typeText(text, (ch) => page.keyboard.type(ch));
       await h.pause();
     },
+    /** Types `text` one key at a time at human pace, handing each key to `sink` (a terminal page types into xterm, not an input). */
+    async typeText(text, sink) {
+      const gaps = typingDelays(text, rng);
+      let i = 0;
+      for (const ch of text) { await wait(gaps[i++]); await sink(ch); }
+    },
+    /** Waits `ms`, stretched by the pace knob like every other human delay. */
+    wait,
     /** Performs the declared step `id`: shows its caption (away from `locator`, the control about to be used). Throws out of order or unknown. */
     async step(id, locator) {
       await h.say(tracker.reach(id).caption, locator);

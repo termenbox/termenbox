@@ -1,0 +1,62 @@
+
+What needs root (this installer never runs sudo):
+  - no active ufw or firewalld was detected. With another firewall, open 4443-4542/udp yourself
+  - sessions start at boot: lingering could not be read; it will be tried, but not undone on uninstall. If it fails, as root:  loginctl enable-linger alice
+Checking the latest release...
+
+Termenbox 0.1.56 will be installed for alice, with no root (sessions run as alice):
+  - the server  /home/alice/.local/bin/termenbox-server
+  - tmux        /home/alice/.local/bin/termenbox-tmux (a pinned static build, used before any tmux on PATH)
+  - state       /home/alice/.config/termenbox
+  - a user service termenbox.service, and a daily update check (signed releases only), in /home/alice/.config/systemd/user
+  - updates     channel stable, installed automatically (change with --channel, or edit update.toml in the journal directory)
+  - UDP port    the server picks a free one from 4443-4542 on its first start and keeps it
+Every change is recorded in /home/alice/.local/state/termenbox; undo them with: termenbox-server --journal-dir /home/alice/.local/state/termenbox --revert --dry-run, then --revert
+
+Lingering could not be switched on: the server starts at login only. As root:  loginctl enable-linger alice
+█████████████████████████████████████████████████████████████████████
+█████████████████████████████████████████████████████████████████████
+████ ▄▄▄▄▄ █▄▄▀▀▄ ▀ █ ▀██ █▀▄▄█▀▀▄   ▀██▄▄▀▀▄ ▄  ▀▀▄▀▀█  █ ▄▄▄▄▄ ████
+████ █   █ █ ▀  ▄▀██    █▄███▄▄ ▄▀█ ▀█▄ ▀█▀██▀  █  ▀▀  ▄ █ █   █ ████
+████ █▄▄▄█ █▄▄ █▀▀  ▀ ▀▄ ▄ ▀▀ █▄ ▄▄▄ ▄▀▀▀ ▄▄ ▀▀▄▄▄█▀█▀ ▄██ █▄▄▄█ ████
+████▄▄▄▄▄▄▄█▄█ ▀▄█ ▀ ▀ █ ▀▄█▄█ █ █▄█ ▀▄▀▄▀ ▀ █ █▄▀ ▀▄▀ ▀▄█▄▄▄▄▄▄▄████
+████ ▄▄ ▀▀▄▀ ▄▀█▄▀█▄▄▄ ██ ▄▀ ▄█ ▄  ▄▄▀█ ▀ ▄ ▄   ▀▄▄▄▀ ██▄▄▀▀  ▄▀▄████
+████   ▀▀█▄█▄▄█ ███▄█▄  ▄ ▄▀▄▄ █▀██▀▄▄ ▄█▄▀█ █▄█ ▀▀  ▀█ ▄▄▄▄▀  ██████
+█████▄ ▀▀▄▄▄▀█▀█  ▀▀▄▄ ▀  ▀▄█▄█▄█ █▄▀▄▄ ▄▀▀▀▀▄█▄█▀█   ▀ █▄▄▀▀▄▄▀█████
+████▄ ▄ ▀▀▄▄ ▀▀█▄█ ▀ ▀  █▀▄▀▀▄▀█▄█▀▀▀▄█▀▄▄ ▀▄ ▀▀  ▀██▄█ ██▀█ ▀█ ▀████
+████ ▀▀▀▀█▄▄▀▄▀▀█ █▀█▀▀ ██▀▄█   ▀ █ ▀█ ▄▀▀█▄▀ █▄▄█▀█▀ █   ▄  ▄   ████
+████ ▄█▄  ▄█▀█▀▀ ▀   ██▀▀██▀▄ ▀█▄██ ▀▀ ▀▀▄▄█▀▀▀▀█▄ ▀▄▄▄  ▀▄▄▀▀█▀ ████
+████▄ ▄█▄ ▄ ▄ ▀▄█▀ ██ ██▄  ▀ ▀██▄██▄▀▄▄▀▀ ▄▄ █ █▀█▄ ▀█▄▄▄▀▀▀██▄▀▀████
+████▀███▄ ▄█▄▄▄█▄██▀  █▀██ ▄▀▀▄▀▀▀█ ▄▄▀▄  ▀  ▄▄  ▀▀▀▀▄██▀ ▀▀ ▀▀██████
+████▄▀▄▄  ▄▀▀   ▄█▀▀██▄▀██▀█▄█▀ █████ ▄▄ ▀▀▀██▄▀█ █ ▄ ▀ █▄███▀▄▀ ████
+████▀ █▄█▀▄▀  ▄▄ ▄▄▀▄█   ▄ ▄█▄▀▀▄▀ ▄█▀█▀▀▄██▀▀▄█▄▀  ██▄▄▄█ ▄ ▄█ ▀████
+████ ▄▀█ ▄▄▄ ▄ █▄█▄▀▀▀██▄▄▀▀▄█ █ ▄▄▄ ▀ ▀█▄▄▀▀▀▄ ▄▀▀▀▀▄▄█ ▄▄▄ ▀▀ ▀████
+████▄█   █▄█ ▀▄▀ ▄█▄███ ██ ▀ ▀█▄ █▄█ ▄▄ ▄▀ ▄   ▄▀▀▀  ▀▀█ █▄█  █  ████
+████▄██▄ ▄▄ ▄▀▀▀█ ▀ ▄▄█ ▄ ██▀██▄ ▄ ▄▄▀▄▄█ █▄ ▀▀████▄█▄█ ▄   ▄█▄▄█████
+████▀  ▄▄▀▄  █ ▄██ ▄▀▀██ ██▄█▄▀▀▀▄██▄▄  ▀   ▄▀▀ ▄▀ ▀ ▄█▀▀██▀▀▀ ██████
+█████ ▄  ▄▄▄  ▀█████▄ ▄▀▀▀██▄ ██ ▀▄▀█ █▀▄▀  █▄▄▄▀ ██▄█ ▄█ ▄▀▀ ▄█ ████
+████▄██▄ ▀▄▀ █ █▀ █▀▀▄▄ ██▄▀▀▄█▀▄▀█▀▄█  ██▄█ ▄ ▄  ▄ ██▄█▀▄█▄▀█▄▀█████
+████▄  █▀█▄█ █▄▄▄  ▄ █▄ ▄ ▀▀█▀▄ ██▀ ██  █▄▄▀█▀█▀  ▀ ▀███ ▀▀█▄▄ ▄ ████
+████▀ ▀▄▄▄▄█ ▄▄▄▄▄   ▀▀▄▀█▀▀▄▀ ▄▀█ ▄ █ ▀██▄▄▀▀▀ █▀ ▀▄█ ▀▄ ▄▄▀▀██▄████
+████▀▄██▀ ▄ █ ▄█▀▀  ███▄▄ ▄▀ ██▀▄▀█▄▀▄▄ ▀▀█  █ ▀▀▄█ ▀▀█▀▀▀▀█▄▀▄▀▀████
+████▀  ▀▄▀▄▀   ▄▀▄▄▄  █▀▄▀▀ ██ █▀██ ▄█▀▀ ▀▀██▀ █▄  ▄▀▀▄██▀▀ █▀ ▀█████
+████▀▀▄█▄▀▄▀█  ▄  ▀ ▀█ ▀▀ █▀▄▄█▄▀ ▄ ▀▀▄█▄ ▀▄▀ █ ▀ █▄▄ ▀▄▄█▄▀▀▄▀█▀████
+████▀▀ ▄ ▄▄█▀█ ▀▀ ▄█▀█▄█▄▀ █▀ ██▄█▀ ▄▄ ▀  ▄█▄▄▄▀▄▀█▄▀ ██▀▄▀▄▄█▄▄█████
+████▄▄▄▄██▄█▀▀ ▄  █▀ █▀ █▀█ █▄▄▀ ▄▄▄ ▀▀▀▀██ ▀ █▄▄ ▀▀████ ▄▄▄ ▄ ▄█████
+████ ▄▄▄▄▄ ██▄ ▀ ▄▄███▄ ▀▄▄▀ █▀  █▄█ ▄▀ ▄██ ▀▀ ▀█ █▄▄▀█▄ █▄█  █  ████
+████ █   █ █▀▀ ▀█▀▀█▄▀▀ ▀▄ ▄ ▄█▀▄▄   ▄▄▄█ █▀▄ ▀▀█▄▄ ▀▀██ ▄▄▄  ██▀████
+████ █▄▄▄█ █ ▄▀▄   ▄ ▀▄█▀ █▀▄█▄▄▀▄█▄▄▀   ▄▀▀██▄ ▄█▀█▄▀█▄█ ▄▄▄ ▀▄█████
+████▄▄▄▄▄▄▄█▄▄▄███▄██▄▄▄▄▄█▄▄▄█████▄█▄▄█▄▄███▄▄▄█▄█▄▄▄█▄▄█▄██▄█▄▄████
+█████████████████████████████████████████████████████████████████████
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+Scan this, open the link, or type the code in Add Server:
+
+  https://app.termenbox.dev/#/pair/dGJ4YjI3aF2n9h0lvCbDdBGb9AThtwtbR54B3ZxZ-S0HuBK0SgAAAAAAAAACAAAAAGrvhDQAXFuC_Z1ri3FJzvGT9-R2iFSqg9c4XT7RcCg0YGaHaXsLd29ya3N0YXRpb24BAhFbDjE5OC41MS4xMDAuMTAwDh_039XvxAhy2J4V03WlOE6DBJuJ5_qXDHgo7FG0-DkIuJaj6myYVyAFhrJm0GJypUK66EE5EEx_pCtNyz-xAQ?claim=EXAMPLE000000000000000000000000000000000000
+
+The link carries this server's name, key fingerprint and addresses, signed by the server; the app shows them before it connects.
+The first user to confirm becomes the owner. It works for 15 minutes, once.
+
+Termenbox listens on UDP port 4443.
+No active ufw or firewalld was detected here. With another firewall, allow inbound UDP 4443 yourself.
+If your hosting provider has a network firewall or security group, allow inbound UDP 4443 there too.
+Add Server tests the connection from your browser and shows what is blocking it.

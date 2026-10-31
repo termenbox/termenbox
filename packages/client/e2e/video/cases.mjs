@@ -179,6 +179,38 @@ async function openWorkspace({ h, page }, name) {
 const screenHas = (page, text) => page.waitForFunction((x) => [...document.querySelectorAll('.xterm-rows > div')].some((d) => d.textContent.includes(x)), text, { timeout: 8000 });
 
 Object.assign(cases, {
+  /** Install: the real installer's captured output replayed in a terminal (fixtures/, scripts/capture-installer-output.sh). */
+  'install': {
+    title: 'Install Termenbox on your server',
+    group: 'start',
+    page: 'docs/course/01-install.md',
+    server: 'replay',
+    replay: true,
+    disclaimer: "A rendered replay of the real installer's output, not a live install",
+    inputs: ['packages/client/installer/install.sh', 'packages/client/e2e/video/**'],
+    steps: [
+      { id: 'open', caption: 'On the machine that will run your agents, open a terminal', label: null },
+      { id: 'paste', caption: 'Paste the install command and press Enter', label: null },
+      { id: 'wait', caption: 'Wait for the QR code and the link', label: null },
+    ],
+    async run({ h, replay }) {
+      await h.step('open', replay.bottom());
+      await replay.prompt();
+      await h.pause();
+      await h.step('paste', replay.bottom());
+      await replay.paste('curl -fsSL https://app.termenbox.dev/i | sh');
+      await h.pause(1200);
+      await replay.enter();
+      await h.step('wait', replay.bottom());
+      await replay.play(h.wait);
+      const lines = await replay.lines();
+      expectThat(lines.some((l) => /^\s*https:\/\/app\.termenbox\.dev\/#\/pair\/\S+$/.test(l)), 'the terminal does not show the pairing link line');
+      expectThat(lines.some((l) => l.startsWith('Scan this, open the link')), 'the terminal does not say to scan the code');
+      await h.still('poster');
+      await h.result();
+    },
+  },
+
   /** Add a server: paste the link, read what is being added, name it, see that this device can reach it. Real server binary. */
   'add-server': {
     title: 'Add your server',
