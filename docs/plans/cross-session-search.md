@@ -138,4 +138,4 @@ Done-when: the Chromium e2e job passes with the new scenario, the conform check 
 - All three landings are driven (ACP open, terminal open, dormant resume). Desktop window only: no phone was driven.
 - Fixture ids: under a composite backend (`tmux,acp`, the default) the registry's workspace ids already carry the kind (`tmux:ws-…`), so hand-written records need it too.
 - `conform` over the branch: no violation; the only log line on the search path is the existing `session_search` audit entry (provider and account id, no query).
-- R78 moved to `roadmap/archive/` with `Status: done (PR pending)`; set the PR number when it opens.
+- R78 moved to `roadmap/archive/` with `Status: done (PR #448)`.
