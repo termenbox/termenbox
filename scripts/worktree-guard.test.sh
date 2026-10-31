@@ -15,7 +15,7 @@ fails=0
 ok() { printf 'ok   %s\n' "$1"; }
 bad() { printf 'FAIL %s\n' "$1"; fails=$((fails + 1)); }
 # run <cwd> <tool> <field> <value>: exit status of the hook
-run() { jq -n --arg cwd "$1" --arg tool "$2" --arg f "$3" --arg v "$4" '{cwd:$cwd,tool_name:$tool,tool_input:{($f):$v}}' | python3 "$hook" >/dev/null 2>&1; }
+run() { jq -n --arg cwd "$1" --arg tool "$2" --arg f "$3" --arg v "$4" '{cwd:$cwd,tool_name:$tool,tool_input:{($f):$v}}' | TERMENBOX_POOL_ONLY=${POOL_ONLY-1} python3 "$hook" >/dev/null 2>&1; }
 allow() { d=$1; shift; if run "$@"; then ok "$d"; else bad "$d"; fi; }
 deny() { d=$1; shift; if run "$@"; then bad "$d"; else ok "$d"; fi; }
 
@@ -37,5 +37,7 @@ for c in 'touch f' 'cargo build' 'git commit -m x'; do
 done
 allow "a directory that is no repository is not the main checkout" "$tmp" Bash command 'touch f'
 deny  "a hook given garbage fails closed in the main checkout" "$repo" Bash command ''
+POOL_ONLY=0 allow "without TERMENBOX_POOL_ONLY=1 the main checkout is not locked" "$repo" Edit file_path "$repo/a"
+POOL_ONLY= allow "an unset-like empty value does not enforce" "$repo" Bash command 'touch f'
 
 [ "$fails" -eq 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }

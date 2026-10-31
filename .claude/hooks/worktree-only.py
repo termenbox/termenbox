@@ -5,6 +5,9 @@ Blocks file edits whose path is inside a main checkout, and Bash commands that c
 a working tree whose git dir is the common git dir; a linked worktree is not. Reads are never blocked. Exit 2 blocks
 and tells the agent what to do; any other exit allows. Fails closed when it cannot tell, but only inside a main
 checkout: elsewhere nothing here applies.
+
+Opt-in per environment: it enforces only when TERMENBOX_POOL_ONLY=1 (set it in your shell profile). Without it
+the hook allows everything, so other clones and contributors are never locked out of their main checkout.
 """
 import json
 import os
@@ -172,6 +175,8 @@ def check_bash(cmd, cwd):
 
 
 def main():
+    if os.environ.get("TERMENBOX_POOL_ONLY") != "1":
+        return
     try:
         event = json.load(sys.stdin)
     except ValueError:

@@ -81,7 +81,7 @@ lint
 
 ## Guardrail Highlights
 
-- Work happens only in a pool worktree, never in the main checkout; a hook enforces it (GUARDRAIL-work-happens-in-pool-worktrees)
+- Work happens only in a pool worktree, never in the main checkout; a hook enforces it where `TERMENBOX_POOL_ONLY=1` (GUARDRAIL-work-happens-in-pool-worktrees)
 - Wrappers optional; the web client stays complete (GUARDRAIL-native-wrapper-keeps-web-parity)
 - No paid services (GUARDRAIL-no-paid-services; developer accounts and signing certificates excepted)
 - 512MB RAM / 1 vCPU limit (GUARDRAIL-resource-constraints)
