@@ -34,13 +34,9 @@ function block(id, mediaDir, pageDir, chapter) {
   const rel = (tail) => relative(pageDir, join(mediaDir, `${stem(id)}${tail}`)).split('\\').join('/');
   const { seconds } = JSON.parse(readFileSync(join(mediaDir, `${stem(id)}.render.json`), 'utf8'));
   if (!Number.isFinite(seconds)) throw new Error(`media:${id}: its render.json has no length (seconds)`);
-<<<<<<< HEAD
   // a course chapter's poster opens the player page on termenbox.dev (GitHub downloads an MP4); other pages link the file
   const target = chapter ? `${SITE}/course/${chapter}/` : rel('.mp4');
   return `<!-- media:${id} -->\n[![Walkthrough: ${c.replace(/-/g, ' ')}](${rel('-poster.png')})](${target})\n\nWatch, ${seconds} s\n<!-- /media -->`;
-=======
-  return `<!-- media:${id} -->\n[![Walkthrough: ${c.replace(/-/g, ' ')}](${rel('-poster.png')})](${rel('.mp4')})\n\nWatch, ${seconds} s\n<!-- /media -->`;
->>>>>>> origin/develop
 }
 
 /** `text` with every marker filled from `mediaDir`; throws on a marker whose video is not there. */
