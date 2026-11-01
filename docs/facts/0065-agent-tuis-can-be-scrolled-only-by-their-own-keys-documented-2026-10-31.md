@@ -29,7 +29,7 @@ Both agents write one JSONL file per session, append-only, one JSON object per l
 | | Claude Code 2.1.308 | Codex 0.166.0 |
 |---|---|---|
 | File | `$CLAUDE_CONFIG_DIR` or `~/.claude`, then `projects/<cwd with every non-alphanumeric as "-">/<session-id>.jsonl` | `$CODEX_HOME` or `~/.codex`, then `sessions/YYYY/MM/DD/rollout-<local time>-<session-id>.jsonl` |
-| Directory link | the folder name encodes the cwd; each record also carries `cwd` | `session_meta.payload.cwd` on line 1 |
+| Directory link | the folder name encodes the cwd lossily (every non-alphanumeric becomes `-`), so read the `cwd` each record carries (0182) | `session_meta.payload.cwd` on line 1 |
 | Record | `type`, `uuid`, `parentUuid`, `sessionId`, `version`, `timestamp`, `isSidechain` | `timestamp`, `ordinal`, `type`, `payload`; line 1 is `session_meta` with `cli_version` |
 | Conversation | `user` and `assistant` records, `message.content` a string or blocks (`text`, `thinking`, `tool_use`, `tool_result`) | `response_item` with `payload.type` `message` and `role` (`developer` and `user` setup messages come first); turns bracketed by `event_msg` `task_started` and `task_complete` with `turn_id` |
 | Tool call | `assistant` `tool_use` block, then a `user` record with a `tool_result` block and a `toolUseResult` object (stdout, stderr) | `custom_tool_call` (`input` is code) and `custom_tool_call_output` in `response_item`, plus `event_msg` `item_completed` of type `CommandExecution` with the command and output |

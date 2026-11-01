@@ -1,6 +1,6 @@
 # Session search follow-ups
 
-Follows `cross-session-search.md` (R78, landed in #448, shipped in `v0.1.57-beta.20`). Decisions: 0156 (what is searched, amended by step 7), 0157 (the SessionLog port). Fact 0065. Guardrails `session-search-is-bounded-scrubbed-and-never-logs-the-query`, `resource-constraints`, `security-secrets-handling`.
+Follows `cross-session-search.md` (R78, landed in #448, shipped in `v0.1.57-beta.20`). Decisions: 0156 (what is searched), 0182 (amends it: every session in the agents' session roots, no ledger; written in step 7), 0157 (the SessionLog port). Fact 0065. Guardrails `session-search-is-bounded-scrubbed-and-never-logs-the-query`, `resource-constraints`, `security-secrets-handling`.
 
 ## Cold start
 
@@ -11,12 +11,11 @@ What search does today (verified at `a31db0d`):
 - **Known sessions** (`registry.rs` `known_sessions`): one `agent_session` per tab. `set_agent_session` overwrites it when the agent restarts in the tab; `close_tab` and `close_workspace` delete the record, so a closed or replaced conversation has no pointer any more.
 - **Client** (`lib/sessionSearch.ts`, `SearchSheet.svelte`): hits are grouped by workspace only; the client keeps at most 100 hits per server; a cut says "narrow the words" and there is no way to ask for more.
 
-Goals: (a) switchable grouping, (b) fast, allocation-free scanning that does not read what a time bound rules out, (c) conversations of closed tabs and workspaces are found, (d) more results on demand.
+Goals: (a) switchable grouping, (b) fast, allocation-free scanning that does not read what a time bound rules out, (c) every session in the agents' session roots is found, closed or never opened in termenbox, (d) more results on demand.
 
 Defaults assumed until the owner says otherwise (each is a choice, not a fact):
 - "Lazy load" means more hits as the list is scrolled, past the 50 cap, plus rendering in pieces.
-- A hit in a closed session offers Resume in a new tab in the recorded directory, never started by the search.
-- The ledger keeps 500 sessions or 90 days, whichever is fewer, and has a "forget closed sessions" action.
+- A hit that no workspace holds offers Resume: switch to the workspace that already holds the session, else a new workspace named after the directory (0182). Never started by the search.
 - Map/reduce across threads is out of scope: the target is 1 vCPU, so it adds a merge and no throughput. Revisit only with a measurement.
 
 ### 1 Grouping modes — [x]
@@ -56,28 +55,26 @@ Result: `may_hold_text` in both adapters drops tool-only lines on quoted-marker 
 
 ### 6 Time window and time bounds — [x]
 Class: implement · Needs: 4 · Check: `scripts/dev.sh cargo test --workspace`
-Context: Session files are append-only, so a file last written before a cutoff holds nothing after it; its `mtime` is free. Inside a long file, records are in time order, so the timestamp of the first complete line of a block (one `memmem` per block, not per line) tells where to stop reading backwards. `mtime` can lie after `cp`, `rsync` or a restore; the ledger (step 8) holds a recorded last-event time that wins when present. Codex puts the date in the rollout file name and in its records; the time-of-last-event function belongs in the `SessionLog` port.
+Context: Session files are append-only, so a file last written before a cutoff holds nothing after it; its `mtime` is free. Inside a long file, records are in time order, so the timestamp of the first complete line of a block (one `memmem` per block, not per line) tells where to stop reading backwards. `mtime` can lie after `cp`, `rsync` or a restore; with no ledger (0182) that risk is accepted. Codex puts the date in the rollout file name and in its records; the time-of-last-event function belongs in the `SessionLog` port.
 Do: Add `since` (milliseconds) to `search` in both protocol files. Skip a file whose last-event time is before `since` without opening it; stop a file at the first block older than `since`. Add the cut reason `range` and a count of sessions skipped, shown as "N older conversations not searched. Search older". Default window 30 days; chips *24 h / 7 d / 30 d / Any* in the sheet. The time and byte caps stay as the safety net.
 Done-when: a server test shows a file older than `since` is never opened (read counter is zero) and the skipped count is reported; a long-file test stops mid-file; the sheet test covers the chips and the "Search older" action; the query is still absent from the log.
-Result: `since` on `search`, `older` and the cut `range` on `search_done` (both protocol files). `SessionLog::last_event` (file mtime for both adapters; the ledger's time wins once step 8 adds it) lets `session_search::run` skip a file without opening it; `scan_file` reads the first whole line's `"timestamp"` per block with one `memmem` and ends with `End::Range` after the first block older than `since`. `older` counts both. The sheet has the 24 h / 7 d / 30 d / Any chips (remembered per viewer, 30 d default) and "Search older". Tests: a stale file costs zero bytes, a 4 MB file reads under two blocks, chips and the older action. The block's time is the record's own top-level `timestamp`, read with a borrowing serde struct (no allocation; a nested one is skipped; an unreadable or over-64 KiB first line never stops a scan), and a file ends only at the second block in a row whose first line is older, so one out-of-order record cannot hide newer ones (up to three blocks are read). Not run here: clippy `-D warnings` stops in `bridge-contract` (existing, `explicit_counter_loop`), and 20 server tests need real tmux (environment).
+Result: `since` on `search`, `older` and the cut `range` on `search_done` (both protocol files). `SessionLog::last_event` (file mtime for both adapters; there is no recorded time to override it (0182, no ledger)) lets `session_search::run` skip a file without opening it; `scan_file` reads the first whole line's `"timestamp"` per block with one `memmem` and ends with `End::Range` after the first block older than `since`. `older` counts both. The sheet has the 24 h / 7 d / 30 d / Any chips (remembered per viewer, 30 d default) and "Search older". Tests: a stale file costs zero bytes, a 4 MB file reads under two blocks, chips and the older action. The block's time is the record's own top-level `timestamp`, read with a borrowing serde struct (no allocation; a nested one is skipped; an unreadable or over-64 KiB first line never stops a scan), and a file ends only at the second block in a row whose first line is older, so one out-of-order record cannot hide newer ones (up to three blocks are read). Not run here: clippy `-D warnings` stops in `bridge-contract` (existing, `explicit_counter_loop`), and 20 server tests need real tmux (environment).
 
-### 7 Decision: a ledger of closed sessions — [ ]
+### 7 Decision: search every session in the agents' session roots, no ledger — [x]
 Class: decide · Needs: none · Check: `lint` over `docs/` passes
-Context: 0156 says the corpus is open tabs and dormant tabs holding an `agent_session`. This step widens it and must say what is stored, for how long and how it is cleared. Run the `clarify` or `roadmap` skill with the owner; do not decide alone.
-Do: Write the decision amending 0156: a ledger of (agent, session id, directory, workspace name and tab title when last seen, last event time), kept after a tab or workspace closes and after the agent restarts in a tab; bounded by count and age; entries dropped when the agent's file is gone; the owner can clear it; ids never logged; stored in the registry's state directory with the same atomic writes. Update fact 0065 and `docs/skills/add-a-session-log-adapter.md` where they describe the corpus.
-Done-when: the decision is `accepted` by the owner, the guardrail `session-search-is-bounded-scrubbed-and-never-logs-the-query` still holds unchanged, and the index lists it.
+Result: Decision 0182 (accepted by the owner, 2026-11-01) amends 0156: the corpus is every session file inside each adapter's session root, termenbox stores nothing new and there is no ledger. Guardrail `session-search-is-bounded-scrubbed-and-never-logs-the-query` changes its confinement from "known folders" to "the adapter's root, no symlink out, no client path, no unrecognised format". A hit's directory comes from the file's `cwd`; badges are `open` and `resume`; hits group under the holding workspace or the directory; Resume switches to the workspace that already holds the session, else creates a workspace named after the directory. Fact 0065 notes the folder name is lossy; the adapter skill gained a root-and-symlink step.
 
-### 8 Session ledger on the server — [ ]
-Class: implement · Needs: 6, 7 · Check: `scripts/dev.sh cargo test -p termenbox-server registry`
-Context: `set_agent_session`, `close_tab`, `close_workspace` and `known_sessions` in `packages/server/src/registry.rs`; ACP session ids live in the ACP manager (`known_sessions` says it adds them).
-Do: Append to the ledger in `set_agent_session` and for ACP session ids. `close_tab` and `close_workspace` leave ledger entries alone. `known_sessions()` merges live tabs and the ledger and returns a state of `open`, `dormant` or `closed`; `distinct` still keeps one entry per conversation, preferring the more live state. The wire `up` flag stays for old clients and gains a `state` beside it. Prune on count, age and a missing file. A clear action for the owner.
-Done-when: tests show a closed tab, a closed workspace and a session replaced in the same tab are all found by a search; a session whose file is gone is dropped; a directory outside every recorded one is still never read; no log line holds an id.
+### 8 Enumerate the session roots — [ ]
+Class: implement · Needs: 6, 7 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log`
+Context: `known_sessions` in `packages/server/src/registry.rs` and `session_search::run`; `SessionLogs::standard()` already resolves each agent's home. Decision 0182.
+Do: Add `SessionLog::list` (or equivalent) that walks the adapter's root and yields session files with agent, session id, `mtime` and the `cwd` read from the file, newest first, without following symlinks out of the root. `session_search::run` searches that list. The registry's sessions only mark a hit `open` (a running tab holds it) or `resume`, and name the holding workspace; `distinct` keeps one entry per conversation, preferring `open`. The wire `up` flag stays for old clients and gains a `state` beside it.
+Done-when: tests show a closed tab, a closed workspace, a replaced session and a session started outside termenbox are all found; a symlink pointing outside the root is never read; a file of an unrecognised format is skipped; no log line holds an id, a path or the query.
 
-### 9 Landing for a closed hit — [ ]
+### 9 Landing and Resume for a hit no tab holds — [ ]
 Class: implement · Needs: 1, 8 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test'`
-Context: `landingOf` and `resumeOutcome` in `lib/sessionSearch.ts`; Resume reuses 0152's command table (`claude --resume <id>`, `codex resume <id>`, `opencode --session <id>`) on the server. A closed hit has no workspace to switch to or reopen.
-Do: Badge **Closed**; its group is keyed by the recorded workspace name. A tap shows the same confirmation as Resume, then the server opens a new tab in the recorded directory with the resume command and the reply says `resumed` or `shell`. If the directory is gone, say so and offer nothing. Nothing in the client types into an agent.
-Done-when: component tests cover the closed landing, the confirmation, the shell fallback message and the missing directory; a server test opens a tab in the recorded directory.
+Context: `landingOf` and `resumeOutcome` in `lib/sessionSearch.ts`; Resume reuses 0152's command table (`claude --resume <id>`, `codex resume <id>`, `opencode --session <id>`) on the server. Decision 0182.
+Do: Badge `resume`; the group is the holding workspace or the directory (last two segments, full path as a tooltip). A tap asks for confirmation. The server then switches to the workspace that already holds the same agent and session id, else creates a workspace named after the directory and runs the resume command; the reply says `switched`, `resumed` or `shell`. If the directory is gone, say so and offer nothing. Nothing in the client types into an agent.
+Done-when: component tests cover the confirmation, the shell fallback message and the missing directory; server tests show an already-held session opens no duplicate and an unheld one creates a workspace in the hit's directory.
 
 ### 10 More results: per-session and continuation — [ ]
 Class: implement · Needs: 6, 8 · Check: `scripts/dev.sh cargo test --workspace`
@@ -94,5 +91,5 @@ Done-when: tests cover scroll-to-more, the end of results, a new query during pa
 ### 12 End-to-end and privacy check — [ ]
 Class: review · Needs: 9, 11 · Check: `sg docker -c "COMPOSE_PROJECT_NAME=termenbox-sergei scripts/dev.sh --full sh -c 'cd packages/client && node e2e/session-search.mjs'"`
 Context: `packages/client/e2e/session-search.mjs` already covers open, dormant and capped searches against the real server and tmux. Phone checks must name their platform (guardrail `a-phone-check-names-its-platform`).
-Do: Extend it with a closed tab, an agent restarted in the same tab, a grouping switch, the time chips with a skipped count, and paging past 50. Assert the query and any session id appear in no server log line. Run the `conform` skill over the diff, then move the follow-ups out of this plan per the roadmap's landing procedure.
+Do: Extend it with a closed tab, a session started outside termenbox, an agent restarted in the same tab, a grouping switch, the time chips with a skipped count, and paging past 50. Assert the query and any session id or path appear in no server log line. Run the `conform` skill over the diff, then move the follow-ups out of this plan per the roadmap's landing procedure.
 Done-when: the Chromium e2e job passes with the new scenarios, `conform` reports no violation, and the plan is archived.
