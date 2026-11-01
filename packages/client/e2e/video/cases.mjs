@@ -417,6 +417,39 @@ Object.assign(cases, {
       await h.result();
     },
   },
+  /** Template stage of R88 step 2.5: the merged Needs-you list across nodes on fixtures (3 nodes, 40 asks, one silent node). */
+  'fleet-needs-you-template': {
+    title: 'Needs you across your nodes (template)',
+    group: 'control-plane',
+    page: 'docs/plans/attention-control-plane.md',
+    server: 'probe',
+    probe: 'fleet',
+    disclaimer: 'A template on fixture data, not a live fleet',
+    inputs: ['packages/client/src/FleetNeedsYou.svelte', 'packages/client/src/lib/fleet.ts', 'packages/client/src/lib/fleetFixtures.ts', 'packages/client/e2e/FleetProbe.svelte', 'packages/client/e2e/video/**'],
+    steps: [
+      { id: 'list', caption: 'One list holds the asks of every node, oldest first, each with its node chip', label: null },
+      { id: 'silent', caption: 'A silent node is named, and its asks wait and cannot be opened', label: null },
+      { id: 'open', caption: 'Tap an ask to open it on its node', label: null },
+    ],
+    async run({ h, page }) {
+      const chips = page.locator('[data-fleet-chip]');
+      await h.step('list');
+      expectThat((await chips.count()) === 40, `the list shows ${await chips.count()} node chips, not 40`);
+      await h.pause();
+      await h.step('silent');
+      const notice = page.locator('[data-fleet-silent="n-lab"]');
+      expectThat(await notice.isVisible(), 'the silent node has no notice');
+      expectThat(await page.locator('[data-fleet-item][disabled]').count() === 10, 'the silent node\'s ten asks are not disabled');
+      await h.pause();
+      await h.step('open');
+      const first = page.locator('[data-fleet-item]:not([disabled])').first();
+      await h.tap(first);
+      expectThat((await page.evaluate(() => window.__fleet.opened.length)) === 1, 'tapping an ask did not open it');
+      await h.still('poster');
+      await h.result();
+    },
+  },
+
 });
 
 for (const [id, c] of Object.entries(cases)) checkDeclared(id, c.steps);

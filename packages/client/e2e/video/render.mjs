@@ -10,6 +10,7 @@ import { humanPage, overlayScript, paceFactor, sleep } from './lib.mjs';
 import { cases } from './cases.mjs';
 import { launchReal } from './real-server.mjs';
 import { launchReplay } from './terminal-replay.mjs';
+import { startProbe } from './probe.mjs';
 import { appVersion, hashInputs } from './inputs-hash.mjs';
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -45,6 +46,9 @@ try {
   if (cases[caseName].real) {
     // The real server binary and the add-server wizard: the case brings its own browser (real-server.mjs).
     t = await launchReal({ viewport, scale, phone, recordDir: work, overlay: overlayScript });
+  } else if (cases[caseName].probe) {
+    // A template on its fixtures: the built probe page (e2e/<probe>.html), no app and no server (build-an-agent-view-slice-template-first).
+    t = await startProbe(shared, cases[caseName].probe, { viewport, scale, phone, recordDir: work, overlay: overlayScript });
   } else if (cases[caseName].replay) {
     // The installer's captured output in an xterm.js page: no app, no server (terminal-replay.mjs).
     t = await launchReplay({ viewport, scale, phone, recordDir: work, overlay: overlayScript });
@@ -88,7 +92,7 @@ const base = `${caseName}-${profile}`;
 const mp4 = join(out, `${base}.mp4`);
 // Start where the app is ready (not on the blank load); even dimensions for H.264; faststart so it plays while it downloads.
 const trim = ['-ss', String(Math.max(0, ready - 0.3))];
-const comment = `Rendered walkthrough "${cases[caseName].title}" on ${cases[caseName].real ? 'a local test server' : cases[caseName].replay ? 'the installer\'s captured output' : 'scripted data'} (${profile}); not a recording of a real device or agent.`;
+const comment = `Rendered walkthrough "${cases[caseName].title}" on ${cases[caseName].real ? 'a local test server' : cases[caseName].probe ? 'template fixtures' : cases[caseName].replay ? 'the installer\'s captured output' : 'scripted data'} (${profile}); not a recording of a real device or agent.`;
 const run = (args) => { const r = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', ...args], { stdio: 'inherit' }); if (r.status !== 0) { console.error(`FAIL ffmpeg ${args.slice(0, 4).join(' ')}`); rmSync(work, { recursive: true, force: true }); rmSync(mp4, { force: true }); process.exit(1); } };
 run([...trim, '-i', webm, '-vf', `scale=${viewport.width * scale}:${viewport.height * scale}:flags=lanczos,fps=30`, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '23', '-movflags', '+faststart', '-an', '-metadata', `comment=${comment}`, mp4]);
 rmSync(work, { recursive: true, force: true });
