@@ -18,6 +18,8 @@ Termenbox is a web terminal for remote AI coding agents: Rust server `packages/s
 
 **Milestones.** M1 = slices 0 to 2 (meter and conductor, dogfooded). M2 = slices 3 to 5 (operator session, clusters, escalation). M3 = slice 6 (rules and contracts; Agent view R82 to R84 and R86 resumes after it, decision 0177). M4 = slice 7 (deputy, in shadow mode first). M5 = slice 8 (levers). M6 = slice 9 (team mode). M7 = slice 10 (dispatcher).
 
+**Depends on the agent status model** (`docs/plans/agent-status-model.md`, decisions 0187 to 0193, PR #486). Claude sessions get one state machine per session; Attention items carry a `tier` (`needs_you`, `result`, `info`), an `ask` kind and a `cause`, and an ask is filled in place when its text arrives. For this plan: the meter counts only `needs_you` asks (1.1); the conductor forwards the tier, ask and fills (2.4c); cluster keys and answer idempotency use `(workspace, tab, ItemId)` (4.2, 3.1); the deputy does not build on ask `options` until answers move onto the ask key (7.x). The conductor link reads `EventHub::attention_items` and `StatusChange::Attention`; the status plan's F.3 must keep both.
+
 **Where today's code is.** Attention and Activity state: `packages/server/src/events.rs`, `reducer.rs` (decision 0122), `workspaces.rs`, `push.rs`, `turn.rs`; ACP in `acp.rs`, `acp_stream.rs`; wire types `ClientMessage` and `ServerMessage` in `packages/core/src/protocol.rs`. Client: `Home.svelte`, `lib/cards.ts`, `NeedsYouBanner.svelte`, `InboxSheet.svelte`, `DecisionPanel.svelte`, `QuickReply.svelte`, `lib/acpStore.ts`, `lib/protocol.ts`. The candidate-path connection model is decision 0123 (`candidates.rs`, `connection.rs`).
 
 **How to work and release here.**
@@ -42,7 +44,7 @@ Done-when: the file names each of those modules with line references and a secti
 
 ## Slice 1: the meter (R87)
 
-### 1.1 Server meter: layers, dwell and answer latency — [ ] (code and Check done, awaits the 1.3 dogfood note; released in beta `v0.1.57-beta.26`; the answering device is the class (`device_class` message, `lib/deviceClass.ts`) of the connection that sent the answer, reply or keys; a question cleared with no such connection is `other`; `by_device` shows `phone` and `desktop` once beta.26 runs on both devices, and day 20758 is a partial, restart-skewed day, so do not quote its seconds per agent-hour)
+### 1.1 Server meter: layers, dwell and answer latency — [ ] (code and Check done, awaits the 1.3 dogfood note; released in beta `v0.1.57-beta.26`; the answering device is the class (`device_class` message, `lib/deviceClass.ts`) of the connection that sent the answer, reply or keys; a question cleared with no such connection is `other`; with the status model only `needs_you` asks are raised obligations, a result or info item is not (fix `count only asks as obligations`); `by_device` shows `phone` and `desktop` once beta.26 runs on both devices, and day 20758 is a partial, restart-skewed day, so do not quote its seconds per agent-hour)
 Class: implement · Needs: 0.2 · Check: `scripts/dev.sh cargo test -p termenbox-server attention_meter`
 Context: Decision 0169: attention leverage is human seconds per agent-hour. Data stays on the server, metadata only, bounded (`resource-constraints`, decision 0105 for the pattern). No prompt or agent text is stored.
 Do: Add `packages/server/src/attention_meter.rs`: for every obligation record `raised_at`, `resolved_at`, the layer that resolved it (`human`, `rule`, later `contract`, `deputy`), the answering device (never a name), and for a human the dwell (card foreground time reported by the client) and answer latency. Keep a ring of the last 30 days as daily buckets in the server's state directory, atomically written. Compute `human_seconds` and `agent_hours` (sum of working time per tab from the reducer) per day and a 7-day figure. Add `ClientMessage::CardSeen { obligation, ms }` and `ServerMessage::AttentionStats { days }` in `packages/core/src/protocol.rs`, mirrored in `packages/client/src/lib/protocol.ts` with a round-trip test. Test: bucket rollover, bounded size, a rule-resolved obligation adds zero human seconds, no text stored.
@@ -123,7 +125,7 @@ Do: Add open and close of a terminal on a node through the conductor, stopping o
 Done-when: the test passes.
 
 ### 2.7 Dogfood M1: the owner's own fleet — [ ] (blocked on the owner: choose the conductor and one or two nodes and enrol them with `--conductor-enrol`, one tap, after 1.3. Closing it unblocks 2.8, 3.1 and 5.1)
-Class: review · Needs: 2.5, 2.6, 1.3 · Check: `grep -q "^## 2.7" docs/plans/assets/control-plane/dogfood.md`
+Class: review · Needs: 2.5, 2.6, 2.4c, 1.3 · Check: `grep -q "^## 2.7" docs/plans/assets/control-plane/dogfood.md`
 Context: Decision 0178. The owner enrols two or three of their own machines to a conductor they pin, behind the switch, and works from one phone connection. This is the first milestone.
 Do: Hand over the build and the install command. The owner runs it for 7 days and writes `## 2.7 <date>` with the 7-day meter reading beside the 1.3 baseline and what hurt. Turn each pain into a step or an edit to 2.8, 3.x or 4.x before they are wired.
 Done-when: the note exists and the pains are listed as steps or edits in this plan.
@@ -133,6 +135,12 @@ Class: implement · Needs: 2.7 · Check: `scripts/dev.sh cargo test -p termenbox
 Context: Decision 0170 names the conductor a single point of failure in the first version; the spike (2.1) states the standby design.
 Do: Implement the standby: a second server replicates the conductor's operator state and rules, nodes know both, and the standby takes over after a missed-heartbeat window with a visible incident. Test failover and no double answers.
 Done-when: the test passes and an answer made during failover is applied once.
+
+### 2.4c Conductor forwards tier, ask, cause and fills — [ ]
+Class: implement · Needs: 2.4, agent-status-model B.7 and C.3 · Check: `scripts/dev.sh cargo test -p termenbox-server conductor_link`
+Context: `obligation_of(&Attention)` in `conductor_link.rs` predates the status model: every item becomes an obligation, so a finished turn would show as one on the conductor's list, `tier`, `ask` and `cause` are dropped, and the Differ only raises and clears by id, so an ask card filled in place later never reaches the conductor. The status plan's F.3 removes the old attention wire message and waits for this step.
+Do: Add `tier`, `ask` and `cause` (optional, off the wire when empty) to `Obligation` in `packages/core/src/conductor.rs`; forward only `needs_you` as obligations and `result` as a silent-until-viewed item (decision 0193); make the Differ send a fill when an item's prompt appears or changes, with the same id, and never alert twice; key items by `(node, workspace, tab, id)`. Tests: a result is not an obligation, a fill reaches the conductor with the id unchanged, and the cleared-by-view path still works.
+Done-when: the tests pass.
 
 ## Slice 3: the operator session (R89)
 
