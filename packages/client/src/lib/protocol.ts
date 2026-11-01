@@ -158,6 +158,8 @@ export type ServerMessage =
   | { type: 'agent_events'; events: AgentEvent[] }
   | { type: 'activity'; workspaces: WorkspaceActivity[] }
   | { type: 'attention'; items: Attention[] }
+  /** Decision 0096: everything the status channel carries, read at one instant. An unknown `v` is ignored. */
+  | ({ type: 'status_frame' } & StatusFrame)
   | { type: 'attention_stats'; days: AttentionDay[] }
   | SessionViewMessage
   | AcpViewMessage
@@ -440,6 +442,18 @@ export type Activity = 'working' | 'blocked' | 'idle' | 'unknown';
 
 export type AttentionKind = 'needs_input' | 'finished_unseen' | 'failed' | 'unknown';
 
+/** The body of a `status_frame`. */
+export interface StatusFrame { v: number; workspaces: WorkspaceActivity[]; attention: Attention[]; tabs: TabAgentState[] }
+
+/** Decision 0188: why a working session works. A value this client does not know is shown as plain working. */
+export type SubReason = 'inferring' | 'tool' | 'subagent' | 'compacting' | 'retrying' | 'quiet' | 'unknown';
+/** Decision 0190: what a `needs_you` item waits for. */
+export type AskKind = 'permission' | 'question' | 'plan' | 'trust' | 'elicitation' | 'unknown';
+/** Decision 0192: why a turn ended badly. */
+export type FailureCause = 'rate_limit' | 'auth' | 'api_error' | 'context' | 'crashed' | 'unknown';
+/** Decision 0193: `needs_you` and `result` alert, `info` is silent. */
+export type AttentionTier = 'needs_you' | 'result' | 'info' | 'unknown';
+
 /** The current piece of work of a workspace; `started_at` is ms since the epoch on the server's clock. */
 export interface Task {
   title: string;
@@ -455,6 +469,10 @@ export interface WorkspaceActivity {
   agent?: string;
   /** What scan or screen suspect without a hook: low confidence, never pushed. */
   hint?: AttentionKind;
+  /** Why it is working; absent from an older server. */
+  sub_reason?: SubReason;
+  /** Background work still running after the turn ended (the `bg: N` badge); absent means none. */
+  bg?: number;
 }
 
 /** A durable, server-owned item that asks for the owner. */
@@ -494,6 +512,10 @@ export interface Attention {
   task?: Task;
   /** The question of a `needs_input`. */
   prompt?: string;
+  /** Absent from an older server: `tierOf` derives it from `kind`. */
+  tier?: AttentionTier;
+  ask?: AskKind;
+  cause?: FailureCause;
 }
 
 /** Plan v6: `seq` and `ts` come from the server; unknown `kind`s and extra fields are ignored. */

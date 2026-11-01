@@ -252,7 +252,7 @@ Done-when: A server e2e test shows a hook producing exactly one frame with both 
 and an old-client fixture still parses.
 Progress: done 2026-11-01. `ServerMessage::StatusFrame { v: 1, workspaces, attention, tabs }` (`status_frame` on the wire) holds the Activity of every workspace (sub-reason and `bg` ride in it), the open Attention items (tier, ask, cause) and every tab state, read together. A connection arms a 25 ms window (`FRAME_COALESCE`) on any Activity, Attention or tab change and sends one frame when it ends; `agent_sync` also answers with one. The old `activity`, `attention` and `tab_states` messages are sent unchanged beside it, so an old client keeps working and ignores the unknown type (`protocol::tests` parses the three old messages; the e2e `a_hook_reaches_the_client_as_one_status_frame` shows one frame per hook and the old `attention` beside it). That test needs no tmux (the hook names a session without a workspace). Not done: a per-tab sub-reason (`TabAgentState` has none; the roll-up sub-reason is on the workspace), and the client does not read the frame yet (C.1). Env note: the 20 tmux-dependent tests in `cargo test -p termenbox-server` fail in this image, also with `--full`, and on a clean tree.
 
-### C.1 One status store and selectors in the client — [ ]
+### C.1 One status store and selectors in the client — [ ] (C.1a done, C.1b open)
 Class: implement · Needs: B.7 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test -- status'`
 Context: Three readers today: `lib/agents.ts` `derived()` (chip, tab strip), `lib/workspaceTabs.ts` `aggregateStatus`
 (Home, sidebar, fleet counts), and `lib/tabs.ts`, `lib/notify.ts` (queue, title, badge, chime). Components:
@@ -262,6 +262,17 @@ of decision 0187 (counts, first-ask tab). Switch every surface to the selectors 
 `rowOf`. Drawing nothing for `unknown`.
 Done-when: `grep -rn "aggregateStatus\|derived(" packages/client/src` finds no use outside `status.ts` and its tests,
 and the status unit tests pass.
+
+Progress: C.1a done 2026-11-01. `protocol.ts` types `status_frame`, `SubReason`, `AskKind`, `FailureCause`,
+`AttentionTier` (and the optional `sub_reason`, `bg`, `tier`, `ask`, `cause` fields). `lib/status.ts` holds
+`applyStatusFrame` (activity, attention and tabs land together; unknown `v` ignored), `tierOf` (the kind decides when an
+older server sends no tier), `alerts`, `subReasonWord`, `bgBadge`. The hub applies a frame and, once a connection has
+delivered one (`framed`), skips that connection's `activity`, `attention` and `tab_states`; an older server keeps the
+legacy path. `WorkspaceAgent` gained `subReason` and `bg`. Nothing draws them yet. Env: client suites need `--full`
+(`sg docker -c "scripts/dev.sh --full sh -c 'cd packages/client && pnpm test -- status'"`).
+C.1b (open): switch `Home`, `WorkspaceGroups`, `navlist`, `home.ts`, `TabStrip`, the chip and `BottomBar` to selectors in
+`status.ts`, move `aggregateStatus` and `derived()` into it and delete them from `workspaceTabs.ts` and `agents.ts`, draw
+the sub-reason and `bg` badge, draw nothing for `unknown`.
 
 ### C.2 Alerts play from the renderer — [ ]
 Class: implement · Needs: C.1 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test -- notify'`

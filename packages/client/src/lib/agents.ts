@@ -1,7 +1,7 @@
 // The agent event store (plan v6, P.6): the latest state per workspace, kept up to date from the server's
 // snapshot and event stream. No UI here (cards are v8). Text in events is untrusted: render it as text only.
 import { get, writable } from 'svelte/store';
-import type { Activity, AgentEvent, AgentState, Attention, ClientMessage, ServerMessage, WorkspaceActivity, WorkspaceAgentState, Task } from './protocol';
+import type { Activity, AgentEvent, SubReason, AgentState, Attention, ClientMessage, ServerMessage, WorkspaceActivity, WorkspaceAgentState, Task } from './protocol';
 
 export interface WorkspaceAgent {
   state: AgentState;
@@ -26,6 +26,9 @@ export interface WorkspaceAgent {
   /** Set once the server sends Activity or Attention (decision 0095): `state` is then derived from them, not from raw events. */
   serverStatus?: boolean;
   activity?: Activity;
+  /** Why the workspace works (decision 0188), and the background tasks still alive after its turn ended. */
+  subReason?: SubReason;
+  bg?: number;
   task?: Task;
   /** The most urgent open Attention item of the workspace. */
   attention?: Attention;
@@ -70,7 +73,7 @@ export function applyActivity(map: AgentMap, workspaces: WorkspaceActivity[], re
   const next: AgentMap = { ...map };
   for (const s of workspaces) {
     const cur = next[s.workspace] ?? { state: 'unknown' as AgentState, seq: 0, stale: false, ts: s.ts };
-    next[s.workspace] = derived({ ...cur, serverStatus: true, activity: s.activity, task: s.task, agent: s.agent ?? cur.agent,
+    next[s.workspace] = derived({ ...cur, serverStatus: true, activity: s.activity, task: s.task, subReason: s.sub_reason, bg: s.bg ?? 0, agent: s.agent ?? cur.agent,
       clockOffset: s.ts - receivedAt, ts: Math.max(cur.ts, s.ts) });
   }
   return next;

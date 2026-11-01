@@ -1,5 +1,6 @@
 import { derived, writable } from 'svelte/store';
 import { Connection, type ConnectionOptions, type ConnState } from './connection';
+import { applyStatusFrame, knowsFrame } from './status';
 import { applyActivity, applyAttention, applyEvents, applySnapshot, syncRequest, type AgentMap } from './agents';
 import type { AttentionDay, ClientMessage, ConductorCardInfo, ConductorNodeInfo, ServerHealth, ServerListItem, ServerMessage, TabAgentState, UpdateInfo, WorkspaceInfo } from './protocol';
 import { CHECK_WAIT_MS, checkAnswered, type UpdateAction } from './updateState';
@@ -61,6 +62,8 @@ interface Entry extends HubServer {
   agents: AgentMap;
   windows: WindowMap;
   tabStates: Record<string, TabAgentState>;
+  /** This connection has delivered a `status_frame`: its legacy status messages repeat it and are skipped. */
+  framed?: boolean;
   refresh: boolean;
   everReady: boolean;
 }
@@ -326,15 +329,21 @@ export class ServerHub {
       onFatal: reason => { if (current()) { e.state = 'closed'; e.reason = reason; this.publish(); this.opts.onFatal?.(e.id, reason); } },
     });
     e.connection = connection;
+    e.framed = false;
     e.unsubscribe = connection.subscribe(msg => {
       if (!current()) return;
-      const changed = msg.type === 'workspaces' || msg.type === 'agent_snapshot' || msg.type === 'agent_events' || msg.type === 'window_list' || msg.type === 'activity' || msg.type === 'attention' || msg.type === 'tab_states';
+      const changed = msg.type === 'workspaces' || msg.type === 'agent_snapshot' || msg.type === 'agent_events' || msg.type === 'window_list' || msg.type === 'activity' || msg.type === 'attention' || msg.type === 'tab_states' || msg.type === 'status_frame';
       if (msg.type === 'workspaces') { e.workspaces = msg.workspaces; e.windows = forgetWindows(e.windows, msg.workspaces.map(s => s.id)); }
       if (msg.type === 'window_list') e.windows = applyWindowList(e.windows, msg);
-      if (msg.type === 'tab_states') e.tabStates = Object.fromEntries(msg.states.map(s => [`${s.workspace}/${s.tab}`, s]));
+      if (msg.type === 'status_frame' && knowsFrame(msg)) {
+        // The frame is the whole status at one instant; the legacy messages sent beside it say the same and are skipped.
+        const next = applyStatusFrame({ agents: e.agents, tabStates: e.tabStates }, msg, Date.now());
+        e.agents = next.agents; e.tabStates = next.tabStates; e.framed = true;
+      }
+      if (msg.type === 'tab_states' && !e.framed) e.tabStates = Object.fromEntries(msg.states.map(s => [`${s.workspace}/${s.tab}`, s]));
       if (msg.type === 'agent_snapshot') e.agents = applySnapshot(e.agents, msg.states);
-      if (msg.type === 'activity') e.agents = applyActivity(e.agents, msg.workspaces, Date.now());
-      if (msg.type === 'attention') e.agents = applyAttention(e.agents, msg.items);
+      if (msg.type === 'activity' && !e.framed) e.agents = applyActivity(e.agents, msg.workspaces, Date.now());
+      if (msg.type === 'attention' && !e.framed) e.agents = applyAttention(e.agents, msg.items);
       if (msg.type === 'conductor_state') { e.fleet = { nodes: msg.nodes, cards: msg.cards }; this.publishServers(); }
       if (msg.type === 'attention_stats') { e.attentionStats = msg.days; this.publishServers(); }
       if (msg.type === 'agent_events') {
