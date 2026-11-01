@@ -13,6 +13,13 @@ export type ClientMessage =
   | { type: 'update_postpone' }
   /** Owner-only: stop offering this release (the one the owner saw); a newer one is offered again. */
   | { type: 'update_skip'; version: string }
+  | { type: 'conductor_list' }
+  | { type: 'conductor_approve'; node: string }
+  | { type: 'conductor_remove'; node: string }
+  | { type: 'conductor_answer'; card: string; option: string; idem: string; device?: string }
+  | { type: 'conductor_ack'; card: string; idem: string }
+  | { type: 'conductor_open_terminal'; node: string; workspace: string; tab?: string; cols: number; rows: number }
+  | { type: 'conductor_close_terminal' }
   /** Owner-only (decision 0144): asks for the scrubbed diagnostics bundle; the answer is `diagnostics_bundle` parts. */
   | { type: 'diagnostics_bundle' }
   | { type: 'uninstall'; confirm_name: string; delete_user?: boolean; remove_tmux?: boolean; kill_workspaces?: boolean }
@@ -56,6 +63,7 @@ export type ClientMessage =
   | { type: 'foreground'; workspace: string | null; tab?: string | null }
   | { type: 'ack'; attention_id: string }
   | { type: 'dismiss'; attention_id: string }
+  | { type: 'card_seen'; obligation: string; ms: number }
   /** Decision 0103: asks for the workspace view (cleaned tail, parsed prompt, tier); `hash` is the one already held. */
   | { type: 'workspace_view'; workspace: string; hash?: string }
   /** Taps option `option` (0-based) of prompt `prompt_id`; the server sends the keys its profile lists for it, never more. */
@@ -126,7 +134,10 @@ export type ServerMessage =
   | { type: 'uninstall_done'; mode: string }
   /** Decision 0123: the server's signed candidate bundle, pushed after `auth_ok`; verify it before use (lib/bundle.ts). */
   | { type: 'candidates'; bundle: string }
-  | { type: 'auth_ok'; protocol?: number; control_channel?: boolean; channels?: string[]; tabs?: boolean; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string; acp_agents?: string[]; update_available?: string; update_capabilities?: string[] }
+  | { type: 'auth_ok'; protocol?: number; control_channel?: boolean; channels?: string[]; tabs?: boolean; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string; acp_agents?: string[]; update_available?: string; update_capabilities?: string[]; conductor?: boolean }
+  | { type: 'conductor_terminal_opened'; ticket: string }
+  | { type: 'conductor_terminal_closed'; ticket: string }
+  | { type: 'conductor_state'; nodes: ConductorNodeInfo[]; cards: ConductorCardInfo[] }
   | { type: 'workspaces'; workspaces: WorkspaceInfo[] }
   /** The answer to `list_dir`: directory names only, at most 500 (`truncated` says more matched). `parent` is absent at `home`. */
   | { type: 'dir_listing'; path: string; parent?: string | null; entries: DirEntry[]; truncated?: boolean; home: string }
@@ -146,6 +157,7 @@ export type ServerMessage =
   | { type: 'agent_events'; events: AgentEvent[] }
   | { type: 'activity'; workspaces: WorkspaceActivity[] }
   | { type: 'attention'; items: Attention[] }
+  | { type: 'attention_stats'; days: AttentionDay[] }
   | SessionViewMessage
   | AcpViewMessage
   | { type: 'push_info'; configured: boolean; public_key: string; devices: number; subscribed: boolean; settings?: boolean }
@@ -445,6 +457,32 @@ export interface WorkspaceActivity {
 }
 
 /** A durable, server-owned item that asks for the owner. */
+/** Decision 0169: one UTC day of the attention meter. Numbers only; fields a newer server adds are ignored. */
+export interface AttentionDay {
+  day: number;
+  raised: number;
+  by_layer: Record<string, number>;
+  by_device: Record<string, number>;
+  human_ms: number;
+  latency_ms: number;
+  agent_ms: number;
+  /** Task telemetry (plan step 1.4); absent from a server without it. */
+  by_model?: Record<string, ModelUse>;
+  /** Estimated cost in millionths of a US dollar. */
+  cost_micros?: number;
+  /** Verifier outcomes: `pass`, `fail`, `none`. */
+  verified?: Record<string, number>;
+}
+
+export interface ModelUse {
+  turns: number;
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+  cost_micros: number;
+}
+
 export interface Attention {
   id: string;
   workspace: string;
@@ -516,5 +554,77 @@ export interface ServerListItem {
 export const CONTROL_TYPES: ReadonlySet<string> = new Set([
   'acp_interrupt', 'acp_answer', 'acp_prompt', 'acp_mode', 'answer', 'workspace_answer', 'detach', 'close_workspace',
   'rename_workspace', 'new_workspace', 'new_window', 'close_window', 'select_window', 'new_tab', 'rename_tab',
-  'close_tab', 'move_tab', 'focus_tab', 'move_workspace', 'resize', 'foreground',
+  'close_tab', 'move_tab', 'focus_tab', 'move_workspace', 'resize', 'foreground', 'conductor_answer', 'conductor_ack',
 ]);
+
+/** What the owner's device sees of one node of a conductor's fleet (packages/core/src/conductor.rs `NodeInfo`). */
+export interface ConductorNodeInfo {
+  node: string;
+  name: string;
+  standing: 'pending' | 'enrolled';
+  connected: boolean;
+  silent_since?: number;
+  open: number;
+  agents: number;
+  working: number;
+  waiting: number;
+  dropped: number;
+}
+
+/** One row of the merged Needs-you stream; `card` is the handle an answer names. */
+export interface ConductorCardInfo {
+  card: string;
+  node: string;
+  node_name: string;
+  silent_since?: number;
+  obligation: ConductorObligation;
+}
+
+/** The conductor link (decision 0170, packages/core/src/conductor.rs). Attention metadata only; mirrored by hand. */
+export interface ConductorObligation {
+  id: string;
+  workspace: string;
+  tab?: string;
+  kind: AttentionKind;
+  raised_at: number;
+  urgency?: string;
+  class_features?: string[];
+  task?: string;
+  prompt?: string;
+}
+
+export interface ConductorUsageRow {
+  workspace: string;
+  tab?: string;
+  agent?: string;
+  model?: string;
+  tokens_in?: number;
+  tokens_out?: number;
+  cache_read?: number;
+  cost_micro?: number;
+  working_s?: number;
+}
+
+export type ClearedBy = 'fact' | 'ack' | 'answer' | 'rule';
+
+/** Node to conductor. `epoch` is the node's process epoch, `seq` counts messages within it. */
+export type NodeMessage =
+  | { type: 'hello'; v: number; node: string; name: string; epoch: number; version: string; caps?: string[]; enrol?: string; sig?: string }
+  | { type: 'snapshot'; epoch: number; items: ConductorObligation[]; workspaces?: { workspace: string; activity: string }[] }
+  | { type: 'raised'; epoch: number; seq: number; obligation: ConductorObligation }
+  | { type: 'cleared'; epoch: number; seq: number; id: string; by: ClearedBy }
+  | { type: 'acked'; epoch: number; seq: number; id: string; actor: string; owner: string }
+  | { type: 'answered'; epoch: number; seq: number; id: string; actor: string; owner: string; device: string; option: string }
+  | { type: 'usage'; epoch: number; seq: number; rows: ConductorUsageRow[] }
+  | { type: 'incident'; epoch: number; seq: number; cause: string; workspace?: string; detail?: string }
+  | { type: 'health'; epoch: number; seq: number; agents: number; working: number; waiting: number; load?: number; queue_dropped?: number };
+
+/** Conductor to node. An answer or ack without `actor` and `owner` is not valid. */
+export type ConductorMessage =
+  | { type: 'welcome'; epoch_ack: number; heartbeat_s: number; conductor_epoch?: number }
+  | { type: 'resync' }
+  | { type: 'answer'; target: { workspace: string; tab?: string; prompt_id: string }; id: string; actor: string; owner: string; device: string; option: string; idem: string }
+  | { type: 'ack'; id: string; actor: string; owner: string; idem: string }
+  | { type: 'open_terminal'; ticket: string; workspace: string; tab: string; cols: number; rows: number }
+  | { type: 'close_terminal'; ticket: string }
+  | { type: 'disable' };

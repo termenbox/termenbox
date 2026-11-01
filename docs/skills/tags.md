@@ -64,6 +64,10 @@ bootstrap-generated: true
 | stun | STUN discovery of public addresses |
 | turn | TURN relays |
 | updater | In-place server updates |
+| control-plane | The attention control plane: conductor, operator session, clusters, contracts, deputy, dispatcher |
+| deputy | The optional triage model that answers obligations on a ladder |
+| fleet | Many nodes and agents run as one |
+| dogfood | Using a slice on the owner's own fleet before it counts as done |
 
 <!-- Umbrella tags (carried by >50% of active decisions): -->
 <!-- None yet — decisions still drafting -->
@@ -81,3 +85,11 @@ hooks — introduced by go-getter pack tracker@0.3.0
 roadmap — introduced by go-getter pack tracker@0.3.0
 notifications — push, inbox, badge and banner that tell the owner an agent needs them
 sessions — terminal sessions and the managers that own them
+acp — the Agent Client Protocol backend and the Agent view that draws it
+legal — terms of use, licences and vendor policy that bound what the product may do
+accessibility — contrast, text alternatives and sizes that keep the UI usable for everyone
+automation — rules and actions that run without a person present
+navigation — moving between screens, turns and landmarks
+ux — user experience and interface design
+procedural — tag for how-to procedures
+process — how the project is built, organized or shipped

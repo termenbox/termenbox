@@ -69,3 +69,5 @@
 | 0069 | The Electron community template pins an end-of-life Electron 26, and the wrappers use Electron 45 | desktop, platform, security | active |
 
 <!-- bootstrap-generated: true -->
+| 0070 | One person has about 28,800 seconds of attention a day, which is 1.2 seconds per agent-hour at 1,000 agents and 0.12 at 10,000 | product, control-plane, agents | active |
+| 0071 | Anthropic's terms allow a subscription login in the unmodified Claude Code binary, but point Agent SDK products at API keys | agents, acp, legal | active |

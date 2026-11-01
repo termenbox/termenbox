@@ -199,6 +199,44 @@ pub enum ClientMessage {
     RevokeDevice {
         device: String,
     },
+    /// Owner-only, on a conductor (decision 0170): asks for the fleet now; answered with `conductor_state`, which the
+    /// server also pushes whenever it changes.
+    ConductorList {},
+    /// Owner-only: the tap that trusts a node waiting after it presented the enrolment secret.
+    ConductorApprove {
+        node: String,
+    },
+    /// Owner-only: forget a node; it is told to stop dialling.
+    ConductorRemove {
+        node: String,
+    },
+    /// Owner-only: answer a merged-stream item. `option` is the choice number on the node's prompt; `idem` makes a
+    /// resend apply once. The server names the actor and the owner itself.
+    ConductorAnswer {
+        card: String,
+        option: String,
+        idem: String,
+        /// Device class (`phone`, `desktop`, `other`); never a name.
+        #[serde(default)]
+        device: String,
+    },
+    /// Owner-only: dismiss a merged-stream item that is not a question.
+    ConductorAck {
+        card: String,
+        idem: String,
+    },
+    /// Owner-only, on a conductor: a terminal on a tab of a node, through the conductor (step 2.6). It replaces the
+    /// connection's current terminal; `input` and `resize` then reach the node's tab until `conductor_close_terminal`,
+    /// an `attach` or the end of the connection. Answered with `conductor_terminal_opened`.
+    ConductorOpenTerminal {
+        node: String,
+        workspace: String,
+        #[serde(default)]
+        tab: String,
+        cols: u16,
+        rows: u16,
+    },
+    ConductorCloseTerminal {},
     /// Owner-only: install the newer release now (decision 0077): the server leaves an `update-now` request for the
     /// root helper and answers `update_requested`. The service restarts when the update is installed.
     UpdateServer {},
@@ -406,6 +444,12 @@ pub enum ClientMessage {
     Dismiss {
         attention_id: String,
     },
+    /// How long this device showed the card of an attention item in the foreground, for the attention meter
+    /// (decision 0169). A number only; never what the card said. Older servers ignore it.
+    CardSeen {
+        obligation: String,
+        ms: u32,
+    },
     /// Asks for the workspace view (decision 0103): the cleaned screen tail, the parsed prompt and the tier in use.
     /// `hash` is the one the client already holds; the server then answers `unchanged`.
     #[serde(rename = "workspace_view")]
@@ -536,8 +580,61 @@ impl ClientMessage {
                 | ClientMessage::MoveWorkspace { .. }
                 | ClientMessage::Resize { .. }
                 | ClientMessage::Foreground { .. }
+                | ClientMessage::ConductorAnswer { .. }
+                | ClientMessage::ConductorAck { .. }
         )
     }
+}
+
+/// One UTC day of the attention meter (decision 0169): counts and milliseconds, never text.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct AttentionDay {
+    /// Days since the Unix epoch, UTC.
+    pub day: u32,
+    /// Obligations raised that day.
+    #[serde(default)]
+    pub raised: u32,
+    /// Obligations resolved that day by the layer that resolved them: `human`, `rule`, later `contract`, `deputy`.
+    #[serde(default)]
+    pub by_layer: std::collections::BTreeMap<String, u32>,
+    /// Human-resolved obligations by the answering device class (`phone`, `desktop`, `other`); never a name.
+    #[serde(default)]
+    pub by_device: std::collections::BTreeMap<String, u32>,
+    /// Card foreground time the human spent, in ms.
+    #[serde(default)]
+    pub human_ms: u64,
+    /// Sum over human-resolved obligations of the time from raised to resolved, in ms.
+    #[serde(default)]
+    pub latency_ms: u64,
+    /// Time tabs spent working, in ms, summed over tabs.
+    #[serde(default)]
+    pub agent_ms: u64,
+    /// Task telemetry (plan step 1.4): what the agents' turns used, by model id (`unknown` when the agent names none).
+    #[serde(default)]
+    pub by_model: std::collections::BTreeMap<String, ModelUse>,
+    /// Estimated cost of the day in millionths of a US dollar, from the owner's price table and agent-reported costs.
+    #[serde(default)]
+    pub cost_micros: u64,
+    /// Outcomes a verifier judged that day: `pass`, `fail`, `none` (no verifier ran).
+    #[serde(default)]
+    pub verified: std::collections::BTreeMap<String, u32>,
+}
+
+/// One model's use in a day: counts only.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelUse {
+    #[serde(default)]
+    pub turns: u32,
+    #[serde(default)]
+    pub input: u64,
+    #[serde(default)]
+    pub output: u64,
+    #[serde(default)]
+    pub cache_read: u64,
+    #[serde(default)]
+    pub cache_write: u64,
+    #[serde(default)]
+    pub cost_micros: u64,
 }
 
 /// What reopening a dormant workspace did to one tab that held an agent conversation (decision 0152). `outcome` is
@@ -621,6 +718,19 @@ pub enum ServerMessage {
     Candidates {
         bundle: String,
     },
+    /// Owner-only, from a conductor (decision 0170): the fleet and the merged Needs-you stream. Replaces the previous
+    /// one whole.
+    ConductorTerminalOpened {
+        ticket: String,
+    },
+    /// The node's terminal ended (closed, the node left, the tab ended, or this device fell behind).
+    ConductorTerminalClosed {
+        ticket: String,
+    },
+    ConductorState {
+        nodes: Vec<crate::conductor::NodeInfo>,
+        cards: Vec<crate::conductor::CardInfo>,
+    },
     AuthOk {
         user: String,
         /// The termenbox protocol version this server speaks to this client (`ext::PROTOCOL_VERSION`); absent (0)
@@ -668,6 +778,10 @@ pub enum ServerMessage {
         /// so a client offers no button the helper would reject.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         update_capabilities: Vec<String>,
+        /// This server is a conductor (`--accept-nodes`, decision 0170) and sends `conductor_state` to its owner;
+        /// absent from every other server, and ignored by an older client.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        conductor: bool,
     },
     Workspaces {
         workspaces: Vec<WorkspaceInfo>,
@@ -766,6 +880,11 @@ pub enum ServerMessage {
     /// The open attention items, and again whenever one is raised or cleared.
     Attention {
         items: Vec<crate::events::Attention>,
+    },
+    /// The attention meter (decision 0169): one entry per UTC day, oldest first, the last 30 days at most. Sent
+    /// after connect and after a `card_seen`. Numbers only; no agent text.
+    AttentionStats {
+        days: Vec<AttentionDay>,
     },
     /// Legacy message of the parked termenbox-agent.
     AgentEvent {
@@ -1503,6 +1622,30 @@ mod tests {
     }
 
     #[test]
+    fn conductor_surface_auth_ok_stays_readable_by_old_peers() {
+        // An older server sends no `conductor`; a conductor's `auth_ok` adds one key an older client ignores.
+        let old = r#"{"type":"auth_ok","user":"u","server_name":"s"}"#;
+        assert!(matches!(
+            serde_json::from_str::<ServerMessage>(old).unwrap(),
+            ServerMessage::AuthOk {
+                conductor: false,
+                ..
+            }
+        ));
+        let new = r#"{"type":"auth_ok","user":"u","server_name":"s","conductor":true}"#;
+        assert!(matches!(
+            serde_json::from_str::<ServerMessage>(new).unwrap(),
+            ServerMessage::AuthOk {
+                conductor: true,
+                ..
+            }
+        ));
+        // An older server meeting the new messages answers `unknown`, never an error.
+        let ask = serde_json::to_value(ClientMessage::ConductorList {}).unwrap();
+        assert_eq!(ask["type"], "conductor_list");
+    }
+
+    #[test]
     fn test_wire_names_match_the_client() {
         let v = serde_json::to_value(ClientMessage::ListWorkspaces).unwrap();
         assert_eq!(v["type"], "list_workspaces");
@@ -1522,6 +1665,7 @@ mod tests {
             acp_agents: vec![],
             update_available: String::new(),
             update_capabilities: vec![],
+            conductor: false,
         })
         .unwrap();
         assert_eq!(v["type"], "auth_ok");
@@ -1691,6 +1835,38 @@ mod tests {
         })
         .unwrap();
         assert_eq!(v["type"], "dismiss");
+        let v = serde_json::to_value(ClientMessage::CardSeen {
+            obligation: "a1".into(),
+            ms: 4200,
+        })
+        .unwrap();
+        assert_eq!(
+            (
+                v["type"].as_str(),
+                v["obligation"].as_str(),
+                v["ms"].as_u64()
+            ),
+            (Some("card_seen"), Some("a1"), Some(4200))
+        );
+        let m: ClientMessage = serde_json::from_value(v).unwrap();
+        assert!(matches!(m, ClientMessage::CardSeen { ms: 4200, .. }));
+        assert!(!m.is_control());
+        let day = AttentionDay {
+            day: 20_000,
+            raised: 3,
+            human_ms: 9_000,
+            ..Default::default()
+        };
+        let v = serde_json::to_value(ServerMessage::AttentionStats {
+            days: vec![day.clone()],
+        })
+        .unwrap();
+        assert_eq!(v["type"], "attention_stats");
+        let back: ServerMessage = serde_json::from_value(v).unwrap();
+        assert_eq!(back, ServerMessage::AttentionStats { days: vec![day] });
+        // A day from a newer server with fields this client lacks still reads.
+        let d: AttentionDay = serde_json::from_str(r#"{"day":1,"raised":2,"later":true}"#).unwrap();
+        assert_eq!((d.day, d.raised, d.human_ms), (1, 2, 0));
         let v = serde_json::to_value(ServerMessage::WorkspaceAttached {
             workspace_id: "x".into(),
             tab: None,

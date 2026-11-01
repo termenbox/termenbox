@@ -16,3 +16,9 @@ review-and-publish-docs-media,"Review rendered documentation videos, send some b
 write-a-course-chapter,"Write one course chapter from a recorded case, with its story, trouble box and generated steps","docs, onboarding, video, procedural",active
 run-a-cold-read-test,"Run a cold-read test of a course part on a real phone and record what the newcomer stumbled on","docs, onboarding, mobile, ux, procedural",active
 regenerate-the-user-course,"Re-run the course interview and regenerate the user course when an answer changes","docs, onboarding, video, ux, procedural",active
+add-a-message-role-to-the-agent-view,"Add a message role to the Agent view","client, acp, ux, procedural",active
+build-an-agent-view-slice-template-first,"Build an Agent view slice template-first","client, acp, ux, ci, docs, procedural",active
+add-a-decision-class-to-the-deputy,"Add a decision class to the deputy and move it up or down the ladder","control-plane, deputy, agents, server, procedural",active
+write-a-mission-contract-template,"Write a mission contract template for a kind of work","control-plane, agents, security, automation, procedural",active
+dogfood-a-control-plane-slice,"Dogfood a control-plane slice on the owner's own fleet and record the reading","control-plane, dogfood, process, procedural",active
+run-a-plan-with-the-dispatcher-discipline,"Run a plan with the dispatcher discipline: pre-flight, outcome checks, decomposition, routing, combining and a run log","control-plane, process, agents, procedural",active

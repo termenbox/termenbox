@@ -110,6 +110,8 @@ pub struct WorkspaceManager {
     /// Where requests for the root helper go and where the updater's status sits beside them (decision 0077); None
     /// in tests and builds without an updater.
     requests_dir: Option<std::path::PathBuf>,
+    /// Set on a conductor (`--accept-nodes`): its owner's connections get the fleet and may answer for it.
+    conductor: Option<Arc<crate::conductor::Conductor>>,
     update_gate: Arc<std::sync::Mutex<UpdateGate>>,
     events: Option<EventHub>,
     push: Option<Arc<crate::push::Push>>,
@@ -138,6 +140,74 @@ pub struct WorkspaceManager {
         Arc<std::sync::Mutex<std::collections::HashMap<u64, crate::session_log::scan::Cancel>>>,
 }
 
+#[async_trait::async_trait]
+impl crate::conductor_link::Applier for WorkspaceManager {
+    /// A terminal for the conductor: the tab, attached as a device of this server would, without taking the focus.
+    async fn open_terminal(
+        &self,
+        workspace: &str,
+        tab: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Attachment> {
+        let tab = (!tab.is_empty()).then_some(tab);
+        if self.registry.has(workspace) {
+            let (_, att, _) = self
+                .registry
+                .attach(self.backend.as_ref(), workspace, tab, cols, rows)
+                .await?;
+            Ok(att)
+        } else {
+            self.backend.attach(workspace, cols, rows)
+        }
+    }
+
+    /// An answer routed from a conductor: the attention item names the prompt, as a tap on this server's own Home does.
+    async fn answer(&self, id: &str, choice: u8) -> Result<()> {
+        let hub = self
+            .events
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Answers are not available"))?;
+        let item = hub
+            .attention_items()
+            .into_iter()
+            .find(|a| a.id == id && a.kind == termenbox_core::events::AttentionKind::NeedsInput)
+            .ok_or_else(|| anyhow::anyhow!(PROMPT_CHANGED))?;
+        let tab = item.tab.as_deref();
+        let window = if self.registry.has(&item.workspace) {
+            self.registry
+                .tab_window(self.backend.as_ref(), &item.workspace, tab)
+                .await?
+        } else {
+            None
+        };
+        // A tab names its own prompt; otherwise the workspace's current one, with the event number it carries.
+        let (prompt_id, seq) = match tab.and_then(|t| hub.tab_prompt(&item.workspace, t)) {
+            Some(p) => (p.id, 0),
+            None => {
+                let current = hub
+                    .current_prompt(&item.workspace)
+                    .ok_or_else(|| anyhow::anyhow!(PROMPT_CHANGED))?;
+                let termenbox_core::events::EventKind::Prompt { id, .. } = &current.kind else {
+                    return Err(anyhow::anyhow!(PROMPT_CHANGED));
+                };
+                (id.clone(), current.seq)
+            }
+        };
+        answer_tab(
+            self.backend.as_ref(),
+            hub,
+            &item.workspace,
+            window.as_deref(),
+            tab,
+            &prompt_id,
+            seq,
+            choice,
+        )
+        .await
+    }
+}
+
 impl WorkspaceManager {
     pub fn new(backend: Arc<dyn WorkspaceBackend>, mode: RunMode, registry: Arc<Registry>) -> Self {
         Self {
@@ -147,6 +217,7 @@ impl WorkspaceManager {
             server_name: String::new(),
             on_uninstalled: Arc::new(|| {}),
             requests_dir: None,
+            conductor: None,
             update_gate: Arc::default(),
             events: None,
             push: None,
@@ -389,6 +460,12 @@ impl WorkspaceManager {
         }
     }
 
+    /// Makes this server a conductor for its owner's connections (decision 0170).
+    pub fn with_conductor(mut self, conductor: Option<Arc<crate::conductor::Conductor>>) -> Self {
+        self.conductor = conductor;
+        self
+    }
+
     /// Serves the agent event stream (plan v6) to every connection.
     pub fn with_events(mut self, hub: EventHub) -> Self {
         self.events = Some(hub);
@@ -485,6 +562,10 @@ impl WorkspaceManager {
         static NEXT_CONN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let conn = NEXT_CONN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let res = self.serve_conn(conn, link, identity, auth).await;
+        if let Some(c) = &self.conductor {
+            // Nothing a device opened on a node stays open once the device is gone.
+            c.close_device_terminals(conn);
+        }
         self.stop_search(conn);
         if let Some(p) = &self.push {
             p.set_foreground(conn, None);
@@ -500,6 +581,8 @@ impl WorkspaceManager {
         auth: &crate::auth::AuthState,
     ) -> Result<()> {
         let mut attachment: Option<Attachment> = None;
+        // A node's terminal opened through the conductor; it takes the place of `attachment` while it lasts.
+        let mut remote: Option<(String, tokio::sync::mpsc::Receiver<Vec<u8>>)> = None;
         let (mut cols, mut rows) = (80u16, 24u16);
         let idle = tokio::time::sleep(IDLE_TIMEOUT);
         tokio::pin!(idle);
@@ -534,6 +617,17 @@ impl WorkspaceManager {
         update_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut update_sent = self.update_available();
         let mut state_sent = None;
+        let mut conductor_rx = self
+            .conductor
+            .as_ref()
+            .filter(|_| {
+                auth.owner()
+                    .is_some_and(|o| o.provider == identity.provider && o.id == identity.id)
+            })
+            .map(|c| c.subscribe());
+        let mut conductor_dirty = conductor_rx.is_some();
+        let mut conductor_tick = tokio::time::interval(CONDUCTOR_PUSH);
+        conductor_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut update_pending = if auth
             .owner()
             .is_some_and(|o| o.provider == identity.provider && o.id == identity.id)
@@ -563,7 +657,9 @@ impl WorkspaceManager {
                     let text = match msg {
                         Inbound::Json(text) => text,
                         Inbound::Term(bytes) => {
-                            if let Some(att) = attachment.as_mut() {
+                            if let (Some((ticket, _)), Some(c)) = (&remote, &self.conductor) {
+                                c.terminal_input(conn, ticket, &bytes);
+                            } else if let Some(att) = attachment.as_mut() {
                                 if let Err(e) = att.write(&bytes) {
                                     if !send(&link.tx, &ServerMessage::Error { message: e.to_string() }).await { break; }
                                 }
@@ -583,6 +679,21 @@ impl WorkspaceManager {
                     if let (true, ClientMessage::Attach { workspace_id, .. }) = (self.mode.is_host(), &client_msg) {
                         // Who got a shell on the host and as whom; never what they typed.
                         info!(target: "audit", event = "host_session", provider = %identity.provider, account_id = %identity.id, login = %identity.login, run_as = %self.mode.label(), session = %workspace_id);
+                    }
+                    if let Some(result) = self
+                        .remote_terminal(conn, &client_msg, auth, &identity, &mut remote, &mut attachment, (cols, rows), &link.tx)
+                        .await
+                    {
+                        match (req, result) {
+                            (Some(req), result) => {
+                                if !send_ack(&link.tx, req, result.map_err(|e| e.to_string())).await { break; }
+                            }
+                            (None, Err(e)) => {
+                                if !send(&link.tx, &ServerMessage::Error { message: e.to_string() }).await { break; }
+                            }
+                            (None, Ok(())) => {}
+                        }
+                        continue;
                     }
                     let updating = matches!(&client_msg, ClientMessage::UpdateServer {});
                     let result = self.handle(conn, client_msg, auth, &identity, &mut attachment, &mut cols, &mut rows, &mut acp, &mut events, &link.tx).await;
@@ -617,6 +728,24 @@ impl WorkspaceManager {
                         }
                     }
                 }
+                out = async {
+                    let permit = link.tx.reserve_output().await;
+                    (permit, next_remote_output(&mut remote).await)
+                }, if remote.is_some() => {
+                    let (permit, out) = out;
+                    match out {
+                        Some(bytes) => {
+                            let Some(permit) = permit else { break };
+                            permit.send(bytes);
+                        }
+                        None => {
+                            if let Some((ticket, _)) = remote.take() {
+                                if let Some(c) = &self.conductor { c.close_terminal(conn, &ticket); }
+                                if !send(&link.tx, &ServerMessage::ConductorTerminalClosed { ticket }).await { break; }
+                            }
+                        }
+                    }
+                }
                 batch = next_events(&mut agent_rx) => {
                     let msg = match batch {
                         Some(events) => ServerMessage::AgentEvents { events },
@@ -624,6 +753,15 @@ impl WorkspaceManager {
                         None => ServerMessage::AgentSnapshot { states: self.events.as_ref().map(|h| h.snapshot()).unwrap_or_default() },
                     };
                     if !send(&link.tx, &msg).await { break; }
+                }
+                _ = next_conductor_change(&mut conductor_rx) => conductor_dirty = true,
+                _ = conductor_tick.tick(), if conductor_dirty => {
+                    // At most one fleet message per tick, however many things changed.
+                    conductor_dirty = false;
+                    if let Some(c) = &self.conductor {
+                        let (nodes, cards) = c.state(crate::events::now_ms());
+                        if !send(&link.tx, &ServerMessage::ConductorState { nodes, cards }).await { break; }
+                    }
                 }
                 change = next_status(&mut status_rx) => {
                     let msgs = match change {
@@ -808,6 +946,9 @@ impl WorkspaceManager {
             ServerMessage::Attention {
                 items: hub.attention_items(),
             },
+            ServerMessage::AttentionStats {
+                days: hub.meter_days(),
+            },
         ]
     }
 
@@ -914,6 +1055,103 @@ impl WorkspaceManager {
     }
 
     #[allow(clippy::too_many_arguments)] // one connection's state, passed explicitly
+    /// The conductor, for its owner only.
+    fn conductor_for(
+        &self,
+        auth: &crate::auth::AuthState,
+        identity: &crate::auth::Identity,
+        what: &str,
+    ) -> Result<&Arc<crate::conductor::Conductor>> {
+        let is_owner = auth
+            .owner()
+            .is_some_and(|o| o.provider == identity.provider && o.id == identity.id);
+        match (&self.conductor, is_owner) {
+            (Some(c), true) => Ok(c),
+            (Some(_), false) => {
+                info!(target: "audit", event = "conductor_refused", what, provider = %identity.provider, account_id = %identity.id);
+                Err(anyhow::anyhow!("Only the owner can use the fleet"))
+            }
+            (None, _) => Err(anyhow::anyhow!("This server is not a conductor")),
+        }
+    }
+
+    /// The messages that open, close or feed a node's terminal. `None` leaves the message to `handle`.
+    #[allow(clippy::too_many_arguments)]
+    async fn remote_terminal(
+        &self,
+        conn: u64,
+        msg: &ClientMessage,
+        auth: &crate::auth::AuthState,
+        identity: &crate::auth::Identity,
+        remote: &mut Option<(String, tokio::sync::mpsc::Receiver<Vec<u8>>)>,
+        attachment: &mut Option<Attachment>,
+        size: (u16, u16),
+        tx: &LinkTx,
+    ) -> Option<Result<()>> {
+        match msg {
+            ClientMessage::ConductorOpenTerminal {
+                node,
+                workspace,
+                tab,
+                cols,
+                rows,
+            } => Some(
+                async {
+                    let c = self.conductor_for(auth, identity, "terminal")?;
+                    if let Some((old, _)) = remote.take() {
+                        c.close_terminal(conn, &old);
+                    }
+                    *attachment = None;
+                    let (cols, rows) = if *cols == 0 || *rows == 0 { size } else { (*cols, *rows) };
+                    let (ticket, rx) = c
+                        .open_terminal(conn, node, workspace, tab, cols, rows)
+                        .map_err(|e| match e {
+                            crate::conductor_terminal::OpenError::NodeAway => {
+                                anyhow::anyhow!("That machine is not connected")
+                            }
+                            crate::conductor_terminal::OpenError::TooMany => {
+                                anyhow::anyhow!("Too many terminals are open")
+                            }
+                        })?;
+                    info!(target: "audit", event = "conductor_terminal_opened", actor = %identity.login);
+                    *remote = Some((ticket.clone(), rx));
+                    send_r(tx, &ServerMessage::ConductorTerminalOpened { ticket }).await
+                }
+                .await,
+            ),
+            ClientMessage::ConductorCloseTerminal {} => {
+                if let (Some((ticket, _)), Some(c)) = (remote.take(), &self.conductor) {
+                    c.close_terminal(conn, &ticket);
+                    info!(target: "audit", event = "conductor_terminal_closed", actor = %identity.login);
+                }
+                Some(Ok(()))
+            }
+            // A local terminal replaces a node's.
+            ClientMessage::Attach { .. } | ClientMessage::Detach => {
+                if let (Some((ticket, _)), Some(c)) = (remote.take(), &self.conductor) {
+                    c.close_terminal(conn, &ticket);
+                }
+                None
+            }
+            ClientMessage::Input { data } => {
+                let (Some((ticket, _)), Some(c)) = (remote.as_ref(), &self.conductor) else {
+                    return None;
+                };
+                Some(B64.decode(data).map_err(Into::into).map(|b| c.terminal_input(conn, ticket, &b)))
+            }
+            ClientMessage::Resize { cols, rows } => {
+                let (Some((ticket, _)), Some(c)) = (remote.as_ref(), &self.conductor) else {
+                    return None;
+                };
+                if *cols > 0 && *rows > 0 && *cols <= 1000 && *rows <= 1000 {
+                    c.terminal_resize(conn, ticket, *cols, *rows);
+                }
+                Some(Ok(()))
+            }
+            _ => None,
+        }
+    }
+
     async fn handle(
         &self,
         conn: u64,
@@ -958,6 +1196,63 @@ impl WorkspaceManager {
                 )
                 .await?;
                 (self.on_uninstalled)();
+            }
+            ClientMessage::ConductorList {} => {
+                let c = self.conductor_for(auth, identity, "list")?;
+                let (nodes, cards) = c.state(crate::events::now_ms());
+                send_r(tx, &ServerMessage::ConductorState { nodes, cards }).await?;
+            }
+            ClientMessage::ConductorApprove { node } => {
+                let c = self.conductor_for(auth, identity, "approve")?;
+                if !c.approve(&node) {
+                    return Err(anyhow::anyhow!("Unknown node"));
+                }
+                info!(target: "audit", event = "conductor_node_approved", actor = %identity.login);
+            }
+            ClientMessage::ConductorRemove { node } => {
+                let c = self.conductor_for(auth, identity, "remove")?;
+                if !c.remove(&node) {
+                    return Err(anyhow::anyhow!("Unknown node"));
+                }
+                info!(target: "audit", event = "conductor_node_removed", actor = %identity.login);
+            }
+            ClientMessage::ConductorAnswer {
+                card,
+                option,
+                idem,
+                device,
+            } => {
+                let c = self.conductor_for(auth, identity, "answer")?;
+                // The actor is the account behind this connection, named by the server, never by the client; the
+                // owner is the server's owner (they differ once team mode exists).
+                let owner = auth.owner().map(|o| o.login.clone()).unwrap_or_default();
+                c.answer(
+                    &card,
+                    &identity.login,
+                    &owner,
+                    &device,
+                    &option,
+                    &idem,
+                    crate::events::now_ms(),
+                )
+                .map_err(conductor_refusal)?;
+                info!(target: "audit", event = "conductor_answer_sent", actor = %identity.login);
+            }
+            // Answered by `remote_terminal` before this is reached.
+            ClientMessage::ConductorOpenTerminal { .. }
+            | ClientMessage::ConductorCloseTerminal {} => {}
+            ClientMessage::ConductorAck { card, idem } => {
+                let c = self.conductor_for(auth, identity, "ack")?;
+                let owner = auth.owner().map(|o| o.login.clone()).unwrap_or_default();
+                c.ack(
+                    &card,
+                    &identity.login,
+                    &owner,
+                    &idem,
+                    crate::events::now_ms(),
+                )
+                .map_err(conductor_refusal)?;
+                info!(target: "audit", event = "conductor_ack_sent", actor = %identity.login);
             }
             ClientMessage::UpdateServer {} => {
                 let is_owner = auth
@@ -1181,6 +1476,11 @@ impl WorkspaceManager {
             ClientMessage::Ack { attention_id } | ClientMessage::Dismiss { attention_id } => {
                 if let Some(hub) = &self.events {
                     hub.ack(&attention_id);
+                }
+            }
+            ClientMessage::CardSeen { obligation, ms } => {
+                if let Some(hub) = &self.events {
+                    hub.card_seen(&obligation, u64::from(ms));
                 }
             }
             ClientMessage::Answer {
@@ -1900,6 +2200,16 @@ async fn send_r(tx: &LinkTx, msg: &ServerMessage) -> Result<()> {
     }
 }
 
+/// Next chunk of a node's terminal; `None` when it ended.
+async fn next_remote_output(
+    remote: &mut Option<(String, tokio::sync::mpsc::Receiver<Vec<u8>>)>,
+) -> Option<Vec<u8>> {
+    match remote {
+        Some((_, rx)) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
 /// Next chunk of terminal output; pends forever while nothing is attached.
 async fn next_output(attachment: &mut Option<Attachment>) -> Option<Vec<u8>> {
     match attachment {
@@ -1956,6 +2266,18 @@ async fn next_list_change(rx: &mut tokio::sync::broadcast::Receiver<u64>) -> Opt
         Ok(from) => Some(from),
         Err(RecvError::Lagged(_)) => None,
         Err(RecvError::Closed) => std::future::pending().await,
+    }
+}
+
+/// How often a changed fleet is pushed to the owner's devices at most.
+const CONDUCTOR_PUSH: Duration = Duration::from_millis(400);
+
+async fn next_conductor_change(rx: &mut Option<tokio::sync::watch::Receiver<u64>>) {
+    let Some(rx) = rx else {
+        return std::future::pending().await;
+    };
+    if rx.changed().await.is_err() {
+        std::future::pending().await
     }
 }
 
@@ -2020,6 +2342,7 @@ fn status_message(c: crate::events::StatusChange) -> ServerMessage {
             workspaces: vec![a],
         },
         crate::events::StatusChange::Attention(items) => ServerMessage::Attention { items },
+        crate::events::StatusChange::Meter(days) => ServerMessage::AttentionStats { days },
     }
 }
 
@@ -2209,6 +2532,16 @@ pub async fn peek_tab(
 }
 
 const PROMPT_CHANGED: &str = "That prompt changed";
+
+fn conductor_refusal(e: crate::conductor::AnswerError) -> anyhow::Error {
+    use crate::conductor::AnswerError;
+    anyhow::anyhow!(match e {
+        AnswerError::UnknownCard => "That item is gone",
+        AnswerError::NodeAway => "That machine is not answering right now",
+        AnswerError::Cleared(_) => "That item was already handled",
+        AnswerError::NodeGone => "That machine is not connected",
+    })
+}
 
 /// The agent the event layer found in a workspace, if any.
 fn workspace_agent(hub: &EventHub, workspace: &str) -> Option<String> {

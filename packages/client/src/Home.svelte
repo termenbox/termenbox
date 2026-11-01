@@ -8,12 +8,15 @@
   import type { FleetState } from './lib/ds/states';
   import type { AgentMap, WorkspaceAgent } from './lib/agents';
   import type { HubServer, HubWorkspace } from './lib/hub';
-  import type { TabAgentState } from './lib/protocol';
+  import type { AttentionDay, TabAgentState } from './lib/protocol';
+  import FleetNeedsYou from './FleetNeedsYou.svelte';
+  import { fleetItems } from './lib/fleet';
+  import AttentionMeter from './AttentionMeter.svelte';
   import { ageText } from './lib/cards';
   import { continueTarget, fleetCounts, queueOf, rowOf, Settle, splitQueue, type HomeQueue, type Row } from './lib/home';
 
   /** Home (decision 0100): the oldest waiting decision, the rest of the queue, the four fleet counts and Continue. */
-  let { workspaces, agents, servers, now, lastKey, offer, focusKey = null, tabStates = {}, onopen, onanswer, onreply, onservers, onnew, onhook }: {
+  let { workspaces, agents, servers, now, lastKey, offer, focusKey = null, tabStates = {}, days = [], oncardseen, onfleetopen, onopen, onanswer, onreply, onservers, onnew, onhook }: {
     workspaces: HubWorkspace[]; agents: AgentMap; servers: HubServer[]; now: number; lastKey: string | null;
     /** Per-tab state from `hub.tabStates`, so the workspace row follows all its tabs. */
     tabStates?: Record<string, TabAgentState>;
@@ -25,7 +28,15 @@
     offer?: HookOffer; onhook?: (choice: 'enable' | 'later' | 'never', offer: HookOffer) => void;
     /** The workspace a push's deep link named (U11): its decision is shown first and scrolled to, while it still waits. */
     focusKey?: string | null;
+    /** The attention meter's daily buckets of all servers (decision 0169), and where to report how long a card was in front of the owner. */
+    days?: AttentionDay[];
+    oncardseen?: (serverId: string, obligation: string, ms: number) => void;
+    /** Opens a card of a node through the conductor (step 2.6); the terminal picker is step 2.5b. */
+    onfleetopen?: (serverId: string, card: string) => void;
   } = $props();
+
+  // A conductor's merged stream (decision 0170): one list across its nodes, shown above the local queue.
+  const conductors = $derived(servers.filter((s) => s.fleet));
 
   const FILTERS = ['needs-you', 'working', 'failed', 'finished'] as const;
   let filter = $state<FleetState | null>(null);
@@ -45,6 +56,22 @@
   const view = $derived.by(() => { beat; return settle.view(live, Date.now()); });
   let decisionEl = $state<HTMLElement>();
   $effect(() => { if (focusKey && view.hero?.key === focusKey) decisionEl?.scrollIntoView({ block: 'start' }); });
+  // Card dwell: the time the hero card is on screen with the page in the foreground, reported when it changes or goes (metadata only).
+  // Primitives, so a re-read of the same card does not end its dwell.
+  const seenServer = $derived(view.hero?.serverId);
+  const seenId = $derived(view.hero ? agents[view.hero.key]?.attention?.id : undefined);
+  $effect(() => {
+    const serverId = seenServer; const id = seenId;
+    if (!serverId || !id || !oncardseen) return;
+    let shown = 0; let since = document.visibilityState === 'visible' ? Date.now() : 0;
+    const flip = () => { const t = Date.now(); if (document.visibilityState === 'visible') since = t; else if (since) { shown += t - since; since = 0; } };
+    document.addEventListener('visibilitychange', flip);
+    return () => {
+      document.removeEventListener('visibilitychange', flip);
+      if (since) shown += Date.now() - since;
+      if (shown >= 500) oncardseen(serverId, id, Math.round(shown));
+    };
+  });
   const connected = $derived(new Set(servers.filter((s) => s.state === 'connected').map((s) => s.id)));
   const cont = $derived(continueTarget(lastKey, workspaces, connected, [...(view.hero ? [view.hero] : []), ...view.rest]));
   const filtered = $derived(filter ? workspaces.map((s) => rowOf(s, agents[s.key], unhealthy.has(s.serverId), tabStates)).filter((r) => r.state === filter) : []);
@@ -69,6 +96,12 @@
         <FleetTile state={f} count={counts[f]} pressed={filter === f} onclick={() => (filter = filter === f ? null : f)} />
       {/each}
     </div>
+
+    <AttentionMeter {days} {now} />
+
+    {#each conductors as c (c.id)}
+      <FleetNeedsYou items={fleetItems(c.fleet!.cards)} nodes={c.fleet!.nodes} {now} onopen={(card) => onfleetopen?.(c.id, card)} />
+    {/each}
 
     {#if filter}
       <section class="flex flex-col gap-2" aria-label="Filtered workspaces" data-home-filter>

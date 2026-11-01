@@ -362,6 +362,8 @@ pub struct UsageReader {
     /// Each message id with the largest counts taken from it so far: a message still streaming at one collection may
     /// report more at the next, and only the growth is new.
     seen: VecDeque<(String, Tokens)>,
+    /// The model id of the last assistant message read (plan step 1.4); an id only, cut to 64 characters.
+    model: Option<String>,
 }
 
 impl UsageReader {
@@ -372,6 +374,7 @@ impl UsageReader {
             path,
             offset,
             seen: VecDeque::new(),
+            model: None,
         }
     }
 
@@ -456,6 +459,9 @@ impl UsageReader {
         };
         // Ids are kept cut to 80 characters, so they are compared cut too.
         let id: String = id.chars().take(80).collect();
+        if let Some(model) = m["model"].as_str() {
+            self.model = Some(model.chars().take(64).collect());
+        }
         let n = |k: &str| u.get(k).and_then(Value::as_u64);
         let t = Tokens {
             input: n("input_tokens"),
@@ -548,6 +554,13 @@ impl UsageTracker {
             workspace.to_string(),
             (now, raw_path.to_string(), Arc::new(Mutex::new(reader))),
         );
+    }
+
+    /// The model of the last message read from a workspace's transcript.
+    pub fn model(&self, workspace: &str) -> Option<String> {
+        let reader = self.readers.lock().ok()?.get(workspace)?.2.clone();
+        let m = reader.lock().ok()?.model.clone();
+        m
     }
 
     /// The counts appended since the last collection, or None when nothing is watched, nothing was appended, or the

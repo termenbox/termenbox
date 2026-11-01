@@ -1,7 +1,7 @@
 import { derived, writable } from 'svelte/store';
 import { Connection, type ConnectionOptions, type ConnState } from './connection';
 import { applyActivity, applyAttention, applyEvents, applySnapshot, syncRequest, type AgentMap } from './agents';
-import type { ClientMessage, ServerHealth, ServerListItem, ServerMessage, TabAgentState, UpdateInfo, WorkspaceInfo } from './protocol';
+import type { AttentionDay, ClientMessage, ConductorCardInfo, ConductorNodeInfo, ServerHealth, ServerListItem, ServerMessage, TabAgentState, UpdateInfo, WorkspaceInfo } from './protocol';
 import { CHECK_WAIT_MS, checkAnswered, type UpdateAction } from './updateState';
 import type { Target } from './transport';
 import { storedBundle, type PathFailure } from './paths';
@@ -41,6 +41,10 @@ export interface HubServer {
   health?: ServerHealth;
   /** The path carrying the workspace (`Direct, LAN`, `Tunnel`); empty while there is none. */
   path?: string;
+  /** The attention meter's daily buckets (decision 0169), oldest first; absent from an older server. */
+  attentionStats?: AttentionDay[];
+  /** The fleet and the merged Needs-you stream, when this server is a conductor (decision 0170); absent otherwise. */
+  fleet?: { nodes: ConductorNodeInfo[]; cards: ConductorCardInfo[] };
   /** Every path tried in the last failed attempt, with why and one fix (decision 0123). */
   failures?: PathFailure[];
 }
@@ -301,6 +305,7 @@ export class ServerHub {
         e.controlMode = !!msg.control_mode; e.tmuxVersion = msg.tmux_version ?? ''; e.prefix = msg.prefix ?? '';
         this.publish(); this.opts.onSaved?.(e.server);
         connection.send({ type: 'list_workspaces' });
+        if (msg.conductor) connection.send({ type: 'conductor_list' });
         connection.send({ type: 'agent_sync', after: syncRequest(e.agents) });
         this.opts.onReady?.(e.id, msg, restoring);
       },
@@ -328,6 +333,8 @@ export class ServerHub {
       if (msg.type === 'agent_snapshot') e.agents = applySnapshot(e.agents, msg.states);
       if (msg.type === 'activity') e.agents = applyActivity(e.agents, msg.workspaces, Date.now());
       if (msg.type === 'attention') e.agents = applyAttention(e.agents, msg.items);
+      if (msg.type === 'conductor_state') { e.fleet = { nodes: msg.nodes, cards: msg.cards }; this.publishServers(); }
+      if (msg.type === 'attention_stats') { e.attentionStats = msg.days; this.publishServers(); }
       if (msg.type === 'agent_events') {
         const result = applyEvents(e.agents, msg.events); e.agents = result.map;
         if (result.gap) connection.send({ type: 'agent_sync', after: syncRequest(e.agents) });
@@ -371,7 +378,7 @@ export class ServerHub {
   }
   /** The server list alone: a health sample every 10 s per server must not rebuild the workspace, agent and window stores. */
   private publishServers(entries = [...this.entries.values()]) {
-    this.servers.set(entries.map(({ id, server, state, reason, version, updateAvailable, update, updateCapabilities, checking, updating, backends, tabs, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures }) => ({ id, server, state, reason, version, updateAvailable, update, updateCapabilities, checking, updating, backends, tabs, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures })));
+    this.servers.set(entries.map(({ id, server, state, reason, version, updateAvailable, update, updateCapabilities, checking, updating, backends, tabs, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures, attentionStats, fleet }) => ({ id, server, state, reason, version, updateAvailable, update, updateCapabilities, checking, updating, backends, tabs, acpAgents, controlMode, tmuxVersion, prefix, health, path, failures, attentionStats, fleet })));
   }
   private publish() {
     const entries = [...this.entries.values()];

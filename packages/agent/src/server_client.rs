@@ -140,7 +140,9 @@ impl ServerClient {
             | ServerMessage::UpdateState { .. }
             | ServerMessage::Candidates { .. }
             | ServerMessage::DirListing { .. }
-            | ServerMessage::DirError { .. } => {}
+            | ServerMessage::DirError { .. }
+            | ServerMessage::ConductorTerminalOpened { .. }
+            | ServerMessage::ConductorTerminalClosed { .. } => {}
             ServerMessage::Workspaces { workspaces } => {
                 info!("Received {} workspaces", workspaces.len());
                 for workspace in workspaces {
@@ -197,7 +199,9 @@ impl ServerClient {
             }
             ServerMessage::Pong
             | ServerMessage::ControlAck { .. }
-            | ServerMessage::AcpEvents { .. } => {}
+            | ServerMessage::AcpEvents { .. }
+            | ServerMessage::ConductorState { .. }
+            | ServerMessage::AttentionStats { .. } => {}
         }
         Ok(())
     }
