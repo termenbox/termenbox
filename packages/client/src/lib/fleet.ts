@@ -35,3 +35,20 @@ export function silentText(n: ConductorNodeInfo, now: number): string {
   const m = Math.max(1, Math.round((now - n.silent_since) / 60_000));
   return `${n.name} has been silent for ${m} min; its ${n.open} open asks wait`;
 }
+
+/** What a tap on a fleet card opens: the node's workspace (and tab) on that node, through the conductor (step 2.6). */
+export interface NodeTerminalTarget {
+  serverId: string;
+  node: string;
+  nodeName: string;
+  workspace: string;
+  tab?: string;
+  /** Stands in for the workspace id the terminal view sends input and resizes under; never leaves the client. */
+  id: string;
+}
+
+export function nodeTerminalTarget(cards: ConductorCardInfo[], serverId: string, card: string): NodeTerminalTarget | null {
+  const c = cards.find((x) => x.card === card);
+  if (!c || c.silent_since !== undefined) return null;
+  return { serverId, node: c.node, nodeName: c.node_name, workspace: c.obligation.workspace, tab: c.obligation.tab, id: `node:${c.node}:${c.obligation.workspace}` };
+}

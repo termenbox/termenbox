@@ -60,6 +60,8 @@
   import { mergeDays } from './lib/attentionMeter';
   import { answerIndex, nextNeedsYou, stepOf } from './lib/decision';
   import { fleetOf } from './lib/navlist';
+  import NodeTerminal from './NodeTerminal.svelte';
+  import { nodeTerminalTarget, type NodeTerminalTarget } from './lib/fleet';
   import { canSplit, commitLayout, layout, MIN_HALF, patchLayout, SPLIT, splitWidthFor, toggleSidebar, toggleSplit } from './lib/panes';
   import Resizer from './shell/Resizer.svelte';
   import Home from './Home.svelte';
@@ -678,6 +680,17 @@
 
   /** Opens a workspace that needs you on the window the need is in: the tab's window (the agent window used last), not
    *  whichever one tmux has current. Chosen before the attach, so the terminal comes up on it. */
+  /** A fleet card's terminal on its node, through the conductor (step 2.5); shown over Home until closed. */
+  let nodeTerm: NodeTerminalTarget | null = null;
+  function openFleetCard(serverId: string, card: string) {
+    const cards = $hubServers.find((s) => s.id === serverId)?.fleet?.cards ?? [];
+    const target = nodeTerminalTarget(cards, serverId, card);
+    if (!target) { showToast('That machine is not connected.', 'error'); return; }
+    // A terminal attached here would be replaced by the node's; let go of it first.
+    closeAcp();
+    nodeTerm = target;
+  }
+
   async function openWaiting(key: string, tabWanted?: string) {
     const workspace = hub.findWorkspace(key);
     const tab = tabWanted ?? (workspace?.tabs ? openingTab(workspace.tabs, loadActiveTab(key), workspace.focus, controlModeOf(workspace.serverId))?.id : null);
@@ -1242,7 +1255,7 @@
       {#if serversPage || servers.length === 0}
         <ServerList {servers} states={$hubServers} counts={workspaceCounts} onpause={(id) => { hub.pause(id); }} onresume={(id) => hub.resume(id)} onretry={(id) => hub.retry(id)} onadd={() => { addPrefill = null; addStart = 'install'; showAddServer = true; }} onscan={() => { addPrefill = null; addStart = 'scan'; showAddServer = true; }} onremove={removeServer} onshare={shareServer} onrename={renameServer} onupdate={(id) => hub.updateServer(id)} oncheck={(id) => hub.checkUpdate(id)} onpostpone={(id) => hub.postponeUpdate(id)} onskip={(id) => hub.skipUpdate(id)} bind:updatesFor />
       {:else if $destination === 'home'}
-        <Home workspaces={$allWorkspaces} agents={$allAgents} servers={$hubServers} tabStates={$allTabStates} days={mergeDays($hubServers.map((s) => s.attentionStats))} oncardseen={(serverId, obligation, ms) => hub.send(serverId, { type: 'card_seen', obligation, ms })} {now} {lastKey} {focusKey} offer={hookOffer} onhook={homeHook} onopen={openWaiting} onservers={leaveServer} onnew={newWorkspace}
+        <Home workspaces={$allWorkspaces} agents={$allAgents} servers={$hubServers} tabStates={$allTabStates} days={mergeDays($hubServers.map((s) => s.attentionStats))} oncardseen={(serverId, obligation, ms) => hub.send(serverId, { type: 'card_seen', obligation, ms })} onfleetopen={openFleetCard} {now} {lastKey} {focusKey} offer={hookOffer} onhook={homeHook} onopen={openWaiting} onservers={leaveServer} onnew={newWorkspace}
           onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })}
           onreply={(key, text) => sendWorkspace({ type: 'reply', workspace: key, text })} />
       {:else if $destination === 'activity'}
@@ -1305,6 +1318,10 @@
       </svelte:boundary>
     </main>
     </AppFrame>
+  {/if}
+
+  {#if nodeTerm && hub.connection(nodeTerm.serverId)}
+    {#key nodeTerm.id}<NodeTerminal connection={hub.connection(nodeTerm.serverId)!} target={nodeTerm} onclose={() => (nodeTerm = null)} />{/key}
   {/if}
 
   {#if menuOpen && user}<MenuSheet {user} {avatar} onservers={leaveServer} onsettings={() => go('settings')} onreport={openReport} ondiagnostics={() => openDiagnostics()} onlogout={logout} onclose={() => menuOpen = false} unread={unreadCount($inbox)} oninbox={() => inboxOpen = true} />{/if}
