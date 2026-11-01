@@ -5,6 +5,11 @@ on:
     branches: [master]
     paths: ['packages/site/**', 'scripts/check-site.mjs', 'scripts/build-site.mjs', 'docs/course/**', 'docs/media/**', 'README.md', '.github/workflows/deploy-site.yaml']
   workflow_dispatch:
+    inputs:
+      preview:
+        description: 'Preview alias (letters, digits, dashes). Empty deploys production from master only.'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -32,8 +37,22 @@ jobs:
       - name: Install Wrangler
         run: npm install -g wrangler
 
+      # A preview goes to its own branch alias (https://course-<alias>.<project>.pages.dev), never production, so a branch can be
+      # looked at on a phone before a release. Production deploys only from master.
       - name: Deploy to Cloudflare Pages
-        run: wrangler pages deploy site-dist --project-name=${{ vars.TERMENBOX_SITE_PROJECT_NAME || 'termenbox-site' }} --branch=master
+        run: |
+          if [ -n "$PREVIEW" ]; then
+            case "$PREVIEW" in *[!a-z0-9-]*) echo "preview must be lowercase letters, digits and dashes" >&2; exit 1;; esac
+            BRANCH="course-$PREVIEW"
+          elif [ "$GITHUB_REF" = refs/heads/master ]; then
+            BRANCH=master
+          else
+            echo "production deploys only from master; pass a preview alias" >&2; exit 1
+          fi
+          wrangler pages deploy site-dist --project-name="$PROJECT" --branch="$BRANCH"
+          echo "Deployed to branch $BRANCH"
         env:
+          PREVIEW: ${{ inputs.preview }}
+          PROJECT: ${{ vars.TERMENBOX_SITE_PROJECT_NAME || 'termenbox-site' }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
