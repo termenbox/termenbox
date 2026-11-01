@@ -185,13 +185,14 @@ and no panic.
 
 Progress: done 2026-11-01. `session_log/observe.rs`: `Tail` reads the complete lines appended since its last call and returns `status::event::Event`s; `SessionLog::observe` is the port method (default `Disabled`), `ClaudeLog` implements it. Transcript turn start, assistant text and `end_turn` are `Observe{Transcript, Working|Idle}` only; tool calls are `ToolStart/ToolEnd`; `AskUserQuestion`/`ExitPlanMode` calls open an ask with question and options (same cleaning as the hook); a refused tool result waits for the next record: `[Request interrupted by user` makes `AskClose{Escaped}` plus `Observe Idle`, anything else `Declined`. An `isApiErrorMessage` record is `TurnEnd{Failed}` (field names unmeasured: no credentials for that error, fixture is hand-written). A shrunk file is `StaleCursor`, a half line waits, a bad line is counted and skipped (warn, no content). Not yet read by the server: B.6 wires `Tail` per live session (start `Tail::from(len)`), and a transcript `TurnEnd{Failed}` must be weighed against the hook there. The two `e2e::terminal_bytes_use_their_own_lane...` tests fail in the plain image (environment).
 
-### B.5 Screen and scan reconcile every agent pane; the process gone closes the turn — [ ]
+### B.5 Screen and scan reconcile every agent pane; the process gone closes the turn — [x]
 Class: implement · Needs: B.2 · Check: `scripts/dev.sh cargo test -p termenbox-server agentwatch`
 Context: `packages/server/src/agentwatch.rs` reconciles only the one chosen pane per workspace (active pane
 preferred), and skips a pane whose command is no longer an agent without closing its state (fact 0071).
 Do: Run reconcile per agent pane, emit observation events instead of setting state, and emit `process gone` when an
 agent pane's command stops being an agent or its process exits. A screen hint never raises Attention.
 Done-when: A test with two agent tabs reconciles both, and one that kills the agent mid-turn ends with `failed(crashed)`.
+Progress: done 2026-11-01. `agentwatch::PaneWatch` turns one scan into `TabEvent`s: an `Observe{Screen|Scan}` per agent tab (every agent pane is captured now, with or without the tab store), and one `ProcessGone` when a tab that had an agent no longer does (command changed, pane or window closed) or tmux has no server (`all_gone`). `scan_tmux_once` returns them; nothing consumes them until B.6 (the spawned loop drops them, the legacy writers still run). Choices for B.6: a split tab is driven by its first agent pane (catalogue 33); a screen the profile does not recognise yields no observation; a scan failure other than "no server" yields no events, so a flaky `list-panes` never ends a turn. Tests: two tabs, split tab, kill mid-turn ending `Failed` through a `Machine`, closed tab and server gone. The hook `SessionEnd` and the pane check can both close a turn; the machine's `ProcessGone` after a clean end is already a no-op (B.2 rows).
 
 ### B.6 Retire the parallel state paths — [ ]
 Class: implement · Needs: B.3, B.4, B.5 · Check: `scripts/dev.sh cargo test --workspace`
