@@ -78,6 +78,7 @@ try {
 }
 const video = t?.page.video();
 await t?.ctx.close().catch(() => {});
+const closed = Date.now();
 const webm = video ? await video.path().catch(() => null) : null;
 await t?.stop?.();
 await shared.stop();
@@ -95,7 +96,15 @@ const mp4 = join(out, `${base}.mp4`);
 const trim = ['-ss', String(Math.max(0, ready - 0.3))];
 const comment = `"${cases[caseName].title}" on ${cases[caseName].real ? 'a local test server' : cases[caseName].probe ? 'template fixtures' : cases[caseName].replay ? 'the installer\'s captured output' : 'scripted data'} (${profile}).`;
 const run = (args) => { const r = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', ...args], { stdio: 'inherit' }); if (r.status !== 0) { console.error(`FAIL ffmpeg ${args.slice(0, 4).join(' ')}`); rmSync(work, { recursive: true, force: true }); rmSync(mp4, { force: true }); process.exit(1); } };
-run([...trim, '-i', webm, '-vf', `scale=${viewport.width * scale}:${viewport.height * scale}:flags=lanczos,fps=30`, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '23', '-movflags', '+faststart', '-an', '-metadata', `comment=${comment}`, mp4]);
+// The frames in which the overlay was hidden for a still are cut out, so the caption and pointer do not blink. The recording
+// starts when the page is created, later than `started`; the two clocks are aligned at their end (the context closed just now).
+const lastTime = [...spawnSync('ffmpeg', ['-i', webm, '-f', 'null', '-'], { encoding: 'utf8' }).stderr.matchAll(/time=(\d+):(\d+):([\d.]+)/g)].pop();
+const recorded = lastTime ? Number(lastTime[1]) * 3600 + Number(lastTime[2]) * 60 + Number(lastTime[3]) : NaN;
+const lag = Number.isFinite(recorded) ? (closed - started) / 1000 - recorded : 0;
+const at = (ms) => ((ms - started) / 1000 - lag - Number(trim[1])).toFixed(2);
+const cut = (h?.hidden ?? []).map(([a, b]) => `between(t,${at(a - 300)},${at(b + 300)})`);
+const without = cut.length ? `,select='not(${cut.join('+')})',setpts=N/(30*TB)` : '';
+run([...trim, '-i', webm, '-vf', `scale=${viewport.width * scale}:${viewport.height * scale}:flags=lanczos,fps=30${without}`, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '23', '-movflags', '+faststart', '-an', '-metadata', `comment=${comment}`, mp4]);
 rmSync(work, { recursive: true, force: true });
 // A frame that loses the caption or the pointer for one frame is a flicker (scripts/video-flicker.mjs): the render fails instead of reaching the reviewer.
 const flicker = spawnSync('node', [resolve(import.meta.dirname, '../../../../scripts/video-flicker.mjs'), mp4], { encoding: 'utf8' });
