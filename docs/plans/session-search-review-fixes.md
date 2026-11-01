@@ -53,7 +53,7 @@ Do:
 - The Codex `found` cache (`codex.rs:51`, `:103`) is unbounded; cap it.
 Done-when: the 100-search test also shows no per-file big allocation while listing; the cursor tests still pass.
 
-### 6 Resume races — [ ]
+### 6 Resume races — [x]
 Class: implement · Needs: 2 · Check: `scripts/dev.sh env ... cargo test -p termenbox-server workspaces`
 Do: `WorkspaceManager::resume_session` checks then creates (`workspaces.rs:199-246`); two clients resuming the same conversation can create two workspaces. Serialise per (agent, session). `d.is_dir()` (`:214`) blocks the async thread: use the async or blocking-pool form.
 Done-when: a test with two concurrent resumes of one session yields one workspace and one `resumed`, one `switched`.

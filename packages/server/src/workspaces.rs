@@ -140,6 +140,8 @@ pub struct WorkspaceManager {
         Arc<std::sync::Mutex<std::collections::HashMap<u64, crate::session_log::scan::Cancel>>>,
     /// The class each connection declared (`device_class`), for the attention meter.
     device_classes: Arc<std::sync::Mutex<std::collections::HashMap<u64, &'static str>>>,
+    /// Held across a resume's check and create, so two asks for one conversation make one workspace.
+    resume_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[async_trait::async_trait]
@@ -236,6 +238,7 @@ impl WorkspaceManager {
             search_limits: crate::session_log::scan::Limits::default(),
             searches: Arc::default(),
             device_classes: Arc::default(),
+            resume_gate: Arc::default(),
         }
     }
 
@@ -270,6 +273,8 @@ impl WorkspaceManager {
                 reason: reason.map(str::to_string),
             }
         };
+        // Resumes are rare owner taps, so one gate serialises them all, which covers each (agent, session) pair.
+        let _gate = self.resume_gate.lock().await;
         if let Some(k) = self
             .registry
             .known_sessions()
@@ -285,7 +290,11 @@ impl WorkspaceManager {
         );
         let dir = tokio::task::spawn_blocking(move || crate::session_search::locate(&logs, &a, &s))
             .await?;
-        let Some(dir) = dir.filter(|d| d.is_absolute() && d.is_dir()) else {
+        let dir = match dir.filter(|d| d.is_absolute()) {
+            Some(d) if tokio::fs::metadata(&d).await.is_ok_and(|m| m.is_dir()) => Some(d),
+            _ => None,
+        };
+        let Some(dir) = dir else {
             return Ok(said("missing", String::new(), String::new(), None));
         };
         let name = dir
@@ -4376,6 +4385,31 @@ mod search_tests {
             if outcome == "switched" && workspace == "ws-new"),
             "{again:?}"
         );
+        assert_eq!(maker.0.lock().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[tokio::test]
+    async fn two_concurrent_resumes_of_one_session_make_one_workspace() {
+        let work = std::env::temp_dir().join(format!("tm-work-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&work).unwrap();
+        let (root, logs) = session_in(&work, "race-1");
+        let maker = Arc::new(Maker::default());
+        let manager = resume_manager(maker.clone(), logs);
+        let (a, b) = tokio::join!(
+            manager.resume_session("claude", "race-1"),
+            manager.resume_session("claude", "race-1")
+        );
+        let mut outcomes: Vec<String> = [a.unwrap(), b.unwrap()]
+            .into_iter()
+            .map(|m| match m {
+                ServerMessage::SessionResumed { outcome, .. } => outcome,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        outcomes.sort();
+        assert_eq!(outcomes, ["resumed", "switched"]);
         assert_eq!(maker.0.lock().unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&work);
