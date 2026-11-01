@@ -5,6 +5,7 @@ import type { AgentMap, WorkspaceAgent } from './lib/agents';
 import type { HubServer, HubWorkspace } from './lib/hub';
 import type { AttentionKind } from './lib/protocol';
 import { live } from './lib/healthFixture';
+import { fleetCards, fleetNodes } from './lib/fleetFixtures';
 
 // Two servers, a waiting decision on alpha (the hero) and a failed task on each: the dot follows the server's own verdict.
 const NOW = 1_800_000_000_000;
@@ -42,5 +43,15 @@ describe('Home shows the server\'s own verdict as a dot with words', () => {
   it('shows no dot for a healthy server, a server with no verdict yet, or an older server that sends none', () => {
     expect(dots(html([server('alpha', live({ healthy: true, unhealthy: [] })), server('beta')]))).toBe(0);
     expect(dots(html([server('alpha'), server('beta')]))).toBe(0);
+  });
+});
+
+describe('Home shows a conductor\'s merged Needs-you list', () => {
+  const withFleet = (id: string) => ({ ...server(id), fleet: { nodes: fleetNodes, cards: fleetCards } }) as unknown as HubServer;
+  it('lists the fleet\'s cards with node chips only for a server that is a conductor', () => {
+    const out = html([withFleet('alpha'), server('beta')]);
+    expect(out).toContain('data-fleet-needs-you');
+    expect(out).toContain('data-fleet-chip');
+    expect(html([server('alpha')])).not.toContain('data-fleet-needs-you');
   });
 });

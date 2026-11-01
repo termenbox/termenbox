@@ -9,12 +9,14 @@
   import type { AgentMap, WorkspaceAgent } from './lib/agents';
   import type { HubServer, HubWorkspace } from './lib/hub';
   import type { AttentionDay, TabAgentState } from './lib/protocol';
+  import FleetNeedsYou from './FleetNeedsYou.svelte';
+  import { fleetItems } from './lib/fleet';
   import AttentionMeter from './AttentionMeter.svelte';
   import { ageText } from './lib/cards';
   import { continueTarget, fleetCounts, queueOf, rowOf, Settle, splitQueue, type HomeQueue, type Row } from './lib/home';
 
   /** Home (decision 0100): the oldest waiting decision, the rest of the queue, the four fleet counts and Continue. */
-  let { workspaces, agents, servers, now, lastKey, offer, focusKey = null, tabStates = {}, days = [], oncardseen, onopen, onanswer, onreply, onservers, onnew, onhook }: {
+  let { workspaces, agents, servers, now, lastKey, offer, focusKey = null, tabStates = {}, days = [], oncardseen, onfleetopen, onopen, onanswer, onreply, onservers, onnew, onhook }: {
     workspaces: HubWorkspace[]; agents: AgentMap; servers: HubServer[]; now: number; lastKey: string | null;
     /** Per-tab state from `hub.tabStates`, so the workspace row follows all its tabs. */
     tabStates?: Record<string, TabAgentState>;
@@ -29,7 +31,12 @@
     /** The attention meter's daily buckets of all servers (decision 0169), and where to report how long a card was in front of the owner. */
     days?: AttentionDay[];
     oncardseen?: (serverId: string, obligation: string, ms: number) => void;
+    /** Opens a card of a node through the conductor (step 2.6); the terminal picker is step 2.5b. */
+    onfleetopen?: (serverId: string, card: string) => void;
   } = $props();
+
+  // A conductor's merged stream (decision 0170): one list across its nodes, shown above the local queue.
+  const conductors = $derived(servers.filter((s) => s.fleet));
 
   const FILTERS = ['needs-you', 'working', 'failed', 'finished'] as const;
   let filter = $state<FleetState | null>(null);
@@ -91,6 +98,10 @@
     </div>
 
     <AttentionMeter {days} {now} />
+
+    {#each conductors as c (c.id)}
+      <FleetNeedsYou items={fleetItems(c.fleet!.cards)} nodes={c.fleet!.nodes} {now} onopen={(card) => onfleetopen?.(c.id, card)} />
+    {/each}
 
     {#if filter}
       <section class="flex flex-col gap-2" aria-label="Filtered workspaces" data-home-filter>

@@ -18,6 +18,8 @@ export type ClientMessage =
   | { type: 'conductor_remove'; node: string }
   | { type: 'conductor_answer'; card: string; option: string; idem: string; device?: string }
   | { type: 'conductor_ack'; card: string; idem: string }
+  | { type: 'conductor_open_terminal'; node: string; workspace: string; tab?: string; cols: number; rows: number }
+  | { type: 'conductor_close_terminal' }
   /** Owner-only (decision 0144): asks for the scrubbed diagnostics bundle; the answer is `diagnostics_bundle` parts. */
   | { type: 'diagnostics_bundle' }
   | { type: 'uninstall'; confirm_name: string; delete_user?: boolean; remove_tmux?: boolean; kill_workspaces?: boolean }
@@ -129,6 +131,8 @@ export type ServerMessage =
   /** Decision 0123: the server's signed candidate bundle, pushed after `auth_ok`; verify it before use (lib/bundle.ts). */
   | { type: 'candidates'; bundle: string }
   | { type: 'auth_ok'; protocol?: number; control_channel?: boolean; channels?: string[]; tabs?: boolean; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string; acp_agents?: string[]; update_available?: string; update_capabilities?: string[]; conductor?: boolean }
+  | { type: 'conductor_terminal_opened'; ticket: string }
+  | { type: 'conductor_terminal_closed'; ticket: string }
   | { type: 'conductor_state'; nodes: ConductorNodeInfo[]; cards: ConductorCardInfo[] }
   | { type: 'workspaces'; workspaces: WorkspaceInfo[] }
   /** The answer to `list_dir`: directory names only, at most 500 (`truncated` says more matched). `parent` is absent at `home`. */
