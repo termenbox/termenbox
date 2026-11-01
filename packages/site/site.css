@@ -33,3 +33,11 @@ details:last-of-type { border-bottom: 1px solid var(--border); }
 summary { cursor: pointer; font-weight: 600; }
 details p { margin: 8px 0 0; color: var(--muted); }
 footer { padding-top: 32px; padding-bottom: 40px; color: var(--muted); font-size: 0.9rem; }
+.course { padding-bottom: 40px; max-width: 760px; }
+.course h1 { margin-top: 24px; }
+.course .table { overflow-x: auto; }
+.course table { border-collapse: collapse; width: 100%; }
+.course th, .course td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
+.player { margin: 20px 0; }
+.player video { display: block; width: 100%; max-height: 80vh; background: var(--code-bg); border-radius: 10px; }
+.player figcaption { color: var(--muted); font-size: 0.9rem; margin-top: 6px; }

@@ -11,7 +11,7 @@
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/termenbox/termenbox"></a>
 </p>
 
-**New here? [Start the course](docs/course/README.md).** You start a long agent task at your desk, leave, and finish it from the train; six short chapters get you there.
+**New here? [Start the course](docs/course/README.md)** (or [watch it on termenbox.dev](https://termenbox.dev/course/)). You start a long agent task at your desk, leave, and finish it from the train; six short chapters get you there.
 
 ## Install
 
