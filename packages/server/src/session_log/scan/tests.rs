@@ -630,3 +630,154 @@ fn bench_200_mb_scan_stays_within_budget() {
         assert_eq!(end, End::Cut(Cut::Bytes), "200 MB is the byte cap's edge");
     }
 }
+
+/// A corpus of one kind for the baseline: `ascii` lines only, `mixed` (every tenth line non-ASCII, as the benchmark
+/// above) or `cyrillic` lines only.
+fn write_corpus(path: &Path, bytes: usize, kind: &str) {
+    let mut out = std::io::BufWriter::with_capacity(1 << 20, File::create(path).unwrap());
+    let ascii = "The assistant read the file, ran the build, and reported that every check passed on the first try ";
+    let cyr = "Привет, мир: создаём файл с кириллицей и акцентами — café, naïve, façade, ünïcödé ";
+    let (mut written, mut n) = (0usize, 0u64);
+    while written < bytes {
+        n += 1;
+        let body = match kind {
+            "ascii" => ascii,
+            "cyrillic" => cyr,
+            _ if n.is_multiple_of(10) => cyr,
+            _ => ascii,
+        };
+        let line = format!(
+            r#"{{"type":"assistant","uuid":"{n:016x}","message":{{"content":[{{"type":"text","text":"{body}{body}{body}"}}]}}}}{}"#,
+            "\n"
+        );
+        out.write_all(line.as_bytes()).unwrap();
+        written += line.len();
+    }
+    out.flush().unwrap();
+}
+
+/// Drops the file's pages from the page cache so the next read is cold.
+fn evict(file: &File) {
+    use std::os::fd::AsRawFd;
+    unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
+}
+
+/// The figures of `session_log/README.md`: run by hand in a release build, `-- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement, not a check"]
+fn measure_the_scan_baseline() {
+    const BYTES: usize = 200 * 1024 * 1024;
+    let mb = |d: Duration| BYTES as f64 / 1048576.0 / d.as_secs_f64();
+    let dir = TempDir::new();
+    let needle = Needle::new("zebra quartz").unwrap();
+    for kind in ["ascii", "mixed", "cyrillic"] {
+        let path = dir.0.join(format!("{kind}.jsonl"));
+        write_corpus(&path, BYTES, kind);
+        let file = File::open(&path).unwrap();
+        let size = file.metadata().unwrap().len();
+        let mut scanner = Scanner::new();
+        let scan = |scanner: &mut Scanner| {
+            let mut budget = Budget::new(unlimited(), Cancel::default());
+            let t = Instant::now();
+            let end = scanner
+                .scan_file(&file, size, &needle, &mut budget, |_| {
+                    ControlFlow::Continue(())
+                })
+                .unwrap();
+            assert_eq!(end, End::Done);
+            t.elapsed()
+        };
+        evict(&file);
+        let cold = scan(&mut scanner);
+        let hot = (0..3).map(|_| scan(&mut scanner)).min().unwrap();
+
+        // Phases over the same bytes, hot: pread alone, then the newline split, then the fold of every line, then
+        // memmem over folded lines. The rest of `hot` is the loop and the carry copies.
+        let mut buf = vec![0u8; BLOCK];
+        let t = Instant::now();
+        let mut at = 0u64;
+        while at < size {
+            let len = BLOCK.min((size - at) as usize);
+            read_exact_at(&file, &mut buf[..len], at).unwrap();
+            at += len as u64;
+        }
+        let pread = t.elapsed();
+        let (mut split, mut fold_t, mut find_t) = (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+        let mut folded = Vec::new();
+        let mut at = 0u64;
+        while at < size {
+            let len = BLOCK.min((size - at) as usize);
+            read_exact_at(&file, &mut buf[..len], at).unwrap();
+            at += len as u64;
+            let block = &buf[..len];
+            let t = Instant::now();
+            let lines: Vec<&[u8]> = block.split(|&b| b == b'\n').collect();
+            split += t.elapsed();
+            // One timer per block: a timer per line costs more than the fold of an ASCII line.
+            let fold_line = |l: &[u8], folded: &mut Vec<u8>| {
+                folded.clear();
+                if l.is_ascii() {
+                    folded.extend(l.iter().map(u8::to_ascii_lowercase));
+                } else {
+                    for chunk in l.utf8_chunks() {
+                        for c in chunk.valid().chars() {
+                            fold_char(c, |f| push_char(folded, f));
+                        }
+                    }
+                }
+            };
+            let t = Instant::now();
+            for l in &lines {
+                fold_line(l, &mut folded);
+            }
+            fold_t += t.elapsed();
+            let t = Instant::now();
+            for l in &lines {
+                fold_line(l, &mut folded);
+                std::hint::black_box(memchr::memmem::find(&folded, b"zebra quartz"));
+            }
+            find_t += t.elapsed();
+        }
+        let find_t = find_t.saturating_sub(fold_t);
+
+        // One line's JSON parse, as the adapters pay it per candidate.
+        let line = {
+            let mut first = Vec::new();
+            read_exact_at(&file, &mut buf[..4096], 0).unwrap();
+            first.extend_from_slice(buf[..4096].split(|&b| b == b'\n').next().unwrap());
+            first
+        };
+        let t = Instant::now();
+        for _ in 0..20_000 {
+            std::hint::black_box(serde_json::from_slice::<serde_json::Value>(&line).unwrap());
+        }
+        let parse_us = t.elapsed().as_secs_f64() * 1e6 / 20_000.0;
+
+        // A fresh `Scanner` and one search of a small file: what a keystroke's search allocates.
+        let small = dir.0.join("small.jsonl");
+        write_corpus(&small, 1024 * 1024, kind);
+        let sf = File::open(&small).unwrap();
+        let ssize = sf.metadata().unwrap().len();
+        let (rss0, a0, h0) = (vm_rss_kib(), allocs(), reset_peak());
+        let mut s2 = Scanner::new();
+        let mut budget = Budget::new(unlimited(), Cancel::default());
+        s2.scan_file(&sf, ssize, &needle, &mut budget, |_| {
+            ControlFlow::Continue(())
+        })
+        .unwrap();
+        let (n_allocs, peak) = (allocs() - a0, peak_above(h0));
+        drop(s2);
+        eprintln!(
+            "[{kind}] cold {:.0} MB/s ({cold:?}), hot {:.0} MB/s ({hot:?}); phases hot: pread {:.0} MB/s, newline split {:.1}% , fold {:.1}%, memmem {:.1}% of hot; parse {parse_us:.1} us/line; fresh search: {n_allocs} allocs, heap peak {peak} B, rss {} KiB -> {} KiB",
+            mb(cold),
+            mb(hot),
+            mb(pread),
+            100.0 * split.as_secs_f64() / hot.as_secs_f64(),
+            100.0 * fold_t.as_secs_f64() / hot.as_secs_f64(),
+            100.0 * find_t.as_secs_f64() / hot.as_secs_f64(),
+            rss0,
+            vm_rss_kib(),
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+}

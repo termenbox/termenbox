@@ -25,11 +25,12 @@ Context: `groupHits` in `lib/sessionSearch.ts` groups by workspace; `Group.agent
 Do: Add a segmented control **Agent / Workspace / None** to `SearchSheet.svelte`. `groupHits(hits, mode, nameOf)`: `agent` groups by `hit.agent`, `workspace` is today's behaviour, `none` is one flat list newest first. With no header a row shows its workspace and tab. Remember the choice per viewer.
 Done-when: component tests cover the three modes, the order inside each, and the remembered choice; phone width shows the control without overflow.
 
-### 2 Baseline: measure the scan — [ ]
+### 2 Baseline: measure the scan — [x]
 Class: explore · Needs: none · Check: the benchmark in `session_log/scan.rs` (plan R78 step 3) prints MB/s and peak RSS
 Context: Every later performance step is a guess without numbers. The existing benchmark generates 200 MB; use `perf` or a flamegraph in the container.
 Do: Record MB/s hot and cold-cache, peak RSS growth, allocations per search (counting allocator) and the share of time in fold, `memmem`, `pread` and JSON parse, for an ASCII-only and a non-ASCII corpus. Save the figures in `session_log/README.md` next to the fixtures' notes.
 Done-when: the README lists the figures and the machine they were taken on; steps 3 to 5 each name the figure they expect to move.
+Result: `session_log/README.md`. Fold is the cost (75 to 97% of the hot scan); `pread` is 4 GB/s; ASCII 601 MB/s hot, mixed 206, Cyrillic 36; cold is disk-bound (30 to 150 MB/s). Step 4 helps only blocks that are entirely ASCII, and a mixed corpus has non-ASCII in most blocks, so it gains little on real histories unless the fold is also reworked (see the note in step 4).
 
 ### 3 Pool the scan buffers — [ ]
 Class: implement · Needs: 2 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log::scan`
@@ -40,6 +41,7 @@ Done-when: a test running 100 searches shows one set of block-sized allocations 
 ### 4 Search blocks, not lines — [ ]
 Class: implement · Needs: 2, 3 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log::scan`
 Context: Today every line is copied through the fold buffer before `memmem`. `aho-corasick` with `ascii_case_insensitive(true)` runs a SIMD (Teddy) search for one pattern with no copy. Accent-insensitive matching must stay: "cafe" matches "café", so a raw ASCII search is only valid where the needle has no letter that has accented forms, or on a block that is entirely ASCII.
+Note from step 2: with one non-ASCII line in ten, almost every 256 KiB block holds one, so the whole-block ASCII path would rarely fire on real histories. Consider also folding only the non-ASCII lines of a block (search the block with the automaton, fold-check just the lines `is_ascii` rejects).
 Do: Per block: if it is ASCII (SIMD `is_ascii`), search the whole block with the case-insensitive automaton, and find the enclosing line of a hit with `memrchr`/`memchr` for `\n`; never split the block into lines. A block with non-ASCII bytes takes today's fold path. Write down the accent rule in the module header and test it with a needle and text that differ only in accents.
 Done-when: the contract suite and the existing scan tests pass unchanged; the benchmark's hot-cache MB/s on the ASCII corpus rises and the figure is in the README; the zero-allocation-per-non-matching-line test still passes.
 
