@@ -1401,7 +1401,14 @@ impl EventHub {
         drop(list);
         if let Some(m) = &self.meter {
             self.meter_removed(&dropped, None);
-            m.raised(&format!("a{id}"), now_ms());
+            // Only an ask is an obligation; a result or an info item is not, and a view that clears it is no answer.
+            let obligation = match extras.tier {
+                Some(tier) => tier == AttentionTier::NeedsYou,
+                None => kind == AttentionKind::NeedsInput,
+            };
+            if obligation {
+                m.raised(&format!("a{id}"), now_ms());
+            }
         }
         // Workspace, kind and source only (audit-logging-no-secrets).
         tracing::info!(target: "audit", event = "attention_raised", session = %workspace, kind = ?kind, source = ?source);
@@ -3956,6 +3963,48 @@ mod tests {
             !h.card_seen("a999", 1_000),
             "an unknown card is not credited"
         );
+    }
+
+    #[test]
+    fn attention_meter_counts_a_machine_ask_but_not_a_result_or_its_view() {
+        use crate::status::event::{AskOutcome, Event, Outcome};
+        let h = hub().with_meter(Arc::new(crate::attention_meter::AttentionMeter::in_memory()));
+        h.mark_backed("s", "t");
+        h.feed_machine("s", "t", Event::TurnStart { title: None }, 1_000);
+        let key = || "AskUserQuestion".to_string();
+        h.feed_machine(
+            "s",
+            "t",
+            Event::AskOpen {
+                key: key(),
+                kind: AskKind::Question,
+            },
+            2_000,
+        );
+        h.feed_machine(
+            "s",
+            "t",
+            Event::AskClose {
+                key: key(),
+                outcome: AskOutcome::Answered,
+            },
+            3_000,
+        );
+        h.feed_machine(
+            "s",
+            "t",
+            Event::TurnEnd {
+                outcome: Outcome::Done,
+                bg: 0,
+            },
+            9_000,
+        );
+        let result = h.attention_items()[0].clone();
+        assert_eq!(result.tier, Some(AttentionTier::Result));
+        assert!(!h.card_seen(&result.id, 2_000), "a result is not credited");
+        assert!(h.ack(&result.id));
+        let d = &h.meter_days()[0];
+        assert_eq!((d.raised, d.by_layer["human"], d.human_ms), (1, 1, 0));
     }
 
     #[test]
