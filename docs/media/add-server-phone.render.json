@@ -1,0 +1,44 @@
+{
+  "case": "add-server",
+  "profile": "phone",
+  "pace": "normal",
+  "captions": true,
+  "steps": [
+    {
+      "id": "tap-add",
+      "caption": "Open the app and add a server",
+      "label": "Add Server"
+    },
+    {
+      "id": "install",
+      "caption": "Step 1 installs the server; it announces itself while you run the command",
+      "label": "Next"
+    },
+    {
+      "id": "paste",
+      "caption": "Paste the link the installer printed",
+      "label": null
+    },
+    {
+      "id": "preview",
+      "caption": "Nothing is claimed yet: this says what you are adding",
+      "label": null
+    },
+    {
+      "id": "reach",
+      "caption": "Then it checks that this device can reach the server",
+      "label": null
+    }
+  ],
+  "seconds": 59,
+  "hash": "f7e3544f79fc4b059ec0041345d64c9e4adb41ab69cc62688e4245135837acd3",
+  "version": "0.1.57",
+  "run": "41314144763",
+  "renderedAt": "2026-11-01T14:14:23.186Z",
+  "poster": "add-server-phone-poster.png",
+  "files": [
+    "add-server-phone.mp4",
+    "add-server-phone-poster.png",
+    "add-server-phone-server-added.png"
+  ]
+}

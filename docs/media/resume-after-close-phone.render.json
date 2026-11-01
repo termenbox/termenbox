@@ -1,0 +1,38 @@
+{
+  "case": "resume-after-close",
+  "profile": "phone",
+  "pace": "normal",
+  "captions": true,
+  "steps": [
+    {
+      "id": "open",
+      "caption": "Open a workspace",
+      "label": "shell"
+    },
+    {
+      "id": "live",
+      "caption": "Its screen is live on the server",
+      "label": null
+    },
+    {
+      "id": "lose",
+      "caption": "Lose the signal: a tunnel, a lock screen, a dropped Wi-Fi",
+      "label": null
+    },
+    {
+      "id": "back",
+      "caption": "The app reconnects by itself and re-attaches",
+      "label": null
+    }
+  ],
+  "seconds": 27,
+  "hash": "91383aa0fb7ad16e63a56e8c648ef08cf7800ddf947aead8aebc78b4b813fa8e",
+  "version": "0.1.57",
+  "run": "41314144763",
+  "renderedAt": "2026-11-01T14:16:08.222Z",
+  "poster": "resume-after-close-phone-poster.png",
+  "files": [
+    "resume-after-close-phone.mp4",
+    "resume-after-close-phone-poster.png"
+  ]
+}

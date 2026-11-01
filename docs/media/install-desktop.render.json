@@ -1,0 +1,33 @@
+{
+  "case": "install",
+  "profile": "desktop",
+  "pace": "normal",
+  "captions": true,
+  "steps": [
+    {
+      "id": "open",
+      "caption": "On the machine that will run your agents, open a terminal",
+      "label": null
+    },
+    {
+      "id": "paste",
+      "caption": "Paste the install command and press Enter",
+      "label": null
+    },
+    {
+      "id": "wait",
+      "caption": "Wait for the QR code and the link",
+      "label": null
+    }
+  ],
+  "seconds": 32,
+  "hash": "689c78f540e794794563d78b042adf2b0b109c7ea794de274b171e9eb79efd78",
+  "version": "0.1.57",
+  "run": "41314144763",
+  "renderedAt": "2026-11-01T14:13:11.501Z",
+  "poster": "install-desktop-poster.png",
+  "files": [
+    "install-desktop.mp4",
+    "install-desktop-poster.png"
+  ]
+}

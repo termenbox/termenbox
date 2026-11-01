@@ -1,0 +1,43 @@
+{
+  "case": "talk-to-agent",
+  "profile": "phone",
+  "pace": "normal",
+  "captions": true,
+  "steps": [
+    {
+      "id": "open",
+      "caption": "Open the workspace your agent runs in",
+      "label": "build"
+    },
+    {
+      "id": "type",
+      "caption": "Tap the screen and type what you want done",
+      "label": null
+    },
+    {
+      "id": "send",
+      "caption": "Send it with Enter",
+      "label": null
+    },
+    {
+      "id": "answer",
+      "caption": "The answer arrives on the same screen",
+      "label": null
+    },
+    {
+      "id": "escape",
+      "caption": "A key your phone keyboard lacks is in the key row: Escape stops the agent",
+      "label": "Escape"
+    }
+  ],
+  "seconds": 49,
+  "hash": "045e280687633e7c0d6e8fe99d179fa9f636bda38de2907312a8ada393663b9c",
+  "version": "0.1.57",
+  "run": "41314144763",
+  "renderedAt": "2026-11-01T14:17:32.158Z",
+  "poster": "talk-to-agent-phone-poster.png",
+  "files": [
+    "talk-to-agent-phone.mp4",
+    "talk-to-agent-phone-poster.png"
+  ]
+}
