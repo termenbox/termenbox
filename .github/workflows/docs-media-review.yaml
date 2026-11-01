@@ -1,12 +1,10 @@
 name: Docs Media Review
 
-# DECISION-0158: a developer with write access picks a rendered video for the docs by ticking its line in the review issue, or sends it back with
+# DECISION-0158: a developer with write access picks a rendered video for the docs by ticking its line in the review issue and commenting `/approve` once (every ticked line goes in one branch), or sends it back with
 # `/regen <case> [pace=slow|normal] [profile=phone|desktop] [caption=off] <note>`. Issue and comment events run THIS file from the default
 # branch with the repository token for anyone who can comment (FACT-0067), so the first step checks the actor's permission and every
 # later step is skipped unless it is write, maintain or admin. The comment and the issue body reach the scripts only through env.
 on:
-  issues:
-    types: [edited]
   issue_comment:
     types: [created]
 
@@ -47,10 +45,8 @@ jobs:
         id: ask
         if: steps.gate.outputs.ok == 'true'
         env:
-          EVENT: ${{ github.event_name }}
           COMMENT: ${{ github.event.comment.body }}
           BODY: ${{ github.event.issue.body }}
-          BEFORE: ${{ github.event.changes.body.from }}
           TITLE: ${{ github.event.issue.title }}
         run: |
           run_id=$(printf '%s' "$TITLE" | sed -nE 's/^Docs media review ([0-9]+)$/\1/p')
@@ -59,21 +55,19 @@ jobs:
           # The cases of this review are the ones in its checklist; a command can name only those.
           ledger=$(printf '%s\n' "$BODY" | sed -nE 's/^- \[[ xX]\] ([a-z0-9-]+) (phone|desktop) ([0-9a-f]+)[[:space:]]*$/\1 \2 \3/p')
           catalog=$(printf '%s\n' "$ledger" | awk '{print $1}' | sort -u | tr '\n' ' ')
-          if [ "$EVENT" = issues ]; then
-            ticked=$(BEFORE="$BEFORE" AFTER="$BODY" node scripts/docs-media-review-cli.mjs ticked)
-            printf '%s' "$ticked" | jq -r '.ticked[] | "\(.case) \(.profile) \(.hash)"' > "$RUNNER_TEMP/approve.txt"
-            if [ -s "$RUNNER_TEMP/approve.txt" ]; then echo "action=approve" >> "$GITHUB_OUTPUT"; else echo "action=none" >> "$GITHUB_OUTPUT"; fi
-          else
-            parsed=$(COMMENT="$COMMENT" CATALOG="$catalog" node scripts/docs-media-review-cli.mjs parse)
-            cmd=$(printf '%s' "$parsed" | jq -r '.cmd // "none"')
-            if [ "$cmd" = approve ]; then
-              want=$(printf '%s' "$parsed" | jq -r .case)
+          parsed=$(COMMENT="$COMMENT" CATALOG="$catalog" node scripts/docs-media-review-cli.mjs parse)
+          cmd=$(printf '%s' "$parsed" | jq -r '.cmd // "none"')
+          if [ "$cmd" = approve ]; then
+            want=$(printf '%s' "$parsed" | jq -r .case)
+            if [ "$want" = ticked ]; then
+              printf '%s\n' "$BODY" | sed -nE 's/^- \[[xX]\] ([a-z0-9-]+) (phone|desktop) ([0-9a-f]+)[[:space:]]*$/\1 \2 \3/p' > "$RUNNER_TEMP/approve.txt"
+            else
               printf '%s\n' "$ledger" | awk -v w="$want" 'w == "all" || $1 == w' > "$RUNNER_TEMP/approve.txt"
-              echo "action=approve" >> "$GITHUB_OUTPUT"
-            elif [ "$cmd" = regen ]; then
-              echo "action=regen" >> "$GITHUB_OUTPUT"
-              printf '%s' "$parsed" > "$RUNNER_TEMP/regen.json"
             fi
+            if [ -s "$RUNNER_TEMP/approve.txt" ]; then echo "action=approve" >> "$GITHUB_OUTPUT"; else echo "action=none" >> "$GITHUB_OUTPUT"; echo "nothing ticked"; fi
+          elif [ "$cmd" = regen ]; then
+            echo "action=regen" >> "$GITHUB_OUTPUT"
+            printf '%s' "$parsed" > "$RUNNER_TEMP/regen.json"
           fi
 
       - name: Download the render
@@ -106,7 +100,7 @@ jobs:
           node scripts/docs-media.mjs embed README.md docs/guide/*.md
           git add -A docs README.md
           git commit -m "docs(media): add the walkthroughs approved by $APPROVER" -m "Why: $APPROVER approved these rendered walkthroughs in issue #$ISSUE (run $RUN_ID)." -m "What: adds the video, poster, stills and render.json of each approved line and fills the media markers."
-          git push --force-with-lease origin "$branch"
+          git push --force origin "$branch"
           url="https://github.com/$GITHUB_REPOSITORY/compare/develop...$branch?expand=1"
           printf 'Approved by %s. Open the pull request to add them to the docs: %s\n' "$APPROVER" "$url" > "$RUNNER_TEMP/reply.md"
           gh issue comment "$ISSUE" --body-file "$RUNNER_TEMP/reply.md"
