@@ -9,8 +9,9 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use termenbox_core::events::{
-    Activity, AgentEvent, AgentState, Attention, AttentionKind, Confidence, EventKind, PlanItem,
-    Source, Task, ToolPhase, WorkspaceActivity, WorkspaceAgentState,
+    Activity, AgentEvent, AgentState, AskKind, Attention, AttentionKind, AttentionTier, Confidence,
+    EventKind, FailureCause, PlanItem, Source, SubReason, Task, ToolPhase, WorkspaceActivity,
+    WorkspaceAgentState,
 };
 use tokio::sync::broadcast;
 
@@ -413,6 +414,39 @@ fn derive_activity(r: &Ring, now: u64) -> Activity {
     Activity::Unknown
 }
 
+fn agent_state_of(status: crate::status::machine::Status) -> AgentState {
+    use crate::status::machine::Status;
+    match status {
+        Status::Working => AgentState::Working,
+        Status::NeedsYou => AgentState::NeedsInput,
+        Status::Finished => AgentState::Done,
+        Status::Failed => AgentState::Error,
+        Status::Idle => AgentState::Idle,
+        Status::Unknown => AgentState::Unknown,
+    }
+}
+
+/// The workspace's Activity from its tabs' machines (decision 0187): the roll-up, the sub-reason of the tab that
+/// decides it, and the background work of all tabs. `None` while no machine has a status, so a workspace the machines
+/// do not follow (ACP, Codex, an agent that sent no hook yet) keeps the legacy derivation.
+fn machine_activity(
+    views: &[crate::status::machine::View],
+) -> Option<(Activity, Option<SubReason>, u32)> {
+    use crate::status::machine::{rollup, Status};
+    let status = rollup(&views.iter().map(|v| v.status).collect::<Vec<_>>());
+    let activity = match status {
+        Status::Working => Activity::Working,
+        Status::NeedsYou => Activity::Blocked,
+        Status::Finished | Status::Failed | Status::Idle => Activity::Idle,
+        Status::Unknown => return None,
+    };
+    let sub_reason = views
+        .iter()
+        .find(|v| v.status == status)
+        .and_then(|v| v.sub_reason);
+    Some((activity, sub_reason, views.iter().map(|v| v.bg).sum()))
+}
+
 /// What screen or scan suspect, when a live signal of theirs says the agent waits or failed.
 fn derive_hint(r: &Ring, now: u64) -> Option<AttentionKind> {
     r.by_source[1..]
@@ -480,6 +514,18 @@ pub struct EventHub {
     answerers: Arc<Mutex<HashMap<(String, String), (&'static str, u64)>>>,
     /// Where a tab's agent session id is kept (decision 0152); absent in tests that do not need it.
     registry: Option<Arc<crate::registry::Registry>>,
+    /// The status machine of each live session, fed beside the old paths (plan B.6a).
+    machines: Arc<crate::status::feed::Machines>,
+    /// The Attention item of each machine effect, so a later effect finds it again.
+    machine_items: Arc<Mutex<HashMap<(String, String, crate::status::machine::ItemId), String>>>,
+}
+
+/// What the machine adds to an item the legacy writers raise bare.
+#[derive(Default)]
+struct Extras {
+    tier: Option<AttentionTier>,
+    ask: Option<AskKind>,
+    cause: Option<FailureCause>,
 }
 
 impl EventHub {
@@ -501,7 +547,14 @@ impl EventHub {
             meter: None,
             answerers: Arc::default(),
             registry: None,
+            machines: Arc::default(),
+            machine_items: Arc::default(),
         }
+    }
+
+    /// The status machines (decisions 0187 to 0193).
+    pub fn machines(&self) -> &crate::status::feed::Machines {
+        &self.machines
     }
 
     /// Measures the owner's attention (decision 0169).
@@ -968,6 +1021,10 @@ impl EventHub {
                 self.announce_meter();
             }
         }
+        if self.backed(workspace, tab) {
+            self.refresh(now);
+            return;
+        }
         if state != AgentState::NeedsInput {
             self.clear_where(workspace, |a| {
                 a.kind == AttentionKind::NeedsInput && a.tab.as_deref() == tab
@@ -1230,7 +1287,8 @@ impl EventHub {
         tab: Option<&str>,
         reduced: bool,
     ) {
-        if tier(source) == Some(0) && confidence != Confidence::Low {
+        if tier(source) == Some(0) && confidence != Confidence::Low && !self.backed(workspace, tab)
+        {
             match kind {
                 EventKind::State { state } if prev_hook != Some(*state) && !reduced => {
                     if *state != AgentState::NeedsInput {
@@ -1287,6 +1345,20 @@ impl EventHub {
         now: u64,
         tab: Option<&str>,
     ) {
+        self.raise_item(workspace, kind, source, now, tab, Extras::default());
+    }
+
+    /// Raises one item and returns its id. `extras.ask` set means the machine owns it: several asks of a tab live
+    /// side by side instead of the newer replacing the older.
+    fn raise_item(
+        &self,
+        workspace: &str,
+        kind: AttentionKind,
+        source: Source,
+        now: u64,
+        tab: Option<&str>,
+        extras: Extras,
+    ) -> String {
         let task = self
             .rings
             .lock()
@@ -1295,12 +1367,16 @@ impl EventHub {
             .and_then(|r| r.task.clone());
         let mut list = self.attention.lock().unwrap();
         // One open item per tab and kind: a newer one replaces the older.
-        let replaced: Vec<Attention> = list
-            .iter()
-            .filter(|a| a.workspace == workspace && a.kind == kind && a.tab.as_deref() == tab)
-            .cloned()
-            .collect();
-        list.retain(|a| !(a.workspace == workspace && a.kind == kind && a.tab.as_deref() == tab));
+        let same =
+            |a: &Attention| a.workspace == workspace && a.kind == kind && a.tab.as_deref() == tab;
+        let replaced: Vec<Attention> = if extras.ask.is_some() {
+            Vec::new()
+        } else {
+            list.iter().filter(|a| same(a)).cloned().collect()
+        };
+        if extras.ask.is_none() {
+            list.retain(|a| !same(a));
+        }
         let id = self
             .next_attention
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -1313,6 +1389,9 @@ impl EventHub {
             raised_at: now,
             task,
             prompt: None,
+            tier: extras.tier,
+            ask: extras.ask,
+            cause: extras.cause,
         });
         let mut dropped = replaced;
         while list.len() > MAX_ATTENTION {
@@ -1322,15 +1401,142 @@ impl EventHub {
         drop(list);
         if let Some(m) = &self.meter {
             self.meter_removed(&dropped, None);
-            m.raised(&format!("a{id}"), now_ms());
+            // Only an ask is an obligation; a result or an info item is not, and a view that clears it is no answer.
+            let obligation = match extras.tier {
+                Some(tier) => tier == AttentionTier::NeedsYou,
+                None => kind == AttentionKind::NeedsInput,
+            };
+            if obligation {
+                m.raised(&format!("a{id}"), now_ms());
+            }
         }
         // Workspace, kind and source only (audit-logging-no-secrets).
         tracing::info!(target: "audit", event = "attention_raised", session = %workspace, kind = ?kind, source = ?source);
         let _ = self.status_tx.send(StatusChange::Attention(snapshot));
+        format!("a{id}")
+    }
+
+    /// From the first Claude hook of a tab on, the machine owns its Attention and its tab state.
+    pub fn mark_backed(&self, workspace: &str, tab: &str) {
+        self.machines.mark_backed(workspace, tab);
+        if let Some(status) = &self.tab_status {
+            status.own(workspace, tab);
+        }
+    }
+
+    /// Whether the machine owns this tab's Attention: the legacy writers leave it alone.
+    fn backed(&self, workspace: &str, tab: Option<&str>) -> bool {
+        self.machines.is_backed(workspace, tab.unwrap_or(""))
+    }
+
+    /// Feeds one event to a session's machine and applies what it asks for (plan B.6b-2).
+    pub fn feed_machine(
+        &self,
+        workspace: &str,
+        tab: &str,
+        event: crate::status::event::Event,
+        now: u64,
+    ) {
+        let effects = self.machines.feed(workspace, tab, event, now);
+        self.apply_effects(
+            effects
+                .into_iter()
+                .map(|effect| crate::status::feed::Routed {
+                    workspace: workspace.to_string(),
+                    tab: tab.to_string(),
+                    effect,
+                })
+                .collect(),
+            now,
+        );
+    }
+
+    /// Raises and clears Attention from machine effects, the only writer for a machine-backed tab. An item is
+    /// found again by its `(workspace, tab, ItemId)`.
+    pub fn apply_effects(&self, routed: Vec<crate::status::feed::Routed>, now: u64) {
+        use crate::status::machine::{Effect, ItemId};
+        for r in routed {
+            let tab = Some(r.tab.as_str()).filter(|t| !t.is_empty());
+            let slot = |item: ItemId| (r.workspace.clone(), r.tab.clone(), item);
+            let raised =
+                |kind, extras| self.raise_item(&r.workspace, kind, Source::Hook, now, tab, extras);
+            match r.effect {
+                Effect::RaiseAsk { key, kind } => {
+                    let id = raised(
+                        AttentionKind::NeedsInput,
+                        Extras {
+                            tier: Some(AttentionTier::NeedsYou),
+                            ask: Some(kind),
+                            cause: None,
+                        },
+                    );
+                    self.machine_items
+                        .lock()
+                        .unwrap()
+                        .insert(slot(ItemId::Ask(key)), id);
+                }
+                Effect::RaiseFinished => {
+                    let id = raised(
+                        AttentionKind::FinishedUnseen,
+                        Extras {
+                            tier: Some(AttentionTier::Result),
+                            ..Extras::default()
+                        },
+                    );
+                    self.machine_items
+                        .lock()
+                        .unwrap()
+                        .insert(slot(ItemId::Result), id);
+                }
+                Effect::RaiseFailed(cause) => {
+                    let id = raised(
+                        AttentionKind::Failed,
+                        Extras {
+                            tier: Some(AttentionTier::Result),
+                            cause: Some(cause),
+                            ..Extras::default()
+                        },
+                    );
+                    self.machine_items
+                        .lock()
+                        .unwrap()
+                        .insert(slot(ItemId::Result), id);
+                }
+                // The silent tier has no Attention kind yet: it travels with the status frame (plan B.7).
+                Effect::RaiseInfo(_) => {}
+                Effect::FillAsk { key, text, .. } => {
+                    let id = self
+                        .machine_items
+                        .lock()
+                        .unwrap()
+                        .get(&slot(ItemId::Ask(key)))
+                        .cloned();
+                    let mut list = self.attention.lock().unwrap();
+                    if let Some(a) = id.and_then(|id| list.iter_mut().find(|a| a.id == id)) {
+                        a.prompt = Some(text);
+                        let snapshot = list.clone();
+                        drop(list);
+                        let _ = self.status_tx.send(StatusChange::Attention(snapshot));
+                    }
+                }
+                Effect::Clear(item) => {
+                    let id = self.machine_items.lock().unwrap().remove(&slot(item));
+                    if let Some(id) = id {
+                        self.clear_where(&r.workspace, |a| a.id == id);
+                    }
+                }
+            }
+        }
+        self.refresh(now);
     }
 
     /// A closed tab must not keep its prompt or a pending attention that a push could still follow.
     pub fn forget_tab(&self, workspace: &str, tab: &str) {
+        self.machines.forget_tab(workspace, tab);
+        self.machine_items
+            .lock()
+            .unwrap()
+            .retain(|(w, t, _), _| !(w == workspace && t == tab));
         if let Some(status) = &self.tab_status {
             status.forget_tab(workspace, tab);
         }
@@ -1411,6 +1617,15 @@ impl EventHub {
         if let (Some(tab), Some(status)) = (&gone.tab, &self.tab_status) {
             status.clear_result(&gone.workspace, tab);
         }
+        let tab = gone.tab.as_deref().unwrap_or("");
+        if self.machines.is_backed(&gone.workspace, tab) {
+            self.feed_machine(
+                &gone.workspace,
+                tab,
+                crate::status::event::Event::Viewed,
+                now_ms(),
+            );
+        }
         tracing::info!(target: "audit", event = "attention_cleared", session = %gone.workspace, by = "ack");
         let _ = self.status_tx.send(StatusChange::Attention(snapshot));
         true
@@ -1423,6 +1638,11 @@ impl EventHub {
     /// Recomputes every workspace's Activity and announces the ones that changed. Called after each event and
     /// on a timer, so a silent `working` decays to `unknown`.
     pub fn refresh(&self, now: u64) {
+        if let Some(status) = &self.tab_status {
+            for (workspace, tab, view) in self.machines.backed_views(now) {
+                status.set_machine(&workspace, &tab, agent_state_of(view.status), now);
+            }
+        }
         let open: Vec<String> = self
             .attention
             .lock()
@@ -1435,21 +1655,35 @@ impl EventHub {
         let mut derived = self.derived.lock().unwrap();
         let mut changed = Vec::new();
         for (workspace, r) in rings.iter() {
+            let from_machines = machine_activity(&self.machines.views_for(workspace, now));
             let next = WorkspaceActivity {
                 workspace: workspace.clone(),
-                activity: derive_activity(r, now),
+                activity: from_machines.map_or_else(|| derive_activity(r, now), |m| m.0),
                 ts: now,
-                task: r.task.clone(),
+                // A machine-backed workspace that is idle has no task in flight.
+                task: r
+                    .task
+                    .clone()
+                    .filter(|_| from_machines.map_or(true, |m| m.0 != Activity::Idle)),
                 agent: agents.get(workspace).cloned(),
                 hint: if open.contains(workspace) {
                     None
                 } else {
                     derive_hint(r, now)
                 },
+                sub_reason: from_machines.and_then(|m| m.1),
+                bg: from_machines.map_or(0, |m| m.2),
             };
             let same = derived.get(workspace).is_some_and(|d| {
-                (d.activity, &d.task, &d.agent, d.hint)
-                    == (next.activity, &next.task, &next.agent, next.hint)
+                (d.activity, &d.task, &d.agent, d.hint, d.sub_reason, d.bg)
+                    == (
+                        next.activity,
+                        &next.task,
+                        &next.agent,
+                        next.hint,
+                        next.sub_reason,
+                        next.bg,
+                    )
             });
             if !same {
                 derived.insert(workspace.clone(), next.clone());
@@ -1477,6 +1711,7 @@ impl EventHub {
     /// Forget a workspace that no longer exists.
     /// Only ids that start with `prefix` are considered (one per workspace manager when several run).
     pub fn forget_except(&self, prefix: &str, live: &[String]) {
+        self.machines.retain_live(prefix, live);
         if let Some(history) = &self.history {
             history.retain_live(prefix, live, now_ms());
         }
@@ -1879,6 +2114,14 @@ async fn deliver(
     workspace: &str,
 ) {
     if w.adapter == "claude" {
+        // From the first hook on, the machine owns this tab's Attention.
+        hub.mark_backed(
+            workspace,
+            hub.tab_status()
+                .and_then(|status| status.tab_of(&w.pane, workspace))
+                .as_deref()
+                .unwrap_or(""),
+        );
         // File reads: off the async threads.
         let (h, s, data) = (hub.clone(), workspace.to_string(), w.data.clone());
         let _ = tokio::task::spawn_blocking(move || h.note_claude_usage(&s, &data)).await;
@@ -1900,6 +2143,22 @@ async fn deliver(
         .is_ok()
     {
         hub.apply_hook_tab(&w.pane, workspace, &for_tab, now_ms());
+        if w.adapter == "claude" {
+            let tab_key = tab.as_deref().unwrap_or("");
+            let now = now_ms();
+            for event in crate::adapters::claude_events(&w.data) {
+                hub.feed_machine(workspace, tab_key, event, now);
+            }
+            if let (Some(raw), Some(root)) = (
+                w.data.get("transcript_path").and_then(|p| p.as_str()),
+                crate::transcript::claude_root(),
+            ) {
+                if let Ok(path) = crate::transcript::resolve(&root, raw) {
+                    hub.machines().follow(workspace, tab_key, path);
+                }
+            }
+            hub.refresh(now);
+        }
         if let (Some(tab), Some(id)) = (
             tab.as_deref(),
             crate::adapters::agent_session_id(&w.adapter, &w.data),
@@ -2854,6 +3113,263 @@ mod tests {
     }
 
     #[test]
+    fn a_backed_tab_raises_and_clears_attention_only_from_its_machine() {
+        use crate::status::event::{AskOutcome, Event, Outcome};
+        let h = hub();
+        h.mark_backed("s", "t");
+        // The legacy path says needs_input; it raises nothing for a backed tab.
+        h.feed(
+            "s",
+            Source::Hook,
+            Confidence::High,
+            state(AgentState::NeedsInput),
+            1_000,
+            Some("t"),
+        );
+        assert!(h.attention_items().is_empty());
+
+        h.feed_machine("s", "t", Event::TurnStart { title: None }, 1_000);
+        h.feed_machine(
+            "s",
+            "t",
+            Event::AskOpen {
+                key: "AskUserQuestion".into(),
+                kind: AskKind::Question,
+            },
+            2_000,
+        );
+        let items = h.attention_items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            (
+                items[0].kind,
+                items[0].tier,
+                items[0].ask,
+                items[0].prompt.clone()
+            ),
+            (
+                AttentionKind::NeedsInput,
+                Some(AttentionTier::NeedsYou),
+                Some(AskKind::Question),
+                None
+            )
+        );
+        let id = items[0].id.clone();
+
+        // The text fills the same card in place.
+        h.feed_machine(
+            "s",
+            "t",
+            Event::AskContent {
+                key: "AskUserQuestion".into(),
+                text: "Which one?".into(),
+                options: vec!["a".into()],
+            },
+            2_500,
+        );
+        let items = h.attention_items();
+        assert_eq!(
+            (items.len(), items[0].id.clone(), items[0].prompt.clone()),
+            (1, id, Some("Which one?".into()))
+        );
+
+        // An answer closes it; a legacy `working` would have too, but the machine decides.
+        h.feed_machine(
+            "s",
+            "t",
+            Event::AskClose {
+                key: "AskUserQuestion".into(),
+                outcome: AskOutcome::Answered,
+            },
+            3_000,
+        );
+        assert!(h.attention_items().is_empty());
+
+        // A finished turn raises a result that only a view clears.
+        h.feed_machine(
+            "s",
+            "t",
+            Event::TurnEnd {
+                outcome: Outcome::Done,
+                bg: 0,
+            },
+            9_000,
+        );
+        let items = h.attention_items();
+        assert_eq!(
+            (items.len(), items[0].kind, items[0].tier),
+            (
+                1,
+                AttentionKind::FinishedUnseen,
+                Some(AttentionTier::Result)
+            )
+        );
+        h.feed_machine("s", "t", Event::TurnStart { title: None }, 20_000);
+        assert_eq!(h.attention_items().len(), 1, "a new turn does not view it");
+        assert!(h.ack(&items[0].id));
+        assert!(h.attention_items().is_empty());
+        assert_eq!(
+            h.machines().view("s", "t", 21_000).unwrap().status,
+            crate::status::machine::Status::Working
+        );
+    }
+
+    #[test]
+    fn a_backed_tab_state_comes_from_its_machine_and_the_workspace_task_ends_on_idle() {
+        use crate::status::event::{Event, Outcome};
+        let status = Arc::new(TabStatus::default());
+        let h = EventHub::new([1; 32]).with_tab_status(status.clone());
+        h.mark_backed("s", "t");
+        h.feed(
+            "s",
+            Source::Hook,
+            Confidence::High,
+            EventKind::Task {
+                title: "fix it".into(),
+            },
+            500,
+            Some("t"),
+        );
+        h.feed_machine("s", "t", Event::TurnStart { title: None }, 1_000);
+        let tab_state = || {
+            status
+                .snapshot()
+                .iter()
+                .find(|t| t.tab == "t")
+                .map(|t| t.state)
+        };
+        assert_eq!(tab_state(), Some(AgentState::Working));
+        // A legacy writer cannot move it.
+        status.set_screen_state(
+            "s",
+            "t",
+            crate::reducer::Screen {
+                working: false,
+                idle: true,
+                blocked: false,
+            },
+            None,
+            9_000,
+        );
+        status.set_hook_state("s", "t", AgentState::Error, 9_000);
+        assert_eq!(tab_state(), Some(AgentState::Working));
+        h.feed_machine(
+            "s",
+            "t",
+            Event::TurnEnd {
+                outcome: Outcome::Done,
+                bg: 0,
+            },
+            10_000,
+        );
+        assert_eq!(tab_state(), Some(AgentState::Done));
+        assert!(activity(&h, "s", 10_000).unwrap().task.is_none());
+        let id = h.attention_items()[0].id.clone();
+        assert!(h.ack(&id));
+        assert_eq!(tab_state(), Some(AgentState::Idle));
+    }
+
+    #[test]
+    fn a_failed_turn_carries_its_cause_and_another_tab_keeps_its_legacy_items() {
+        use crate::status::event::{Event, Outcome};
+        let h = hub();
+        h.mark_backed("s", "t1");
+        h.feed_machine("s", "t1", Event::TurnStart { title: None }, 1_000);
+        h.feed_machine(
+            "s",
+            "t1",
+            Event::TurnEnd {
+                outcome: Outcome::Failed(FailureCause::RateLimit),
+                bg: 0,
+            },
+            9_000,
+        );
+        h.feed(
+            "s",
+            Source::Hook,
+            Confidence::High,
+            state(AgentState::NeedsInput),
+            9_500,
+            Some("t2"),
+        );
+        let items = h.attention_items();
+        let failed = items
+            .iter()
+            .find(|a| a.tab.as_deref() == Some("t1"))
+            .unwrap();
+        assert_eq!(
+            (failed.kind, failed.cause),
+            (AttentionKind::Failed, Some(FailureCause::RateLimit))
+        );
+        assert!(
+            items
+                .iter()
+                .any(|a| a.tab.as_deref() == Some("t2") && a.kind == AttentionKind::NeedsInput),
+            "an unbacked tab still follows the legacy path"
+        );
+    }
+
+    #[test]
+    fn a_machine_backed_workspace_keeps_working_past_the_old_decay_and_names_why() {
+        use crate::status::event::Event;
+        let h = hub();
+        h.report(
+            "s",
+            Source::Hook,
+            Confidence::High,
+            state(AgentState::Working),
+        );
+        h.machines()
+            .feed("s", "t", Event::TurnStart { title: None }, 1_000);
+        h.machines().feed(
+            "s",
+            "t",
+            Event::ToolStart {
+                name: "Bash".into(),
+            },
+            2_000,
+        );
+        let a = activity(&h, "s", 600_000).unwrap();
+        assert_eq!(
+            a.activity,
+            Activity::Working,
+            "the 60 s decay no longer applies"
+        );
+        assert_eq!(a.sub_reason, Some(SubReason::Tool));
+        h.machines().feed(
+            "s",
+            "t",
+            Event::TurnEnd {
+                outcome: crate::status::event::Outcome::Done,
+                bg: 2,
+            },
+            700_000,
+        );
+        let a = activity(&h, "s", 700_000).unwrap();
+        assert_eq!((a.activity, a.sub_reason, a.bg), (Activity::Idle, None, 2));
+    }
+
+    #[test]
+    fn a_workspace_with_no_machine_keeps_the_legacy_activity() {
+        let h = hub();
+        h.push(
+            "s",
+            Source::Hook,
+            Confidence::High,
+            state(AgentState::Working),
+            1_000,
+        );
+        assert_eq!(
+            activity(&h, "s", 2_000).unwrap().activity,
+            Activity::Working
+        );
+        assert_eq!(
+            activity(&h, "s", 200_000).unwrap().activity,
+            Activity::Unknown
+        );
+    }
+
+    #[test]
     fn a_long_tool_is_still_working_after_the_old_sixty_second_window() {
         let h = EventHub::new([1; 32]);
         hook(&h, "UserPromptSubmit", quiet(), 1_000);
@@ -3450,6 +3966,48 @@ mod tests {
     }
 
     #[test]
+    fn attention_meter_counts_a_machine_ask_but_not_a_result_or_its_view() {
+        use crate::status::event::{AskOutcome, Event, Outcome};
+        let h = hub().with_meter(Arc::new(crate::attention_meter::AttentionMeter::in_memory()));
+        h.mark_backed("s", "t");
+        h.feed_machine("s", "t", Event::TurnStart { title: None }, 1_000);
+        let key = || "AskUserQuestion".to_string();
+        h.feed_machine(
+            "s",
+            "t",
+            Event::AskOpen {
+                key: key(),
+                kind: AskKind::Question,
+            },
+            2_000,
+        );
+        h.feed_machine(
+            "s",
+            "t",
+            Event::AskClose {
+                key: key(),
+                outcome: AskOutcome::Answered,
+            },
+            3_000,
+        );
+        h.feed_machine(
+            "s",
+            "t",
+            Event::TurnEnd {
+                outcome: Outcome::Done,
+                bg: 0,
+            },
+            9_000,
+        );
+        let result = h.attention_items()[0].clone();
+        assert_eq!(result.tier, Some(AttentionTier::Result));
+        assert!(!h.card_seen(&result.id, 2_000), "a result is not credited");
+        assert!(h.ack(&result.id));
+        let d = &h.meter_days()[0];
+        assert_eq!((d.raised, d.by_layer["human"], d.human_ms), (1, 1, 0));
+    }
+
+    #[test]
     fn attention_meter_tells_the_devices_when_a_tab_starts_and_stops_working() {
         let (h, _status) = tab_hub();
         let h = h.with_meter(Arc::new(crate::attention_meter::AttentionMeter::in_memory()));
@@ -3728,5 +4286,91 @@ mod tests {
             AgentState::Working,
             "only t2 is left"
         );
+    }
+    /// Replays every recorded hook run (A.1, A.2) through the old paths and through the machine, and lists the steps
+    /// where they disagree on the workspace state. The list is a fixture (`testdata/status/disagreements.txt`): B.6b
+    /// changes what clients see, and the diff of that file shows which steps moved. `UPDATE_DISAGREEMENTS=1` rewrites it.
+    #[test]
+    fn old_paths_and_machine_disagreements_are_listed() {
+        use crate::status::machine::Status;
+        let states = |old: &EventHub, machines: &crate::status::feed::Machines, at: u64| {
+            let was = match activity(old, "w", at).map(|a| a.activity) {
+                Some(Activity::Working) => "working",
+                Some(Activity::Blocked) => "needs_you",
+                Some(Activity::Idle) => "idle",
+                _ => "unknown",
+            };
+            let now = match machines.view("w", "t", at).map(|v| v.status) {
+                Some(Status::Working) => "working",
+                Some(Status::NeedsYou) => "needs_you",
+                Some(Status::Finished | Status::Failed | Status::Idle) => "idle",
+                _ => "unknown",
+            };
+            (was, now)
+        };
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata");
+        let mut rows = Vec::new();
+        for dir in ["lag", "a2"] {
+            let mut files: Vec<_> = std::fs::read_dir(root.join("events").join(dir))
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+                .collect();
+            files.sort();
+            for file in files {
+                let name = format!("{dir}/{}", file.file_name().unwrap().to_string_lossy());
+                let (old, machines) = (hub(), crate::status::feed::Machines::default());
+                let text = std::fs::read_to_string(&file).unwrap();
+                let mut last = 0;
+                for (n, line) in text.lines().enumerate() {
+                    let Some((ts, json)) = line.split_once('\t') else {
+                        continue;
+                    };
+                    let (Ok(ts), Ok(data)) = (
+                        ts.parse::<u64>(),
+                        serde_json::from_str::<serde_json::Value>(json),
+                    ) else {
+                        continue;
+                    };
+                    if let Some((source, confidence, kinds)) =
+                        crate::adapters::adapt("claude", &data)
+                    {
+                        for k in kinds {
+                            old.feed("w", source, confidence, k, ts, Some("t"));
+                        }
+                    }
+                    for e in crate::adapters::claude_events(&data) {
+                        machines.feed("w", "t", e, ts);
+                    }
+                    let (was, now) = states(&old, &machines, ts);
+                    if was != now {
+                        let hook = data
+                            .get("hook_event_name")
+                            .and_then(|e| e.as_str())
+                            .unwrap_or("?");
+                        rows.push(format!(
+                            "{name}\t{}\t{hook}\told={was}\tmachine={now}",
+                            n + 1
+                        ));
+                    }
+                    last = ts;
+                }
+                // Time passing is where the paths part: the old ones decay or pin, the machine has a quiet window.
+                for (label, later) in [("+90s", 90_000), ("+40min", 2_400_000)] {
+                    machines.tick(last + later);
+                    let (was, now) = states(&old, &machines, last + later);
+                    if was != now {
+                        rows.push(format!("{name}\t{label}\t-\told={was}\tmachine={now}"));
+                    }
+                }
+            }
+        }
+        let listed = rows.join("\n") + "\n";
+        let path = root.join("status/disagreements.txt");
+        if std::env::var_os("UPDATE_DISAGREEMENTS").is_some() || !path.exists() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &listed).unwrap();
+        }
+        assert_eq!(listed, std::fs::read_to_string(&path).unwrap());
     }
 }

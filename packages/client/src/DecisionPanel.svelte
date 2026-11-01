@@ -50,5 +50,5 @@
   {/if}
   <p class="text-sm text-soft empty:hidden" role="status" data-decision-status>
     {#if sent}{sent.what === 'Reply' ? 'Reply sent.' : `Sent “${labelOf(sent.index ?? -1) ?? 'your answer'}”.`} Waiting for the agent to take it.{:else if slow}Nothing changed yet. The agent may still be busy; try again, or open the terminal.{/if}</p>
-  {#if onopen}<button type="button" onclick={onopen} class="min-h-11 rounded-card bg-raised px-4 text-base font-semibold text-fg">Open workspace</button>{/if}
+  {#if onopen}<button type="button" onclick={onopen} class="min-h-11 rounded-card bg-raised px-4 text-base font-semibold text-fg">Open terminal</button>{/if}
 </DecisionCard>

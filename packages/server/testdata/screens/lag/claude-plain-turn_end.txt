@@ -1,0 +1,13 @@
+
+ ▐▛███▛█   Claude Code v2.1.308
+▝▜██████▀  Haiku 5.5 · Claude Max
+ ▝▝   ▝▝   /tmp/statuslag-plain-EEnsvD
+❯ Reply with the single word OK and nothing else.
+● OK
+✻ Cooked for 2s · done 3:54 PM
+                                           ✘ Auto-update failed: no write permission to npm prefix · Run claude doctor
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Haiku 5.5 med x0.1 • ▕▁▏ 0%/1M • Σ <1¢ • 10% 2h35m/5h • 15% 5d11h/7d
+  ⏸ manual mode on

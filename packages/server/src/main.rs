@@ -68,6 +68,7 @@ mod rtc;
 mod session_log;
 mod session_search;
 mod signal;
+mod status;
 mod stun;
 mod tabstatus;
 mod terminfo;

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { render } from 'svelte/server';
 import DecisionPanel from '../DecisionPanel.svelte';
-import { answerIndex, decisionFor, nextNeedsYou, replyLine, stepOf, STEP_SUMMARY_CHARS } from './decision';
+import type { AskKind } from './protocol';
+import { ASK_FALLBACK, askFallback, answerIndex, decisionFor, nextNeedsYou, replyLine, stepOf, STEP_SUMMARY_CHARS } from './decision';
 import type { WorkspaceAgent } from './agents';
 
 const waiting = (extra: Partial<WorkspaceAgent> = {}): WorkspaceAgent => ({
@@ -12,6 +13,8 @@ const waiting = (extra: Partial<WorkspaceAgent> = {}): WorkspaceAgent => ({
   ...extra,
 });
 const sess = { key: 'k/s', name: 's', since: 5, question: 'Allow the edit?', title: 'Fix login' };
+
+const html = (p: Record<string, unknown>) => (render as unknown as (c: unknown, o: { props: Record<string, unknown> }) => { body: string })(DecisionPanel, { props: p }).body;
 
 describe('the decision a card shows', () => {
   it('is T1 with the hook step when the agent confirmed the prompt', () => {
@@ -28,7 +31,27 @@ describe('the decision a card shows', () => {
     expect(decisionFor(sess, waiting({ prompt: { id: 'p', kind: 'choice', choices: ['1', '2', '3', '4'], seq: 4, confidence: 'high' } }), 20).options).toEqual([]);
   });
   it('falls back to a plain question', () => {
-    expect(decisionFor({ ...sess, question: undefined }, undefined, 20).question).toBe('Needs your answer');
+    expect(decisionFor({ ...sess, question: undefined }, undefined, 20)).toMatchObject({ question: 'Needs your answer', content: false });
+  });
+  it('says what each kind of ask is until its content arrives, and never shows an empty card', () => {
+    for (const kind of Object.keys(ASK_FALLBACK) as AskKind[]) {
+      const a = waiting({ attention: { ...waiting().attention!, ask: kind, prompt: undefined } });
+      const bare = decisionFor({ ...sess, question: undefined }, a, 20);
+      expect(bare).toMatchObject({ ask: kind, content: false, question: ASK_FALLBACK[kind] });
+      expect(bare.question.length).toBeGreaterThan(0);
+      const out = html({ decision: bare, now: 65_000, onpick: () => {}, onreply: () => {}, onopen: () => {} });
+      expect(out).toContain(ASK_FALLBACK[kind]);
+      expect(out).toContain('Open terminal');
+      expect(decisionFor(sess, a, 20)).toMatchObject({ ask: kind, content: true, question: 'Allow the edit?' });
+    }
+  });
+  it('treats a kind this client does not know as unknown', () => {
+    expect(askFallback('future' as AskKind)).toBe(ASK_FALLBACK.unknown);
+    expect(askFallback(undefined)).toBe('Needs your answer');
+  });
+  it('offers one-tap options only from structured content', () => {
+    const a = waiting({ prompt: undefined });
+    expect(decisionFor(sess, a, 20).options).toEqual([]);
   });
 });
 
@@ -52,7 +75,6 @@ describe('typed reply', () => {
 
 describe('the decision panel', () => {
   const props = (over = {}) => ({ decision: decisionFor(sess, waiting(), 20), now: 65_000, onpick: () => {}, onreply: () => {}, ...over });
-  const html = (p: Record<string, unknown>) => (render as unknown as (c: unknown, o: { props: Record<string, unknown> }) => { body: string })(DecisionPanel, { props: p }).body;
   it('shows the question, task, wait, tier label, hook step, options and a reply field', () => {
     const out = html(props());
     for (const t of ['Allow the edit?', 'Fix login', 'Waiting 1 min', 'Structured', 'The agent is about to use Edit', 'src/auth.ts +12 -3', 'Yes, always', 'aria-label="Write a reply"']) expect(out).toContain(t);

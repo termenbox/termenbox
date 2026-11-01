@@ -3,6 +3,7 @@
 // plain text: nothing here builds markup.
 import { isStale, type WorkspaceAgent } from './agents';
 import type { AgentState } from './protocol';
+import { bgBadge, subReasonWord } from './status';
 
 export interface Chip {
   /** The word. A state is never shown by colour alone. */
@@ -21,9 +22,12 @@ const CHIPS: Record<AgentState, Chip> = {
   unknown: { label: 'No status', icon: '·', tone: 'idle' },
 };
 
-export function chipFor(a: WorkspaceAgent, nowMs: number): Chip & { stale: boolean } {
+/** The chip of a workspace. With server status a working one says why (decision 0188) and `bg` names background work. */
+export function chipFor(a: WorkspaceAgent, nowMs: number): Chip & { stale: boolean; bg: string } {
   const stale = isStale(a, nowMs);
-  return { ...(CHIPS[a.state] ?? CHIPS.unknown), stale };
+  const chip = CHIPS[a.state] ?? CHIPS.unknown;
+  const label = a.serverStatus && a.state === 'working' && a.subReason ? subReasonWord(a.subReason) : chip.label;
+  return { ...chip, label, stale, bg: bgBadge(a.bg) };
 }
 
 export const isDone = (status: string) => /^(done|completed|complete|finished)$/i.test(status);

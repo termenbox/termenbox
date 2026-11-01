@@ -24,7 +24,7 @@
     execute: 'Wants to run a command', think: 'Wants to think', fetch: 'Wants to fetch a page', switch_mode: 'Wants to switch mode', other: 'Wants to use a tool',
   };
   const decision = (e: Extract<Entry, { kind: 'permission' }>): Decision => ({
-    key: workspaceKey, promptId: e.promptId, name, agent, question: e.title || 'The agent asks permission', tier: 't0', options: e.options.map((o) => o.name),
+    key: workspaceKey, promptId: e.promptId, name, agent, question: e.title || 'The agent asks permission', ask: 'permission', content: !!e.title, tier: 't0', options: e.options.map((o) => o.name),
   });
 </script>
 

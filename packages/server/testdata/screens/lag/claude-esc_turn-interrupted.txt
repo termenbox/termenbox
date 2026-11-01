@@ -1,0 +1,14 @@
+
+ ▐▛███▛█   Claude Code v2.1.308
+▝▜██████▀  Haiku 5.5 · Claude Max
+ ▝▝   ▝▝   /tmp/statuslag-esc_turn-0vA1fD
+❯ Run the shell command node -e "const t=Date.now();while(Date.now()-t<40000);console.log(1)" with the Bash tool, in
+  the foreground, then reply DONE.
+  Running 1 shell command · 3s…
+  ⎿  $ node -e "const t=Date.now();while(Date.now()-t<40000);console.log(1)" (3s)
+                                           ✘ Auto-update failed: no write permission to npm prefix · Run claude doctor
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Haiku 5.5 med x0.1 • ▕▁▏ 4%/1M • Σ <1¢ ⚡ <.1¢ ⇲ 1.1¢ ⟲ 55 • ⏱ 59m 65% • 12% 2h3m/5h • 15% 5d10h/7d
+  ⏸ manual mode on

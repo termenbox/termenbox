@@ -6,7 +6,8 @@ import { bannerChoices } from './notify';
 import type { HubWorkspace } from './hub';
 import type { AttentionKind, TabAgentState } from './protocol';
 import type { FleetState } from './ds/states';
-import { aggregateStatus, tabAgentStates, tabOrder, tabStateKey } from './workspaceTabs';
+import { aggregateStatus, tabAgentStates } from './status';
+import { tabOrder, tabStateKey } from './workspaceTabs';
 
 export type QueueKind = Exclude<AttentionKind, 'unknown'>;
 

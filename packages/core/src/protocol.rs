@@ -909,6 +909,16 @@ pub enum ServerMessage {
     Attention {
         items: Vec<crate::events::Attention>,
     },
+    /// One ordered snapshot of everything the status channel carries (decisions 0096, 0191): the Activity of every
+    /// workspace, the open Attention items and the state of every tab, taken at the same instant. `v` is the frame
+    /// version; a client that does not know it ignores the frame and keeps reading `activity`, `attention` and
+    /// `tab_states`, which the server still sends beside it.
+    StatusFrame {
+        v: u32,
+        workspaces: Vec<crate::events::WorkspaceActivity>,
+        attention: Vec<crate::events::Attention>,
+        tabs: Vec<crate::events::TabAgentState>,
+    },
     /// The attention meter (decision 0169): one entry per UTC day, oldest first, the last 30 days at most. Sent
     /// after connect and after a `card_seen`. Numbers only; no agent text.
     AttentionStats {
@@ -1879,6 +1889,23 @@ mod tests {
         assert_eq!(v["type"], "agent_events");
         let v = serde_json::to_value(ServerMessage::Activity { workspaces: vec![] }).unwrap();
         assert_eq!(v["type"], "activity");
+        let v = serde_json::to_value(ServerMessage::StatusFrame {
+            v: 1,
+            workspaces: vec![],
+            attention: vec![],
+            tabs: vec![],
+        })
+        .unwrap();
+        assert_eq!(v["type"], "status_frame");
+        assert_eq!(v["v"], 1);
+        // The old messages parse as before beside the frame (an old client fixture).
+        for old in [
+            r#"{"type":"activity","workspaces":[]}"#,
+            r#"{"type":"attention","items":[]}"#,
+            r#"{"type":"tab_states","states":[]}"#,
+        ] {
+            serde_json::from_str::<ServerMessage>(old).unwrap();
+        }
         let v = serde_json::to_value(ServerMessage::Attention { items: vec![] }).unwrap();
         assert_eq!(v["type"], "attention");
         let v = serde_json::to_value(ClientMessage::Ack {

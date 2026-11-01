@@ -124,7 +124,7 @@
         <span class="mark"><AgentIcon command={rep?.command} agent={rep ? rep.agent : agent?.agent} size={22} /><span class="state-icon state-{chip.tone}" aria-hidden="true">{chip.icon}</span></span><span class="workspace-name">{text.label}</span>
         {#if servers.length > 1}<span class="badge">{workspace.serverName}</span>{/if}
         <span class="need" aria-hidden="true">{needsYou(agent) ? '●' : ''}</span>
-        <span class="sr">{chip.label}</span>
+        <span class="sr">{chip.label}{'bg' in chip && chip.bg ? ', ' + chip.bg : ''}</span>
       </button>
     {/each}
     {#if !shown.length}<span class="empty">No workspaces</span>{/if}

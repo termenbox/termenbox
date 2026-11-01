@@ -27,6 +27,7 @@ pub mod claude;
 pub mod codex;
 #[cfg(test)]
 mod contract;
+pub mod observe;
 pub mod scan;
 #[cfg(test)]
 mod stub;
@@ -599,6 +600,15 @@ pub trait SessionLog: Send + Sync {
         direction: Direction,
         count: usize,
     ) -> Result<Page, LogError>;
+    /// The status events of what was appended to the session since `tail` last read (decision 0189). An agent whose
+    /// adapter does not read for status is off for this, the way an unreadable file is off for search.
+    fn observe(
+        &self,
+        _session: &SessionRef,
+        _tail: &mut observe::Tail,
+    ) -> Result<Vec<crate::status::event::Event>, LogError> {
+        Err(LogError::Disabled("no status reader"))
+    }
 }
 
 /// The adapters by agent name, and which of them are off.

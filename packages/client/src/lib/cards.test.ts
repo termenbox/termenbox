@@ -13,6 +13,12 @@ describe('chips', () => {
     }
     expect(chipFor(a('needs_input'), 0).label).toBe('Needs you');
   });
+  it('names why a working workspace works and shows background work, only with server status', () => {
+    expect(chipFor(a('working', { serverStatus: true, subReason: 'tool' }), 1000).label).toBe('Running a tool');
+    expect(chipFor(a('working', { subReason: 'tool' }), 1000).label).toBe('Working');
+    expect(chipFor(a('idle', { serverStatus: true, bg: 2 }), 1000).bg).toBe('bg: 2');
+    expect(chipFor(a('idle', { serverStatus: true, bg: 0 }), 1000).bg).toBe('');
+  });
   it('marks a working state without news as stale', () => {
     expect(chipFor(a('working'), 1000 + 30_000).stale).toBe(false);
     expect(chipFor(a('working'), 1000 + 90_000).stale).toBe(true);

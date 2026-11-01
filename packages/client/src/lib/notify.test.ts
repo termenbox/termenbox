@@ -142,6 +142,27 @@ describe('sound and vibration when a workspace starts needing you', () => {
     return { play, vibrate, log, clock, update: createAlerter(play, vibrate, () => clock.now, log) };
   };
 
+  it('is silent for an info item, and a tier that rises is news again', () => {
+    const rec = vi.fn();
+    const play = vi.fn((_kind: string): PlayResult => 'played');
+    const clock = { now: 100_000 };
+    const update = createAlerter(play, () => true, () => clock.now, () => {}, rec);
+    const item = (kind: string, tier: string) => ({ key: 'a', name: 'a', since: 99_000, agent: ag({ attention: { id: 'x', workspace: 'a', kind, tier, raised_at: 99_000 } as never }) });
+    update([item('unknown', 'info')], both);
+    expect(play).not.toHaveBeenCalled();
+    update([item('finished_unseen', 'result')], both);
+    expect(play).toHaveBeenCalledTimes(1);
+    update([item('needs_input', 'needs_you')], both);
+    expect(play).toHaveBeenCalledTimes(2);
+    expect(rec.mock.calls.map(c => c[0].tier)).toEqual(['result', 'needs_you']);
+  });
+
+  it('never alerts for a workspace the store does not hold', () => {
+    const { play, update } = setup();
+    update(waitingList([{ key: 'ghost', name: 'ghost' }], {}), both);
+    expect(play).not.toHaveBeenCalled();
+  });
+
   it('alerts once for a fresh item, with the pattern, and not again while it waits', () => {
     const { play, vibrate, update } = setup();
     update([w('a', 95_000)], both);

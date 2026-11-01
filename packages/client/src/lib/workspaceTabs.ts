@@ -2,9 +2,6 @@
 // and the workspace row shows the aggregate of what its agents do. Pure functions, so the rules are testable without a
 // browser; text from an agent or the owner is never turned into markup here.
 import type { AgentState, TabAgentState, TabInfo } from './protocol';
-import type { WorkspaceAgent } from './agents';
-import type { HubWorkspace } from './hub';
-import type { FleetState } from './ds/states';
 import { TEMPLATES } from './newworkspace';
 
 /** Tabs in the server's order; an older server sends none. */
@@ -80,48 +77,6 @@ export const tabStateKey = (workspaceKey: string, tabId: string) => `${workspace
  */
 export function tabForPrompt(states: TabAgentState[], promptId: string): string | null {
   return states.find((t) => t.prompt?.id === promptId)?.tab ?? null;
-}
-
-/** `hub.tabStates` for one workspace, in the shape `aggregateStatus` reads. */
-export function tabAgentStates(workspaceKey: string, states: Record<string, TabAgentState> = {}): Record<string, AgentState> {
-  const prefix = `${workspaceKey}/`;
-  const out: Record<string, AgentState> = {};
-  for (const [key, state] of Object.entries(states)) if (key.startsWith(prefix)) out[key] = state.state;
-  return out;
-}
-
-/**
- * The workspace's status from its tabs: Needs you → Error → Working only when every agent tab works → Idle →
- * Done/Unknown. Terminal tabs with no agent state are ignored; a workspace of shells is Idle. Without per-tab states
- * (an older server, or before the first `tab_states`) the workspace's own agent state answers.
- */
-export function aggregateStatus(
-  workspaceKey: string,
-  workspace: Pick<HubWorkspace, 'tabs'>,
-  agent: WorkspaceAgent | undefined,
-  states: Record<string, AgentState> = {},
-): FleetState {
-  const known = tabOrder(workspace.tabs)
-    .map((t) => states[tabStateKey(workspaceKey, t.id)])
-    .filter((s): s is AgentState => !!s);
-  if (known.length) {
-    if (known.includes('needs_input')) return 'needs-you';
-    if (known.includes('error')) return 'failed';
-    if (known.every((s) => s === 'working')) return 'working';
-    if (known.includes('idle')) return 'idle';
-    if (known.includes('done')) return 'finished';
-    return 'idle';
-  }
-  if (!agent) return 'idle';
-  const attention = agent.attention?.kind;
-  if (attention === 'needs_input') return 'needs-you';
-  if (attention === 'failed') return 'failed';
-  if (attention === 'finished_unseen') return 'finished';
-  if (!agent.serverStatus && agent.state === 'needs_input') return 'needs-you';
-  if (!agent.serverStatus && agent.state === 'error') return 'failed';
-  if (agent.state === 'working') return 'working';
-  if (!agent.serverStatus && agent.state === 'done') return 'finished';
-  return 'idle';
 }
 
 /** The word for a tab's own state (PR4 fills these; the fallback is the workspace's). */

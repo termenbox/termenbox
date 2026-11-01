@@ -29,7 +29,7 @@
   import { focusedTab, liveTab, loadActiveTab, saveActiveTab, openingTab, tabForPrompt, tabMove, tabOrder } from './lib/workspaceTabs';
   import { windowToOpen } from './lib/windows';
   import { installAudioUnlock, onAudioRunning, playChime } from './lib/bell';
-  import { announce, waitingList, createAttention, createNotifier, createAlerter } from './lib/notify';
+  import { announce, waitingList, createAttention, createNotifier, createAlerter, alertRecord, recordAlert } from './lib/notify';
   import { attentionToAck } from './lib/agents';
   import { AskDwell, type AskTarget } from './lib/askDwell';
   import { cacheRemaining, expiringSoon } from './lib/cache';
@@ -529,7 +529,8 @@
     (key) => { window.focus(); void openWaiting(key); },
   );
   $: notifyWaiting?.(waiting, !pageVisible, pushOn);
-  const alertWaiting = createAlerter((kind) => playChime($settings.alertSoundId, kind), (pattern) => typeof navigator.vibrate === 'function' && navigator.vibrate(pattern), Date.now, (line) => console.info(line));
+  const alertWaiting = createAlerter((kind) => playChime($settings.alertSoundId, kind), (pattern) => typeof navigator.vibrate === 'function' && navigator.vibrate(pattern), Date.now, (line) => console.info(line), recordAlert);
+  (globalThis as { __termenboxAlerts?: unknown }).__termenboxAlerts = alertRecord;
   $: alertWaiting(waiting, { sound: $settings.alertSound, vibrate: $settings.alertVibrate });
   // Looking at a workspace clears its finished or failed item on the server; a question stays until it is answered.
   let pageVisible = typeof document === 'undefined' || document.visibilityState !== 'hidden';

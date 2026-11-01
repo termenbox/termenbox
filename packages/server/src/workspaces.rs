@@ -700,6 +700,11 @@ impl WorkspaceManager {
         let mut agent_rx = self.events.as_ref().map(|h| h.subscribe());
         let tab_status = self.events.as_ref().and_then(|h| h.tab_status());
         let mut tab_rev = 0;
+        // A change to any of the three status sources arms this; the one frame goes out when it fires, so a hook that
+        // moves Activity, Attention and the tab together reaches the client as one frame.
+        let frame_wait = tokio::time::sleep(FRAME_COALESCE);
+        tokio::pin!(frame_wait);
+        let mut frame_due = false;
         let mut tab_tick = tokio::time::interval(std::time::Duration::from_millis(500));
         tab_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         if let Some(status) = &tab_status {
@@ -874,7 +879,17 @@ impl WorkspaceManager {
                         if !send(&link.tx, &ServerMessage::ConductorState { nodes, cards }).await { break; }
                     }
                 }
+                _ = &mut frame_wait, if frame_due => {
+                    frame_due = false;
+                    if let Some(m) = self.status_frame(tab_status.as_deref()) {
+                        if !send(&link.tx, &m).await { return Ok(()); }
+                    }
+                }
                 change = next_status(&mut status_rx) => {
+                    if !frame_due {
+                        frame_due = true;
+                        frame_wait.as_mut().reset(tokio::time::Instant::now() + FRAME_COALESCE);
+                    }
                     let msgs = match change {
                         Some(c) => vec![status_message(c)],
                         // Fell behind: send the whole picture again.
@@ -889,6 +904,10 @@ impl WorkspaceManager {
                         let rev = status.rev();
                         if rev != tab_rev {
                             tab_rev = rev;
+                            if !frame_due {
+                                frame_due = true;
+                                frame_wait.as_mut().reset(tokio::time::Instant::now() + FRAME_COALESCE);
+                            }
                             if !send(&link.tx, &ServerMessage::TabStates { states: status.snapshot() }).await { break; }
                         }
                     }
@@ -1061,6 +1080,17 @@ impl WorkspaceManager {
                 days: hub.meter_days(),
             },
         ]
+    }
+
+    /// The status frame: every workspace's Activity, the open Attention items and every tab's state, read together.
+    fn status_frame(&self, tabs: Option<&crate::tabstatus::TabStatus>) -> Option<ServerMessage> {
+        let hub = self.events.as_ref()?;
+        Some(ServerMessage::StatusFrame {
+            v: STATUS_FRAME_VERSION,
+            workspaces: hub.activities(),
+            attention: hub.attention_items(),
+            tabs: tabs.map(|t| t.snapshot()).unwrap_or_default(),
+        })
     }
 
     /// One tab by its position in the server's order, for an old client's window message.
@@ -1666,6 +1696,10 @@ impl WorkspaceManager {
                 }
                 send_r(tx, &ServerMessage::AgentSnapshot { states }).await?;
                 for m in self.status_messages() {
+                    send_r(tx, &m).await?;
+                }
+                let tabs = hub.tab_status();
+                if let Some(m) = self.status_frame(tabs.as_deref()) {
                     send_r(tx, &m).await?;
                 }
                 if !events.is_empty() {
@@ -2506,6 +2540,12 @@ fn update_result_error(
         None => None,
     }
 }
+
+/// The version of the `status_frame` message.
+const STATUS_FRAME_VERSION: u32 = 1;
+
+/// How long changes to the status sources gather into one frame. A hook moves them all within microseconds.
+const FRAME_COALESCE: std::time::Duration = std::time::Duration::from_millis(25);
 
 fn status_message(c: crate::events::StatusChange) -> ServerMessage {
     match c {

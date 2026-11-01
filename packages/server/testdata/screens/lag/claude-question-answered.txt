@@ -1,0 +1,12 @@
+
+ ▐▛███▛█   Claude Code v2.1.308
+▝▜██████▀  Haiku 5.5 · Claude Max
+ ▝▝   ▝▝   /tmp/statuslag-question-aqb7tz
+❯ Use the AskUserQuestion tool to ask me whether I prefer red or blue, with exactly those two options. Then reply DONE.
+· Gusting… (running PostToolUse hooks… 0/2 · 2s · ↓ 132 tokens)
+                                                                                                    ◐ medium · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Haiku 5.5 med x0.1 • ▕▁▏ 0%/1M • Σ 0¢ • 11% 2h18m/5h • 15% 5d10h/7d
+  ⏸ manual mode on

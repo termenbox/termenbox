@@ -2,7 +2,8 @@
 import { mount } from 'svelte';
 import '../src/app.css';
 import WorkspaceList from '../src/WorkspaceList.svelte';
-import { agents, applyActivity, applyEvents } from '../src/lib/agents';
+import { agents, applyEvents } from '../src/lib/agents';
+import { applyActivity } from '../src/lib/status';
 import type { AgentEvent } from '../src/lib/protocol';
 
 const workspaces = [

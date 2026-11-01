@@ -12,6 +12,7 @@ use crate::backend::Runner;
 use crate::events::{now_ms, EventHub};
 use crate::profile::Profiles;
 use crate::reducer::Screen;
+use crate::status::event::{Event, Seen, Source as Evidence};
 
 const SCAN_EVERY: Duration = Duration::from_secs(2);
 /// Never more than one `capture-pane` per this long, whatever the number of workspaces.
@@ -51,6 +52,73 @@ impl PromptTracker {
     }
 }
 
+/// One pane of a scan, reduced to what the status machine needs: whose it is, whether an agent runs in it, and what
+/// the screen (or, without a profile, the output scan) showed.
+pub struct Reading {
+    pub workspace: String,
+    pub tab: String,
+    pub agent: bool,
+    pub seen: Option<(Evidence, Seen)>,
+}
+
+/// An event for the machine of one (workspace, tab) session.
+#[derive(Debug, PartialEq, Eq)]
+pub struct TabEvent {
+    pub workspace: String,
+    pub tab: String,
+    pub event: Event,
+}
+
+/// Remembers which tabs had an agent in the last scan, so a tab whose agent is gone (its command changed, its pane or
+/// window closed, tmux itself gone) says `ProcessGone` once and the machine can end an open turn as `failed(crashed)`.
+#[derive(Default)]
+pub struct PaneWatch {
+    agents: HashSet<(String, String)>,
+}
+
+impl PaneWatch {
+    /// The events of one scan. Every agent tab gets its own observation (a screen hint never raises Attention, the
+    /// machine decides); with a split tab the first agent pane drives (catalogue 33).
+    pub fn events(&mut self, readings: Vec<Reading>) -> Vec<TabEvent> {
+        let mut out = Vec::new();
+        let mut now_agents = HashSet::new();
+        for r in readings.into_iter().filter(|r| r.agent) {
+            let key = (r.workspace.clone(), r.tab.clone());
+            if !now_agents.insert(key) {
+                continue;
+            }
+            if let Some((source, seen)) = r.seen {
+                out.push(TabEvent {
+                    workspace: r.workspace,
+                    tab: r.tab,
+                    event: Event::Observe { source, seen },
+                });
+            }
+        }
+        for (workspace, tab) in self.agents.difference(&now_agents) {
+            out.push(TabEvent {
+                workspace: workspace.clone(),
+                tab: tab.clone(),
+                event: Event::ProcessGone,
+            });
+        }
+        self.agents = now_agents;
+        out
+    }
+
+    /// tmux has no server: every agent it held is gone.
+    pub fn all_gone(&mut self) -> Vec<TabEvent> {
+        self.agents
+            .drain()
+            .map(|(workspace, tab)| TabEvent {
+                workspace,
+                tab,
+                event: Event::ProcessGone,
+            })
+            .collect()
+    }
+}
+
 /// What a recognised screen says: a waiting dialog, a working agent, or an idle one. Nothing when it shows none.
 fn screen_state(v: &crate::profile::ScreenView) -> Option<AgentState> {
     if v.blocked {
@@ -59,6 +127,19 @@ fn screen_state(v: &crate::profile::ScreenView) -> Option<AgentState> {
         Some(AgentState::Working)
     } else if v.idle {
         Some(AgentState::Idle)
+    } else {
+        None
+    }
+}
+
+/// What a recognised screen shows, as the machine's reading; nothing when the profile recognises none.
+fn seen_on_screen(v: &crate::profile::ScreenView) -> Option<Seen> {
+    if v.blocked {
+        Some(Seen::Blocked)
+    } else if v.working {
+        Some(Seen::Working)
+    } else if v.idle {
+        Some(Seen::Idle)
     } else {
         None
     }
@@ -104,7 +185,8 @@ pub async fn scan_tmux_once(
     runner: &Runner,
     prefix: &str,
     tracker: &mut PromptTracker,
-) {
+    watch: &mut PaneWatch,
+) -> Vec<TabEvent> {
     let args = [
         "list-panes",
         "-a",
@@ -113,7 +195,7 @@ pub async fn scan_tmux_once(
     ]
     .map(String::from);
     let Ok(out) = runner.run("tmux", &args).await else {
-        return;
+        return Vec::new();
     };
     if !out.status.success() {
         // Only a tmux that says there is no server means every workspace is gone. Any other failure is this scan's, and
@@ -121,8 +203,9 @@ pub async fn scan_tmux_once(
         if no_tmux_server(&String::from_utf8_lossy(&out.stderr)) {
             hub.forget_except(prefix, &[]);
             tracker.retain(&HashSet::new());
+            return watch.all_gone();
         }
-        return;
+        return Vec::new();
     }
     let mut panes = adapters::parse_panes(&String::from_utf8_lossy(&out.stdout), now_s());
     // Events know a workspace by the id clients see: the manager prefix plus tmux's name.
@@ -138,45 +221,74 @@ pub async fn scan_tmux_once(
     tracker.retain(&live);
     // The hooks name a pane (`TMUX_PANE`); this is where panes learn their tab, and every agent pane reports its
     // own process state so a workspace with several tabs never shows one tab's work on another (decision 0149).
-    if let Some(status) = hub.tab_status() {
+    let status = hub.tab_status();
+    if let Some(status) = &status {
         let live_tabs: HashSet<(String, String)> = panes
             .iter()
             .filter(|p| !p.tab.is_empty())
             .map(|p| (p.workspace.clone(), p.tab.clone()))
             .collect();
         status.retain(&live_tabs);
-        for p in &panes {
+    }
+    let mut readings = Vec::new();
+    for p in &panes {
+        if let Some(status) = &status {
             status.set_pane(&p.pane_id, &p.workspace, &p.tab);
-            let Some(agent) = adapters::agent_name(&p.command) else {
-                continue;
-            };
-            let (profile, _) = Profiles::builtin().for_agent(Some(agent));
-            if profile.has_state_markers() {
-                // The screen decides: a redraw (a client attaching, a resize) is output on every pane at once.
-                let Some(screen) = capture_pane(runner, &p.pane_id).await else {
-                    continue;
-                };
-                if screen.is_empty() {
-                    continue;
-                }
+        }
+        let Some(agent) = adapters::agent_name(&p.command) else {
+            readings.push(Reading {
+                workspace: p.workspace.clone(),
+                tab: p.tab.clone(),
+                agent: false,
+                seen: None,
+            });
+            continue;
+        };
+        let mut seen = None;
+        let (profile, _) = Profiles::builtin().for_agent(Some(agent));
+        if profile.has_state_markers() {
+            // The screen decides: a redraw (a client attaching, a resize) is output on every pane at once.
+            if let Some(screen) = capture_pane(runner, &p.pane_id)
+                .await
+                .filter(|s| !s.is_empty())
+            {
                 let v = profile.read(&screen);
-                status.set_screen_state(
-                    &p.workspace,
-                    &p.tab,
-                    Screen {
-                        working: v.working,
-                        idle: v.idle,
-                        blocked: v.blocked,
-                    },
-                    Some(agent),
-                    now_ms(),
-                );
+                seen = seen_on_screen(&v).map(|s| (Evidence::Screen, s));
+                if let Some(status) = &status {
+                    status.set_screen_state(
+                        &p.workspace,
+                        &p.tab,
+                        Screen {
+                            working: v.working,
+                            idle: v.idle,
+                            blocked: v.blocked,
+                        },
+                        Some(agent),
+                        now_ms(),
+                    );
+                }
                 tokio::time::sleep(PANE_SPACING).await;
-            } else if let Some(state) = adapters::scan_state(p) {
+            }
+        } else if let Some(state) = adapters::scan_state(p) {
+            seen = Some((
+                Evidence::Scan,
+                match state {
+                    AgentState::Working => Seen::Working,
+                    _ => Seen::Idle,
+                },
+            ));
+            if let Some(status) = &status {
                 status.set_scan_state(&p.workspace, &p.tab, state, Some(agent), now_ms());
             }
         }
+        readings.push(Reading {
+            workspace: p.workspace.clone(),
+            tab: p.tab.clone(),
+            agent: true,
+            seen,
+        });
     }
+    let tab_events = watch.events(readings);
     // One agent pane speaks for a workspace, and it is the one the workspace shows (the active pane of its active
     // window), so the process, the screen and the state all come from the same pane. Without an active agent pane
     // the first one is used, as before.
@@ -308,13 +420,28 @@ pub async fn scan_tmux_once(
         }
         tokio::time::sleep(PANE_SPACING).await;
     }
+    tab_events
 }
 
 pub fn spawn_tmux_scan(hub: EventHub, runner: Runner, prefix: String) {
     tokio::spawn(async move {
         let mut tracker = PromptTracker::default();
+        let mut watch = PaneWatch::default();
         loop {
-            scan_tmux_once(&hub, &runner, &prefix, &mut tracker).await;
+            // The machines are fed beside the legacy writers; a machine-backed tab's Attention comes from them.
+            let events = scan_tmux_once(&hub, &runner, &prefix, &mut tracker, &mut watch).await;
+            let now = now_ms();
+            for e in events {
+                hub.feed_machine(&e.workspace, &e.tab, e.event, now);
+            }
+            let h = hub.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let now = now_ms();
+                let mut routed = h.machines().poll_transcripts(now);
+                routed.extend(h.machines().tick(now));
+                h.apply_effects(routed, now);
+            })
+            .await;
             tokio::time::sleep(SCAN_EVERY).await;
         }
     });
@@ -323,6 +450,104 @@ pub fn spawn_tmux_scan(hub: EventHub, runner: Runner, prefix: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn reading(ws: &str, tab: &str, agent: bool, seen: Option<Seen>) -> Reading {
+        Reading {
+            workspace: ws.into(),
+            tab: tab.into(),
+            agent,
+            seen: seen.map(|s| (Evidence::Screen, s)),
+        }
+    }
+
+    #[test]
+    fn two_agent_tabs_are_each_observed() {
+        let mut w = PaneWatch::default();
+        let ev = w.events(vec![
+            reading("tmux:a", "t1", true, Some(Seen::Working)),
+            reading("tmux:a", "t2", true, Some(Seen::Idle)),
+        ]);
+        assert_eq!(ev.len(), 2);
+        assert!(ev.iter().any(|e| e.tab == "t1"
+            && e.event
+                == Event::Observe {
+                    source: Evidence::Screen,
+                    seen: Seen::Working
+                }));
+        assert!(ev.iter().any(|e| e.tab == "t2"
+            && e.event
+                == Event::Observe {
+                    source: Evidence::Screen,
+                    seen: Seen::Idle
+                }));
+    }
+
+    #[test]
+    fn a_split_tab_is_driven_by_its_first_agent_pane() {
+        let mut w = PaneWatch::default();
+        let ev = w.events(vec![
+            reading("tmux:a", "t1", false, None),
+            reading("tmux:a", "t1", true, Some(Seen::Working)),
+            reading("tmux:a", "t1", true, Some(Seen::Idle)),
+        ]);
+        assert_eq!(ev.len(), 1);
+    }
+
+    #[test]
+    fn a_screen_with_no_reading_emits_nothing_but_the_agent_is_still_present() {
+        let mut w = PaneWatch::default();
+        assert!(w
+            .events(vec![reading("tmux:a", "t1", true, None)])
+            .is_empty());
+        // Still an agent next scan: no ProcessGone.
+        assert!(w
+            .events(vec![reading("tmux:a", "t1", true, None)])
+            .is_empty());
+    }
+
+    #[test]
+    fn killing_the_agent_mid_turn_ends_it_failed_crashed() {
+        use crate::status::machine::{Machine, Status};
+        let mut w = PaneWatch::default();
+        let mut m = Machine::new();
+        m.apply(Event::TurnStart { title: None }, 0);
+        assert_eq!(m.status(), Status::Working);
+        w.events(vec![reading("tmux:a", "t1", true, Some(Seen::Working))]);
+        // The pane's command is a shell now.
+        let ev = w.events(vec![reading("tmux:a", "t1", false, None)]);
+        assert_eq!(
+            ev,
+            vec![TabEvent {
+                workspace: "tmux:a".into(),
+                tab: "t1".into(),
+                event: Event::ProcessGone
+            }]
+        );
+        for e in ev {
+            m.apply(e.event, 10_000);
+        }
+        assert_eq!(m.status(), Status::Failed);
+        // Said once.
+        assert!(w
+            .events(vec![reading("tmux:a", "t1", false, None)])
+            .is_empty());
+    }
+
+    #[test]
+    fn a_closed_tab_and_a_gone_tmux_server_both_say_process_gone() {
+        let mut w = PaneWatch::default();
+        w.events(vec![
+            reading("tmux:a", "t1", true, None),
+            reading("tmux:a", "t2", true, None),
+        ]);
+        let ev = w.events(vec![reading("tmux:a", "t2", true, None)]);
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0].tab, "t1");
+        let ev = w.all_gone();
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0].tab, "t2");
+        assert!(w.all_gone().is_empty());
+    }
 
     #[test]
     fn only_a_missing_tmux_server_means_the_workspaces_are_gone() {
@@ -409,7 +634,14 @@ mod tests {
             );
         }
         let mut tracker = PromptTracker::default();
-        scan_tmux_once(&hub, &runner, "tmux:", &mut tracker).await;
+        scan_tmux_once(
+            &hub,
+            &runner,
+            "tmux:",
+            &mut tracker,
+            &mut PaneWatch::default(),
+        )
+        .await;
         let ev = hub.since("tmux:scantest", 0);
         let agent = hub
             .snapshot()

@@ -142,7 +142,8 @@ impl ServerClient {
             | ServerMessage::DirListing { .. }
             | ServerMessage::DirError { .. }
             | ServerMessage::ConductorTerminalOpened { .. }
-            | ServerMessage::ConductorTerminalClosed { .. } => {}
+            | ServerMessage::ConductorTerminalClosed { .. }
+            | ServerMessage::StatusFrame { .. } => {}
             ServerMessage::Workspaces { workspaces } => {
                 info!("Received {} workspaces", workspaces.len());
                 for workspace in workspaces {
