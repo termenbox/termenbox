@@ -480,6 +480,8 @@ pub struct EventHub {
     answerers: Arc<Mutex<HashMap<(String, String), (&'static str, u64)>>>,
     /// Where a tab's agent session id is kept (decision 0152); absent in tests that do not need it.
     registry: Option<Arc<crate::registry::Registry>>,
+    /// The status machine of each live session, fed beside the old paths (plan B.6a).
+    machines: Arc<crate::status::feed::Machines>,
 }
 
 impl EventHub {
@@ -501,7 +503,13 @@ impl EventHub {
             meter: None,
             answerers: Arc::default(),
             registry: None,
+            machines: Arc::default(),
         }
+    }
+
+    /// The status machines (decisions 0187 to 0193).
+    pub fn machines(&self) -> &crate::status::feed::Machines {
+        &self.machines
     }
 
     /// Measures the owner's attention (decision 0169).
@@ -1334,6 +1342,7 @@ impl EventHub {
 
     /// A closed tab must not keep its prompt or a pending attention that a push could still follow.
     pub fn forget_tab(&self, workspace: &str, tab: &str) {
+        self.machines.forget_tab(workspace, tab);
         if let Some(status) = &self.tab_status {
             status.forget_tab(workspace, tab);
         }
@@ -1482,6 +1491,7 @@ impl EventHub {
     /// Forget a workspace that no longer exists.
     /// Only ids that start with `prefix` are considered (one per workspace manager when several run).
     pub fn forget_except(&self, prefix: &str, live: &[String]) {
+        self.machines.retain_live(prefix, live);
         if let Some(history) = &self.history {
             history.retain_live(prefix, live, now_ms());
         }
@@ -1905,6 +1915,21 @@ async fn deliver(
         .is_ok()
     {
         hub.apply_hook_tab(&w.pane, workspace, &for_tab, now_ms());
+        if w.adapter == "claude" {
+            let tab_key = tab.as_deref().unwrap_or("");
+            let now = now_ms();
+            for event in crate::adapters::claude_events(&w.data) {
+                hub.machines().feed(workspace, tab_key, event, now);
+            }
+            if let (Some(raw), Some(root)) = (
+                w.data.get("transcript_path").and_then(|p| p.as_str()),
+                crate::transcript::claude_root(),
+            ) {
+                if let Ok(path) = crate::transcript::resolve(&root, raw) {
+                    hub.machines().follow(workspace, tab_key, path);
+                }
+            }
+        }
         if let (Some(tab), Some(id)) = (
             tab.as_deref(),
             crate::adapters::agent_session_id(&w.adapter, &w.data),
@@ -3733,5 +3758,91 @@ mod tests {
             AgentState::Working,
             "only t2 is left"
         );
+    }
+    /// Replays every recorded hook run (A.1, A.2) through the old paths and through the machine, and lists the steps
+    /// where they disagree on the workspace state. The list is a fixture (`testdata/status/disagreements.txt`): B.6b
+    /// changes what clients see, and the diff of that file shows which steps moved. `UPDATE_DISAGREEMENTS=1` rewrites it.
+    #[test]
+    fn old_paths_and_machine_disagreements_are_listed() {
+        use crate::status::machine::Status;
+        let states = |old: &EventHub, machines: &crate::status::feed::Machines, at: u64| {
+            let was = match activity(old, "w", at).map(|a| a.activity) {
+                Some(Activity::Working) => "working",
+                Some(Activity::Blocked) => "needs_you",
+                Some(Activity::Idle) => "idle",
+                _ => "unknown",
+            };
+            let now = match machines.view("w", "t", at).map(|v| v.status) {
+                Some(Status::Working) => "working",
+                Some(Status::NeedsYou) => "needs_you",
+                Some(Status::Finished | Status::Failed | Status::Idle) => "idle",
+                _ => "unknown",
+            };
+            (was, now)
+        };
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata");
+        let mut rows = Vec::new();
+        for dir in ["lag", "a2"] {
+            let mut files: Vec<_> = std::fs::read_dir(root.join("events").join(dir))
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+                .collect();
+            files.sort();
+            for file in files {
+                let name = format!("{dir}/{}", file.file_name().unwrap().to_string_lossy());
+                let (old, machines) = (hub(), crate::status::feed::Machines::default());
+                let text = std::fs::read_to_string(&file).unwrap();
+                let mut last = 0;
+                for (n, line) in text.lines().enumerate() {
+                    let Some((ts, json)) = line.split_once('\t') else {
+                        continue;
+                    };
+                    let (Ok(ts), Ok(data)) = (
+                        ts.parse::<u64>(),
+                        serde_json::from_str::<serde_json::Value>(json),
+                    ) else {
+                        continue;
+                    };
+                    if let Some((source, confidence, kinds)) =
+                        crate::adapters::adapt("claude", &data)
+                    {
+                        for k in kinds {
+                            old.feed("w", source, confidence, k, ts, Some("t"));
+                        }
+                    }
+                    for e in crate::adapters::claude_events(&data) {
+                        machines.feed("w", "t", e, ts);
+                    }
+                    let (was, now) = states(&old, &machines, ts);
+                    if was != now {
+                        let hook = data
+                            .get("hook_event_name")
+                            .and_then(|e| e.as_str())
+                            .unwrap_or("?");
+                        rows.push(format!(
+                            "{name}\t{}\t{hook}\told={was}\tmachine={now}",
+                            n + 1
+                        ));
+                    }
+                    last = ts;
+                }
+                // Time passing is where the paths part: the old ones decay or pin, the machine has a quiet window.
+                for (label, later) in [("+90s", 90_000), ("+40min", 2_400_000)] {
+                    machines.tick(last + later);
+                    let (was, now) = states(&old, &machines, last + later);
+                    if was != now {
+                        rows.push(format!("{name}\t{label}\t-\told={was}\tmachine={now}"));
+                    }
+                }
+            }
+        }
+        let listed = rows.join("\n") + "\n";
+        let path = root.join("status/disagreements.txt");
+        if std::env::var_os("UPDATE_DISAGREEMENTS").is_some() || !path.exists() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &listed).unwrap();
+        }
+        assert_eq!(listed, std::fs::read_to_string(&path).unwrap());
     }
 }

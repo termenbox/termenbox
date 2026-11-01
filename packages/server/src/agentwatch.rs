@@ -428,8 +428,18 @@ pub fn spawn_tmux_scan(hub: EventHub, runner: Runner, prefix: String) {
         let mut tracker = PromptTracker::default();
         let mut watch = PaneWatch::default();
         loop {
-            // B.6 hands the events to the machines; until then the legacy writers above still run.
-            let _ = scan_tmux_once(&hub, &runner, &prefix, &mut tracker, &mut watch).await;
+            // The machines are fed beside the legacy writers until B.6b reads from them.
+            let events = scan_tmux_once(&hub, &runner, &prefix, &mut tracker, &mut watch).await;
+            let now = now_ms();
+            for e in events {
+                hub.machines().feed(&e.workspace, &e.tab, e.event, now);
+            }
+            let h = hub.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                h.machines().poll_transcripts(now_ms());
+                h.machines().tick(now_ms());
+            })
+            .await;
             tokio::time::sleep(SCAN_EVERY).await;
         }
     });

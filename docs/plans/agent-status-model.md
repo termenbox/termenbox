@@ -222,7 +222,8 @@ three commits, each green on its own:
 - **B.6c Delete the old paths.** Remove `Reducer`, `reducer.rs` (keep `Screen` and `WEAK_KEY` where used),
   `set_*_state`, `apply_pane`, `PIN_MAX_MS`, the duplicated `GRACE_MS`, `#![allow(dead_code)]` in `status/mod.rs`.
   Done-when: the original grep finds nothing and `cargo test --workspace` passes.
-Not started: no code changed. The branch is 6 commits behind `develop`; rebase before B.6a.
+B.6a done 2026-11-01: `status/feed.rs` `Machines` (one machine per (workspace, tab), plus a `Tail` per followed transcript, started at the end of the file) is owned by `EventHub`. `deliver` feeds `adapters::claude_events` and follows `transcript_path` (resolved under the Claude root); the scan loop feeds the `PaneWatch` events, polls the tails on a blocking thread and ticks the machines; `forget_tab` and `forget_except` drop them. Nothing reads them yet. The test `events::tests::old_paths_and_machine_disagreements_are_listed` replays every A.1/A.2 run through both paths and pins the disagreements in `testdata/status/disagreements.txt` (`UPDATE_DISAGREEMENTS=1` rewrites it): after an Esc or a 401 the hooks alone leave the machine `working` where the old path says `unknown`, so B.6b must rely on the transcript or screen to close those (the fixtures hold hooks only). Env note: the 22 tmux-dependent tests in `cargo test --workspace` fail in this image (same as before B.6a); clippy `-p termenbox-server` has 17 errors in files this step did not touch.
+Not started: B.6b, B.6c.
 
 ### B.7 One snapshot frame on the status channel — [ ]
 Class: implement · Needs: B.6 · Check: `scripts/dev.sh cargo test -p termenbox-server e2e`
