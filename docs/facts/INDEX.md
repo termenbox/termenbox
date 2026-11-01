@@ -68,6 +68,7 @@
 | 0068 | GitHub Markdown does not play a repository MP4 inline, and a chapter-length GIF is several megabytes | docs, video, github | active |
 | 0069 | The Electron community template pins an end-of-life Electron 26, and the wrappers use Electron 45 | desktop, platform, security | active |
 | 0071 | Claude Code status runs through three parallel paths that can disagree, and its asks lose their question text | agents, server, client, notifications | active |
+| 0072 | Claude Code 2.1.308 shows a dialog on the screen and in the transcript within 80 ms of its hook, but the transcript lags the hook by 150 to 400 ms elsewhere, and Esc leaves a trace in the transcript and on the screen only | agents, hooks, claude, status | active |
 
 <!-- bootstrap-generated: true -->
 | 0070 | One person has about 28,800 seconds of attention a day, which is 1.2 seconds per agent-hour at 1,000 agents and 0.12 at 10,000 | product, control-plane, agents | active |

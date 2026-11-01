@@ -1,0 +1,16 @@
+
+ ▐▛███▛█   Claude Code v2.1.308
+▝▜██████▀  Haiku 5.5 · Claude Max
+ ▝▝   ▝▝   /tmp/statuslag-question-aqb7tz
+❯ Use the AskUserQuestion tool to ask me whether I prefer red or blue, with exactly those two options. Then reply DONE.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Color
+Do you prefer red or blue?
+❯ 1. Red
+     Choose red
+  2. Blue
+     Choose blue
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+Enter to select · ↑/↓ to navigate · Esc to cancel

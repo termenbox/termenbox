@@ -92,7 +92,7 @@ their question (the text rides on the late `Notification` hook, matched to any o
 Phase A measures. Phase B builds the server model. Phase C moves the client onto it. Phase D proves it. Phase E closes
 the loop in docs.
 
-### A.1 Measure the lag between hook, transcript and screen — [ ]
+### A.1 Measure the lag between hook, transcript and screen — [x]
 Class: explore · Needs: none · Check: `test -f docs/facts/0072-claude-hook-transcript-and-screen-lag.md && ls packages/server/testdata/transcripts | grep -c claude`
 Context: Decision 0182 ranks hook > transcript > screen > scan and promotes the Claude session file to a status
 source, with the grace values set from measured lag. Fact 0048 measured hooks only (claude 2.1.302, n=1). The Claude
@@ -106,6 +106,7 @@ pane redraw showing it. Run each case at least 5 times and report median and p95
 transcript lines and screens as fixtures. Write fact 0072 with the table, the version and the date, and add it to
 `docs/facts/INDEX.md`.
 Done-when: Fact 0072 holds a lag table for every listed case with n >= 5, and fixtures from the real run exist for each.
+Progress: done 2026-11-01. `scripts/status-lag.mjs` (rerunnable), fact 0072, fixtures in `testdata/{events,transcripts,screens}/lag/`. Findings for later steps: the transcript has the pending ask and the Esc cancel within 500 ms, and the transcript trails the hook by up to 400 ms (so the reconcile grace must exceed 500 ms); a foreground `sleep` is refused with no hook (A.3 must use a busy loop); `Notification` was not seen. The skipped part: the script has no case for a 20-minute tool (A.3).
 
 ### A.2 Measure the unmeasured events and background behaviour — [ ]‖
 Class: explore · Needs: none · Check: `test -f docs/facts/0073-claude-events-subagents-background-and-errors.md`

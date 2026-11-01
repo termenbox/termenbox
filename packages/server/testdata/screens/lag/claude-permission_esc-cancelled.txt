@@ -1,0 +1,14 @@
+
+ ▐▛███▛█   Claude Code v2.1.308
+▝▜██████▀  Haiku 5.5 · Claude Max
+ ▝▝   ▝▝   /tmp/statuslag-permission_esc-91jAhw
+❯ Run the shell command touch lagprobe.txt with the Bash tool, then reply DONE.
+  Ran 1 shell command
+  ⎿  Interrupted · What should Claude do instead?
+✻ Churned for 2s · done 4:07 PM
+                                                                                                    ◐ medium · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Haiku 5.5 med x0.1 • ▕▁▏ 0%/1M • Σ 0¢ • 11% 2h22m/5h • 15% 5d10h/7d
+  ⏸ manual mode on

@@ -1,0 +1,14 @@
+
+ ▐▛███▛█   Claude Code v2.1.308
+▝▜██████▀  Haiku 5.5 · Claude Max
+ ▝▝   ▝▝   /tmp/statuslag-tool-SeK5TB
+❯ Run the shell command echo lagprobe with the Bash tool, then reply DONE.
+  Ran 1 shell command
+● DONE
+✢ Processing… (3s · ↓ 81 tokens)
+                                           ✘ Auto-update failed: no write permission to npm prefix · Run claude doctor
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Haiku 5.5 med x0.1 • ▕▁▏ 4%/1M • Σ <1¢ ⚡ <.1¢ ⇲ 1.1¢ ⟲ 55 • ⏱ 59m 65% • 11% 2h31m/5h • 15% 5d11h/7d
+  ⏸ manual mode on
