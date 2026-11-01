@@ -1377,6 +1377,54 @@ async fn terminal_bytes_use_their_own_lane_and_status_is_not_held_up_by_output(k
         .output();
 }
 
+/// A hook that opens a question reaches the client as one `status_frame` holding both the workspace's status and
+/// the Attention item (decision 0191), and the old `activity` and `attention` messages still come beside it.
+async fn a_hook_reaches_the_client_as_one_status_frame(kind: Kind) {
+    use tokio::io::AsyncWriteExt;
+    let f = fixture().await;
+    let name = "framed".to_string();
+    let alice = f.who(1, "alice");
+    let mut c = Conn::open(kind, &f).await;
+    c.login(&f, &alice, &f.claim).await;
+    c.recv_type("auth_ok").await;
+    c.send(json!({"type":"agent_sync","after":{}})).await;
+    c.recv_type("status_frame").await;
+
+    let line = json!({"session": name, "token": f.hub.token(&name), "adapter": "claude",
+        "data": {"hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion",
+                 "tool_input": {"questions": [{"question": "Which one?", "options": [{"label": "a"}, {"label": "b"}]}]}}})
+    .to_string()
+        + "\n";
+    // Let what the attach set in motion settle, so the next frame is the hook's.
+    while tokio::time::timeout(Duration::from_millis(300), c.recv())
+        .await
+        .is_ok()
+    {}
+    let mut s = tokio::net::UnixStream::connect(&f.events_socket)
+        .await
+        .unwrap();
+    s.write_all(line.as_bytes()).await.unwrap();
+
+    let (mut frames, mut old_attention) = (Vec::new(), 0);
+    let end = Instant::now() + Duration::from_millis(1500);
+    while let Ok(Some(v)) =
+        tokio::time::timeout(end.saturating_duration_since(Instant::now()), c.recv()).await
+    {
+        match v["type"].as_str() {
+            Some("status_frame") => frames.push(v),
+            Some("attention") if !v["items"].as_array().unwrap().is_empty() => old_attention += 1,
+            _ => {}
+        }
+    }
+    assert_eq!(frames.len(), 1, "{frames:?}");
+    let frame = &frames[0];
+    assert_eq!(frame["v"], 1);
+    assert_eq!(frame["workspaces"][0]["activity"], "blocked");
+    assert_eq!(frame["attention"][0]["kind"], "needs_input");
+    assert_eq!(frame["attention"][0]["workspace"], json!(name));
+    assert!(old_attention >= 1, "the old attention message is kept");
+}
+
 /// The prompt text of the open `needs_input` item, from the next `attention` message.
 async fn v_first_prompt(c: &mut Conn) -> Option<String> {
     for _ in 0..2000 {
@@ -1777,6 +1825,7 @@ over_both_transports!(
     session_view_reads_the_screen_and_unknown_messages_are_ignored,
     windows_close_window_and_close_workspace_go_through_the_handlers,
     terminal_bytes_use_their_own_lane_and_status_is_not_held_up_by_output,
+    a_hook_reaches_the_client_as_one_status_frame,
     a_flood_of_output_on_the_single_pipe_still_reaches_the_client
 );
 

@@ -241,7 +241,7 @@ B.6b-2 done 2026-11-01: `EventHub::feed_machine` and `apply_effects` raise and c
 B.6b-3 done 2026-11-01: `TabStatus` owns a tab's state through `set_machine` once a Claude hook has reached it (`EventHub::mark_backed` marks the machine and `TabStatus::own`); `set_hook_state`, `set_screen_state`, `set_scan_state`, `set_state` and the `State` arm of `apply_pane` skip owned tabs, and `refresh` copies each backed machine's status into its tab (the 500 ms poll serves it unchanged). The workspace `task` is dropped while the machine-backed activity is idle. **`TabPrompt` is not filled from the ask:** its `id` is the answer contract (`answer_tab` matches it to the screen's question hash), so the hook's `Prompt` keeps writing the prompt id, and for an owned tab it no longer sets the state. Moving the answer path onto the ask key is a separate change (C.3). B.6 is done for the Claude scope.
 Not started: nothing in B.6b. B.6c is F.3.
 
-### B.7 One snapshot frame on the status channel — [ ]
+### B.7 One snapshot frame on the status channel — [x]
 Class: implement · Needs: B.6b-3 · Check: `scripts/dev.sh cargo test -p termenbox-server e2e`
 Context: Status and Attention travel as separate messages (`activity`, `attention`, `tab_states`, polled every 500
 ms in `packages/server/src/workspaces.rs`). Decision 0191 needs the status and the Attention item in the same frame.
@@ -250,6 +250,7 @@ channel (decision 0096); keep old messages for old clients until they are retire
 client against the new server.
 Done-when: A server e2e test shows a hook producing exactly one frame with both the status and the Attention item,
 and an old-client fixture still parses.
+Progress: done 2026-11-01. `ServerMessage::StatusFrame { v: 1, workspaces, attention, tabs }` (`status_frame` on the wire) holds the Activity of every workspace (sub-reason and `bg` ride in it), the open Attention items (tier, ask, cause) and every tab state, read together. A connection arms a 25 ms window (`FRAME_COALESCE`) on any Activity, Attention or tab change and sends one frame when it ends; `agent_sync` also answers with one. The old `activity`, `attention` and `tab_states` messages are sent unchanged beside it, so an old client keeps working and ignores the unknown type (`protocol::tests` parses the three old messages; the e2e `a_hook_reaches_the_client_as_one_status_frame` shows one frame per hook and the old `attention` beside it). That test needs no tmux (the hook names a session without a workspace). Not done: a per-tab sub-reason (`TabAgentState` has none; the roll-up sub-reason is on the workspace), and the client does not read the frame yet (C.1). Env note: the 20 tmux-dependent tests in `cargo test -p termenbox-server` fail in this image, also with `--full`, and on a clean tree.
 
 ### C.1 One status store and selectors in the client — [ ]
 Class: implement · Needs: B.7 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test -- status'`
