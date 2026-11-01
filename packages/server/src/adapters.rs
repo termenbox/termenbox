@@ -173,7 +173,7 @@ const ASK_OPTIONS: usize = 8;
 /// What a dialog asks, read from `tool_input`: `AskUserQuestion` carries the question and its options, `ExitPlanMode`
 /// the plan, any other tool the tool and its summary (fact 0071: these were dropped before).
 #[allow(dead_code)] // read by the status machine from B.6
-fn ask_content(name: &str, input: &Value) -> Option<(String, Vec<String>)> {
+pub(crate) fn ask_content(name: &str, input: &Value) -> Option<(String, Vec<String>)> {
     match name {
         "AskUserQuestion" => {
             let q = input.get("questions")?.as_array()?.first()?;
@@ -217,7 +217,7 @@ fn text_of(o: &Value) -> &str {
 }
 
 #[allow(dead_code)] // read by the status machine from B.6
-fn ask_kind(tool: &str) -> AskKind {
+pub(crate) fn ask_kind(tool: &str) -> AskKind {
     match tool {
         "AskUserQuestion" => AskKind::Question,
         "ExitPlanMode" => AskKind::Plan,
@@ -227,7 +227,7 @@ fn ask_kind(tool: &str) -> AskKind {
 
 /// `StopFailure.error` to the class of decision 0185. Anything unrecognised is `Unknown`, still a failure.
 #[allow(dead_code)] // read by the status machine from B.6
-fn failure_cause(error: &str) -> FailureCause {
+pub(crate) fn failure_cause(error: &str) -> FailureCause {
     match error {
         "rate_limit" => FailureCause::RateLimit,
         "authentication_failed" | "auth" | "billing_error" => FailureCause::Auth,

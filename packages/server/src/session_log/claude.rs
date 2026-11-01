@@ -453,6 +453,15 @@ fn entries_of(file: &File, node: &Node) -> Result<Vec<Entry>, LogError> {
 }
 
 impl SessionLog for ClaudeLog {
+    fn observe(
+        &self,
+        s: &SessionRef,
+        tail: &mut observe::Tail,
+    ) -> Result<Vec<crate::status::event::Event>, LogError> {
+        let (_, file, _) = self.open(s)?;
+        tail.read(&file)
+    }
+
     fn agent(&self) -> &str {
         AGENT
     }

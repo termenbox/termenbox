@@ -172,7 +172,7 @@ Done-when: Each recorded fixture maps to the expected typed event, and an AskUse
 and options.
 Progress: done 2026-11-01. `adapters::claude_events` maps every hook to `status::event::Event` (the legacy `claude()` stays until B.6); `AskUserQuestion` question and options, the `ExitPlanMode` plan and the permission tool come from `tool_input`, cleaned and capped. `claude_hooks::EVENTS` now has 17 (added `SubagentStart/Stop`, `PreCompact/PostCompact`; the opt-in consent flow is unchanged). Choices later steps rely on: asks are keyed by tool name, elicitations by `elicit:<server>`; a `Notification` yields `AskContent` with the new `machine::ANY_ASK` key, which the machine resolves to the one open ask without text (none or two: dropped, two new transition rows); `SubagentStop` with an empty `agent_type` is noise (fires after every `Stop`) and is ignored; `Stop` `bg` = `background_tasks` + `session_crons`; `StopFailure.error` maps `rate_limit`, `server_error` (measured) and `authentication_failed`, `billing_error`, `invalid_request`, `max_output_tokens` (documented, not measured) to causes, else `Unknown`. Also fixed `profile` test that broke on A.1's `testdata/screens/lag/` directory. Not yet read by the server: the new items carry `allow(dead_code)` until B.6.
 
-### B.4 Transcript as an evidence source — [ ]
+### B.4 Transcript as an evidence source — [x]
 Class: implement · Needs: A.1, B.2 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log`
 Context: `packages/server/src/session_log/claude.rs` parses the transcript for search and usage only. Decision 0182
 makes it a reconciler and the source of ask text. The contract for adapters is `session_log/contract.rs`.
@@ -182,6 +182,8 @@ port; an unreadable or changed format degrades to hook and screen, logged withou
 `audit-logging-no-secrets`).
 Done-when: Fixture transcripts from A.1 produce the expected observations, and a malformed transcript produces none
 and no panic.
+
+Progress: done 2026-11-01. `session_log/observe.rs`: `Tail` reads the complete lines appended since its last call and returns `status::event::Event`s; `SessionLog::observe` is the port method (default `Disabled`), `ClaudeLog` implements it. Transcript turn start, assistant text and `end_turn` are `Observe{Transcript, Working|Idle}` only; tool calls are `ToolStart/ToolEnd`; `AskUserQuestion`/`ExitPlanMode` calls open an ask with question and options (same cleaning as the hook); a refused tool result waits for the next record: `[Request interrupted by user` makes `AskClose{Escaped}` plus `Observe Idle`, anything else `Declined`. An `isApiErrorMessage` record is `TurnEnd{Failed}` (field names unmeasured: no credentials for that error, fixture is hand-written). A shrunk file is `StaleCursor`, a half line waits, a bad line is counted and skipped (warn, no content). Not yet read by the server: B.6 wires `Tail` per live session (start `Tail::from(len)`), and a transcript `TurnEnd{Failed}` must be weighed against the hook there. The two `e2e::terminal_bytes_use_their_own_lane...` tests fail in the plain image (environment).
 
 ### B.5 Screen and scan reconcile every agent pane; the process gone closes the turn — [ ]
 Class: implement · Needs: B.2 · Check: `scripts/dev.sh cargo test -p termenbox-server agentwatch`
