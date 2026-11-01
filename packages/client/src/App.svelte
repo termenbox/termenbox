@@ -185,7 +185,7 @@
         if (!away && id === activeServerId && key === activeKey) showWorkspace(key, activeTabId ?? undefined);
       });
     },
-    onDrop: (_id, reason, upMs) => { sessionSearch.lost(_id); dirClients.get(_id)?.fail('The connection was lost.'); noteError(`connection lost after ${Math.round(upMs / 1000)} s: ${reason}`); },
+    onDrop: (_id, reason, upMs) => { sessionSearch.lost(_id); dropSessionAsk(_id, 'The connection was lost before the server answered the resume.'); dirClients.get(_id)?.fail('The connection was lost.'); noteError(`connection lost after ${Math.round(upMs / 1000)} s: ${reason}`); },
     onFatal: (_id, reason) => { noteError(`connection: ${reason}`); showToast(reason, 'error'); },
     onMessage: (_id, msg) => {
       const id = _id;
@@ -379,10 +379,19 @@
   let resumeAsked: { key: string; hit: TappedHit } | null = null;
   // A conversation no workspace holds (decision 0167): the server switches to the workspace that holds it or makes one; nothing is typed from here.
   let sessionAsked: { serverId: string; hit: TappedHit } | null = null;
+  let sessionAskTimer: ReturnType<typeof setTimeout> | undefined;
+  const SESSION_ASK_MS = 20_000;
+  /** Forget the open ask, for `serverId` only when given: a reply that will not come must not claim a later one. */
+  function dropSessionAsk(serverId?: string, say?: string) {
+    if (!sessionAsked || (serverId !== undefined && sessionAsked.serverId !== serverId)) return;
+    sessionAsked = null;
+    clearTimeout(sessionAskTimer);
+    if (say) showToast(say, 'error');
+  }
   function sessionResumed(serverId: string, msg: import('./lib/protocol').SessionResumedMessage) {
     const ask = sessionAsked;
     if (!ask || ask.serverId !== serverId) return;
-    sessionAsked = null;
+    dropSessionAsk();
     const r = sessionResumedOutcome(ask.hit, msg);
     showToast(r.message, r.ok ? undefined : 'error');
     if (r.go && msg.workspace) void attach(workspaceKey(serverId, msg.workspace), msg.tab || undefined);
@@ -398,6 +407,8 @@
     if (isUnheld(h)) {
       if (!h.session) { showToast('This server cannot resume a conversation that no workspace holds.', 'error'); return; }
       sessionAsked = { serverId: h.serverId, hit: h };
+      clearTimeout(sessionAskTimer);
+      sessionAskTimer = setTimeout(() => dropSessionAsk(undefined, 'The server did not answer the resume.'), SESSION_ASK_MS);
       hub.send(h.serverId, { type: 'resume_session', agent: h.agent, session: h.session });
       return;
     }

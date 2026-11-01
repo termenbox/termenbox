@@ -23,7 +23,7 @@ Do:
 - Keys: use the `\u0000`-joined hit key (`sessionSearch.ts:231`) for the keyed `each` (`SearchSheet.svelte:111`).
 Done-when: tests for Stop during a page and during an expansion, `older` on a page reply, a cursor returned at the cap, more/expand after a server dropped, a moving window; a client render test (not SSR) that a plain hit during paging does not shrink the list.
 
-### 2 Resume safety and feedback — [ ]
+### 2 Resume safety and feedback — [x]
 Class: implement · Needs: none · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test'` and server tests for ids
 Do:
 - R2: session ids now come from file names. `plain_id` (`session_log/mod.rs:95-100`) and `adapters.rs:387-402` accept a leading `-`, so a file `--dangerously-skip-permissions.jsonl` makes Resume type `claude --resume --dangerously-skip-permissions`. Reject a leading `-` or require the agent's id shape; test with such a file name.

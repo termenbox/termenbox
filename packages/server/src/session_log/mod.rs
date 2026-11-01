@@ -91,9 +91,10 @@ pub(crate) fn real_entries(dir: &Path, want_dir: bool) -> Vec<std::fs::DirEntry>
         .collect()
 }
 
-/// A session id the adapters accept in a path: a plain name.
+/// A session id the adapters accept in a path: a plain name that cannot read as a flag.
 pub(crate) fn plain_id(id: &str) -> bool {
     !id.is_empty()
+        && !id.starts_with('-')
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')

@@ -400,3 +400,19 @@ fn only_a_line_with_text_in_it_is_worth_parsing() {
         br#"{"type":"user","message":{"content":[{"type":"tool_result","content":"{\"type\":\"text\",\"text\":\"x\"}"}]}}"#
     ));
 }
+
+#[test]
+fn a_file_named_like_a_flag_is_never_listed() {
+    let root = tmp();
+    let dir = projects(&root);
+    std::fs::copy(
+        dir.join("short.jsonl"),
+        dir.join("--dangerously-skip-permissions.jsonl"),
+    )
+    .unwrap();
+    let log = ClaudeLog::new(root.clone());
+    let listing = log.list(None);
+    assert!(!listing.files.is_empty());
+    assert!(listing.files.iter().all(|f| !f.id.starts_with('-')));
+    std::fs::remove_dir_all(root).ok();
+}

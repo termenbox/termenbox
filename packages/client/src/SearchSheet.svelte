@@ -15,6 +15,8 @@
   let text = $state('');
   // A hit in a dormant workspace asks first: Resume starts the agent again, so it is its own step, never part of the tap.
   let resuming = $state<Hit | null>(null);
+  // The confirmation sits above the chips and the list, so it may be off-screen when a row far down is tapped: bring it into view and put focus on its button.
+  const attend = (node: HTMLElement) => { node.scrollIntoView?.({ block: 'nearest' }); node.querySelector<HTMLElement>('[data-testid="search-resume-go"]')?.focus({ preventScroll: true }); };
   const tap = (h: Hit) => { if (landingOf(h) === 'resume') resuming = h; else onpick(h); };
   const typed = debounced((t) => onquery(t));
   let mode = $state<GroupMode>(loadGroupMode());
@@ -72,7 +74,7 @@
     </div>
 
     {#if resuming}
-      <div class="flex flex-col gap-2 rounded-card border border-line bg-raised p-3" role="alertdialog" aria-label="Resume" data-testid="search-resume">
+      <div class="flex flex-col gap-2 rounded-card border border-line bg-raised p-3" role="alertdialog" aria-label="Resume" data-testid="search-resume" use:attend>
         <p class="text-sm text-fg" data-testid="search-resume-text" title={resuming.dir}>{resumeAskText(resuming)}</p>
         <div class="flex gap-2">
           <button type="button" data-testid="search-resume-go" onclick={() => { const h = resuming; resuming = null; if (h) onresume(h); }} class="h-11 flex-1 rounded-control bg-accent px-4 text-base font-semibold text-on-accent">Resume</button>
