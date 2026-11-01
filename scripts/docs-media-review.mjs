@@ -5,7 +5,7 @@ export const PROFILES = ['phone', 'desktop'];
 const NOTE_MAX = 300;
 
 /**
- * Parses `/regen <case> [pace=slow|normal] [profile=phone|desktop] [caption=off] <note>` or `/approve <case|all>`.
+ * Parses `/regen <case> [pace=slow|normal] [profile=phone|desktop] [caption=off] <note>` or `/approve [case|all]` (no argument: the ticked lines).
  * Returns { cmd, ... } or { error }. The note is data: it is stored and posted back, never run.
  */
 export function parseCommand(text, catalogIds) {
@@ -13,7 +13,8 @@ export function parseCommand(text, catalogIds) {
   if (lines.length !== 1) return { error: 'one command on one line' };
   const [verb, ...rest] = lines[0].split(/\s+/);
   if (verb === '/approve') {
-    if (rest.length !== 1) return { error: 'usage: /approve <case|all>' };
+    if (rest.length === 0) return { cmd: 'approve', case: 'ticked' }; // every line ticked in the issue at this moment
+    if (rest.length !== 1) return { error: 'usage: /approve [case|all]' };
     if (rest[0] !== 'all' && !catalogIds.includes(rest[0])) return { error: `unknown case ${JSON.stringify(rest[0].slice(0, 40))}` };
     return { cmd: 'approve', case: rest[0] };
   }

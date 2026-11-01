@@ -29,6 +29,7 @@ test('unknown case, unknown knob, extra lines and other verbs are refused', () =
 test('approve one case or all', () => {
   assert.deepEqual(parseCommand('/approve all', ids), { cmd: 'approve', case: 'all' });
   assert.deepEqual(parseCommand('/approve add-server', ids), { cmd: 'approve', case: 'add-server' });
+  assert.deepEqual(parseCommand('/approve', ids), { cmd: 'approve', case: 'ticked' });
   assert.ok(parseCommand('/approve add-server extra', ids).error);
 });
 test('the note is capped', () => assert.equal(parseCommand(`/regen add-server ${'x'.repeat(900)}`, ids).note.length, 300));
