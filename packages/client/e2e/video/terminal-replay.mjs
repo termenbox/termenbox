@@ -44,6 +44,8 @@ export async function launchReplay({ viewport, scale, phone, recordDir, overlay 
   page.on('pageerror', (e) => errors.push(e.message));
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
   await page.setContent(pageHtml);
+  // setContent rewrites the document and drops the overlay the init script mounted, so the captions would draw into a detached node.
+  await page.evaluate(overlay, phone);
   await page.addStyleTag({ path: resolve(xtermDir, 'css/xterm.css') });
   await page.addScriptTag({ path: resolve(xtermDir, 'lib/xterm.js') });
   await page.addScriptTag({ path: addonDir('fit') });
