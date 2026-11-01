@@ -426,7 +426,6 @@ Object.assign(cases, {
     page: 'docs/plans/attention-control-plane.md',
     server: 'probe',
     probe: 'fleet',
-    disclaimer: 'A template on fixture data, not a live fleet',
     inputs: ['packages/client/src/FleetNeedsYou.svelte', 'packages/client/src/lib/fleet.ts', 'packages/client/src/lib/fleetFixtures.ts', 'packages/client/e2e/FleetProbe.svelte', 'packages/client/e2e/video/**'],
     steps: [
       { id: 'list', caption: 'One list holds the asks of every node, oldest first, each with its node chip', label: null },
