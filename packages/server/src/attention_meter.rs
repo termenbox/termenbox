@@ -395,13 +395,22 @@ impl AttentionMeter {
         view.days.into_values().collect()
     }
 
-    /// Writes the buckets if they changed. Called on an interval, not per event.
-    pub fn flush(&self) -> Result<()> {
+    /// Writes the buckets if they changed. Called on an interval, not per event. The open working spans are banked
+    /// up to `now` first and restarted there, so a restart or a crash loses at most one interval of a running turn.
+    /// (A tab found working at startup is counted from its next event, as it has no span until then.)
+    pub fn flush(&self, now: u64) -> Result<()> {
         let Some(path) = &self.path else {
             return Ok(());
         };
         let body = {
             let mut g = self.inner.lock().unwrap();
+            let spans: Vec<_> = g.spans.iter().map(|(k, from)| (k.clone(), *from)).collect();
+            for (key, from) in spans {
+                if now > from {
+                    g.add_working(from, now);
+                    g.spans.insert(key, now);
+                }
+            }
             if !g.dirty {
                 return Ok(());
             }
@@ -565,7 +574,7 @@ mod attention_meter_tests {
         let m = AttentionMeter::open(&d, D0).unwrap();
         m.turn_used(Some("m-big"), &tokens(1_000_000, 0, 0), D0);
         m.verified(Verdict::Pass, D0);
-        m.flush().unwrap();
+        m.flush(D0 + MIN).unwrap();
         let raw = std::fs::read_to_string(d.join(FILE)).unwrap();
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         // Every leaf is a number, except the keys of the three maps the meter owns.
@@ -674,6 +683,23 @@ mod attention_meter_tests {
     }
 
     #[test]
+    fn a_span_open_across_flushes_is_banked_once_and_survives_a_restart() {
+        let d = dir("bank");
+        let m = AttentionMeter::open(&d, D0).unwrap();
+        m.tab_working("w", "t", true, D0);
+        m.flush(D0 + MIN).unwrap();
+        m.flush(D0 + 2 * MIN).unwrap();
+        assert_eq!(m.stats(D0 + 2 * MIN)[0].agent_ms, 2 * MIN);
+        // The server dies a minute after the last flush: that minute of the running turn is the most that is lost.
+        let again = AttentionMeter::open(&d, D0 + 3 * MIN).unwrap();
+        assert_eq!(again.stats(D0 + 3 * MIN)[0].agent_ms, 2 * MIN);
+        // The tab stops after a flush: only the time since it is added.
+        m.flush(D0 + 3 * MIN).unwrap();
+        m.tab_working("w", "t", false, D0 + 3 * MIN + 20_000);
+        assert_eq!(m.stats(D0 + 4 * MIN)[0].agent_ms, 3 * MIN + 20_000);
+    }
+
+    #[test]
     fn buckets_roll_over_by_day_and_stay_bounded() {
         let m = AttentionMeter::in_memory();
         for i in 0..(KEEP_DAYS as u64 + 10) {
@@ -721,7 +747,7 @@ mod attention_meter_tests {
         m.resolved("a1", Layer::Human, Some("desktop"), D0 + 5_000);
         m.tab_working("secret-workspace-name", "secret-tab", true, D0);
         m.tab_working("secret-workspace-name", "secret-tab", false, D0 + MIN);
-        m.flush().unwrap();
+        m.flush(D0 + MIN).unwrap();
         let raw = std::fs::read_to_string(d.join(FILE)).unwrap();
         for text in ["secret-workspace-name", "secret-tab", "a1"] {
             assert!(!raw.contains(text), "{text} reached the file");
@@ -768,7 +794,7 @@ mod attention_meter_tests {
         std::fs::write(d.join(FILE), b"{not json").unwrap();
         let m = AttentionMeter::open(&d, D0).unwrap();
         assert!(m.stats(D0).is_empty());
-        m.flush().unwrap();
+        m.flush(D0 + MIN).unwrap();
         assert_eq!(std::fs::read(d.join(FILE)).unwrap(), b"{not json");
     }
 }

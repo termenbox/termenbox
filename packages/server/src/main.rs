@@ -876,7 +876,7 @@ async fn main() -> anyhow::Result<()> {
                     meter_hub.announce_working_time();
                     let meter = meter.clone();
                     let _ = tokio::task::spawn_blocking(move || {
-                        if let Err(e) = meter.flush() {
+                        if let Err(e) = meter.flush(events::now_ms()) {
                             tracing::warn!("attention meter not saved: {e:#}");
                         }
                     })
