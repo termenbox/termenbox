@@ -1370,7 +1370,7 @@ async fn terminal_bytes_use_their_own_lane_and_status_is_not_held_up_by_output(k
     assert!(waited < Duration::from_secs(1), "{waited:?}");
     assert_eq!(
         v_first_prompt(&mut c).await,
-        Some("needs a decision".to_string())
+        Some("Bash: rm x".to_string())
     );
 
     let _ = std::process::Command::new("tmux")
