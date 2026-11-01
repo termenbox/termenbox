@@ -190,7 +190,6 @@ Object.assign(cases, {
     page: 'docs/course/01-install.md',
     server: 'replay',
     replay: true,
-    disclaimer: "A rendered replay of the real installer's output, not a live install",
     inputs: ['packages/client/installer/install.sh', 'packages/client/e2e/video/**'],
     steps: [
       { id: 'open', caption: 'On the machine that will run your agents, open a terminal', label: null },
