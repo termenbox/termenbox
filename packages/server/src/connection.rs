@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::RngCore;
+use termenbox_core::conductor::NodeMessage;
 use termenbox_core::protocol::{ClientMessage, ServerMessage};
 
 use crate::link::{Inbound, Link};
@@ -19,6 +20,17 @@ async fn next(link: &mut Link) -> Option<ClientMessage> {
         return None;
     };
     serde_json::from_str(&text).ok()
+}
+
+/// The next text message within the auth window, unparsed.
+async fn next_text(link: &mut Link) -> Option<String> {
+    let Inbound::Json(text) = tokio::time::timeout(AUTH_TIMEOUT, link.rx.recv())
+        .await
+        .ok()??
+    else {
+        return None;
+    };
+    Some(text)
 }
 
 async fn send(link: &Link, msg: &ServerMessage) -> bool {
@@ -75,7 +87,15 @@ pub async fn run(mut link: Link, state: AppState) {
     if !send(&link, &challenge).await {
         return;
     }
-    let (cert, signature, claim, lanes) = match next(&mut link).await {
+    // A node of this conductor answers the challenge with its own hello instead of a device `auth` (decision 0170).
+    let first = next_text(&mut link).await;
+    if let (Some(conductor), Some(text)) = (&state.conductor, &first) {
+        if let Ok(hello @ NodeMessage::Hello { .. }) = serde_json::from_str::<NodeMessage>(text) {
+            crate::conductor::serve(link, conductor.clone(), hello, &nonce).await;
+            return;
+        }
+    }
+    let (cert, signature, claim, lanes) = match first.and_then(|t| serde_json::from_str(&t).ok()) {
         // Decision 0117: the dialog asks what it is about to add. One answer, then the connection ends; nothing is
         // bound and the token stays valid.
         Some(ClientMessage::ClaimPreview { server_token }) => {

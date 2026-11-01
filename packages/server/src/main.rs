@@ -27,6 +27,9 @@ mod candidates;
 mod cert;
 mod claude_hooks;
 mod cloudflare;
+#[allow(dead_code)]
+// enrolment, the owner's tap and the merged stream are surfaced by steps 2.4b and 2.5
+mod conductor;
 mod conductor_link;
 mod connection;
 mod container;
@@ -177,6 +180,11 @@ struct Args {
     /// remembered; `off` stops the link and keeps the pin. Without it, and with nothing remembered, the node dials nothing.
     #[arg(long, env = "TERMENBOX_CONDUCTOR")]
     conductor: Option<String>,
+
+    /// Act as a conductor (decision 0170): accept enrolled nodes' links and merge their attention. Off by default;
+    /// an ordinary server never answers a node.
+    #[arg(long, env = "TERMENBOX_ACCEPT_NODES", default_value = "false")]
+    accept_nodes: bool,
 
     /// Print the pairing link and QR for this server (a signed candidate bundle; works with no directory) and exit.
     #[arg(long, default_value = "false")]
@@ -364,6 +372,8 @@ pub struct AppState {
     pub rtc_info: Option<rtc::RtcInfo>,
     /// The signed candidate bundle pushed to every client after it authenticates; set once the transport is up.
     pub paths: Arc<std::sync::OnceLock<Arc<candidates::PathHub>>>,
+    /// Set when this server accepts nodes (`--accept-nodes`, decision 0170); `None` makes it an ordinary server.
+    pub conductor: Option<Arc<conductor::Conductor>>,
 }
 
 /// The crate's version, unless a release build sets `TERMENBOX_RELEASE_VERSION` to the full SemVer
@@ -893,6 +903,22 @@ async fn main() -> anyhow::Result<()> {
         Ok(None) => {}
         Err(e) => tracing::warn!("conductor link not started: {e:#}"),
     }
+    let conductor = args.accept_nodes.then(|| {
+        let c = Arc::new(conductor::Conductor::new(
+            Some(args.config_dir.clone()),
+            events::now_ms(),
+        ));
+        tokio::spawn({
+            let c = c.clone();
+            async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    c.tick(events::now_ms());
+                }
+            }
+        });
+        c
+    });
     if let Some(dir) = args.requests_dir.parent() {
         push::spawn_update_watcher(push.clone(), dir.to_path_buf(), args.server_name.clone());
     }
@@ -1046,6 +1072,7 @@ async fn main() -> anyhow::Result<()> {
         mode: mode.label(),
         rtc_info: None,
         paths: Arc::default(),
+        conductor,
     };
 
     let mut reach: Option<reach::Handle> = None;

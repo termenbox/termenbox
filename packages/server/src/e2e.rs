@@ -152,6 +152,7 @@ async fn fixture_full(history_runs: usize, limits: rtc::Limits) -> Fixture {
         mode: "container".into(),
         rtc_info: None,
         paths: Arc::default(),
+        conductor: None,
     };
     let cert = rtc::load_or_create_cert(&dir).unwrap();
     let (socket, _) = rtc::bind_transport(

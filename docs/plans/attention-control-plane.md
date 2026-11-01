@@ -78,20 +78,26 @@ Context: A node behind NAT must reach the conductor with no open port. Decision 
 Do: Add `packages/server/src/conductor_link.rs` and a `--conductor <pairing>` option in `main.rs`: one outbound connection with backoff, sending the node's attention changes and health, a bounded queue while disconnected (drop oldest with a counted notice), and a switch that disables it. Off unless configured. Test with a fake conductor: reconnect, queue bound, no terminal bytes sent.
 Done-when: the tests pass and a test asserts no terminal bytes cross the link.
 
-### 2.4 Conductor side: accept nodes and merge one stream — [ ]
+### 2.4 Conductor side: accept nodes and merge one stream — [x] (`conductor.rs`: enrolment by key with a 15-minute one-time secret and the owner's tap, ordered merge keyed `(node, epoch, id)`, 256 KiB per node, silent node, answer and ack routing with `idem`, `serve` over a `Link`, hooked into `connection.rs` behind `--accept-nodes`. The surfaces that call it are step 2.4b)
 Class: implement · Needs: 2.2 · Check: `scripts/dev.sh cargo test -p termenbox-server conductor`
 Context: Decision 0170. The merged stream is keyed `(node, workspace, tab, obligation)`. The server advertises `conductor: true` in its hello so the client can switch to the merged view (compatible with old clients).
 Do: Add `packages/server/src/conductor.rs`: enrol nodes by key, merge their Attention into one ordered stream, bounded per node by bytes and age, forward answers back to the owning node, mark a silent node "silent" after a threshold. Test with three simulated nodes: ordering, a silent node, an answer reaching the right node, memory bound.
 Done-when: the tests pass, including 3 nodes and 50 agents each under the byte budget from the spike.
 
+### 2.4b Surfaces of the conductor: enrol, tap, hello flag, apply answers on the node — [ ]
+Class: implement · Needs: 2.4 · Check: `scripts/dev.sh cargo test -p termenbox-server conductor_surface`
+Context: Step 2.4 built the state and the accept path; nothing yet mints the secret, shows the pending node, tells clients the server is a conductor, or applies a routed answer on the node, so a real fleet cannot be enrolled. Decision 0170, `conductor.md` sections 1 and 2.
+Do: (1) Mint the enrolment secret inside the running server (a request through the `requests_dir` or control channel, never a log line) and print the link and QR with `--conductor-enrol`, same shape as `--print-pairing` plus the secret outside the signed part. (2) Add the wire messages for the owner's device: the node list with pending nodes, `approve_node`, `remove_node`, and the merged stream, with `conductor: true` in `auth_ok` (old clients ignore it) and the mirror in `packages/client/src/lib/protocol.ts`; every operator action carries `actor` and `owner`. (3) On the node, apply a routed `Ack` (`EventHub::ack`) and `Answer` (`answer_tab`, the prompt matched by the obligation's id, the same refusal when stale), once per `idem`, and report `Cleared { by: answer }` instead of `fact`. Test with a conductor and a node in one process: enrol, tap, answer reaches the node and clears there, a stale answer is refused, an old client still connects.
+Done-when: the tests pass and a node enrolled with the printed link appears pending, then live after the tap.
+
 ### 2.5 Client: Needs-you across nodes — template, tests, review — [ ]
-Class: implement · Needs: 2.4, 1.2 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm check && pnpm vitest run src/Home.test.ts src/lib/fleetFixtures.test.ts'`
+Class: implement · Needs: 2.4b, 1.2 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm check && pnpm vitest run src/Home.test.ts src/lib/fleetFixtures.test.ts'`
 Context: Decision 0100 (Home) with 0170. Follow `build-an-agent-view-slice-template-first`: fixtures first (`packages/client/src/lib/fleetFixtures.ts`: 3 nodes, 40 obligations, one silent node), then props-only templates, tests, styling, video and manual, owner review, then wiring.
 Do: Show the merged Needs-you list with a node chip per item, a silent-node notice, and the meter line. Wire it to the conductor stream only after the owner accepts the video. Terminal open on an item goes through the conductor.
 Done-when: the check passes, the video and manual exist, and `docs/plans/assets/agent-view/reviews.md` (or `docs/plans/assets/control-plane/reviews.md`) records the owner's acceptance.
 
 ### 2.6 Open a node's terminal through the conductor — [ ]
-Class: implement · Needs: 2.4 · Check: `scripts/dev.sh cargo test -p termenbox-server conductor_terminal`
+Class: implement · Needs: 2.4b · Check: `scripts/dev.sh cargo test -p termenbox-server conductor_terminal`
 Context: Terminal bytes cross the link only on an explicit open (guardrail `conductor-links-carry-attention-metadata-only`).
 Do: Add open and close of a terminal on a node through the conductor, stopping on close; test that bytes flow only between open and close and that a closed device leaves nothing open.
 Done-when: the test passes.
