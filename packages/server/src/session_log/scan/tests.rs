@@ -860,3 +860,101 @@ fn a_cancelled_or_early_search_returns_its_scanner() {
     assert!(result.is_err());
     assert_eq!(pool.idle(), 1);
 }
+
+/// The lines that hold `query`, newest first, found the slow way: every line folded and compared.
+fn lines_with(text: &[u8], query: &str) -> Vec<(u64, Vec<u8>)> {
+    let needle = Needle::new(query).unwrap();
+    let mut scratch = Vec::new();
+    let mut out = Vec::new();
+    let mut offset = 0u64;
+    for line in text.split_inclusive(|&b| b == b'\n') {
+        let body = line.strip_suffix(b"\n").unwrap_or(line);
+        if !body.is_empty() && needle.matches(body, &mut scratch) {
+            out.push((offset, body.to_vec()));
+        }
+        offset += line.len() as u64;
+    }
+    out.reverse();
+    out
+}
+
+fn scan_lines(path: &Path, query: &str) -> Vec<(u64, Vec<u8>)> {
+    let file = File::open(path).unwrap();
+    let size = file.metadata().unwrap().len();
+    let needle = Needle::new(query).unwrap();
+    let mut budget = Budget::new(unlimited(), Cancel::default());
+    let mut found = Vec::new();
+    let end = Scanner::new()
+        .scan_file(&file, size, &needle, &mut budget, |c| {
+            found.push((c.offset, c.bytes.to_vec()));
+            ControlFlow::Continue(())
+        })
+        .unwrap();
+    assert_eq!(end, End::Done);
+    found
+}
+
+#[test]
+fn the_block_search_finds_what_the_line_search_finds() {
+    // Several blocks of lines, ASCII runs and accented runs, matches at the start, middle and end of blocks, a match
+    // that is only a prefix of a word, the same line twice in a row, and a needle in more than one place per line.
+    let mut text = Vec::new();
+    let mut i = 0u32;
+    while text.len() < 3 * BLOCK + 1000 {
+        let line = match i % 11 {
+            0 => format!("{{\"n\":{i},\"t\":\"Zebra Quartz here\"}}"),
+            1 => format!("{{\"n\":{i},\"t\":\"café zebra QUARTZ\"}}"),
+            2 => format!("{{\"n\":{i},\"t\":\"zebra quartzzebra quartz\"}}"),
+            3 => format!("{{\"n\":{i},\"t\":\"zebra\"}}"),
+            4 => String::new(),
+            _ => format!(
+                "{{\"n\":{i},\"t\":\"{}\"}}",
+                "filler ".repeat(1 + (i % 40) as usize)
+            ),
+        };
+        text.extend_from_slice(line.as_bytes());
+        text.push(b'\n');
+        i += 1;
+    }
+    text.extend_from_slice(b"zebra quartz without a newline");
+    let dir = TempDir::new();
+    let path = dir.0.join("mixed.jsonl");
+    std::fs::write(&path, &text).unwrap();
+    for query in [
+        "zebra quartz",
+        "ZEBRA",
+        "quartz",
+        "café",
+        "cafe",
+        "é",
+        "filler",
+        "a\nb",
+        "nothing here",
+    ] {
+        assert_eq!(
+            scan_lines(&path, query),
+            lines_with(&text, query),
+            "{query:?}"
+        );
+    }
+}
+
+#[test]
+fn accents_do_not_matter_on_either_path() {
+    // One ASCII block and one with an accent: "cafe" must find "CAFÉ" and "café" must find "cafe" in both.
+    let dir = TempDir::new();
+    let ascii = dir.0.join("ascii.jsonl");
+    std::fs::write(&ascii, b"{\"t\":\"a cafe\"}\n{\"t\":\"CAFE\"}\nnone\n").unwrap();
+    let accented = dir.0.join("accented.jsonl");
+    std::fs::write(&accented, "{\"t\":\"un café\"}\n{\"t\":\"CAFÉ\"}\nnone\n").unwrap();
+    for query in ["cafe", "café", "CAFÉ", "Cafe"] {
+        assert_eq!(scan_lines(&ascii, query).len(), 2, "ASCII text, {query:?}");
+        assert_eq!(
+            scan_lines(&accented, query).len(),
+            2,
+            "accented text, {query:?}"
+        );
+    }
+    // A needle that is not ASCII once folded cannot be in ASCII text.
+    assert!(scan_lines(&ascii, "привет").is_empty());
+}

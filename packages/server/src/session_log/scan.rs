@@ -7,6 +7,9 @@
 //! Matched lines are the only place the scan allocates (the adapter copies what it keeps), and `mmap` is never used:
 //! a file truncated while mapped raises SIGBUS.
 //!
+//! A block whose whole lines are all ASCII is searched as it is, case-insensitively, with no copy and no line split
+//! (see `BlockPlan` for why accents need no case there); any other block takes the line path above.
+//!
 //! A search is capped by hits, bytes read and wall time, and can be cancelled. The caps are checked between reads, so
 //! a search overshoots by at most one block. When one fires, the hits found so far stay and the cause is reported
 //! (`Cut`), so the sheet can say the search was cut.
@@ -24,6 +27,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+use aho_corasick::AhoCorasick;
 use memchr::memmem;
 
 use super::{fold_char, Fingerprint};
@@ -169,6 +173,19 @@ impl Budget {
 /// same way, so "CAFÉ", "café" and "cafe" are one query.
 pub struct Needle {
     finder: memmem::Finder<'static>,
+    plan: BlockPlan,
+}
+
+/// How a block that is entirely ASCII may be searched. Folding ASCII text only lowercases it, and the needle is
+/// folded once here, so the rule needs no case for accents: "cafe" and "CAFÉ" are the same folded needle `cafe`, and
+/// a block of ASCII holds it exactly when a case-insensitive search of the raw bytes does.
+enum BlockPlan {
+    /// Search the raw block, ignoring ASCII case, without copying any line.
+    Ascii(AhoCorasick),
+    /// The folded needle has a non-ASCII byte, which a block of ASCII cannot hold.
+    Never,
+    /// The needle holds a newline, which a search of whole lines never matches across: take the line path.
+    Lines,
 }
 
 impl Needle {
@@ -182,7 +199,40 @@ impl Needle {
             return None;
         }
         let finder = memmem::Finder::new(&folded).into_owned();
-        Some(Needle { finder })
+        let plan = if folded.contains(&b'\n') {
+            BlockPlan::Lines
+        } else if !folded.is_ascii() {
+            BlockPlan::Never
+        } else {
+            match AhoCorasick::builder()
+                .ascii_case_insensitive(true)
+                .build([&folded])
+            {
+                Ok(ac) => BlockPlan::Ascii(ac),
+                Err(_) => BlockPlan::Lines,
+            }
+        };
+        Some(Needle { finder, plan })
+    }
+
+    /// Pushes onto `spans` the `(start, end)` of each line in `region` that holds the needle, oldest first, where
+    /// `region` is whole lines each ending in a newline, all ASCII. `None` when the needle needs the line path.
+    fn ascii_lines(&self, region: &[u8], spans: &mut Vec<(usize, usize)>) -> Option<()> {
+        let ac = match &self.plan {
+            BlockPlan::Ascii(ac) => ac,
+            BlockPlan::Never => return Some(()),
+            BlockPlan::Lines => return None,
+        };
+        let mut from = 0;
+        while let Some(m) = ac.find(&region[from..]) {
+            let at = from + m.start();
+            // `region` ends in a newline, so the line always ends inside it.
+            let start = memchr::memrchr(b'\n', &region[..at]).map_or(0, |i| i + 1);
+            let end = at + memchr::memchr(b'\n', &region[at..]).unwrap_or(region.len() - at);
+            spans.push((start, end));
+            from = end + 1;
+        }
+        Some(())
     }
 
     /// Whether `line` holds the needle. `scratch` receives the folded line; its capacity is reused.
@@ -234,6 +284,7 @@ pub struct Scanner {
     carry: Vec<u8>,
     line: Vec<u8>,
     fold: Vec<u8>,
+    spans: Vec<(usize, usize)>,
 }
 
 impl Default for Scanner {
@@ -249,6 +300,7 @@ impl Scanner {
             carry: Vec::new(),
             line: Vec::new(),
             fold: Vec::new(),
+            spans: Vec::new(),
         }
     }
 
@@ -259,6 +311,10 @@ impl Scanner {
             if v.capacity() > IDLE_CAP {
                 *v = Vec::new();
             }
+        }
+        self.spans.clear();
+        if self.spans.capacity() * size_of::<(usize, usize)>() > IDLE_CAP {
+            self.spans = Vec::new();
         }
     }
 
@@ -277,6 +333,7 @@ impl Scanner {
             carry,
             line,
             fold,
+            spans,
         } = self;
         carry.clear();
         let mut skipping = false;
@@ -286,16 +343,21 @@ impl Scanner {
         let mut first = true;
 
         // Hands one line to the adapter if it holds the needle.
-        let mut emit = |offset: u64, bytes: &[u8], complete: bool| -> ControlFlow<()> {
-            if bytes.is_empty() || bytes.len() > MAX_LINE || !needle.matches(bytes, fold) {
-                return ControlFlow::Continue(());
-            }
-            on_candidate(Candidate {
-                offset,
-                bytes,
-                complete,
-            })
-        };
+        // `known` is true when the caller already found the needle in `bytes`, so the fold is skipped.
+        let mut emit =
+            |offset: u64, bytes: &[u8], complete: bool, known: bool| -> ControlFlow<()> {
+                if bytes.is_empty()
+                    || bytes.len() > MAX_LINE
+                    || (!known && !needle.matches(bytes, fold))
+                {
+                    return ControlFlow::Continue(());
+                }
+                on_candidate(Candidate {
+                    offset,
+                    bytes,
+                    complete,
+                })
+            };
 
         while end > 0 {
             if let Err(why) = budget.check() {
@@ -340,7 +402,7 @@ impl Scanner {
                 line.clear();
                 line.extend_from_slice(&block[last_nl + 1..]);
                 line.extend_from_slice(carry);
-                if emit(start + last_nl as u64 + 1, line, carry_complete).is_break() {
+                if emit(start + last_nl as u64 + 1, line, carry_complete, false).is_break() {
                     return Ok(End::Stopped);
                 }
             }
@@ -348,16 +410,33 @@ impl Scanner {
             carry_complete = true;
 
             // Whole lines inside the block, right to left.
-            let mut hi = last_nl;
-            for nl in newlines {
-                if emit(start + nl as u64 + 1, &block[nl + 1..hi], true).is_break() {
-                    return Ok(End::Stopped);
+            let first_nl = memchr::memchr(b'\n', block).unwrap_or(last_nl);
+            let region = &block[first_nl + 1..=last_nl];
+            spans.clear();
+            let hi = if region.is_ascii() && needle.ascii_lines(region, spans).is_some() {
+                // The whole lines are all ASCII: search the block itself and only look at the lines that match.
+                for &(s, e) in spans.iter().rev() {
+                    let at = first_nl + 1 + s;
+                    if emit(start + at as u64, &block[at..first_nl + 1 + e], true, true).is_break()
+                    {
+                        return Ok(End::Stopped);
+                    }
                 }
-                hi = nl;
-            }
+                first_nl
+            } else {
+                spans.clear();
+                let mut hi = last_nl;
+                for nl in newlines {
+                    if emit(start + nl as u64 + 1, &block[nl + 1..hi], true, false).is_break() {
+                        return Ok(End::Stopped);
+                    }
+                    hi = nl;
+                }
+                hi
+            };
             // What is left of the block, `block[..hi]`, ends a line that started earlier.
             if start == 0 {
-                if emit(0, &block[..hi], true).is_break() {
+                if emit(0, &block[..hi], true, false).is_break() {
                     return Ok(End::Stopped);
                 }
             } else {
@@ -368,7 +447,7 @@ impl Scanner {
 
         if end == 0 && !carry.is_empty() && !skipping {
             // The file starts in the middle of the blocks that had no newline.
-            if emit(0, carry, carry_complete).is_break() {
+            if emit(0, carry, carry_complete, false).is_break() {
                 return Ok(End::Stopped);
             }
         }

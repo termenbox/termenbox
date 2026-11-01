@@ -43,3 +43,21 @@ Figures below are the second run (the first agreed within 20%, except cold ASCII
   `cyrillic` unchanged until the fold itself is reworked (blocks with any non-ASCII byte keep the fold path).
 - Step 5 (reject before parse): parse count and allocations for a needle found in tool output, not MB/s.
 - Step 6 (time bounds): bytes read for a search with a `since`, not MB/s.
+
+## After step 4 (search blocks, not lines)
+
+Same machine and command as above, one run. A block whose whole lines are all ASCII is searched with a case-insensitive
+`aho-corasick` automaton (no copy, no line split); only the lines that match are looked at. Any block with a non-ASCII
+byte in its whole lines takes the fold path as before.
+
+| Corpus   | Hot MB/s before | Hot MB/s after | Note |
+|----------|-----------------|----------------|------|
+| ascii    | 601             | 3081           | near the 4 GB/s `pread` ceiling |
+| mixed    | 206             | 218            | every block holds a non-ASCII line, so none takes the fast path |
+| cyrillic | 36              | 36             | fold path only |
+
+The accent rule: the needle is folded once (lower case, accents removed) when it is built, so an ASCII block needs no
+accent handling: it holds the needle exactly when a case-insensitive search of its raw bytes does. A needle that is not
+ASCII once folded (Cyrillic, `ß`) cannot be in an ASCII block, which is skipped without a search. A needle with a
+newline takes the line path. Mixed histories gain only if the fold itself is reworked (fold just the non-ASCII lines of
+a block): not done here, the figure shows where it would pay.

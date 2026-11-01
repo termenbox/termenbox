@@ -39,12 +39,13 @@ Do: Keep a small pool of `Scanner`s (at most 2, so the idle footprint stays boun
 Done-when: a test running 100 searches shows one set of block-sized allocations in the counting allocator, not 100; RSS after the run does not grow with the count.
 Result: `ScannerPool` / `PooledScanner` in `scan.rs`; `SearchRun` takes its scanner from the process pool (max 2 idle, buffers over 64 KiB dropped on return, returned on drop so cancel and unwind are covered). The 100-search test sees 0 allocations after the first and a heap peak under two blocks; RSS is not asserted (tests share the process), no allocation leaves nothing to grow.
 
-### 4 Search blocks, not lines — [ ]
+### 4 Search blocks, not lines — [x]
 Class: implement · Needs: 2, 3 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log::scan`
 Context: Today every line is copied through the fold buffer before `memmem`. `aho-corasick` with `ascii_case_insensitive(true)` runs a SIMD (Teddy) search for one pattern with no copy. Accent-insensitive matching must stay: "cafe" matches "café", so a raw ASCII search is only valid where the needle has no letter that has accented forms, or on a block that is entirely ASCII.
 Note from step 2: with one non-ASCII line in ten, almost every 256 KiB block holds one, so the whole-block ASCII path would rarely fire on real histories. Consider also folding only the non-ASCII lines of a block (search the block with the automaton, fold-check just the lines `is_ascii` rejects).
 Do: Per block: if it is ASCII (SIMD `is_ascii`), search the whole block with the case-insensitive automaton, and find the enclosing line of a hit with `memrchr`/`memchr` for `\n`; never split the block into lines. A block with non-ASCII bytes takes today's fold path. Write down the accent rule in the module header and test it with a needle and text that differ only in accents.
 Done-when: the contract suite and the existing scan tests pass unchanged; the benchmark's hot-cache MB/s on the ASCII corpus rises and the figure is in the README; the zero-allocation-per-non-matching-line test still passes.
+Result: `BlockPlan` in `scan.rs`; ASCII hot 601 -> 3081 MB/s, mixed and Cyrillic unchanged (README, "After step 4"). Differential and accent tests added. Folding only the non-ASCII lines of a mixed block was not done: it is the next lever if real histories are mixed.
 
 ### 5 Reject candidates before parsing — [ ]
 Class: implement · Needs: 4 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log::claude session_log::codex`
