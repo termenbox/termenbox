@@ -869,9 +869,11 @@ async fn main() -> anyhow::Result<()> {
         Ok(meter) => {
             let meter = Arc::new(meter);
             hub = hub.with_meter(meter.clone());
+            let meter_hub = hub.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    meter_hub.announce_working_time();
                     let meter = meter.clone();
                     let _ = tokio::task::spawn_blocking(move || {
                         if let Err(e) = meter.flush() {

@@ -48,6 +48,12 @@ Context: Decision 0169. The owner must see their own number every day for dogfoo
 Do: Add `packages/client/src/AttentionMeter.svelte` (props only: days, window) showing "Attention: N s per agent-hour (7 days), M% of asks answered without you", shown on `Home.svelte` under the fleet summary; send `CardSeen` from the Needs-you card dwell. Test names, the empty state (no agents), and that it never shows agent text.
 Done-when: the test passes and `Home.test.ts` still passes.
 
+### 1.1b Count the time spent on a question in its own tab — [ ] (code and Check done; awaits the 1.3 dogfood note. Found in dogfood: `human_ms` read 0 while three questions were answered in terminal tabs, because only Home's hero card reported dwell)
+Class: implement · Needs: 1.2 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm vitest run src/lib/askDwell.test.ts'`
+Context: The owner's first beta reading was 0 s per agent-hour with 3 human answers (`latency_ms` 410 s): they answer in the tab, not on Home. Decision 0169 measures the human's seconds, so the tab counts.
+Do: `lib/askDwell.ts` reports `card_seen` for the question of the open tab while the page is visible, as Home does for its card; the server credits it the same way.
+Done-when: the test passes and `human_ms` is above 0 after the owner answers in a tab.
+
 ### 1.4 Task telemetry: tokens, cost, model, verifier result, decision points (R99) — [ ] (code and Check done, awaits the 1.3 dogfood note; open: ACP reports no model so its turns count under `unknown`, agent-reported ACP costs are not yet folded into the day cost, and the verifier outcome has no producer until 10.1)
 Class: implement · Needs: 1.1 · Check: `scripts/dev.sh cargo test -p termenbox-server task_telemetry`
 Context: Decision 0179: the dispatcher cannot be tuned without per-task data, and the baseline week (1.3) should already hold it. Token use arrives in ACP `usage` updates (`packages/client/src/lib/acpStream.ts`, `packages/server/src/acp_stream.rs`) and through the Claude status-line forwarder (R19). Metadata only; no agent text (`resource-constraints`, decision 0105).
