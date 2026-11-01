@@ -40,7 +40,7 @@ Context: Decision 0169: attention leverage is human seconds per agent-hour. Data
 Do: Add `packages/server/src/attention_meter.rs`: for every obligation record `raised_at`, `resolved_at`, the layer that resolved it (`human`, `rule`, later `contract`, `deputy`), the answering device (never a name), and for a human the dwell (card foreground time reported by the client) and answer latency. Keep a ring of the last 30 days as daily buckets in the server's state directory, atomically written. Compute `human_seconds` and `agent_hours` (sum of working time per tab from the reducer) per day and a 7-day figure. Add `ClientMessage::CardSeen { obligation, ms }` and `ServerMessage::AttentionStats { days }` in `packages/core/src/protocol.rs`, mirrored in `packages/client/src/lib/protocol.ts` with a round-trip test. Test: bucket rollover, bounded size, a rule-resolved obligation adds zero human seconds, no text stored.
 Done-when: the tests pass, and a test asserts the stored file contains no field of agent text.
 
-### 1.2 Client: the meter line on Home — [ ]
+### 1.2 Client: the meter line on Home — [ ] (code and Check done, awaits the 1.3 dogfood note)
 Class: implement · Needs: 1.1 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm vitest run src/AttentionMeter.test.ts'`
 Context: Decision 0169. The owner must see their own number every day for dogfood notes. Keep it one line, no chart yet. Chrome share limit DR12.
 Do: Add `packages/client/src/AttentionMeter.svelte` (props only: days, window) showing "Attention: N s per agent-hour (7 days), M% of asks answered without you", shown on `Home.svelte` under the fleet summary; send `CardSeen` from the Needs-you card dwell. Test names, the empty state (no agents), and that it never shows agent text.
