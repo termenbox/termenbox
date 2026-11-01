@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { attachInputMirror, isWordKey, replacementData, replacementKeys, syncTextarea } from './swipe';
+import { describe, expect, it, vi } from 'vitest';
+import { attachInputMirror, attachSwipeSupport, DICTATION_SETTLE_MS, isWordKey, replacementData, replacementKeys, replacementKeysFromWords, syncTextarea } from './swipe';
 import { WordTracker } from './terminal/wordTracker';
 
 /** The hidden textarea, with just the DOM surface attachInputMirror uses. */
@@ -7,14 +7,14 @@ interface MirrorField {
   value: string;
   range: [number, number];
   setSelectionRange(start: number, end: number): void;
-  addEventListener(type: string, fn: () => void): void;
-  removeEventListener(type: string, fn: () => void): void;
-  emit(type: string): void;
+  addEventListener(type: string, fn: (e?: any) => void): void;
+  removeEventListener(type: string, fn: (e?: any) => void): void;
+  emit(type: string, e?: { stopped?: boolean }): void;
   count(type: string): number;
 }
 
 function field(value = ''): MirrorField {
-  const listeners = new Map<string, Set<() => void>>();
+  const listeners = new Map<string, Set<(e?: any) => void>>();
   return {
     value,
     range: [-1, -1],
@@ -28,8 +28,11 @@ function field(value = ''): MirrorField {
     removeEventListener(type, fn) {
       listeners.get(type)?.delete(fn);
     },
-    emit(type) {
-      for (const fn of listeners.get(type) ?? []) fn();
+    emit(type, e) {
+      for (const fn of listeners.get(type) ?? []) {
+        fn(e);
+        if (e?.stopped) break; // stopImmediatePropagation
+      }
     },
     count(type) {
       return listeners.get(type)?.size ?? 0;
@@ -88,6 +91,36 @@ describe('replacing two words at once', () => {
   });
 });
 
+describe('replacementKeysFromWords', () => {
+  const typed = (t: string) => {
+    const w = new WordTracker();
+    w.feed(t);
+    return w;
+  };
+
+  it('replaces a typed prefix (прв -> привет)', () => {
+    expect(replacementKeysFromWords(typed('прв'), 'привет')).toBe('\x7f\x7f\x7fпривет');
+  });
+
+  it('replaces a capitalised prefix and a swipe correction', () => {
+    expect(replacementKeysFromWords(typed('Прив'), 'привет')).toBe('\x7f'.repeat(4) + 'привет');
+    expect(replacementKeysFromWords(typed('hello'), "he'll")).toBe('\x7f'.repeat(5) + "he'll");
+  });
+
+  it('replaces two words for a two-word replacement and keeps earlier words', () => {
+    expect(replacementKeysFromWords(typed('say app works'), 'api works')).toBe('\x7f'.repeat(9) + 'api works');
+    expect(replacementKeysFromWords(typed('say hello'), 'world')).toBe('\x7f'.repeat(5) + 'world');
+  });
+
+  it('types the whitespace after the word again', () => {
+    expect(replacementKeysFromWords(typed('прв '), 'привет')).toBe('\x7f'.repeat(4) + 'привет ');
+  });
+
+  it('only types the data when nothing was typed', () => {
+    expect(replacementKeysFromWords(new WordTracker(), 'x')).toBe('x');
+  });
+});
+
 describe('syncTextarea', () => {
   const field = (value: string) => {
     const f = { value, range: [-1, -1], setSelectionRange(a: number, b: number) { this.range = [a, b]; } };
@@ -104,6 +137,13 @@ describe('syncTextarea', () => {
   it('leaves a field alone when it is already right (no caret jumps)', () => {
     const f = field('па');
     expect(syncTextarea(f, 'па')).toBe(false);
+    expect(f.range).toEqual([-1, -1]);
+  });
+
+  it('leaves a selection alone so the keyboard\'s replacement can read it', () => {
+    const f = { ...field('прв'), selectionStart: 0, selectionEnd: 3 };
+    expect(syncTextarea(f, '')).toBe(false);
+    expect(f.value).toBe('прв');
     expect(f.range).toEqual([-1, -1]);
   });
 
@@ -282,5 +322,79 @@ describe('input mirror', () => {
     mirror.dispose();
     expect(area.count('compositionstart')).toBe(0);
     expect(area.count('compositionend')).toBe(0);
+  });
+});
+
+describe('dictation buffering', () => {
+  const setup = () => {
+    vi.useFakeTimers();
+    const area = field();
+    const sent: string[] = [];
+    const words = new WordTracker();
+    attachSwipeSupport(asArea(area), (k) => sent.push(k), words);
+    /** Fires an event the way the browser would; true when it reached xterm (nothing stopped it). */
+    const fire = (type: string, init: Record<string, unknown> = {}) => {
+      const e = { target: area, stopped: false, stopImmediatePropagation() { this.stopped = true; }, ...init };
+      area.emit(type, e);
+      return !e.stopped;
+    };
+    return { area, sent, fire };
+  };
+
+  it('holds back composition interim chunks and types the final text once', () => {
+    const { area, sent, fire } = setup();
+    fire('compositionstart');
+    area.value = 'why would I swipe it out';
+    for (const data of ['why', 'why would', 'why would I swipe it out']) {
+      expect(fire('beforeinput', { inputType: 'insertCompositionText', data, isComposing: true })).toBe(false);
+      expect(fire('input', { inputType: 'insertCompositionText', data, isComposing: true })).toBe(false);
+    }
+    expect(fire('compositionupdate')).toBe(false);
+    expect(sent).toEqual([]);
+    fire('compositionend');
+    expect(sent).toEqual(['why would I swipe it out']);
+    expect(area.value).toBe(''); // put back, so xterm's own read finds nothing
+  });
+
+  it('replaces a growing insertText stream by its last chunk', () => {
+    const { sent, fire } = setup();
+    // the first chunk is indistinguishable from a swiped word: xterm types it
+    expect(fire('beforeinput', { inputType: 'insertText', data: 'why', isComposing: false })).toBe(true);
+    for (const data of ['why would', 'why would I swipe']) {
+      expect(fire('beforeinput', { inputType: 'insertText', data, isComposing: false })).toBe(false);
+      expect(fire('input', { inputType: 'insertText', data })).toBe(false);
+    }
+    expect(sent).toEqual(['\x7f\x7f\x7f']); // "why" taken back, nothing else typed yet
+    vi.advanceTimersByTime(DICTATION_SETTLE_MS);
+    expect(sent).toEqual(['\x7f\x7f\x7f', 'why would I swipe']);
+    // a chunk that does not extend ends the burst
+    fire('beforeinput', { inputType: 'insertText', data: 'why', isComposing: false });
+    fire('beforeinput', { inputType: 'insertText', data: 'why it', isComposing: false });
+    expect(fire('beforeinput', { inputType: 'insertText', data: 'out', isComposing: false })).toBe(true);
+    expect(sent.slice(2)).toEqual(['\x7f\x7f\x7f', 'why it']);
+    vi.useRealTimers();
+  });
+
+  it('commits held text when a key is pressed', () => {
+    const { sent, fire } = setup();
+    fire('beforeinput', { inputType: 'insertText', data: 'why', isComposing: false });
+    fire('beforeinput', { inputType: 'insertText', data: 'why would', isComposing: false });
+    fire('keydown', { key: 'x' });
+    expect(sent).toEqual(['\x7f\x7f\x7f', 'why would']);
+    vi.useRealTimers();
+  });
+
+  it('lets a single insertText and one-character composition through untouched', () => {
+    const { sent, fire } = setup();
+    expect(fire('beforeinput', { inputType: 'insertText', data: 'hello', isComposing: false })).toBe(true);
+    expect(fire('input', { inputType: 'insertText', data: 'hello' })).toBe(true);
+    vi.advanceTimersByTime(DICTATION_SETTLE_MS * 2);
+    fire('compositionstart');
+    expect(fire('beforeinput', { inputType: 'insertCompositionText', data: 'p', isComposing: true })).toBe(true);
+    expect(fire('beforeinput', { inputType: 'insertCompositionText', data: 'pa', isComposing: true })).toBe(true);
+    expect(fire('compositionupdate')).toBe(true);
+    fire('compositionend');
+    expect(sent).toEqual([]);
+    vi.useRealTimers();
   });
 });

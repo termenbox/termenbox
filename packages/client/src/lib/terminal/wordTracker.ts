@@ -66,6 +66,21 @@ export class WordTracker {
     return m ? m[0] : '';
   }
 
+  /**
+   * The text a replacement of `data` covers, when the field gives no selection to read: the last as many words as
+   * `data` has (at most two, the phrase the mirror shows), without the whitespace after them, which is returned
+   * apart so it can be typed again after the replacement (the caret sits behind it).
+   */
+  replaced(data: string): { text: string; trailing: string } {
+    const phrase = this.phrase;
+    const trailing = /[ \t]*$/u.exec(phrase)![0];
+    const body = phrase.slice(0, phrase.length - trailing.length);
+    const want = Math.min(2, data.trim().split(/\s+/u).length);
+    const words = body.split(/([ \t]+)/u); // words and their separators alternate
+    const text = words.slice(-(2 * want - 1)).join('');
+    return { text, trailing };
+  }
+
   /** The script of the last letter typed on this line; null when there is none (an empty line, digits only). */
   get script(): 'latin' | 'cyrillic' | null {
     for (let i = this.line.length - 1; i >= 0; i--) {

@@ -15,6 +15,16 @@ export function replacementKeys(value: string, start: number, end: number, data:
   return DEL.repeat(removed) + data;
 }
 
+/**
+ * Same, when the field has no selection to read. The mirror collapses the caret to the end of the field after
+ * every write, so a replacement that arrives later (a swipe correction, a tapped "привет" for "прв") finds nothing
+ * selected; what it replaces is then taken from the word tracker.
+ */
+export function replacementKeysFromWords(words: WordTracker, data: string): string {
+  const { text, trailing } = words.replaced(data);
+  return DEL.repeat([...text, ...trailing].length) + data + trailing;
+}
+
 /** The text of a replacement event, or null when the event is not one we handle. */
 export function replacementData(e: Pick<InputEvent, 'inputType' | 'data' | 'isComposing' | 'dataTransfer'>): string | null {
   if (e.inputType !== 'insertReplacementText' || e.isComposing) return null; // composition has its own path in xterm
@@ -35,6 +45,130 @@ export function isWordKey(key: string): boolean {
   return [...key].length > 1 && !NAMED_KEY.test(key);
 }
 
+/** A dictation chunk that nothing follows for this long is final. */
+export const DICTATION_SETTLE_MS = 500;
+
+const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'CapsLock']);
+
+const length = (s: string) => [...s].length;
+
+/**
+ * iOS dictation (the keyboard's mic, not lib/terminal/voice.ts) reports its recognizer's interim results as input:
+ * "why", "why would", "why would I swipe"; xterm typed every chunk, giving "whywhy wouldwhy would I swipe". Chunks
+ * come in two shapes, both held back here until the text is final, then typed once through `out`:
+ *  - composition: `isComposing` events whose first chunk is already more than one character (a keyboard composing
+ *    a typed word starts with one, and xterm keeps handling that). xterm must not see these events; at
+ *    `compositionend` the field is put back so xterm's own read of it finds nothing new.
+ *  - plain `insertText` chunks, each extending the one before within the settle time. The first goes through as an
+ *    ordinary insert (it cannot be told from a swiped word yet), so when the second extends it, the first is taken back.
+ * Final means: a chunk that does not extend the last, an `insertFromComposition`, the end of the composition, a key
+ * press, or silence for DICTATION_SETTLE_MS. A single `insertText` never gets held back.
+ * The listeners are on `host` in the capture phase, ahead of xterm's own on the textarea. Returns their removal.
+ */
+function attachDictationBuffer(area: HTMLTextAreaElement, host: EventTarget, out: (keys: string) => void): () => void {
+  let pending: string | null = null; // interim text held back, not yet typed
+  let sent = ''; // the last whole chunk that went to xterm in this burst; the base of a possible extension
+  let session: 'take' | 'pass' | null = null; // how the current composition is handled; decided by its first chunk
+  let swallowInput = false;
+  let snapshot = ''; // the field when the composition began
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const disarm = () => {
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+  };
+  const commit = () => {
+    disarm();
+    const text = pending;
+    pending = null;
+    if (text) out(text);
+  };
+  const arm = () => {
+    disarm();
+    timer = setTimeout(() => {
+      timer = undefined;
+      commit();
+      sent = '';
+    }, DICTATION_SETTLE_MS);
+  };
+  const hold = (e: Event, text: string) => {
+    e.stopImmediatePropagation();
+    pending = text;
+    swallowInput = true;
+    arm();
+  };
+  const extends_ = (base: string, data: string) => length(base) > 1 && length(data) > length(base) && data.startsWith(base);
+
+  const onBeforeInput = (e: Event) => {
+    if (e.target !== area) return;
+    const ev = e as InputEvent;
+    const data = ev.data ?? '';
+    if (ev.isComposing || ev.inputType === 'insertCompositionText') {
+      session ??= length(data) > 1 ? 'take' : 'pass';
+      if (session === 'take') hold(e, data);
+      return;
+    }
+    if (ev.inputType === 'insertFromComposition' && session === 'take') {
+      hold(e, data || pending || '');
+      commit();
+      return;
+    }
+    if (ev.inputType !== 'insertText' || !data) return;
+    const base = pending ?? sent;
+    if (extends_(base, data)) {
+      if (pending === null) out(DEL.repeat(length(sent))); // take back the first chunk, which xterm already typed
+      sent = '';
+      hold(e, data);
+      return;
+    }
+    commit(); // the previous burst is over
+    sent = length(data) > 1 ? data : '';
+    if (sent) arm();
+  };
+  const onInput = (e: Event) => {
+    if (e.target !== area || !(swallowInput || session === 'take')) return;
+    e.stopImmediatePropagation();
+    swallowInput = false;
+  };
+  const onCompositionStart = (e: Event) => {
+    if (e.target !== area) return;
+    commit();
+    session = null;
+    snapshot = area.value;
+  };
+  const onCompositionUpdate = (e: Event) => {
+    if (e.target === area && session === 'take') e.stopImmediatePropagation(); // xterm would draw its composition view
+  };
+  const onCompositionEnd = (e: Event) => {
+    if (e.target !== area) return;
+    if (session === 'take') {
+      area.value = snapshot; // xterm reads what the composition added, a task later; there must be none
+      commit();
+    }
+    session = null;
+    swallowInput = false;
+  };
+  const onKeyDown = (e: Event) => {
+    if (e.target !== area || MODIFIER_KEYS.has((e as KeyboardEvent).key)) return;
+    commit();
+    sent = '';
+  };
+
+  const listeners: [string, (e: Event) => void][] = [
+    ['keydown', onKeyDown],
+    ['beforeinput', onBeforeInput],
+    ['input', onInput],
+    ['compositionstart', onCompositionStart],
+    ['compositionupdate', onCompositionUpdate],
+    ['compositionend', onCompositionEnd],
+  ];
+  for (const [type, fn] of listeners) host.addEventListener(type, fn, true);
+  return () => {
+    disarm();
+    for (const [type, fn] of listeners) host.removeEventListener(type, fn, true);
+  };
+}
+
 /**
  * Makes swipe typing work on the terminal's hidden input: drops word-valued keydowns before xterm sees them, and
  * turns "replace the word you just typed" into keystrokes (see above). `send` receives the bytes to type.
@@ -50,10 +184,14 @@ export function attachSwipeSupport(area: HTMLTextAreaElement, send: (keys: strin
     words.feed(keys);
     send(keys);
   };
+  const stopDictation = attachDictationBuffer(area, host, out); // before the listeners below: it may stop their events
   const onBeforeInput = (e: Event) => {
     const ev = e as InputEvent;
     const data = replacementData(ev);
-    if (data !== null) return out(replacementKeys(area.value, area.selectionStart, area.selectionEnd, data));
+    if (data !== null) {
+      // A selection the keyboard made is the truth; a collapsed one says nothing (the mirror put it there).
+      return out(area.selectionStart !== area.selectionEnd ? replacementKeys(area.value, area.selectionStart, area.selectionEnd, data) : replacementKeysFromWords(words, data));
+    }
     // A tapped suggestion that completes the typed word arrives as plain new text; delete the typed part first.
     // xterm types the text itself right after this event.
     if (ev.inputType === 'insertText' && !ev.isComposing && ev.data) {
@@ -66,18 +204,24 @@ export function attachSwipeSupport(area: HTMLTextAreaElement, send: (keys: strin
   return () => {
     host.removeEventListener('keydown', onKeyDown, true);
     area.removeEventListener('beforeinput', onBeforeInput, true);
+    stopDictation();
   };
 }
 
 /** What the hidden input needs to look like: exactly the word being typed, caret at the end. */
 export interface MirrorTarget {
   value: string;
+  selectionStart?: number;
+  selectionEnd?: number;
   setSelectionRange(start: number, end: number): void;
 }
 
 /** Makes `field` show `word`; returns whether it had to change. */
 export function syncTextarea(field: MirrorTarget, word: string): boolean {
   if (field.value === word) return false;
+  // Assigning the value collapses a selection, and one the keyboard just made (a word picked for replacement) must
+  // survive until its beforeinput reads it; the next sync, after that event, puts the field right.
+  if (field.selectionStart !== undefined && field.selectionStart !== field.selectionEnd) return false;
   field.value = word;
   field.setSelectionRange(word.length, word.length);
   return true;
