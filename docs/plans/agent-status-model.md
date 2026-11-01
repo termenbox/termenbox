@@ -214,16 +214,23 @@ three commits, each green on its own:
   session feeds it transcript events (start `Tail::from(len)`). Nothing reads the machines yet, except a test that
   runs each A.1/A.2 fixture through both paths and lists the disagreements. Done-when: the new test passes and the
   disagreement list is committed as a fixture, so B.6b changes are visible as a diff.
-- **B.6b Read from the machines.** `TabStatus` becomes a view of `Machine::view`; the workspace `Activity` is `rollup`
-  of the machines (drops the 60 s decay); Attention is raised and cleared from `Effect`s (`RaiseAsk`, `FillAsk`,
-  `RaiseFinished`, `RaiseFailed`, `RaiseInfo`, `Clear`), clear only on `Viewed`/`Dismiss`; `task` dropped on idle;
-  `TabPrompt` filled from the ask. Port the `events.rs` tests that pin behaviour the decisions keep, delete those that
-  pin behaviour they replace (say which in the commit body). Done-when: `cargo test --workspace` passes.
+- **B.6b Read from the machines**, in three green commits (split on 2026-11-01 after reading `events.rs`: Activity,
+  Attention and `TabStatus` each have their own tests and writers):
+  - **B.6b-1 Activity.** The workspace `Activity` of a workspace with machines is `rollup` of them, with `sub_reason`
+    and `bg` (drops the 60 s decay there). A workspace no machine has a status for (ACP, Codex, no hook yet) keeps
+    `derive_activity` until B.6c decides what feeds those.
+  - **B.6b-2 Attention.** Raised and cleared from `Effect`s (`RaiseAsk`, `FillAsk`, `RaiseFinished`, `RaiseFailed`,
+    `RaiseInfo`, `Clear`), clear only on `Viewed`/`Dismiss`, for machine-backed tabs; the legacy `settle_tab`/`settle`
+    raise and clear skip them. Ask text fills in place.
+  - **B.6b-3 Tab view.** `TabStatus` serves `Machine::view`; `task` dropped on idle; `TabPrompt` filled from the ask.
+  Port the `events.rs` tests that pin behaviour the decisions keep, delete those that pin behaviour they replace (say
+  which in the commit body). Done-when: `cargo test --workspace` passes.
 - **B.6c Delete the old paths.** Remove `Reducer`, `reducer.rs` (keep `Screen` and `WEAK_KEY` where used),
   `set_*_state`, `apply_pane`, `PIN_MAX_MS`, the duplicated `GRACE_MS`, `#![allow(dead_code)]` in `status/mod.rs`.
   Done-when: the original grep finds nothing and `cargo test --workspace` passes.
 B.6a done 2026-11-01: `status/feed.rs` `Machines` (one machine per (workspace, tab), plus a `Tail` per followed transcript, started at the end of the file) is owned by `EventHub`. `deliver` feeds `adapters::claude_events` and follows `transcript_path` (resolved under the Claude root); the scan loop feeds the `PaneWatch` events, polls the tails on a blocking thread and ticks the machines; `forget_tab` and `forget_except` drop them. Nothing reads them yet. The test `events::tests::old_paths_and_machine_disagreements_are_listed` replays every A.1/A.2 run through both paths and pins the disagreements in `testdata/status/disagreements.txt` (`UPDATE_DISAGREEMENTS=1` rewrites it): after an Esc or a 401 the hooks alone leave the machine `working` where the old path says `unknown`, so B.6b must rely on the transcript or screen to close those (the fixtures hold hooks only). Env note: the 22 tmux-dependent tests in `cargo test --workspace` fail in this image (same as before B.6a); clippy `-p termenbox-server` has 17 errors in files this step did not touch.
-Not started: B.6b, B.6c.
+B.6b-1 done 2026-11-01: `refresh` reads `Machines::views_for` through `machine_activity` (roll-up, sub-reason of the deciding tab, summed `bg`); the hub refreshes after a hook feeds the machines and after each scan tick. No test of the old behaviour changed: they feed the ring, not the machines. Env note: run cargo with a target dir per worktree (`CARGO_TARGET_DIR=/cache/target-sergei-p01`): every worktree mounts at `/work`, so the shared `target-sergei` served a stale `termenbox-core`. `control::a_real_tmux_pushes_window_and_directory_changes` is flaky under the parallel run (fails on the clean tree too).
+Not started: B.6b-2, B.6b-3, B.6c.
 
 ### B.7 One snapshot frame on the status channel — [ ]
 Class: implement · Needs: B.6 · Check: `scripts/dev.sh cargo test -p termenbox-server e2e`

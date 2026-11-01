@@ -10,7 +10,7 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use termenbox_core::events::{
     Activity, AgentEvent, AgentState, Attention, AttentionKind, Confidence, EventKind, PlanItem,
-    Source, Task, ToolPhase, WorkspaceActivity, WorkspaceAgentState,
+    Source, SubReason, Task, ToolPhase, WorkspaceActivity, WorkspaceAgentState,
 };
 use tokio::sync::broadcast;
 
@@ -411,6 +411,27 @@ fn derive_activity(r: &Ring, now: u64) -> Activity {
         return a;
     }
     Activity::Unknown
+}
+
+/// The workspace's Activity from its tabs' machines (decision 0187): the roll-up, the sub-reason of the tab that
+/// decides it, and the background work of all tabs. `None` while no machine has a status, so a workspace the machines
+/// do not follow (ACP, Codex, an agent that sent no hook yet) keeps the legacy derivation.
+fn machine_activity(
+    views: &[crate::status::machine::View],
+) -> Option<(Activity, Option<SubReason>, u32)> {
+    use crate::status::machine::{rollup, Status};
+    let status = rollup(&views.iter().map(|v| v.status).collect::<Vec<_>>());
+    let activity = match status {
+        Status::Working => Activity::Working,
+        Status::NeedsYou => Activity::Blocked,
+        Status::Finished | Status::Failed | Status::Idle => Activity::Idle,
+        Status::Unknown => return None,
+    };
+    let sub_reason = views
+        .iter()
+        .find(|v| v.status == status)
+        .and_then(|v| v.sub_reason);
+    Some((activity, sub_reason, views.iter().map(|v| v.bg).sum()))
 }
 
 /// What screen or scan suspect, when a live signal of theirs says the agent waits or failed.
@@ -1447,9 +1468,10 @@ impl EventHub {
         let mut derived = self.derived.lock().unwrap();
         let mut changed = Vec::new();
         for (workspace, r) in rings.iter() {
+            let from_machines = machine_activity(&self.machines.views_for(workspace, now));
             let next = WorkspaceActivity {
                 workspace: workspace.clone(),
-                activity: derive_activity(r, now),
+                activity: from_machines.map_or_else(|| derive_activity(r, now), |m| m.0),
                 ts: now,
                 task: r.task.clone(),
                 agent: agents.get(workspace).cloned(),
@@ -1458,12 +1480,19 @@ impl EventHub {
                 } else {
                     derive_hint(r, now)
                 },
-                sub_reason: None,
-                bg: 0,
+                sub_reason: from_machines.and_then(|m| m.1),
+                bg: from_machines.map_or(0, |m| m.2),
             };
             let same = derived.get(workspace).is_some_and(|d| {
-                (d.activity, &d.task, &d.agent, d.hint)
-                    == (next.activity, &next.task, &next.agent, next.hint)
+                (d.activity, &d.task, &d.agent, d.hint, d.sub_reason, d.bg)
+                    == (
+                        next.activity,
+                        &next.task,
+                        &next.agent,
+                        next.hint,
+                        next.sub_reason,
+                        next.bg,
+                    )
             });
             if !same {
                 derived.insert(workspace.clone(), next.clone());
@@ -1929,6 +1958,7 @@ async fn deliver(
                     hub.machines().follow(workspace, tab_key, path);
                 }
             }
+            hub.refresh(now);
         }
         if let (Some(tab), Some(id)) = (
             tab.as_deref(),
@@ -2881,6 +2911,66 @@ mod tests {
             assert_eq!(now_state(&h), AgentState::NeedsInput, "at {t}");
         }
         assert_eq!(h.activities_at(900_000)[0].activity, Activity::Blocked);
+    }
+
+    #[test]
+    fn a_machine_backed_workspace_keeps_working_past_the_old_decay_and_names_why() {
+        use crate::status::event::Event;
+        let h = hub();
+        h.report(
+            "s",
+            Source::Hook,
+            Confidence::High,
+            state(AgentState::Working),
+        );
+        h.machines()
+            .feed("s", "t", Event::TurnStart { title: None }, 1_000);
+        h.machines().feed(
+            "s",
+            "t",
+            Event::ToolStart {
+                name: "Bash".into(),
+            },
+            2_000,
+        );
+        let a = activity(&h, "s", 600_000).unwrap();
+        assert_eq!(
+            a.activity,
+            Activity::Working,
+            "the 60 s decay no longer applies"
+        );
+        assert_eq!(a.sub_reason, Some(SubReason::Tool));
+        h.machines().feed(
+            "s",
+            "t",
+            Event::TurnEnd {
+                outcome: crate::status::event::Outcome::Done,
+                bg: 2,
+            },
+            700_000,
+        );
+        let a = activity(&h, "s", 700_000).unwrap();
+        assert_eq!((a.activity, a.sub_reason, a.bg), (Activity::Idle, None, 2));
+    }
+
+    #[test]
+    fn a_workspace_with_no_machine_keeps_the_legacy_activity() {
+        let h = hub();
+        h.push(
+            "s",
+            Source::Hook,
+            Confidence::High,
+            state(AgentState::Working),
+            1_000,
+        );
+        assert_eq!(
+            activity(&h, "s", 2_000).unwrap().activity,
+            Activity::Working
+        );
+        assert_eq!(
+            activity(&h, "s", 200_000).unwrap().activity,
+            Activity::Unknown
+        );
     }
 
     #[test]

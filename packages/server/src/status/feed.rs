@@ -42,6 +42,17 @@ impl Machines {
             .map(|m| m.view(now))
     }
 
+    /// The views of every machine in `workspace`, one per tab.
+    pub fn views_for(&self, workspace: &str, now: u64) -> Vec<View> {
+        self.machines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|((w, _), _)| w == workspace)
+            .map(|(_, m)| m.view(now))
+            .collect()
+    }
+
     /// Lets the quiet window and the retry threshold lapse on every machine.
     pub fn tick(&self, now: u64) {
         for m in self.machines.lock().unwrap().values_mut() {

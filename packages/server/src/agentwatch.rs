@@ -438,6 +438,7 @@ pub fn spawn_tmux_scan(hub: EventHub, runner: Runner, prefix: String) {
             let _ = tokio::task::spawn_blocking(move || {
                 h.machines().poll_transcripts(now_ms());
                 h.machines().tick(now_ms());
+                h.refresh(now_ms());
             })
             .await;
             tokio::time::sleep(SCAN_EVERY).await;
