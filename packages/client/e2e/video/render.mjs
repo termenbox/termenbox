@@ -97,6 +97,9 @@ const comment = `"${cases[caseName].title}" on ${cases[caseName].real ? 'a local
 const run = (args) => { const r = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', ...args], { stdio: 'inherit' }); if (r.status !== 0) { console.error(`FAIL ffmpeg ${args.slice(0, 4).join(' ')}`); rmSync(work, { recursive: true, force: true }); rmSync(mp4, { force: true }); process.exit(1); } };
 run([...trim, '-i', webm, '-vf', `scale=${viewport.width * scale}:${viewport.height * scale}:flags=lanczos,fps=30`, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '23', '-movflags', '+faststart', '-an', '-metadata', `comment=${comment}`, mp4]);
 rmSync(work, { recursive: true, force: true });
+// A frame that loses the caption or the pointer for one frame is a flicker (scripts/video-flicker.mjs): the render fails instead of reaching the reviewer.
+const flicker = spawnSync('node', [resolve(import.meta.dirname, '../../../../scripts/video-flicker.mjs'), mp4], { encoding: 'utf8' });
+if (flicker.status !== 0) { console.error(`FAIL ${base}: ${flicker.stdout.trim() || flicker.stderr.trim()}`); if (process.env.VIDEO_DEBUG) renameSync(mp4, join(out, `${base}.flicker.mp4`)); else rmSync(mp4, { force: true }); process.exit(1); }
 // The length the chapter shows next to the poster ("Watch, N s").
 const probe = spawnSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', mp4], { encoding: 'utf8' });
 const seconds = Math.round(Number.parseFloat(probe.stdout));
