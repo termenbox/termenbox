@@ -42,7 +42,7 @@
       <strong class="name">{workspace.name}</strong>
       {#if serverName}<span class="badge">{serverName}</span>{/if}
       {#if workspace.backend}<span class="badge">{workspace.backend}</span>{/if}
-      <span class="chip {chip.tone}" class:stale={chip.stale}><span aria-hidden="true">{chip.icon}</span> {chip.label}</span>
+      <span class="chip {chip.tone}" class:stale={chip.stale}><span aria-hidden="true">{chip.icon}</span> {chip.label}</span>{#if chip.bg}<span class="chip idle">{chip.bg}</span>{/if}
     </span>
     {#if agent.task}<span class="task">{agent.task.title}</span>{/if}
     {#if line}<span class="line">{line}</span>{/if}
