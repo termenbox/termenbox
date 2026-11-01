@@ -26,7 +26,7 @@ Context: Guardrail `control-plane-steps-are-dogfooded-before-they-are-done` requ
 Do: Create the file with a short header and a "Template" section: `## <step id> <date>` then lines `Days used:`, `Before (s per agent-hour):`, `After:`, `Hurt:` (three items), `Keep / change / revert:`. Add nothing else. Do not fill any note: only the owner does.
 Done-when: the file exists and contains the template section.
 
-### 0.2 Map today's attention path — [ ]‖
+### 0.2 Map today's attention path — [x]‖
 Class: explore · Needs: none · Check: `test -f docs/plans/assets/control-plane/map.md && grep -c "events.rs" docs/plans/assets/control-plane/map.md`
 Context: Every later step extends the attention path; the cold session needs it written down. Decisions 0095 and 0122 describe intent; the code is the truth.
 Do: Write `docs/plans/assets/control-plane/map.md`: where an obligation is raised, cleared and acknowledged (`packages/server/src/events.rs`, `reducer.rs`, `workspaces.rs`, `acp_stream.rs`); which `ClientMessage` and `ServerMessage` variants carry Attention, answers and acks; what is per server and what is per device; where push is triggered (`push.rs`); where the client builds Needs-you (`Home.svelte`, `lib/cards.ts`, `InboxSheet.svelte`). Give file and line for each. List what a multi-node merge would have to rename or key (ids per node).
