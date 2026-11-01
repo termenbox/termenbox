@@ -96,6 +96,8 @@ export function humanPage(page, profile, { pace = 'normal', caption: drawCaption
     page, phone,
     /** Stills taken so far: {name, png}. render.mjs writes them only when the whole case passed. */
     stills: [],
+    /** [from, to] epoch milliseconds in which the overlay was hidden for a still. */
+    hidden: [],
     /**
      * A screenshot of the page at the context's pixel ratio, without the pointer and caption. Call it right after an
      * expectThat: it throws when no assertion has passed since the last still (GUARDRAIL ux-scenarios-assert-a-state-before-they-capture-it).
@@ -104,9 +106,12 @@ export function humanPage(page, profile, { pace = 'normal', caption: drawCaption
       if (assertions === lastStill) throw new Error(`still ${name}: no state was asserted before it`);
       lastStill = assertions;
       await h.pause(400);
+      // The overlay is gone from the recording while the screenshot is taken: render.mjs cuts `hidden` out of the video.
       await page.evaluate(() => { const r = document.getElementById('__human'); if (r) r.style.visibility = 'hidden'; });
+      const from = Date.now();
       const png = await page.screenshot({ type: 'png' });
       await page.evaluate(() => { const r = document.getElementById('__human'); if (r) r.style.visibility = ''; });
+      h.hidden.push([from, Date.now()]);
       h.stills.push({ name, png });
     },
     top: () => page.evaluate(() => window.__humanTop?.()),
