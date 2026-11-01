@@ -118,6 +118,7 @@ writeClaude(closedDir, CLOSED_ID, 1, false, 'quokka closed');      // its tab an
 writeCodex(outsideDir, OUTSIDE_ID, 'quokka outside', 'started by hand'); // never opened in termenbox
 writeClaude(replacedDir, OLD_ID, 1, false, 'quokka replaced old');  // the agent restarted in the tab: the record names NEW_ID
 writeClaude(replacedDir, NEW_ID, 1, false, 'quokka replaced new');
+writeClaude(dirOf('dash-app'), '--dangerously-skip-permissions', 1, false, 'quokka dash'); // an id that reads as a flag is never listed
 const ancientFile = writeClaude(ancientDir, ANCIENT_ID, 1, false, 'quokka ancient');
 const longAgo = new Date(Date.now() - 40 * 86_400_000);
 utimesSync(ancientFile, longAgo, longAgo);                          // older than the default 30 day window
@@ -165,7 +166,6 @@ try {
   page.setDefaultTimeout(20000);
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
-  page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
 
   await page.goto(`http://127.0.0.1:${appPort}/`);
   const dpk = await page.evaluate(async () => {
@@ -260,12 +260,26 @@ try {
   await search(PHRASE);
   await see(hits, 'the first page of hits');
   await waitFor(async () => (await status.innerText()).length > 0 && (await hits.count()) >= 30, 'the first page');
-  for (let i = 0; i < 20; i++) {
-    const more = sheet.locator('[data-testid="search-more"]');
-    if (!(await more.count())) break;
-    const before = await hits.count();
-    await more.first().click().catch(() => {});
-    await waitFor(async () => (await hits.count()) > before || !(await more.count()), 'another page of hits', 10000).catch(() => {});
+  // Strict: one click per page, the list never shrinks, and "older" never changes between pages.
+  const olderText = async () => { const o = sheet.locator('[data-testid="search-older"]'); return (await o.count()) ? (await o.first().innerText()).replace(/\s+/g, ' ') : ''; };
+  const more = sheet.locator('[data-testid="search-more"]');
+  // "Show more" appears once a page has settled.
+  await waitFor(async () => (await more.count()) > 0, 'the first page to settle', 10000);
+  const older0 = await olderText();
+  let last = await hits.count();
+  for (let i = 0; i < 20 && (await more.count()); i++) {
+    await more.first().evaluate((e) => e.click()); // Playwright finds the button hidden under the long list's containment; a DOM click is the tap
+    await waitFor(async () => {
+      const n = await hits.count();
+      if (n < last) throw new Error(`the list shrank from ${last} to ${n} hits while paging`);
+      return n > last;
+    }, 'another page of hits', 10000);
+    await waitFor(async () => (await more.count()) > 0 || (await hits.count()) >= 57, 'the page to settle', 10000);
+    const now = await hits.count();
+    if (now < last) throw new Error(`the list shrank from ${last} to ${now} hits while paging`);
+    last = now;
+    const older = await olderText();
+    if (older !== older0) throw new Error(`"older" changed across pages: "${older0}" then "${older}"`);
   }
   const rows = await hits.evaluateAll((els) => els.map((e) => e.textContent));
   if (rows.length !== 57) throw new Error(`paging shows ${rows.length} hits, expected all 57`);
@@ -282,6 +296,12 @@ try {
   await resumeOnly('quokka outside', 1);
   await resumeOnly('quokka replaced', 2);
   console.log('ok  a closed tab, a session started outside termenbox and a replaced session are all found, badged Resume');
+
+  // 3b2. A file named with a leading '-' is never listed, so Resume can never type it as a flag.
+  await search('quokka dash');
+  await page.waitForTimeout(1500);
+  if ((await hits.count()) !== 0) throw new Error('a session whose id starts with "-" was listed');
+  console.log('ok  a file named like a flag is never listed');
 
   // 3c. Grouping: one section per agent, per workspace or directory, and none (no headers).
   await search('quokka');

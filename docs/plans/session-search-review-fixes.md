@@ -39,7 +39,7 @@ Do:
 - R3: errors from `File::open` (EMFILE, EACCES), a truncation during the scan (`scan.rs:654`) or `Chain::build` become `Disabled` and nothing clears `off` (`mod.rs:487-491`). Skip that file and keep the agent on.
 Done-when: a 1,000-file fixture with a low `max_bytes`/time cap returns hits or a cut with a cursor, never zero by listing alone; listing a cancelled search stops; a link carrying a real id is never read; one unreadable file does not disable the agent. Update the guardrail wording only if the rule itself changes.
 
-### 4 Re-run the end-to-end check — [ ]
+### 4 Re-run the end-to-end check — [x]
 Class: review · Needs: 1, 2, 3 · Check: `sg docker -c "COMPOSE_PROJECT_NAME=termenbox-sergei scripts/dev.sh --full sh -c 'cd packages/client && node e2e/session-search.mjs'"`
 Do: replace the forgiving "Show more" retry loop in `e2e/session-search.mjs` with a strict one (the list never shrinks, `older` stays constant across pages); add a scenario for a file named with a leading `-`. Run `conform` over the new diff.
 Done-when: the e2e passes with the strict assertions and `conform` reports no violation.
