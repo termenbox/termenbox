@@ -6,6 +6,8 @@ export interface MeterReading {
   secPerAgentHour: number | null;
   /** Share of resolved asks answered without the human, 0 to 100; null while none was resolved. */
   autoPercent: number | null;
+  /** Estimated US dollars per task a verifier passed (plan step 1.4); null without cost data or without a pass. */
+  dollarsPerVerified: number | null;
 }
 
 const DAY_MS = 86_400_000;
@@ -18,6 +20,12 @@ export function mergeDays(perServer: (AttentionDay[] | undefined)[]): AttentionD
     m.raised += d.raised; m.human_ms += d.human_ms; m.latency_ms += d.latency_ms; m.agent_ms += d.agent_ms;
     for (const [k, v] of Object.entries(d.by_layer)) m.by_layer[k] = (m.by_layer[k] ?? 0) + v;
     for (const [k, v] of Object.entries(d.by_device)) m.by_device[k] = (m.by_device[k] ?? 0) + v;
+    m.cost_micros = (m.cost_micros ?? 0) + (d.cost_micros ?? 0);
+    for (const [k, v] of Object.entries(d.verified ?? {})) (m.verified ??= {})[k] = (m.verified[k] ?? 0) + v;
+    for (const [k, v] of Object.entries(d.by_model ?? {})) {
+      const u = ((m.by_model ??= {})[k] ??= { turns: 0, input: 0, output: 0, cache_read: 0, cache_write: 0, cost_micros: 0 });
+      u.turns += v.turns; u.input += v.input; u.output += v.output; u.cache_read += v.cache_read; u.cache_write += v.cache_write; u.cost_micros += v.cost_micros;
+    }
     byDay.set(d.day, m);
   }
   return [...byDay.values()].sort((a, b) => a.day - b.day);
@@ -31,7 +39,10 @@ export function reading(days: AttentionDay[], now: number, window = 7): MeterRea
   const agentMs = inWindow.reduce((n, d) => n + d.agent_ms, 0);
   let resolved = 0; let human = 0;
   for (const d of inWindow) for (const [layer, n] of Object.entries(d.by_layer)) { resolved += n; if (layer === 'human') human += n; }
+  const costMicros = inWindow.reduce((n, d) => n + (d.cost_micros ?? 0), 0);
+  const passed = inWindow.reduce((n, d) => n + (d.verified?.pass ?? 0), 0);
   return {
+    dollarsPerVerified: costMicros > 0 && passed > 0 ? costMicros / 1e6 / passed : null,
     secPerAgentHour: agentMs > 0 ? Math.round(humanMs / 1000 / (agentMs / 3_600_000)) : null,
     autoPercent: resolved > 0 ? Math.round(((resolved - human) / resolved) * 100) : null,
   };

@@ -586,6 +586,16 @@ impl EventHub {
         if let Some(h) = &self.history {
             h.tokens(workspace, t);
         }
+        // ACP names no model with its counts.
+        self.meter_tokens(None, &t);
+    }
+
+    /// Task telemetry (plan step 1.4): a turn's counts go to the meter's day bucket. Numbers and a model id only.
+    fn meter_tokens(&self, model: Option<&str>, t: &crate::history::Tokens) {
+        if let Some(m) = &self.meter {
+            m.turn_used(model, t, now_ms());
+            self.announce_meter();
+        }
     }
 
     /// The folder an agent works in, by its last component (U13).
@@ -646,6 +656,7 @@ impl EventHub {
                 // Counts only (audit-logging-no-secrets).
                 tracing::info!(target: "audit", event = "usage_collected", session = %workspace, input = t.input, output = t.output, cache_read = t.cache_read, cache_write = t.cache_write);
                 history.tokens(workspace, t);
+                self.meter_tokens(self.usage.model(workspace).as_deref(), &t);
             }
         }
     }

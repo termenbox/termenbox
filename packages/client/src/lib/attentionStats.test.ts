@@ -16,4 +16,12 @@ describe('attention meter messages', () => {
     const d: AttentionDay = m.days[0];
     expect([d.day, d.raised, d.by_layer.human, d.human_ms, d.agent_ms]).toEqual([20000, 3, 2, 9000, 3600000]);
   });
+
+  it('reads the task telemetry of a server that sends it and a day without it', () => {
+    const wire = '{"type":"attention_stats","days":[{"day":1,"by_model":{"m":{"turns":2,"input":5,"output":6,"cache_read":7,"cache_write":8,"cost_micros":9}},"cost_micros":9,"verified":{"pass":1}},{"day":2}]}';
+    const m = JSON.parse(wire) as ServerMessage;
+    if (m.type !== 'attention_stats') throw new Error('type');
+    expect([m.days[0].by_model?.m.cache_read, m.days[0].cost_micros, m.days[0].verified?.pass]).toEqual([7, 9, 1]);
+    expect(m.days[1].by_model).toBeUndefined();
+  });
 });

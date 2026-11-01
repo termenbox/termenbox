@@ -546,6 +546,32 @@ pub struct AttentionDay {
     /// Time tabs spent working, in ms, summed over tabs.
     #[serde(default)]
     pub agent_ms: u64,
+    /// Task telemetry (plan step 1.4): what the agents' turns used, by model id (`unknown` when the agent names none).
+    #[serde(default)]
+    pub by_model: std::collections::BTreeMap<String, ModelUse>,
+    /// Estimated cost of the day in millionths of a US dollar, from the owner's price table and agent-reported costs.
+    #[serde(default)]
+    pub cost_micros: u64,
+    /// Outcomes a verifier judged that day: `pass`, `fail`, `none` (no verifier ran).
+    #[serde(default)]
+    pub verified: std::collections::BTreeMap<String, u32>,
+}
+
+/// One model's use in a day: counts only.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelUse {
+    #[serde(default)]
+    pub turns: u32,
+    #[serde(default)]
+    pub input: u64,
+    #[serde(default)]
+    pub output: u64,
+    #[serde(default)]
+    pub cache_read: u64,
+    #[serde(default)]
+    pub cache_write: u64,
+    #[serde(default)]
+    pub cost_micros: u64,
 }
 
 /// Server → Client (WebSocket)

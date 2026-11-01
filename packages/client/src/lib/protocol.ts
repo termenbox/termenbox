@@ -406,6 +406,21 @@ export interface AttentionDay {
   human_ms: number;
   latency_ms: number;
   agent_ms: number;
+  /** Task telemetry (plan step 1.4); absent from a server without it. */
+  by_model?: Record<string, ModelUse>;
+  /** Estimated cost in millionths of a US dollar. */
+  cost_micros?: number;
+  /** Verifier outcomes: `pass`, `fail`, `none`. */
+  verified?: Record<string, number>;
+}
+
+export interface ModelUse {
+  turns: number;
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+  cost_micros: number;
 }
 
 export interface Attention {
