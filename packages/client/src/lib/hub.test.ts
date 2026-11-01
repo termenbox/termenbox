@@ -438,6 +438,14 @@ describe('ServerHub candidate bundles (decision 0123)', () => {
     expect(get(hub.servers)[0].path).toBe('Direct, LAN');
     expect(saved.at(-1)?.winner).toBe('lan 10.0.0.2:4443');
   });
+  it('tells each server what class of device this is, once per connection, for the attention meter', () => {
+    const { hub, connections } = setup();
+    hub.start([server('a')]);
+    connections[0].ready();
+    const sent = connections[0].sent.filter(m => m.type === 'device_class');
+    expect(sent).toHaveLength(1);
+    expect(['phone', 'desktop', 'other']).toContain((sent[0] as { class: string }).class);
+  });
   it('shows a new name at once, sends it with the server-local id, and asks for the list again to settle it', () => {
     vi.useFakeTimers();
     const { hub, connections } = setup();

@@ -534,6 +534,11 @@ impl Push {
         self.set_foreground_tab(conn, workspace, None);
     }
 
+    /// The workspace and tab a connection shows in the foreground.
+    pub fn foreground_of(&self, conn: u64) -> Option<(String, Option<String>)> {
+        self.foreground.lock().unwrap().get(&conn).cloned()
+    }
+
     /// The foreground workspace and, when the client names it, the visible tab (decision 0149).
     pub fn set_foreground_tab(&self, conn: u64, workspace: Option<String>, tab: Option<String>) {
         let mut fg = self.foreground.lock().unwrap();

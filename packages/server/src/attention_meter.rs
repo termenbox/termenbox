@@ -132,16 +132,13 @@ struct Stored {
 
 struct Open {
     raised_at: u64,
-    /// The device class the card was last shown on, as `card_seen` reported it.
-    device: Option<&'static str>,
 }
 
 #[derive(Default)]
 struct Inner {
     days: BTreeMap<u32, AttentionDay>,
     open: HashMap<String, Open>,
-    /// Resolved obligations, with the device class their answer was counted under.
-    resolved: VecDeque<(String, Layer, &'static str)>,
+    resolved: VecDeque<(String, Layer)>,
     /// When each working tab started its current span.
     spans: HashMap<(String, String), u64>,
     dirty: bool,
@@ -303,13 +300,7 @@ impl AttentionMeter {
         if g.open.contains_key(id) || g.open.len() >= MAX_OPEN {
             return;
         }
-        g.open.insert(
-            id.to_string(),
-            Open {
-                raised_at: now,
-                device: None,
-            },
-        );
+        g.open.insert(id.to_string(), Open { raised_at: now });
         g.bucket(now).raised += 1;
         g.dirty = true;
     }
@@ -326,18 +317,15 @@ impl AttentionMeter {
             return;
         };
         let latency = now.saturating_sub(open.raised_at);
-        // The answering device wins; otherwise the one the card was last shown on.
-        let class = match device {
-            Some(_) => device_class(device),
-            None => open.device.unwrap_or("other"),
-        };
         let d = g.bucket(now);
         *d.by_layer.entry(layer.as_str().to_string()).or_default() += 1;
         if layer == Layer::Human {
-            *d.by_device.entry(class.to_string()).or_default() += 1;
+            *d.by_device
+                .entry(device_class(device).to_string())
+                .or_default() += 1;
             d.latency_ms += latency;
         }
-        g.resolved.push_back((id.to_string(), layer, class));
+        g.resolved.push_back((id.to_string(), layer));
         while g.resolved.len() > MAX_RESOLVED {
             g.resolved.pop_front();
         }
@@ -346,29 +334,13 @@ impl AttentionMeter {
 
     /// The card of `id` was in the foreground for `ms`. Credited to the human only when the obligation is still open
     /// or a human resolved it; a rule-resolved obligation adds nothing. Returns whether it was credited.
-    /// `device` is the class of the device that showed it; a card shown after the answer was counted moves that answer
-    /// from `other` to the class.
-    pub fn card_seen(&self, id: &str, ms: u64, device: Option<&str>, now: u64) -> bool {
+    pub fn card_seen(&self, id: &str, ms: u64, now: u64) -> bool {
         let mut g = self.inner.lock().unwrap();
-        let class = device.map(|d| device_class(Some(d)));
-        if let Some(open) = g.open.get_mut(id) {
-            if class.is_some() {
-                open.device = class;
-            }
-        } else if let Some(pos) = g
-            .resolved
-            .iter()
-            .position(|(r, layer, _)| r == id && *layer == Layer::Human)
-        {
-            if let Some(class) = class.filter(|c| *c != "other" && g.resolved[pos].2 == "other") {
-                g.resolved[pos].2 = class;
-                let by_device = &mut g.bucket(now).by_device;
-                if let Some(n) = by_device.get_mut("other").filter(|n| **n > 0) {
-                    *n -= 1;
-                    *by_device.entry(class.to_string()).or_default() += 1;
-                }
-            }
-        } else {
+        let known = g.open.contains_key(id)
+            || g.resolved
+                .iter()
+                .any(|(r, layer)| r == id && *layer == Layer::Human);
+        if !known {
             return false;
         }
         g.bucket(now).human_ms += ms.min(MAX_DWELL_MS);
@@ -628,7 +600,7 @@ mod attention_meter_tests {
     fn a_human_answer_records_the_layer_the_device_class_the_dwell_and_the_latency() {
         let m = AttentionMeter::in_memory();
         m.raised("a1", D0);
-        assert!(m.card_seen("a1", 4_000, None, D0 + MIN));
+        assert!(m.card_seen("a1", 4_000, D0 + MIN));
         m.resolved("a1", Layer::Human, Some("phone"), D0 + 2 * MIN);
         let d = &m.stats(D0 + 3 * MIN)[0];
         assert_eq!(d.raised, 1);
@@ -636,47 +608,6 @@ mod attention_meter_tests {
         assert_eq!(d.by_device["phone"], 1);
         assert_eq!(d.human_ms, 4_000);
         assert_eq!(d.latency_ms, 2 * MIN);
-    }
-
-    #[test]
-    fn the_device_that_showed_the_card_is_the_answering_device_when_none_is_given() {
-        let m = AttentionMeter::in_memory();
-        m.raised("a1", D0);
-        assert!(m.card_seen("a1", 2_000, Some("phone"), D0 + MIN));
-        m.resolved("a1", Layer::Human, None, D0 + 2 * MIN);
-        let d = &m.stats(D0 + 3 * MIN)[0];
-        assert_eq!(d.by_device.get("phone"), Some(&1));
-        assert_eq!(d.by_device.get("other"), None);
-    }
-
-    #[test]
-    fn a_card_shown_after_the_answer_moves_it_from_other_to_its_device() {
-        let m = AttentionMeter::in_memory();
-        m.raised("a1", D0);
-        m.resolved("a1", Layer::Human, None, D0 + MIN);
-        assert_eq!(m.stats(D0 + MIN)[0].by_device["other"], 1);
-        assert!(m.card_seen("a1", 3_000, Some("desktop"), D0 + 2 * MIN));
-        let d = &m.stats(D0 + 2 * MIN)[0];
-        assert_eq!(d.by_device.get("other"), Some(&0));
-        assert_eq!(d.by_device["desktop"], 1);
-        // Once placed it stays: a second report moves nothing.
-        assert!(m.card_seen("a1", 1_000, Some("phone"), D0 + 3 * MIN));
-        let d = &m.stats(D0 + 3 * MIN)[0];
-        assert_eq!(
-            (d.by_device["desktop"], d.by_device.get("phone")),
-            (1, None)
-        );
-    }
-
-    #[test]
-    fn a_card_device_that_is_a_name_counts_as_other() {
-        let m = AttentionMeter::in_memory();
-        m.raised("a1", D0);
-        assert!(m.card_seen("a1", 1_000, Some("Sergei's iPhone"), D0));
-        m.resolved("a1", Layer::Human, None, D0 + MIN);
-        let d = &m.stats(D0 + MIN)[0];
-        assert_eq!(d.by_device["other"], 1);
-        assert_eq!(d.by_device.len(), 1);
     }
 
     #[test]
@@ -696,7 +627,7 @@ mod attention_meter_tests {
         m.raised("a1", D0);
         m.resolved("a1", Layer::Rule, None, D0 + 1_000);
         assert!(
-            !m.card_seen("a1", 9_000, None, D0 + 2_000),
+            !m.card_seen("a1", 9_000, D0 + 2_000),
             "late dwell is not credited"
         );
         let d = &m.stats(D0 + 3_000)[0];
@@ -710,9 +641,9 @@ mod attention_meter_tests {
     #[test]
     fn dwell_for_an_unknown_obligation_or_a_long_time_is_bounded() {
         let m = AttentionMeter::in_memory();
-        assert!(!m.card_seen("nope", 1_000, None, D0));
+        assert!(!m.card_seen("nope", 1_000, D0));
         m.raised("a1", D0);
-        m.card_seen("a1", u64::from(u32::MAX), None, D0);
+        m.card_seen("a1", u64::from(u32::MAX), D0);
         assert_eq!(m.stats(D0)[0].human_ms, MAX_DWELL_MS);
     }
 
@@ -770,7 +701,7 @@ mod attention_meter_tests {
         let m = AttentionMeter::in_memory();
         m.tab_working("w", "t", true, D0);
         m.raised("a1", D0);
-        m.card_seen("a1", 30_000, None, D0);
+        m.card_seen("a1", 30_000, D0);
         m.resolved("a1", Layer::Human, None, D0 + MIN);
         m.raised("a2", D0);
         m.resolved("a2", Layer::Rule, None, D0);
