@@ -910,7 +910,17 @@ mod tests {
             Some("opencode --session ses_9")
         );
         assert_eq!(resume_command("gemini", "x"), None);
-        for bad in ["", "a b", "a;b", "$(x)", "-x y", "--dangerously-skip-permissions", "-x", &"a".repeat(129), "é"] {
+        for bad in [
+            "",
+            "a b",
+            "a;b",
+            "$(x)",
+            "-x y",
+            "--dangerously-skip-permissions",
+            "-x",
+            &"a".repeat(129),
+            "é",
+        ] {
             assert_eq!(resume_command("claude", bad), None, "{bad:?}");
         }
     }
