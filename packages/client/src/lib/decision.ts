@@ -4,6 +4,7 @@
 import { cleanText, type Tier } from './sessionView';
 import { bannerChoices } from './notify';
 import { isStale, type WorkspaceAgent } from './agents';
+import type { AskKind } from './protocol';
 import { clean as cleanLine } from './snippets';
 
 export const STEP_NAME_CHARS = 40;
@@ -12,6 +13,18 @@ export const STEP_SUMMARY_CHARS = 200;
 export const ANSWER_WAIT_MS = 8000;
 
 export interface Step { name: string; summary: string }
+
+/** Decision 0190: what the card says until the ask's own content arrives, one line per kind. The content then
+ *  replaces it in place (the card keeps its identity, so nothing alerts again). */
+export const ASK_FALLBACK: Record<AskKind, string> = {
+  permission: 'Wants your permission',
+  question: 'Has a question for you',
+  plan: 'Has a plan for you to approve',
+  trust: 'Asks whether to trust this folder',
+  elicitation: 'Needs input for a tool',
+  unknown: 'Needs your answer',
+};
+export const askFallback = (kind: AskKind | undefined): string => ASK_FALLBACK[kind && kind in ASK_FALLBACK ? kind : 'unknown'];
 
 export interface Decision {
   key: string;
@@ -22,6 +35,10 @@ export interface Decision {
   /** When the wait began (ms). */
   since?: number;
   question: string;
+  /** What the ask is (permission, question, plan, trust, elicitation); absent from an older server. */
+  ask?: AskKind;
+  /** Whether `question` is the agent's own text or the typed fallback for `ask`. */
+  content: boolean;
   tier: Tier;
   /** The tool step the agent's hook reported, at T1 only (untrusted text). */
   step?: Step;
@@ -48,13 +65,17 @@ export function stepOf(a: WorkspaceAgent | undefined): Step | undefined {
 export function decisionFor(s: { key: string; name: string; since?: number; question?: string; title?: string }, a: WorkspaceAgent | undefined, now: number): Decision {
   const options = a ? bannerChoices(a, now) : [];
   const structured = options.length > 0 && !!a && !isStale(a, now);
+  const question = cleanText(s.question, 200);
+  const ask = a?.attention?.ask;
   return {
     key: s.key,
     name: s.name,
     agent: a?.agent,
     task: s.title ? cleanText(s.title, 120) : undefined,
     since: s.since,
-    question: cleanText(s.question, 200) || 'Needs your answer',
+    question: question || askFallback(ask),
+    ask,
+    content: !!question,
     tier: structured ? (a!.prompt?.source === 'acp' ? 't0' : 't1') : 't3',
     step: structured ? stepOf(a) : undefined,
     options: options.map((o) => cleanText(o, 40)),

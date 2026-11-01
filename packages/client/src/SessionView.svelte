@@ -35,7 +35,7 @@
   <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
     {#if prompt}
       <DecisionPanel composer={false} {now}
-        decision={{ key: view?.workspace ?? name, promptId: prompt.id, name, agent, task: title, since: waitingSince, question: prompt.question || 'The agent is asking', tier: view?.tier ?? 't3',
+        decision={{ key: view?.workspace ?? name, promptId: prompt.id, name, agent, task: title, since: waitingSince, question: prompt.question || 'The agent is asking', content: !!prompt.question, tier: view?.tier ?? 't3',
           step: view?.tier === 't1' ? step : undefined, options: prompt.options.map((o) => o.label) }}
         onpick={send} />
     {/if}

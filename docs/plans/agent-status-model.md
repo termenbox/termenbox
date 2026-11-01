@@ -297,13 +297,14 @@ not moved into `applyStatusFrame` and does not run "after render"; it still runs
 `App.svelte` (~line 504), which already sees the store after the frame applied. Move it only if D.4 finds an alert
 before its status is drawn.
 
-### C.3 The ask card: typed fallback, in-place enrichment, open terminal — [ ]
+### C.3 The ask card: typed fallback, in-place enrichment, open terminal — [x]
 Class: implement · Needs: C.1 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test -- decision'`
 Context: `lib/decision.ts` (`decisionFor`, fallback 'Needs your answer'), `DecisionProbe.svelte`, `AcpEntryView.svelte`;
 banner choices need 1 to 3 high-confidence choices.
 Do: Show the typed fallback per kind until content arrives, fill the card in place without a new alert, always offer
 "open terminal", offer one-tap answers only from structured content.
 Done-when: A unit test renders each kind with and without content and shows no empty card.
+Progress: done 2026-11-01. `Decision` gained `ask` and `content`; `ASK_FALLBACK` (`lib/decision.ts`) has one line per kind (an unknown or absent kind says "Needs your answer"), shown until the ask's text arrives. The card's identity (`DecisionPanel`) ignores the question, so the text fills in place and nothing alerts again (the alerter keys on tier). The card's button now reads "Open terminal" and every surface (Home, inbox) already passes it. One-tap options still come only from the hook-confirmed prompt (`bannerChoices`), unchanged; the ask's own `options` do not reach the client yet (the `Attention` wire type has only `prompt`, see B.6b-2), so they wait for the answer-contract change. `SessionView` and `AcpEntryView` build their cards with `content`. Client suite 1179 tests green, `svelte-check` 0 errors.
 
 ### C.4 Viewed by a human only — [ ]
 Class: implement · Needs: C.1 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test -- agents'`
