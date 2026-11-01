@@ -27,8 +27,6 @@ mod candidates;
 mod cert;
 mod claude_hooks;
 mod cloudflare;
-#[allow(dead_code)]
-// enrolment, the owner's tap and the merged stream are surfaced by steps 2.4b and 2.5
 mod conductor;
 mod conductor_link;
 mod connection;
@@ -185,6 +183,11 @@ struct Args {
     /// an ordinary server never answers a node.
     #[arg(long, env = "TERMENBOX_ACCEPT_NODES", default_value = "false")]
     accept_nodes: bool,
+
+    /// Print the link and QR that enrol a node into the conductor running here (decision 0170), then exit. The
+    /// one-time secret comes from the running server (started with --accept-nodes) and is shown only here.
+    #[arg(long, default_value = "false")]
+    conductor_enrol: bool,
 
     /// Print the pairing link and QR for this server (a signed candidate bundle; works with no directory) and exit.
     #[arg(long, default_value = "false")]
@@ -798,6 +801,9 @@ async fn main() -> anyhow::Result<()> {
     if args.print_pairing {
         return print_pairing(&args, &auth);
     }
+    if args.conductor_enrol {
+        return print_conductor_enrol(&args).await;
+    }
 
     if let Some(secret) = &args.claim_secret {
         auth.provide_claim(secret)?;
@@ -881,33 +887,27 @@ async fn main() -> anyhow::Result<()> {
     });
     let push = push::Push::load(&args.config_dir);
     push::spawn_watcher(push.clone(), hub.clone());
-    match conductor_link::configure(&args.config_dir, args.conductor.as_deref()) {
-        Ok(Some(pin)) => {
-            let node = conductor_link::Node {
-                key: directory::ServerKey::load_or_create(&args.config_dir)?,
-                name: args.server_name.clone(),
-                version: version(),
-                hub: hub.clone(),
-            };
-            let backoff = signal::Backoff::new(
-                std::time::Duration::from_secs(1),
-                std::time::Duration::from_secs(60),
-            );
-            tokio::spawn(conductor_link::run(
-                args.config_dir.clone(),
-                pin,
-                node,
-                backoff,
-            ));
+    let conductor_pin = match conductor_link::configure(&args.config_dir, args.conductor.as_deref())
+    {
+        Ok(pin) => pin,
+        Err(e) => {
+            tracing::warn!("conductor link not started: {e:#}");
+            None
         }
-        Ok(None) => {}
-        Err(e) => tracing::warn!("conductor link not started: {e:#}"),
-    }
+    };
     let conductor = args.accept_nodes.then(|| {
         let c = Arc::new(conductor::Conductor::new(
             Some(args.config_dir.clone()),
             events::now_ms(),
         ));
+        tokio::spawn({
+            let (c, path) = (c.clone(), conductor::enrol_socket_path(&args.config_dir));
+            async move {
+                if let Err(e) = conductor::serve_enrol_socket(c, path).await {
+                    tracing::warn!("conductor enrolment socket: {e}");
+                }
+            }
+        });
         tokio::spawn({
             let c = c.clone();
             async move {
@@ -1032,6 +1032,7 @@ async fn main() -> anyhow::Result<()> {
             .with_prefix(tmux_prefix.clone())
             .with_push(push.clone())
             .with_events(hub.clone())
+            .with_conductor(conductor.clone())
             .with_health(health)
             .with_previous_exit(previous_run.message())
             .with_agent_hooks(agent_hooks::Targets {
@@ -1074,6 +1075,26 @@ async fn main() -> anyhow::Result<()> {
         paths: Arc::default(),
         conductor,
     };
+    // Started once the workspace manager exists: it applies the answers a conductor routes to this node.
+    if let Some(pin) = conductor_pin {
+        let node = conductor_link::Node {
+            key: directory::ServerKey::load_or_create(&args.config_dir)?,
+            name: args.server_name.clone(),
+            version: version(),
+            hub: hub.clone(),
+            applier: Some(state.workspaces.clone()),
+        };
+        let backoff = signal::Backoff::new(
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(60),
+        );
+        tokio::spawn(conductor_link::run(
+            args.config_dir.clone(),
+            pin,
+            node,
+            backoff,
+        ));
+    }
 
     let mut reach: Option<reach::Handle> = None;
     if args.webrtc != "off" {
@@ -1313,20 +1334,7 @@ async fn shutdown_signal() {
 /// server adds its claim token, so the same link also claims it (decision 0117's preview still comes first); an owned
 /// server prints a re-add link with the bundle and no claim. Needs the server to have started once, for its port.
 fn pairing_block(args: &Args, auth: &AuthState) -> anyhow::Result<candidates::PairingBlock> {
-    let port = saved_udp_port(&args.config_dir).ok_or_else(|| {
-        anyhow::anyhow!("this server has not started yet; start it once, then run --print-pairing")
-    })?;
-    let cert = rtc::load_or_create_cert(&args.config_dir)?;
-    let key = directory::ServerKey::load_or_create(&args.config_dir)?;
-    let wire = candidates::pairing_bundle(
-        &args.config_dir,
-        &key,
-        &rtc::fingerprint(&cert),
-        &args.server_name,
-        port,
-        args.lan_addrs.as_deref(),
-        args.lan_only,
-    )?;
+    let wire = pairing_wire(args)?;
     let claim = if auth.owner().is_some() {
         None
     } else {
@@ -1338,6 +1346,24 @@ fn pairing_block(args: &Args, auth: &AuthState) -> anyhow::Result<candidates::Pa
         claim.as_deref(),
         None,
     ))
+}
+
+/// The signed candidate bundle of this server, as the wire string.
+fn pairing_wire(args: &Args) -> anyhow::Result<String> {
+    let port = saved_udp_port(&args.config_dir).ok_or_else(|| {
+        anyhow::anyhow!("this server has not started yet; start it once, then run --print-pairing")
+    })?;
+    let cert = rtc::load_or_create_cert(&args.config_dir)?;
+    let key = directory::ServerKey::load_or_create(&args.config_dir)?;
+    candidates::pairing_bundle(
+        &args.config_dir,
+        &key,
+        &rtc::fingerprint(&cert),
+        &args.server_name,
+        port,
+        args.lan_addrs.as_deref(),
+        args.lan_only,
+    )
 }
 
 /// `--print-pairing`: for a phone that has no directory path to this server (LAN-only, offline, or behind a NAT with no
@@ -1376,6 +1402,24 @@ async fn run_cloudflare(args: &Args) -> anyhow::Result<()> {
             std::process::exit(1);
         }
     }
+    Ok(())
+}
+
+/// `--conductor-enrol`: the link a node runs `--conductor <link>` with. Its signed part is this server's bundle; the
+/// secret rides outside it and works once, for 15 minutes (`conductor::ENROL_TTL_MS`).
+async fn print_conductor_enrol(args: &Args) -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+    let wire = pairing_wire(args)?;
+    let secret = conductor::request_enrol(&conductor::enrol_socket_path(&args.config_dir)).await?;
+    let link = candidates::enrol_link(&args.client_url, &wire, &secret);
+    if args.qr || std::io::stdout().is_terminal() {
+        if let Some(qr) = auth::claim_qr(&link) {
+            println!("{qr}");
+        }
+    }
+    println!(
+        "On the node, run:\n\n  termenbox-server --conductor '{link}'\n\nIt works once, for 15 minutes. The node then waits for your tap in the app before its attention joins the stream."
+    );
     Ok(())
 }
 

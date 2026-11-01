@@ -13,6 +13,11 @@ export type ClientMessage =
   | { type: 'update_postpone' }
   /** Owner-only: stop offering this release (the one the owner saw); a newer one is offered again. */
   | { type: 'update_skip'; version: string }
+  | { type: 'conductor_list' }
+  | { type: 'conductor_approve'; node: string }
+  | { type: 'conductor_remove'; node: string }
+  | { type: 'conductor_answer'; card: string; option: string; idem: string; device?: string }
+  | { type: 'conductor_ack'; card: string; idem: string }
   /** Owner-only (decision 0144): asks for the scrubbed diagnostics bundle; the answer is `diagnostics_bundle` parts. */
   | { type: 'diagnostics_bundle' }
   | { type: 'uninstall'; confirm_name: string; delete_user?: boolean; remove_tmux?: boolean; kill_workspaces?: boolean }
@@ -123,7 +128,8 @@ export type ServerMessage =
   | { type: 'uninstall_done'; mode: string }
   /** Decision 0123: the server's signed candidate bundle, pushed after `auth_ok`; verify it before use (lib/bundle.ts). */
   | { type: 'candidates'; bundle: string }
-  | { type: 'auth_ok'; protocol?: number; control_channel?: boolean; channels?: string[]; tabs?: boolean; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string; acp_agents?: string[]; update_available?: string; update_capabilities?: string[] }
+  | { type: 'auth_ok'; protocol?: number; control_channel?: boolean; channels?: string[]; tabs?: boolean; user: string; server_name: string; mode?: string; version?: string; backends?: string[]; control_mode?: boolean; tmux_version?: string; prefix?: string; acp_agents?: string[]; update_available?: string; update_capabilities?: string[]; conductor?: boolean }
+  | { type: 'conductor_state'; nodes: ConductorNodeInfo[]; cards: ConductorCardInfo[] }
   | { type: 'workspaces'; workspaces: WorkspaceInfo[] }
   /** The answer to `list_dir`: directory names only, at most 500 (`truncated` says more matched). `parent` is absent at `home`. */
   | { type: 'dir_listing'; path: string; parent?: string | null; entries: DirEntry[]; truncated?: boolean; home: string }
@@ -494,8 +500,31 @@ export interface ServerListItem {
 export const CONTROL_TYPES: ReadonlySet<string> = new Set([
   'acp_interrupt', 'acp_answer', 'acp_prompt', 'acp_mode', 'answer', 'workspace_answer', 'detach', 'close_workspace',
   'rename_workspace', 'new_workspace', 'new_window', 'close_window', 'select_window', 'new_tab', 'rename_tab',
-  'close_tab', 'move_tab', 'focus_tab', 'move_workspace', 'resize', 'foreground',
+  'close_tab', 'move_tab', 'focus_tab', 'move_workspace', 'resize', 'foreground', 'conductor_answer', 'conductor_ack',
 ]);
+
+/** What the owner's device sees of one node of a conductor's fleet (packages/core/src/conductor.rs `NodeInfo`). */
+export interface ConductorNodeInfo {
+  node: string;
+  name: string;
+  standing: 'pending' | 'enrolled';
+  connected: boolean;
+  silent_since?: number;
+  open: number;
+  agents: number;
+  working: number;
+  waiting: number;
+  dropped: number;
+}
+
+/** One row of the merged Needs-you stream; `card` is the handle an answer names. */
+export interface ConductorCardInfo {
+  card: string;
+  node: string;
+  node_name: string;
+  silent_since?: number;
+  obligation: ConductorObligation;
+}
 
 /** The conductor link (decision 0170, packages/core/src/conductor.rs). Attention metadata only; mirrored by hand. */
 export interface ConductorObligation {

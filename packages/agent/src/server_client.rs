@@ -194,7 +194,9 @@ impl ServerClient {
             }
             ServerMessage::Pong
             | ServerMessage::ControlAck { .. }
-            | ServerMessage::AcpEvents { .. } => {}
+            | ServerMessage::AcpEvents { .. }
+            | ServerMessage::ConductorState { .. }
+            | ServerMessage::AttentionStats { .. } => {}
         }
         Ok(())
     }

@@ -251,6 +251,43 @@ impl NodeMessage {
     }
 }
 
+/// Whether the owner has tapped a node in.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeStanding {
+    Pending,
+    Enrolled,
+}
+
+/// What the owner's device sees of one node of the fleet.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct NodeInfo {
+    pub node: String,
+    pub name: String,
+    pub standing: NodeStanding,
+    pub connected: bool,
+    /// Since when the node has been silent, ms since the epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub silent_since: Option<u64>,
+    pub open: u32,
+    pub agents: u32,
+    pub working: u32,
+    pub waiting: u32,
+    /// Items the conductor had to drop for this node's byte budget.
+    pub dropped: u32,
+}
+
+/// One row of the merged stream, as a device sees it: the `card` id is the handle for an answer.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct CardInfo {
+    pub card: String,
+    pub node: String,
+    pub node_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub silent_since: Option<u64>,
+    pub obligation: Obligation,
+}
+
 /// Where an answer goes on the node.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct AnswerTarget {

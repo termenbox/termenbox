@@ -12,8 +12,12 @@ use anyhow::{Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
 use termenbox_core::bundle::{Bundle, CandidateKind};
-use termenbox_core::conductor::{ConductorMessage, NodeMessage, Obligation, MAX_USAGE_ROWS};
+use termenbox_core::conductor::{
+    cap, ClearedBy, ConductorMessage, NodeMessage, Obligation, MAX_NAME, MAX_USAGE_ROWS,
+};
 use termenbox_core::events::{AgentState, Attention};
 use termenbox_core::protocol::{ClientMessage, ServerMessage};
 use tokio::sync::broadcast::error::RecvError;
@@ -241,6 +245,8 @@ fn obligation_of(a: &Attention) -> Obligation {
 #[derive(Default)]
 struct Differ {
     known: HashSet<String>,
+    /// How an item left when this node itself made it leave (an answer or an ack from the conductor).
+    by: HashMap<String, ClearedBy>,
 }
 
 impl Differ {
@@ -264,11 +270,12 @@ impl Differ {
             .collect();
         for id in gone {
             self.known.remove(&id);
+            let by = self.by.remove(&id).unwrap_or(ClearedBy::Fact);
             out.push(NodeMessage::Cleared {
                 epoch,
                 seq: 0,
                 id,
-                by: termenbox_core::conductor::ClearedBy::Fact,
+                by,
             });
         }
         out
@@ -277,6 +284,7 @@ impl Differ {
     /// After a snapshot the conductor knows exactly this list.
     fn reset(&mut self, items: &[Attention]) {
         self.known = items.iter().map(|a| a.id.clone()).collect();
+        self.by.retain(|id, _| self.known.contains(id));
     }
 }
 
@@ -357,11 +365,21 @@ fn stamp(m: NodeMessage, seq: u64) -> NodeMessage {
 
 // --- the loop --------------------------------------------------------------------------------------------------------
 
+/// What a node does on the keyboard side of an answer the conductor routes to it.
+#[async_trait::async_trait]
+pub trait Applier: Send + Sync {
+    /// Types choice `choice` of the open prompt behind attention item `id`. Fails, and types nothing, when the item
+    /// is gone or its prompt changed, as for an answer from a device of this server.
+    async fn answer(&self, id: &str, choice: u8) -> Result<()>;
+}
+
 pub struct Node {
     pub key: ServerKey,
     pub name: String,
     pub version: String,
     pub hub: EventHub,
+    /// `None` makes the node ignore routed answers (it still applies acks, which need only the hub).
+    pub applier: Option<Arc<dyn Applier>>,
 }
 
 struct State {
@@ -369,6 +387,8 @@ struct State {
     seq: u64,
     outbox: Outbox,
     differ: Differ,
+    /// `idem` keys already applied, so a redelivery after a reconnect does nothing.
+    applied: VecDeque<String>,
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -387,6 +407,7 @@ pub async fn run(dir: PathBuf, mut pin: Pin, node: Node, mut backoff: Backoff) {
         seq: 0,
         outbox: Outbox::default(),
         differ: Differ::default(),
+        applied: VecDeque::new(),
     };
     // Whatever is open now reaches the conductor in the first snapshot.
     st.differ.reset(&node.hub.attention_items());
@@ -422,6 +443,73 @@ pub async fn run(dir: PathBuf, mut pin: Pin, node: Node, mut backoff: Backoff) {
             }
         }
     }
+}
+
+/// Applies one routed answer or ack, once per `idem`. A refusal (the item left, the prompt changed) is logged and
+/// reported to nobody: the conductor learns the item's fate from the `cleared` that follows.
+async fn apply(node: &Node, st: &mut State, msg: ConductorMessage) {
+    let (idem, id) = match &msg {
+        ConductorMessage::Answer { idem, id, .. } | ConductorMessage::Ack { idem, id, .. } => {
+            (idem.clone(), id.clone())
+        }
+        _ => return,
+    };
+    if st.applied.contains(&idem) {
+        return;
+    }
+    let open = node.hub.attention_items().iter().any(|a| a.id == id);
+    let reported = match msg {
+        ConductorMessage::Answer {
+            actor,
+            owner,
+            device,
+            option,
+            ..
+        } if open => {
+            let (Some(applier), Ok(choice)) = (&node.applier, option.parse::<u8>()) else {
+                return;
+            };
+            if let Err(e) = applier.answer(&id, choice).await {
+                tracing::info!(target: "audit", event = "conductor_answer_refused", detail = %e);
+                return;
+            }
+            tracing::info!(target: "audit", event = "conductor_answer_applied", actor = %actor, owner = %owner);
+            st.differ.by.insert(id.clone(), ClearedBy::Answer);
+            NodeMessage::Answered {
+                epoch: st.epoch,
+                seq: 0,
+                id,
+                actor: cap(&actor, MAX_NAME),
+                owner: cap(&owner, MAX_NAME),
+                device: cap(&device, MAX_NAME),
+                option: cap(&option, MAX_NAME),
+            }
+        }
+        ConductorMessage::Ack { actor, owner, .. } if open => {
+            st.differ.by.insert(id.clone(), ClearedBy::Ack);
+            if !node.hub.ack(&id) {
+                st.differ.by.remove(&id);
+                return;
+            }
+            tracing::info!(target: "audit", event = "conductor_ack_applied", actor = %actor, owner = %owner);
+            NodeMessage::Acked {
+                epoch: st.epoch,
+                seq: 0,
+                id,
+                actor: cap(&actor, MAX_NAME),
+                owner: cap(&owner, MAX_NAME),
+            }
+        }
+        _ => {
+            tracing::info!(target: "audit", event = "conductor_answer_stale");
+            return;
+        }
+    };
+    st.applied.push_back(idem);
+    while st.applied.len() > 256 {
+        st.applied.pop_front();
+    }
+    st.outbox.push(reported);
 }
 
 fn note(node: &Node, st: &mut State, got: Result<StatusChange, RecvError>) {
@@ -542,7 +630,11 @@ where
                         send_json(&mut tx, &s).await?;
                     }
                     Ok(ConductorMessage::Disable) => return Ok(Ended::Disabled),
-                    // Answers, acks and terminal opens arrive with steps 2.4 and 2.6.
+                    Ok(m @ (ConductorMessage::Answer { .. } | ConductorMessage::Ack { .. })) => {
+                        apply(node, st, m).await;
+                        flush(&mut tx, st).await?;
+                    }
+                    // Terminal opens arrive with step 2.6.
                     Ok(_) | Err(_) => {}
                 },
                 Some(Ok(Message::Ping(p))) => tx.send(Message::Pong(p)).await?,
@@ -603,6 +695,139 @@ mod tests {
     use termenbox_core::conductor::UsageRow;
     use termenbox_core::events::{Confidence, EventKind, Source};
     use tokio::net::TcpListener;
+
+    struct Recorder(std::sync::Mutex<Vec<(String, u8)>>);
+
+    #[async_trait::async_trait]
+    impl Applier for Recorder {
+        async fn answer(&self, id: &str, choice: u8) -> Result<()> {
+            self.0.lock().unwrap().push((id.to_string(), choice));
+            Ok(())
+        }
+    }
+
+    fn state() -> State {
+        State {
+            epoch: 1,
+            seq: 0,
+            outbox: Outbox::default(),
+            differ: Differ::default(),
+            applied: VecDeque::new(),
+        }
+    }
+
+    fn answer_msg(id: &str, idem: &str) -> ConductorMessage {
+        ConductorMessage::Answer {
+            target: termenbox_core::conductor::AnswerTarget {
+                workspace: "w".into(),
+                tab: None,
+                prompt_id: id.into(),
+            },
+            id: id.into(),
+            actor: "me".into(),
+            owner: "me".into(),
+            device: "phone".into(),
+            option: "1".into(),
+            idem: idem.into(),
+        }
+    }
+
+    fn needs_input(hub: &EventHub) {
+        hub.push(
+            "w",
+            Source::Hook,
+            Confidence::High,
+            EventKind::State {
+                state: AgentState::NeedsInput,
+            },
+            now_ms(),
+        );
+    }
+
+    fn node_with(hub: &EventHub, applier: Arc<Recorder>) -> Node {
+        Node {
+            key: ServerKey::from_seed([5; 32]),
+            name: "vps".into(),
+            version: "t".into(),
+            hub: hub.clone(),
+            applier: Some(applier),
+        }
+    }
+
+    #[tokio::test]
+    async fn conductor_surface_node_applies_an_answer_once_and_reports_it() {
+        let hub = EventHub::new([7; 32]);
+        needs_input(&hub);
+        let id = hub.attention_items()[0].id.clone();
+        let rec = Arc::new(Recorder(Default::default()));
+        let node = node_with(&hub, rec.clone());
+        let mut st = state();
+        st.differ.reset(&hub.attention_items());
+
+        apply(&node, &mut st, answer_msg(&id, "n:i1")).await;
+        // The conductor redelivers after a reconnect: nothing is typed twice.
+        apply(&node, &mut st, answer_msg(&id, "n:i1")).await;
+        assert_eq!(rec.0.lock().unwrap().as_slice(), [(id.clone(), 1)]);
+        assert!(matches!(
+            st.outbox.queue.back(),
+            Some((NodeMessage::Answered { id: got, actor, owner, .. }, _))
+                if *got == id && actor == "me" && owner == "me"
+        ));
+        // The item leaves when the agent moves on, and the clear names the answer, not a fact.
+        hub.push(
+            "w",
+            Source::Hook,
+            Confidence::High,
+            EventKind::State {
+                state: AgentState::Idle,
+            },
+            now_ms(),
+        );
+        let changes = st.differ.changes(1, &hub.attention_items());
+        assert!(matches!(
+            changes.as_slice(),
+            [NodeMessage::Cleared {
+                by: ClearedBy::Answer,
+                ..
+            }]
+        ));
+    }
+
+    #[tokio::test]
+    async fn conductor_surface_node_refuses_a_stale_answer() {
+        let hub = EventHub::new([7; 32]);
+        let rec = Arc::new(Recorder(Default::default()));
+        let node = node_with(&hub, rec.clone());
+        let mut st = state();
+        // Nothing is open: the item left before the answer arrived.
+        apply(&node, &mut st, answer_msg("a9", "n:i1")).await;
+        assert!(rec.0.lock().unwrap().is_empty());
+        assert!(st.outbox.queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn conductor_surface_node_applies_an_ack_and_ignores_a_question() {
+        let hub = EventHub::new([7; 32]);
+        needs_input(&hub);
+        let ask = hub.attention_items()[0].id.clone();
+        let rec = Arc::new(Recorder(Default::default()));
+        let node = node_with(&hub, rec);
+        let mut st = state();
+        // A question is not dismissed by an ack, as on this server's own Home.
+        apply(
+            &node,
+            &mut st,
+            ConductorMessage::Ack {
+                id: ask,
+                actor: "me".into(),
+                owner: "me".into(),
+                idem: "n:a".into(),
+            },
+        )
+        .await;
+        assert!(st.outbox.queue.is_empty());
+        assert_eq!(hub.attention_items().len(), 1);
+    }
 
     fn tmpdir() -> PathBuf {
         let dir =
@@ -853,6 +1078,7 @@ mod tests {
             name: "vps".into(),
             version: "t".into(),
             hub: hub.clone(),
+            applier: None,
         };
         tokio::spawn(run(
             dir.clone(),
@@ -930,6 +1156,7 @@ mod tests {
             name: "vps".into(),
             version: "t".into(),
             hub: EventHub::new([7; 32]),
+            applier: None,
         };
         tokio::spawn(run(
             dir.clone(),

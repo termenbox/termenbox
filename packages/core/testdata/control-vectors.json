@@ -104,6 +104,17 @@
     {
       "type": "foreground",
       "workspace": null
+    },
+    {
+      "type": "conductor_answer",
+      "card": "c1",
+      "option": "1",
+      "idem": "i1"
+    },
+    {
+      "type": "conductor_ack",
+      "card": "c1",
+      "idem": "i2"
     }
   ],
   "bulk_or_other": [
@@ -147,6 +158,17 @@
       "type": "reply",
       "workspace": "s",
       "text": "hi"
+    },
+    {
+      "type": "conductor_list"
+    },
+    {
+      "type": "conductor_approve",
+      "node": "n"
+    },
+    {
+      "type": "conductor_remove",
+      "node": "n"
     }
   ]
 }

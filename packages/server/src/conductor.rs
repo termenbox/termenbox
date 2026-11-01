@@ -14,7 +14,8 @@ use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use termenbox_core::conductor::{
-    cap, AnswerTarget, ClearedBy, ConductorMessage, NodeMessage, Obligation, MAX_NAME,
+    cap, AnswerTarget, CardInfo, ClearedBy, ConductorMessage, NodeInfo, NodeMessage, NodeStanding,
+    Obligation, MAX_NAME,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -277,6 +278,8 @@ struct SavedNode {
 pub struct Conductor {
     inner: Mutex<Inner>,
     dir: Option<PathBuf>,
+    /// Counts changes, so an owner's connection pushes the fleet when something moved.
+    changed: tokio::sync::watch::Sender<u64>,
 }
 
 impl Conductor {
@@ -300,7 +303,17 @@ impl Conductor {
                 cards: HashMap::new(),
             }),
             dir,
+            changed: tokio::sync::watch::channel(0).0,
         }
+    }
+
+    /// Wakes whenever the fleet or the stream changed.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changed.subscribe()
+    }
+
+    fn bump(&self) {
+        self.changed.send_modify(|v| *v += 1);
     }
 
     fn save(&self, inner: &Inner) {
@@ -374,6 +387,8 @@ impl Conductor {
             node.clone(),
             NodeState::new(cap(name, MAX_NAME), Standing::Pending, now),
         );
+        drop(inner);
+        self.bump();
         Ok((node.clone(), Admission::Pending))
     }
 
@@ -389,6 +404,8 @@ impl Conductor {
             let _ = tx.send(ConductorMessage::Resync);
         }
         self.save(&inner);
+        drop(inner);
+        self.bump();
         true
     }
 
@@ -403,6 +420,8 @@ impl Conductor {
         }
         inner.cards.retain(|_, (k, _)| k != node);
         self.save(&inner);
+        drop(inner);
+        self.bump();
         true
     }
 
@@ -433,6 +452,8 @@ impl Conductor {
         inner
             .cards
             .retain(|_, (k, id)| k != node || live.contains(id));
+        drop(inner);
+        self.bump();
         ConductorMessage::Welcome {
             epoch_ack: epoch,
             heartbeat_s: HEARTBEAT_S,
@@ -445,10 +466,17 @@ impl Conductor {
         if let Some(n) = self.inner.lock().unwrap().nodes.get_mut(node) {
             n.sender = None;
         }
+        self.bump();
     }
 
     /// Applies one message of an enrolled node. The reply is what goes back to that node (a `resync` on a gap).
     pub fn handle(&self, node: &str, msg: NodeMessage, now: u64) -> Vec<ConductorMessage> {
+        let reply = self.apply_message(node, msg, now);
+        self.bump();
+        reply
+    }
+
+    fn apply_message(&self, node: &str, msg: NodeMessage, now: u64) -> Vec<ConductorMessage> {
         let msg = msg.capped();
         let mut inner = self.inner.lock().unwrap();
         let next = inner.next_card;
@@ -579,6 +607,7 @@ impl Conductor {
 
     /// Notes silence: a node quiet past the threshold gets an incident once, after the longer one.
     pub fn tick(&self, now: u64) {
+        self.bump();
         let mut inner = self.inner.lock().unwrap();
         for n in inner.nodes.values_mut() {
             if n.standing != Standing::Enrolled {
@@ -650,6 +679,41 @@ impl Conductor {
             .collect();
         out.sort_by(|a, b| a.name.cmp(&b.name).then(a.node.cmp(&b.node)));
         out
+    }
+
+    /// The fleet and the merged stream in the form a device receives.
+    pub fn state(&self, now: u64) -> (Vec<NodeInfo>, Vec<CardInfo>) {
+        let nodes = self
+            .nodes(now)
+            .into_iter()
+            .map(|n| NodeInfo {
+                node: n.node,
+                name: n.name,
+                standing: match n.standing {
+                    Standing::Pending => NodeStanding::Pending,
+                    Standing::Enrolled => NodeStanding::Enrolled,
+                },
+                connected: n.connected,
+                silent_since: n.silent_since,
+                open: n.open as u32,
+                agents: n.agents,
+                working: n.working,
+                waiting: n.waiting,
+                dropped: n.dropped,
+            })
+            .collect();
+        let cards = self
+            .stream(now)
+            .into_iter()
+            .map(|c| CardInfo {
+                card: c.card,
+                node: c.node,
+                node_name: c.node_name,
+                silent_since: c.silent_since,
+                obligation: c.obligation,
+            })
+            .collect();
+        (nodes, cards)
     }
 
     pub fn incidents(&self, node: &str) -> Vec<Incident> {
@@ -837,6 +901,48 @@ pub async fn serve(mut link: Link, conductor: Arc<Conductor>, hello: NodeMessage
         }
     }
     conductor.detach(&node);
+}
+
+/// Where `--conductor-enrol` asks the running server for a secret.
+pub fn enrol_socket_path(dir: &std::path::Path) -> PathBuf {
+    crate::events::socket_in(dir, "conductor.sock")
+}
+
+/// Answers each connection to a Unix socket (mode 0600, never TCP) with a freshly minted enrolment secret and one
+/// newline. The secret lives in this process only: it is not logged, not written to a file, and the previous one stops
+/// working.
+pub async fn serve_enrol_socket(conductor: Arc<Conductor>, path: PathBuf) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    use tokio::io::AsyncWriteExt;
+    let _ = std::fs::remove_file(&path);
+    let listener = tokio::net::UnixListener::bind(&path)?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    loop {
+        let (mut stream, _) = listener.accept().await?;
+        let secret = conductor.mint_enrol(crate::events::now_ms());
+        tracing::info!(target: "audit", event = "conductor_enrol_minted");
+        let _ = stream.write_all(format!("{secret}\n").as_bytes()).await;
+    }
+}
+
+/// The CLI side: the secret the running server minted.
+pub async fn request_enrol(path: &std::path::Path) -> anyhow::Result<String> {
+    use tokio::io::AsyncReadExt;
+    let mut stream = tokio::net::UnixStream::connect(path).await.map_err(|_| {
+        anyhow::anyhow!(
+            "no running conductor here; start the server with --accept-nodes (TERMENBOX_ACCEPT_NODES=1) first"
+        )
+    })?;
+    let mut text = String::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        (&mut stream).take(256).read_to_string(&mut text),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("the conductor did not answer"))??;
+    let secret = text.trim().to_string();
+    anyhow::ensure!(!secret.is_empty(), "the conductor sent no secret");
+    Ok(secret)
 }
 
 async fn send_json(link: &Link, m: &ConductorMessage) -> bool {
@@ -1303,18 +1409,12 @@ mod tests {
         assert!(c.nodes(T0).is_empty());
     }
 
-    #[tokio::test]
-    async fn conductor_serves_a_real_node_link_end_to_end() {
-        use crate::conductor_link::{self, Node, Pin};
-        use crate::events::{now_ms, EventHub};
+    /// A minimal transport for a conductor: the handshake the real one does, then `serve` over a `Link`. Returns the
+    /// port it listens on.
+    async fn spawn_transport(c: Arc<Conductor>, conductor_key: &ServerKey) -> u16 {
         use futures_util::{SinkExt, StreamExt};
-        use termenbox_core::events::{AgentState, Confidence, EventKind, Source};
         use termenbox_core::protocol::ServerMessage;
         use tokio_tungstenite::tungstenite::Message;
-
-        let conductor_key = ServerKey::from_seed([9; 32]);
-        let c = Arc::new(conductor());
-        let secret = c.mint_enrol(now_ms());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         // A minimal transport: the handshake the real one does, then `serve` over a `Link`.
@@ -1362,6 +1462,195 @@ mod tests {
                 }
             }
         });
+        port
+    }
+
+    async fn until(what: &str, mut ok: impl FnMut() -> bool) {
+        for _ in 0..200 {
+            if ok() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    struct Typed(std::sync::Mutex<Vec<(String, u8)>>, EventHub, AgentState);
+
+    use crate::events::EventHub;
+    use termenbox_core::events::AgentState;
+
+    #[async_trait::async_trait]
+    impl crate::conductor_link::Applier for Typed {
+        async fn answer(&self, id: &str, choice: u8) -> anyhow::Result<()> {
+            self.0.lock().unwrap().push((id.to_string(), choice));
+            // The agent moves on once the keys arrive.
+            self.1.push(
+                "w",
+                termenbox_core::events::Source::Hook,
+                termenbox_core::events::Confidence::High,
+                termenbox_core::events::EventKind::State { state: self.2 },
+                crate::events::now_ms(),
+            );
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn conductor_surface_answer_reaches_the_node_and_clears_there() {
+        use crate::conductor_link::{self, Node, Pin};
+        use crate::events::now_ms;
+        use termenbox_core::events::{Confidence, EventKind, Source};
+
+        let conductor_key = ServerKey::from_seed([9; 32]);
+        let c = Arc::new(conductor());
+        let secret = c.mint_enrol(now_ms());
+        let port = spawn_transport(c.clone(), &conductor_key).await;
+        let dir =
+            std::env::temp_dir().join(format!("termenbox-conductor-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pin = Pin {
+            conductor: conductor_key.server_id(),
+            urls: vec![format!("ws://127.0.0.1:{port}")],
+            enrol: Some(secret),
+            enabled: true,
+        };
+        pin.save(&dir).unwrap();
+        let hub = EventHub::new([7; 32]);
+        hub.push(
+            "w",
+            Source::Hook,
+            Confidence::High,
+            EventKind::State {
+                state: AgentState::NeedsInput,
+            },
+            now_ms(),
+        );
+        let typed = Arc::new(Typed(Default::default(), hub.clone(), AgentState::Idle));
+        let node_key = ServerKey::from_seed([5; 32]);
+        tokio::spawn(conductor_link::run(
+            dir,
+            pin,
+            Node {
+                key: ServerKey::from_seed([5; 32]),
+                name: "vps".into(),
+                version: "t".into(),
+                hub: hub.clone(),
+                applier: Some(typed.clone()),
+            },
+            crate::signal::Backoff::new(
+                std::time::Duration::from_millis(20),
+                std::time::Duration::from_millis(50),
+            ),
+        ));
+
+        // Enrol, tap: the node appears pending, then live.
+        until("the node to appear as pending", || {
+            c.nodes(now_ms())
+                .iter()
+                .any(|n| n.standing == Standing::Pending && n.connected)
+        })
+        .await;
+        assert!(
+            c.state(now_ms()).1.is_empty(),
+            "a pending node shows nothing"
+        );
+        assert!(c.approve(&node_key.server_id()));
+        until("the ask to reach the stream", || {
+            c.stream(now_ms()).len() == 1
+        })
+        .await;
+        let (nodes, cards) = c.state(now_ms());
+        assert_eq!(nodes[0].standing, NodeStanding::Enrolled);
+        let card = cards[0].card.clone();
+
+        // The owner's answer reaches the node, is typed there once, and the ask clears.
+        c.answer(&card, "me", "me", "phone", "1", "i1", now_ms())
+            .unwrap();
+        until("the answer to be typed", || {
+            !typed.0.lock().unwrap().is_empty()
+        })
+        .await;
+        until("the clear to arrive", || c.stream(now_ms()).is_empty()).await;
+        assert_eq!(typed.0.lock().unwrap().as_slice(), [("a1".to_string(), 1)]);
+        // A second answer to the same card loses.
+        assert!(matches!(
+            c.answer(&card, "me", "me", "phone", "1", "i2", now_ms()),
+            Err(AnswerError::Cleared(ClearedBy::Answer)) | Err(AnswerError::UnknownCard)
+        ));
+    }
+
+    #[tokio::test]
+    async fn conductor_surface_enrol_socket_hands_out_a_secret_that_works_once() {
+        let c = Arc::new(conductor());
+        let dir =
+            std::env::temp_dir().join(format!("termenbox-conductor-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = enrol_socket_path(&dir);
+        tokio::spawn(serve_enrol_socket(c.clone(), path.clone()));
+        until("the socket", || path.exists()).await;
+        let mode = std::os::unix::fs::PermissionsExt::mode(
+            &std::fs::metadata(&path).unwrap().permissions(),
+        );
+        assert_eq!(mode & 0o777, 0o600);
+        let secret = request_enrol(&path).await.unwrap();
+        let n = Sim::new(1);
+        let (_, adm) = c
+            .admit(&n.hello("n", Some(&secret)), "n", crate::events::now_ms())
+            .unwrap();
+        assert_eq!(adm, Admission::Pending);
+        // Burnt on use.
+        let other = Sim::new(2);
+        assert_eq!(
+            c.admit(
+                &other.hello("n", Some(&secret)),
+                "n",
+                crate::events::now_ms()
+            )
+            .unwrap_err(),
+            Refusal::NotEnrolled
+        );
+        // Asking again retires the previous secret.
+        let first = request_enrol(&path).await.unwrap();
+        let second = request_enrol(&path).await.unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            c.admit(
+                &other.hello("n", Some(&first)),
+                "n",
+                crate::events::now_ms()
+            )
+            .unwrap_err(),
+            Refusal::NotEnrolled
+        );
+    }
+
+    #[test]
+    fn conductor_surface_state_is_pushed_on_change_and_carries_no_secret() {
+        let c = conductor();
+        let mut rx = c.subscribe();
+        let mut n = Sim::new(1);
+        let _keep = n.join(&c, T0);
+        assert!(rx.has_changed().unwrap());
+        let _ = rx.borrow_and_update();
+        n.raise(&c, obligation("a1", T0), T0);
+        assert!(rx.has_changed().unwrap(), "a raise wakes the pushers");
+        let (nodes, cards) = c.state(T0);
+        assert_eq!((nodes.len(), cards.len()), (1, 1));
+        let wire = serde_json::to_string(&(nodes, cards)).unwrap();
+        assert!(!wire.contains("sig"), "{wire}");
+    }
+
+    #[tokio::test]
+    async fn conductor_serves_a_real_node_link_end_to_end() {
+        use crate::conductor_link::{self, Node, Pin};
+        use crate::events::{now_ms, EventHub};
+        use termenbox_core::events::{AgentState, Confidence, EventKind, Source};
+
+        let conductor_key = ServerKey::from_seed([9; 32]);
+        let c = Arc::new(conductor());
+        let secret = c.mint_enrol(now_ms());
+        let port = spawn_transport(c.clone(), &conductor_key).await;
 
         let dir =
             std::env::temp_dir().join(format!("termenbox-conductor-{}", uuid::Uuid::new_v4()));
@@ -1393,6 +1682,7 @@ mod tests {
                 name: "vps".into(),
                 version: "t".into(),
                 hub: hub.clone(),
+                applier: None,
             },
             crate::signal::Backoff::new(
                 std::time::Duration::from_millis(20),
@@ -1400,15 +1690,6 @@ mod tests {
             ),
         ));
 
-        async fn until(what: &str, mut ok: impl FnMut() -> bool) {
-            for _ in 0..200 {
-                if ok() {
-                    return;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-            }
-            panic!("timed out waiting for {what}");
-        }
         // Enrolled on the secret, but not trusted until the owner taps: nothing in the stream.
         until("the node to appear as pending", || {
             c.nodes(now_ms())

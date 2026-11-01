@@ -555,6 +555,14 @@ pub fn pairing_bundle(
 
 /// The link a phone opens or scans: the signed bundle in the fragment, so no host ever sees it. An unclaimed server
 /// adds its one-time claim token outside the signed part (it is a bearer secret, trusted like a claim link).
+/// The link `--conductor` takes on a node: the bundle of the conductor and the one-time secret outside the signed part.
+pub fn enrol_link(client_url: &str, wire: &str, secret: &str) -> String {
+    format!(
+        "{}/#/pair/{wire}?enrol={secret}",
+        client_url.trim_end_matches('/')
+    )
+}
+
 pub fn pairing_link(client_url: &str, wire: &str, claim: Option<&str>) -> String {
     let base = format!("{}/#/pair/{wire}", client_url.trim_end_matches('/'));
     match claim {

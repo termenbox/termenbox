@@ -1574,7 +1574,13 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 /// Unix socket paths are limited to about 108 bytes; a long state directory falls back to a private
 /// directory (0700) under the temp dir.
 pub fn socket_path(state_dir: &Path) -> std::path::PathBuf {
-    let preferred = state_dir.join("events.sock");
+    socket_in(state_dir, "events.sock")
+}
+
+/// A socket file named `name` in the state directory, or in a private one under the temp directory when the path
+/// would be too long for a Unix socket.
+pub fn socket_in(state_dir: &Path, name: &str) -> std::path::PathBuf {
+    let preferred = state_dir.join(name);
     if preferred.as_os_str().len() <= 100 {
         return preferred;
     }
@@ -1584,7 +1590,7 @@ pub fn socket_path(state_dir: &Path) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     }
-    dir.join("events.sock")
+    dir.join(name)
 }
 
 /// What a workspace's shell gets so its tools can report: who it is, its token and where to send.
