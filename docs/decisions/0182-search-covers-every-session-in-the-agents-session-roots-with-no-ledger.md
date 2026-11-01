@@ -1,5 +1,5 @@
 ---
-id: 0182-search-every-session-in-the-agents-session-roots-with-no-ledger
+id: 0182-search-covers-every-session-in-the-agents-session-roots-with-no-ledger
 title: Search covers every session in the agents' own session roots, with no ledger of closed sessions
 status: active
 date: 2026-11-01

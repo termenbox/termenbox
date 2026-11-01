@@ -260,7 +260,7 @@ describe('time window', () => {
   });
 });
 
-describe('a conversation no workspace holds (decision 0167)', () => {
+describe('a conversation no workspace holds (decision 0182)', () => {
   const unheld = { workspace: '', agent: 'claude', dir: '/home/me/code/api' };
   it('carries the session and directory, and is grouped under the last two segments of the directory', () => {
     const { s, sent } = rig();

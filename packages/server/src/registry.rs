@@ -278,7 +278,7 @@ impl Registry {
     }
 
     /// `create_workspace` whose first tab starts `resume` = (command line, session id) in place of the bare template,
-    /// and records the session id so the tab is the one that holds the conversation (decision 0167).
+    /// and records the session id so the tab is the one that holds the conversation (decision 0182).
     pub async fn create_workspace_resuming(
         &self,
         backend: &dyn WorkspaceBackend,

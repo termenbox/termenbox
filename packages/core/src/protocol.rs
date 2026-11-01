@@ -555,7 +555,7 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         after: Option<String>,
     },
-    /// Resume a conversation a search found (decision 0167): switch to the workspace that already holds `session` of
+    /// Resume a conversation a search found (decision 0182): switch to the workspace that already holds `session` of
     /// `agent`, else create a workspace in the directory the session's file names and start the agent's resume command
     /// there. The client names the conversation, never a path; the answer is `session_resumed`. Owner only. The
     /// session id is never logged.

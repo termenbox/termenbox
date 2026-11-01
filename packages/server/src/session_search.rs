@@ -1,4 +1,4 @@
-//! Cross-session search (decisions 0156 and 0167): runs the `SessionLog` adapters over every session file in the
+//! Cross-session search (decisions 0156 and 0182): runs the `SessionLog` adapters over every session file in the
 //! agents' own session roots, and answers the `window` request. Blocking; the connection runs it on a blocking thread.
 //!
 //! The corpus is what the adapters list, not what the registry knows: a closed tab, a replaced session and a session

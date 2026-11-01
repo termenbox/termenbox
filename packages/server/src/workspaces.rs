@@ -261,7 +261,7 @@ impl WorkspaceManager {
         all
     }
 
-    /// Resumes one conversation a search found (decision 0167): the workspace that already holds it is switched to,
+    /// Resumes one conversation a search found (decision 0182): the workspace that already holds it is switched to,
     /// else a workspace named after the directory is created there with the agent's resume command. Nothing is
     /// created when the conversation or its directory is gone. The id and the path are never logged or echoed.
     async fn resume_session(&self, agent: &str, session: &str) -> Result<ServerMessage> {

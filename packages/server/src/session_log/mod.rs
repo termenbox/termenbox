@@ -54,7 +54,7 @@ impl fmt::Debug for SessionRef {
     }
 }
 
-/// A session file found by walking an adapter's root (decision 0167): the agent, its own session id, the directory the
+/// A session file found by walking an adapter's root (decision 0182): the agent, its own session id, the directory the
 /// file says it ran in, and when it was last written.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SessionFile {

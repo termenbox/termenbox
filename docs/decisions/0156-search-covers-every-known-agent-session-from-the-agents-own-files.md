@@ -6,7 +6,7 @@ date: 2026-10-31
 track: product
 accepted-by: Sergey Strebulaev <s@vivantel.dev>
 tags: [agents, workspaces, client, server, privacy]
-amended-by: [0182-search-every-session-in-the-agents-session-roots-with-no-ledger]
+amended-by: [0182-search-covers-every-session-in-the-agents-session-roots-with-no-ledger]
 related: [0105-reports-are-fleet-board-timeline-usage-and-health, 0152-a-dormant-workspace-resumes-its-agents-when-reopened, 0149-a-workspace-is-a-server-record-and-each-tab-is-a-tmux-window, 0139-control-bytes-and-events-travel-on-separate-channels-and-events-replay-from-a-sequence-log, 0095-agent-status-is-activity-plus-attention]
 ---
 

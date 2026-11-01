@@ -26,7 +26,7 @@ export interface Hit {
   turn: string;
   kind: string;
   snippet: string;
-  /** Where the session ran, from its file (decision 0167); empty from an older server. */
+  /** Where the session ran, from its file (decision 0182); empty from an older server. */
   dir: string;
   /** The conversation's id, for `resume_session`; empty from an older server. */
   session: string;
@@ -429,7 +429,7 @@ export function resumeOutcome(h: Pick<Hit, 'tab' | 'agent'>, said: TabResumed[] 
   return { message: 'Workspace reopened. This server did not say whether the conversation was resumed.', jump: false, ok: false };
 }
 
-/** True when no workspace holds the hit's conversation: Resume creates one in the hit's directory (decision 0167). */
+/** True when no workspace holds the hit's conversation: Resume creates one in the hit's directory (decision 0182). */
 export const isUnheld = (h: Pick<Hit, 'workspace'>): boolean => !h.workspace;
 
 /** What to tell after `resume_session`, and whether the view should now go to the workspace the server named. */

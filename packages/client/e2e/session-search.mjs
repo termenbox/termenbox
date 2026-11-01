@@ -111,7 +111,7 @@ writeFileSync(join(home, 'config', 'acp-agents.toml'), `max_sessions = 3\n[agent
 const FILLERS = Array.from({ length: 18 }, (_, i) => ({ dir: dirOf(`filler-${i}`), id: uuid(100 + i) }));
 for (const f of FILLERS) writeClaude(f.dir, f.id, 3);
 
-// Sessions the registry knows nothing about (decision 0167): the search walks the agents' session roots.
+// Sessions the registry knows nothing about (decision 0182): the search walks the agents' session roots.
 const closedDir = dirOf('closed-app'), outsideDir = dirOf('outside-app'), replacedDir = dirOf('replaced-app'), ancientDir = dirOf('ancient-app');
 const CLOSED_ID = uuid(200), OUTSIDE_ID = 'c0de0000-0000-7000-8000-000000000201', OLD_ID = uuid(210), NEW_ID = uuid(211), ANCIENT_ID = uuid(220);
 writeClaude(closedDir, CLOSED_ID, 1, false, 'quokka closed');      // its tab and workspace were closed: no record points at it

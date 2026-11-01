@@ -377,7 +377,7 @@
   // scrolled to the turn; a dormant one is reopened only after the person chose Resume, and says what became of the agent.
   type TappedHit = { serverId: string; workspace: string; tab: string; agent: string; up: boolean; turn: string; snippet: string; highlight: [number, number]; session?: string };
   let resumeAsked: { key: string; hit: TappedHit } | null = null;
-  // A conversation no workspace holds (decision 0167): the server switches to the workspace that holds it or makes one; nothing is typed from here.
+  // A conversation no workspace holds (decision 0182): the server switches to the workspace that holds it or makes one; nothing is typed from here.
   let sessionAsked: { serverId: string; hit: TappedHit } | null = null;
   let sessionAskTimer: ReturnType<typeof setTimeout> | undefined;
   const SESSION_ASK_MS = 20_000;
