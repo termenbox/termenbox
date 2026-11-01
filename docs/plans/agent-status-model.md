@@ -90,7 +90,14 @@ their question (the text rides on the late `Notification` hook, matched to any o
 ## Steps
 
 Phase A measures. Phase B builds the server model. Phase C moves the client onto it. Phase D proves it. Phase E closes
-the loop in docs.
+the loop in docs. Phase F ports the other agents and deletes the old paths.
+
+**Scope (decided 2026-11-01): Claude Code first.** Claude is the main agent, so B.6b, B.7 and C ship for machine-backed
+tabs (Claude hooks, transcript, pane scan) and the product is dogfooded before anything else is ported. A workspace
+without a machine (Codex, ACP, OpenCode) keeps the legacy derivation, Attention and `TabStatus` writers until phase
+F, and the client falls back to the old fields when `sub_reason`, `tier` or `ask` are absent. Until F the
+cross-surface invariants (D.4, D.5) are asserted for Claude sessions only. OpenCode is postponed with the rest: it may
+be a hook agent (`adapters::opencode`) or an ACP one (`acp_stream`), to be traced in F.2.
 
 ### A.1 Measure the lag between hook, transcript and screen — [x]
 Class: explore · Needs: none · Check: `test -f docs/facts/0072-claude-hook-transcript-and-screen-lag.md && ls packages/server/testdata/transcripts | grep -c claude`
@@ -225,15 +232,15 @@ three commits, each green on its own:
   - **B.6b-3 Tab view.** `TabStatus` serves `Machine::view`; `task` dropped on idle; `TabPrompt` filled from the ask.
   Port the `events.rs` tests that pin behaviour the decisions keep, delete those that pin behaviour they replace (say
   which in the commit body). Done-when: `cargo test --workspace` passes.
-- **B.6c Delete the old paths.** Remove `Reducer`, `reducer.rs` (keep `Screen` and `WEAK_KEY` where used),
+- **B.6c Delete the old paths. Moved to F.3 (2026-11-01): Codex and ACP still feed them.** Remove `Reducer`, `reducer.rs` (keep `Screen` and `WEAK_KEY` where used),
   `set_*_state`, `apply_pane`, `PIN_MAX_MS`, the duplicated `GRACE_MS`, `#![allow(dead_code)]` in `status/mod.rs`.
   Done-when: the original grep finds nothing and `cargo test --workspace` passes.
 B.6a done 2026-11-01: `status/feed.rs` `Machines` (one machine per (workspace, tab), plus a `Tail` per followed transcript, started at the end of the file) is owned by `EventHub`. `deliver` feeds `adapters::claude_events` and follows `transcript_path` (resolved under the Claude root); the scan loop feeds the `PaneWatch` events, polls the tails on a blocking thread and ticks the machines; `forget_tab` and `forget_except` drop them. Nothing reads them yet. The test `events::tests::old_paths_and_machine_disagreements_are_listed` replays every A.1/A.2 run through both paths and pins the disagreements in `testdata/status/disagreements.txt` (`UPDATE_DISAGREEMENTS=1` rewrites it): after an Esc or a 401 the hooks alone leave the machine `working` where the old path says `unknown`, so B.6b must rely on the transcript or screen to close those (the fixtures hold hooks only). Env note: the 22 tmux-dependent tests in `cargo test --workspace` fail in this image (same as before B.6a); clippy `-p termenbox-server` has 17 errors in files this step did not touch.
 B.6b-1 done 2026-11-01: `refresh` reads `Machines::views_for` through `machine_activity` (roll-up, sub-reason of the deciding tab, summed `bg`); the hub refreshes after a hook feeds the machines and after each scan tick. No test of the old behaviour changed: they feed the ring, not the machines. Env note: run cargo with a target dir per worktree (`CARGO_TARGET_DIR=/cache/target-sergei-p01`): every worktree mounts at `/work`, so the shared `target-sergei` served a stale `termenbox-core`. `control::a_real_tmux_pushes_window_and_directory_changes` is flaky under the parallel run (fails on the clean tree too).
-Not started: B.6b-2, B.6b-3, B.6c.
+Not started: B.6b-2, B.6b-3. B.6c is F.3. B.6 is done for the Claude scope when B.6b-3 is.
 
 ### B.7 One snapshot frame on the status channel — [ ]
-Class: implement · Needs: B.6 · Check: `scripts/dev.sh cargo test -p termenbox-server e2e`
+Class: implement · Needs: B.6b-3 · Check: `scripts/dev.sh cargo test -p termenbox-server e2e`
 Context: Status and Attention travel as separate messages (`activity`, `attention`, `tab_states`, polled every 500
 ms in `packages/server/src/workspaces.rs`). Decision 0191 needs the status and the Attention item in the same frame.
 Do: Send per-session status, sub-reason, cause, `bg`, tier, and ask content in one ordered frame on the status
@@ -278,6 +285,9 @@ Context: `lib/agents.ts` ack rules (foreground, visible page, not `needs_you`, t
 Do: Send `ack` only on a human view (foreground, visible page, tab visible), for `result` and `info` items; never on
 a timer or a background tab; make the idle transition follow it. Tests cover the hidden page and the two-device case.
 Done-when: A unit test shows no ack from a hidden page or a timer, and an ack on one device clears all.
+
+Dogfood point: C.4 done (Claude scope). Run it for a while and note what is wrong before D and F; D.1 to D.3 may start
+in parallel with that.
 
 ### D.1 Complete the model test with the edge-case catalogue — [ ]‖
 Class: implement · Needs: B.2 · Check: `scripts/dev.sh cargo test -p termenbox-server status::catalogue`
@@ -346,3 +356,29 @@ changed (fact 0074). The roadmap in `docs/plans/termenbox-roadmap.md` does not l
 Do: Mark fact 0074 as historical with a pointer to the decisions, update 0095's text for the points above, record the
 results of A.1 to A.3 in the decisions that name a TBD, add a roadmap item with the owner's go-ahead, and run `lint`.
 Done-when: `lint` reports no dangling reference or stale cross-reference for 0074 and 0187 to 0193.
+
+## Phase F: the other agents, then retire the old paths (postponed until Claude is dogfooded)
+
+### F.1 Typed events for Codex — [ ]
+Class: implement · Needs: C.4 · Check: `scripts/dev.sh cargo test -p termenbox-server adapters`
+Context: `adapters::codex` yields `EventKind`s for the ring only; no Codex hook reaches a machine (events.rs gates the
+machine feed on `adapter == "claude"`).
+Do: Write `codex_events` beside `claude_events` from the Codex hooks, measure what Codex emits first (as A.1 to A.3
+did for Claude), and feed the machines for `adapter == "codex"`. Add the model and adapter tests.
+Done-when: A Codex fixture run yields the same statuses as the model table says, and the invariants helper accepts it.
+
+### F.2 Typed events for ACP and OpenCode — [ ]
+Class: implement · Needs: F.1 · Check: `scripts/dev.sh cargo test -p termenbox-server acp`
+Context: ACP turns and tool calls enter the ring and reducers through `acp.rs`, not a hook; nothing in `acp*.rs` calls
+`machines()`. Whether OpenCode runs over ACP (`acp_stream`) or hooks (`adapters::opencode`) is not traced yet.
+Do: Trace which path OpenCode takes, then map the ACP stream (and the OpenCode hooks if any) to `status::event::Event`;
+a new ACP workspace stays a single-agent workspace (decision 0149).
+Done-when: An ACP fixture run drives a machine to the statuses of the model table.
+
+### F.3 Delete the old paths (was B.6c) — [ ]
+Class: implement · Needs: F.2 · Check: `scripts/dev.sh cargo test --workspace`
+Do: Remove `Reducer`, `reducer.rs` (keep `Screen` and `WEAK_KEY` where used), `set_*_state`, `apply_pane`,
+`PIN_MAX_MS`, the duplicated `GRACE_MS`, `derive_activity`, the legacy `settle*` raise and clear, and
+`#![allow(dead_code)]` in `status/mod.rs`; drop the client fallbacks to the old fields once old clients are retired
+(B.7 keeps them until then).
+Done-when: `grep -n "set_screen_state\|PIN_MAX_MS" packages/server/src` finds nothing and `cargo test --workspace` passes.
