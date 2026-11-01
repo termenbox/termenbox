@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::claude::{next_line, turn_id, AtRead, UNMAPPABLE, UNREADABLE};
+use super::claude::{next_line, turn_id, AtRead, UNMAPPABLE};
 use super::scan::{Needle, BLOCK};
 use super::*;
 
@@ -49,6 +49,7 @@ pub struct CodexLog {
     lines: Mutex<Vec<(PathBuf, Arc<Lines>)>>,
     /// Where each session id was found, so the date folders are walked once.
     found: Mutex<HashMap<String, PathBuf>>,
+    heads: HeadCache,
 }
 
 impl CodexLog {
@@ -57,6 +58,7 @@ impl CodexLog {
             root,
             lines: Mutex::new(Vec::new()),
             found: Mutex::new(HashMap::new()),
+            heads: HeadCache::default(),
         }
     }
 
@@ -79,7 +81,7 @@ impl CodexLog {
             return None;
         }
         if let Some(p) = self.found.lock().unwrap().get(id) {
-            if p.is_file() {
+            if std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file()) {
                 return Some(p.clone());
             }
         }
@@ -94,9 +96,8 @@ impl CodexLog {
             .flat_map(|y| newest_first_dirs(&y))
             .flat_map(|m| newest_first_dirs(&m))
             .find_map(|d| {
-                std::fs::read_dir(d)
-                    .ok()?
-                    .flatten()
+                real_entries(&d, false)
+                    .into_iter()
                     .find(|e| is_ours(&e.file_name().to_string_lossy()))
                     .map(|e| e.path())
             })?;
@@ -107,15 +108,95 @@ impl CodexLog {
         Some(path)
     }
 
+    /// The search of an opened file, under the caps `run` shares with the other files.
+    fn search_opened(
+        &self,
+        file: File,
+        fp: Fingerprint,
+        needle: Needle,
+        query: &str,
+        run: &mut SearchRun,
+    ) -> Result<Vec<Hit>, LogError> {
+        let size = run.start(fp);
+        let SearchRun {
+            scanner,
+            budget,
+            stopped,
+            ..
+        } = run;
+        let limit = budget
+            .limits()
+            .per_session
+            .min(budget.limits().max_hits.saturating_sub(budget.hits()));
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut hits: Vec<Hit> = Vec::new();
+        scanner
+            .scan_file(&file, size, &needle, budget, |c| {
+                // The scan matched bytes; what counts is the scrubbed text of a conversation record.
+                if !may_hold_text(c.bytes) {
+                    return ControlFlow::Continue(());
+                }
+                let Ok(v) = serde_json::from_slice::<Value>(c.bytes) else {
+                    return ControlFlow::Continue(()); // torn
+                };
+                let Some(ordinal) = v.get("ordinal").and_then(Value::as_u64) else {
+                    return ControlFlow::Continue(());
+                };
+                for (n, p) in parts(&v).into_iter().enumerate() {
+                    if matches!(p.kind, Kind::Tool | Kind::Notice) {
+                        continue;
+                    }
+                    let Some((snippet, highlight)) = snippet(&p.text, query) else {
+                        continue;
+                    };
+                    hits.push(Hit {
+                        turn: turn_id(&ordinal.to_string(), n),
+                        kind: p.kind,
+                        snippet,
+                        highlight,
+                        at: v
+                            .get("timestamp")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    });
+                }
+                // The cap is checked between records, so a record's hits are never split across two pages.
+                if hits.len() >= limit {
+                    return ControlFlow::Break(());
+                }
+                ControlFlow::Continue(())
+            })
+            .map_err(|_| LogError::Unreadable)?;
+        *stopped = scanner.stopped_at();
+        for _ in &hits {
+            let _ = budget.record_hit();
+        }
+        Ok(hits)
+    }
+
+    /// A listed file, opened without following a link.
+    fn open_listed(&self, path: &Path) -> Result<(File, Fingerprint), LogError> {
+        let file = open_regular(path).map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound => LogError::Missing,
+            _ => LogError::Unreadable,
+        })?;
+        let meta = file.metadata().map_err(|_| LogError::Unreadable)?;
+        let fp = Fingerprint::of_meta(&meta);
+        if self.heads.get(path, &fp).is_none() {
+            check_head(&file, fp.size)?;
+        }
+        Ok((file, fp))
+    }
+
     fn open(&self, s: &SessionRef) -> Result<(PathBuf, File, Fingerprint), LogError> {
         let path = self.locate(&s.id).ok_or(LogError::Missing)?;
-        let file = File::open(&path).map_err(|e| match e.kind() {
+        let file = open_regular(&path).map_err(|e| match e.kind() {
             io::ErrorKind::NotFound => LogError::Missing,
-            _ => LogError::Disabled(UNREADABLE),
+            _ => LogError::Unreadable,
         })?;
-        let meta = file
-            .metadata()
-            .map_err(|_| LogError::Disabled(UNREADABLE))?;
+        let meta = file.metadata().map_err(|_| LogError::Unreadable)?;
         let fp = Fingerprint::of_meta(&meta);
         if check_head(&file, fp.size)?.as_deref() != Some(s.dir.as_path()) {
             return Err(LogError::Missing);
@@ -134,7 +215,7 @@ impl CodexLog {
         {
             return Ok(l.clone());
         }
-        let lines = Arc::new(Lines::build(file, fp).map_err(|_| LogError::Disabled(UNREADABLE))?);
+        let lines = Arc::new(Lines::build(file, fp).map_err(|_| LogError::Unreadable)?);
         let mut cache = self.lines.lock().unwrap();
         cache.retain(|(p, _)| p != path);
         cache.push((path.to_path_buf(), lines.clone()));
@@ -145,13 +226,10 @@ impl CodexLog {
     }
 }
 
-/// The sub-directories of `dir`, newest name first (the date folders sort as they read).
+/// The real sub-directories of `dir`, newest name first (the date folders sort as they read). A link is not entered.
 fn newest_first_dirs(dir: &Path) -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(dir)
+    let mut dirs: Vec<PathBuf> = real_entries(dir, true)
         .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().is_dir())
         .map(|e| e.path())
         .collect();
     dirs.sort();
@@ -168,7 +246,7 @@ fn check_head(file: &File, size: u64) -> Result<Option<PathBuf>, LogError> {
     }
     let mut buf = vec![0u8; len];
     file.read_exact_at(&mut buf, 0)
-        .map_err(|_| LogError::Disabled(UNREADABLE))?;
+        .map_err(|_| LogError::Unreadable)?;
     let Some(end) = memchr::memchr(b'\n', &buf) else {
         return if size as usize <= BLOCK {
             Ok(None)
@@ -385,7 +463,7 @@ fn entries_of(file: &File, node: &Node) -> Result<Vec<Entry>, LogError> {
     file.read_exact_at(&mut buf, node.offset)
         .map_err(|e| match e.kind() {
             io::ErrorKind::UnexpectedEof => LogError::StaleCursor,
-            _ => LogError::Disabled(UNREADABLE),
+            _ => LogError::Unreadable,
         })?;
     let Ok(v) = serde_json::from_slice::<Value>(&buf) else {
         return Ok(vec![Entry::notice(&node.turn, UNMAPPABLE)]);
@@ -416,73 +494,33 @@ impl SessionLog for CodexLog {
             return Ok(Vec::new());
         };
         let (_, file, fp) = self.open(s)?;
-        let size = run.start(fp);
-        let SearchRun {
-            scanner,
-            budget,
-            stopped,
-            ..
-        } = run;
-        let limit = budget
-            .limits()
-            .per_session
-            .min(budget.limits().max_hits.saturating_sub(budget.hits()));
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-        let mut hits: Vec<Hit> = Vec::new();
-        scanner
-            .scan_file(&file, size, &needle, budget, |c| {
-                // The scan matched bytes; what counts is the scrubbed text of a conversation record.
-                if !may_hold_text(c.bytes) {
-                    return ControlFlow::Continue(());
-                }
-                let Ok(v) = serde_json::from_slice::<Value>(c.bytes) else {
-                    return ControlFlow::Continue(()); // torn
-                };
-                let Some(ordinal) = v.get("ordinal").and_then(Value::as_u64) else {
-                    return ControlFlow::Continue(());
-                };
-                for (n, p) in parts(&v).into_iter().enumerate() {
-                    if matches!(p.kind, Kind::Tool | Kind::Notice) {
-                        continue;
-                    }
-                    let Some((snippet, highlight)) = snippet(&p.text, query) else {
-                        continue;
-                    };
-                    hits.push(Hit {
-                        turn: turn_id(&ordinal.to_string(), n),
-                        kind: p.kind,
-                        snippet,
-                        highlight,
-                        at: v
-                            .get("timestamp")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                    });
-                }
-                // The cap is checked between records, so a record's hits are never split across two pages.
-                if hits.len() >= limit {
-                    return ControlFlow::Break(());
-                }
-                ControlFlow::Continue(())
-            })
-            .map_err(|_| LogError::Disabled(UNREADABLE))?;
-        *stopped = scanner.stopped_at();
-        for _ in &hits {
-            let _ = budget.record_hit();
-        }
-        Ok(hits)
+        self.search_opened(file, fp, needle, query, run)
     }
 
-    fn list(&self, since: Option<std::time::SystemTime>) -> Listing {
-        let mut out = Listing::default();
+    fn search_file(
+        &self,
+        f: &SessionFile,
+        query: &str,
+        run: &mut SearchRun,
+    ) -> Result<Vec<Hit>, LogError> {
+        let Some(needle) = Needle::new(query) else {
+            return Ok(Vec::new());
+        };
+        let (file, fp) = self.open_listed(&f.path)?;
+        self.search_opened(file, fp, needle, query, run)
+    }
+
+    fn list(&self, since: Option<std::time::SystemTime>, budget: &mut Budget) -> Listing {
+        let mut cands = Vec::new();
         // `<root>/YYYY/MM/DD/rollout-<stamp>-<id>.jsonl`, three real directories deep; a link is never entered.
         let days = real_entries(&self.root, true)
             .into_iter()
             .flat_map(|y| real_entries(&y.path(), true))
             .flat_map(|m| real_entries(&m.path(), true));
         for day in days {
+            if budget.cancelled() {
+                break;
+            }
             for e in real_entries(&day.path(), false) {
                 let name = e.file_name().to_string_lossy().into_owned();
                 let Some(id) = name
@@ -493,32 +531,41 @@ impl SessionLog for CodexLog {
                 else {
                     continue;
                 };
-                let Ok(mtime) = e.metadata().and_then(|m| m.modified()) else {
-                    continue;
-                };
-                if since.is_some_and(|s| mtime < s) {
-                    out.older += 1;
-                    continue;
-                }
-                let Ok(file) = File::open(e.path()) else {
-                    continue;
-                };
-                let Ok(meta) = file.metadata() else {
-                    continue;
-                };
-                let Ok(Some(dir)) = check_head(&file, meta.len()) else {
-                    continue;
-                };
-                out.files.push(SessionFile {
-                    agent: AGENT.into(),
+                let Ok(meta) = e.metadata() else { continue };
+                let Ok(mtime) = meta.modified() else { continue };
+                cands.push(Cand {
                     id: id.to_string(),
-                    dir,
+                    path: e.path(),
+                    fp: Fingerprint::of_meta(&meta),
                     mtime,
                 });
             }
         }
-        out.files.sort_by(|a, b| b.mtime.cmp(&a.mtime));
-        out
+        walk_heads(
+            AGENT,
+            cands,
+            since,
+            budget,
+            &self.heads,
+            BLOCK as u64,
+            |file, len| check_head(file, len).ok().flatten(),
+        )
+    }
+
+    fn find(&self, id: &str, cancel: &Cancel) -> Option<SessionFile> {
+        if cancel.is_cancelled() || !plain_id(id) {
+            return None;
+        }
+        let path = self.locate(id)?;
+        let (file, fp) = self.open_listed(&path).ok()?;
+        let dir = check_head(&file, fp.size).ok().flatten()?;
+        Some(SessionFile {
+            agent: AGENT.into(),
+            id: id.to_string(),
+            dir,
+            path,
+            mtime: std::time::UNIX_EPOCH + std::time::Duration::from_nanos(fp.mtime_ns as u64),
+        })
     }
 
     fn last_event(&self, s: &SessionRef) -> Option<std::time::SystemTime> {

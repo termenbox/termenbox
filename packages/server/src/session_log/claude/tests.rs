@@ -411,7 +411,7 @@ fn a_file_named_like_a_flag_is_never_listed() {
     )
     .unwrap();
     let log = ClaudeLog::new(root.clone());
-    let listing = log.list(None);
+    let listing = log.list(None, &mut Budget::new(Limits::default(), Cancel::default()));
     assert!(!listing.files.is_empty());
     assert!(listing.files.iter().all(|f| !f.id.starts_with('-')));
     std::fs::remove_dir_all(root).ok();

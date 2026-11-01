@@ -12,10 +12,10 @@ use std::path::PathBuf;
 use std::time::{Duration, UNIX_EPOCH};
 
 use crate::registry::KnownSession;
-use crate::session_log::scan::{Cancel, Cut, Limits};
+use crate::session_log::scan::{Budget, Cancel, Cut, Limits};
 use crate::session_log::{
-    plain_id, Cursor, Hit, LogError, SearchRun, SessionFile, SessionLogs, SessionRef, Window,
-    MAX_SIDE,
+    plain_id, Cursor, Hit, Listing, LogError, SearchRun, SessionFile, SessionLogs, SessionRef,
+    Window, MAX_SIDE,
 };
 
 /// How a search ended: the cap that cut it, if any, and the agents whose search is off.
@@ -183,7 +183,32 @@ pub fn run_page(
         .limits()
         .since_ms
         .map(|ms| UNIX_EPOCH + Duration::from_millis(ms));
-    let (listing, off) = logs.list(since);
+    // The walk of the roots has its own half of the time and bytes, so a big corpus cannot spend all of them before a
+    // file is searched; what it reads is charged to the search. One conversation is found by name, not by a walk.
+    let (mut listing, off) = match &page.session {
+        Some(id) => {
+            let files = logs.find(id, &cancel);
+            (
+                Listing {
+                    files,
+                    ..Listing::default()
+                },
+                Vec::new(),
+            )
+        }
+        None => {
+            let l = run.budget.limits();
+            let walk = Limits {
+                max_time: l.max_time / 2,
+                max_bytes: l.max_bytes / 2,
+                ..*l
+            };
+            let mut walker = Budget::new(walk, cancel.clone());
+            let out = logs.list(since, &mut walker);
+            run.budget.add_bytes(walker.bytes_read());
+            out
+        }
+    };
     for (agent, why) in off {
         note_off(&mut summary, &agent, why);
     }
@@ -197,11 +222,8 @@ pub fn run_page(
             note_off(&mut summary, agent, why);
         }
     }
-    let mut files = listing.files;
+    let mut files = std::mem::take(&mut listing.files);
     files.sort_by(order);
-    if let Some(id) = &page.session {
-        files.retain(|f| f.id == *id);
-    }
     // A cursor that does not parse starts from the top: it holds no more than a position.
     let after = page.after.as_deref().and_then(Pos::parse);
     if let Some(c) = &after {
@@ -223,6 +245,8 @@ pub fn run_page(
             files.insert(0, h);
         }
     }
+    // A search cancelled during the walk says so, though no file was reached.
+    let _ = run.budget.check();
     let per_session = run.budget.limits().per_session;
     let max_hits = run.budget.limits().max_hits;
     let mut last: Option<Pos> = None;
@@ -265,13 +289,8 @@ pub fn run_page(
                 open: false,
             },
         };
-        let session = SessionRef {
-            agent: f.agent,
-            id: f.id,
-            dir: f.dir,
-        };
         let mut shown = 0;
-        match adapter.search_in(&session, query, &mut run) {
+        match adapter.search_file(&f, query, &mut run) {
             Ok(hits) => {
                 shown = hits.len();
                 for hit in hits {
@@ -281,6 +300,8 @@ pub fn run_page(
                     }
                 }
             }
+            // One file that cannot be read is left out; the agent stays on.
+            Err(LogError::Unreadable | LogError::Missing) => {}
             Err(e) => {
                 logs.note(&found.agent, &e);
                 if let LogError::Disabled(why) = e {
@@ -307,7 +328,7 @@ pub fn run_page(
         }
     }
     summary.older = run.budget.older() + listing.older;
-    let cut = run.budget.cut();
+    let cut = run.budget.cut().or(listing.cut);
     summary.cut = cut.map(cut_name).or((summary.older > 0).then_some(RANGE));
     let stopped_early = matches!(cut, Some(Cut::Hits | Cut::Bytes | Cut::Time));
     let mid_file = last.as_ref().is_some_and(|p| p.at.is_some());
@@ -326,11 +347,9 @@ fn note_off(summary: &mut Summary, agent: &str, why: &'static str) {
 /// The directory the session file of (`agent`, `id`) says it ran in, if the agent's root holds such a file. The client
 /// names a conversation, never a path, so only a file the adapter lists can be resumed.
 pub fn locate(logs: &SessionLogs, agent: &str, id: &str) -> Option<PathBuf> {
-    logs.list(None)
-        .0
-        .files
+    logs.find(id, &Cancel::default())
         .into_iter()
-        .find(|f| f.agent == agent && f.id == id)
+        .find(|f| f.agent == agent)
         .map(|f| f.dir)
 }
 
@@ -727,6 +746,151 @@ mod tests {
             per_session: 100,
             ..Limits::default()
         }
+    }
+
+    /// `n` small sessions, each with one "quokka" record and its own mtime a second apart (newest is `many-0`).
+    fn write_many(root: &Path, n: usize) {
+        for i in 0..n {
+            write_quokka(root, &format!("many-{i}"), 0, 1, false);
+            let path = root
+                .join("-home-fixture-project")
+                .join(format!("many-{i}.jsonl"));
+            let t = std::time::SystemTime::now() - Duration::from_secs(i as u64 + 1);
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(t)
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn a_big_corpus_under_a_low_byte_cap_gives_hits_and_a_cursor_never_nothing() {
+        let root = projects();
+        write_many(&root, 1000);
+        let limits = Limits {
+            max_bytes: 64 * 1024,
+            max_hits: 1000,
+            per_session: 10,
+            ..Limits::default()
+        };
+        // One registry for every page, as the server keeps one: the heads read for a page cost a `stat` on the next.
+        let logs = logs(&root);
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut after: Option<String> = None;
+        for n in 0..100 {
+            let mut got = Vec::new();
+            let summary = run_page(
+                &logs,
+                Vec::new(),
+                "quokka",
+                limits,
+                Cancel::default(),
+                &Page {
+                    after: after.take(),
+                    ..Page::default()
+                },
+                |f, h| {
+                    got.push((f.session_id.clone(), h.turn));
+                    true
+                },
+            );
+            assert!(!got.is_empty(), "page {n} found nothing");
+            if n == 0 {
+                assert_eq!(summary.cut, Some("bytes"));
+            }
+            seen.extend(got.into_iter().map(|(s, _)| s));
+            after = summary.next;
+            if after.is_none() {
+                break;
+            }
+        }
+        assert!(after.is_none(), "the pages did not end");
+        assert_eq!(seen.len(), 1000);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn listing_stops_when_the_search_is_cancelled() {
+        let root = projects();
+        write_many(&root, 50);
+        let cancel = Cancel::default();
+        cancel.cancel();
+        let mut budget = Budget::new(Limits::default(), cancel);
+        let (listing, _) = logs(&root).list(None, &mut budget);
+        assert!(listing.files.len() <= 1, "{} listed", listing.files.len());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_link_that_carries_a_real_sessions_id_is_never_read() {
+        let root = projects();
+        let outside = std::env::temp_dir().join(format!("tm-outside-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&outside).unwrap();
+        write_quokka(&root, "real-id", 0, 1, false);
+        let real = root.join("-home-fixture-project").join("real-id.jsonl");
+        // A second project folder holds a link named for the same id, pointing at a file outside the root.
+        let other = root.join("-home-other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::copy(&real, outside.join("x.jsonl")).unwrap();
+        std::os::unix::fs::symlink(outside.join("x.jsonl"), other.join("real-id.jsonl")).unwrap();
+        let mut got = Vec::new();
+        page(&root, Limits::default(), &Page::default(), &mut got);
+        assert_eq!(got.len(), 1);
+        // Found by name (Resume) the link is not taken either.
+        let found = logs(&root).find("real-id", &Cancel::default());
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path, real);
+        // And a file swapped for a link after the walk is refused at the open.
+        let listed = found[0].clone();
+        std::fs::remove_file(&real).unwrap();
+        std::os::unix::fs::symlink(outside.join("x.jsonl"), &real).unwrap();
+        let mut run = SearchRun::single(10);
+        let adapter = logs(&root).get("claude").unwrap();
+        assert!(adapter.search_file(&listed, "quokka", &mut run).is_err());
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn one_unreadable_file_is_skipped_and_the_agent_stays_on() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = projects();
+        write_quokka(&root, "good", 0, 1, false);
+        write_quokka(&root, "locked", 0, 1, false);
+        let locked = root.join("-home-fixture-project").join("locked.jsonl");
+        let logs = logs(&root);
+        // Listed while readable, then locked: the search meets the error at the open.
+        let listing = logs.list(None, &mut Budget::new(Limits::default(), Cancel::default()));
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::File::open(&locked).is_ok() {
+            return; // running as root: the mode is not enforced
+        }
+        let mut run = SearchRun::single(10);
+        let adapter = logs.get("claude").unwrap();
+        let file = listing.0.files.iter().find(|f| f.id == "locked").unwrap();
+        assert_eq!(
+            adapter.search_file(file, "quokka", &mut run).unwrap_err(),
+            LogError::Unreadable
+        );
+        let mut got = Vec::new();
+        let summary = run_page(
+            &logs,
+            Vec::new(),
+            "quokka",
+            Limits::default(),
+            Cancel::default(),
+            &Page::default(),
+            |f, h| {
+                got.push((f.session_id.clone(), h.turn));
+                true
+            },
+        );
+        assert!(got.iter().any(|(s, _)| s == "good"));
+        assert!(summary.off.is_empty());
+        assert!(logs.get("claude").is_ok());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

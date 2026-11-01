@@ -31,7 +31,7 @@ Do:
 - R6: `sessionAsked` (`App.svelte:377-397`) has no timeout and survives a dropped server; clear it on disconnect and match a reply to its ask.
 Done-when: a hit whose id starts with `-` is never listed or resumed; component tests for focus and for a lost reply.
 
-### 3 Listing under the caps, and file identity — [ ]
+### 3 Listing under the caps, and file identity — [x]
 Class: implement · Needs: none · Check: `scripts/dev.sh env HOME=/tmp/h CARGO_TARGET_DIR=/cache/target-sergei CARGO_HOME=/cache/cargo-sergei cargo test -p termenbox-server session_log session_search`
 Do:
 - B7: `logs.list(since)` runs inside the budget clock but is charged to no cap and cannot be cancelled (`session_search.rs:179-186`; `claude.rs` `check_head`/`head_cwd`; `codex.rs`; `mod.rs:507-526`). Count head bytes against `max_bytes`, check time and cancel per file, and read each head once (the later `open` reads it again). Decide what a cut during listing reports (`time`, with the files not yet listed counted as older or unsearched). `locate` (every Resume) and per-session expand (`since` None) walk all roots with no window: bound them too.

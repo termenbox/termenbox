@@ -135,6 +135,16 @@ impl Budget {
         self.older
     }
 
+    /// Whether the cancel flag is set, without touching the other caps.
+    pub fn cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+
+    /// Counts `n` bytes already read, without refusing them: a walk reads its first file whatever the cap.
+    pub fn add_bytes(&mut self, n: u64) {
+        self.bytes = self.bytes.saturating_add(n);
+    }
+
     pub fn note_older(&mut self) {
         self.older += 1;
     }

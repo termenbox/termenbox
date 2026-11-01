@@ -55,6 +55,7 @@ pub struct ClaudeLog {
     /// The `projects` directory.
     root: PathBuf,
     chains: Mutex<Vec<(PathBuf, Arc<Chain>)>>,
+    heads: HeadCache,
 }
 
 impl ClaudeLog {
@@ -62,6 +63,7 @@ impl ClaudeLog {
         ClaudeLog {
             root,
             chains: Mutex::new(Vec::new()),
+            heads: HeadCache::default(),
         }
     }
 
@@ -108,39 +110,104 @@ impl ClaudeLog {
         Some(found.unwrap_or(direct))
     }
 
-    /// The sessions of one project folder of the root, as `list` finds them.
-    fn list_folder(&self, folder: &Path, since: Option<std::time::SystemTime>, out: &mut Listing) {
-        for e in real_entries(folder, false) {
-            let name = e.file_name().to_string_lossy().into_owned();
-            let Some(id) = name.strip_suffix(".jsonl").filter(|i| plain_id(i)) else {
-                continue;
-            };
-            let Ok(mtime) = e.metadata().and_then(|m| m.modified()) else {
-                continue;
-            };
-            if since.is_some_and(|s| mtime < s) {
-                out.older += 1;
-                continue;
-            }
-            let Ok(file) = File::open(e.path()) else {
-                continue;
-            };
-            let Ok(meta) = file.metadata() else {
-                continue;
-            };
-            if check_head(&file, meta.len()).is_err() {
-                continue;
-            }
-            let Some(dir) = head_cwd(&file, meta.len()) else {
-                continue;
-            };
-            out.files.push(SessionFile {
-                agent: AGENT.into(),
-                id: id.to_string(),
-                dir,
-                mtime,
-            });
+    /// The search of an opened file, under the caps `run` shares with the other files.
+    fn search_opened(
+        &self,
+        path: PathBuf,
+        file: File,
+        fp: Fingerprint,
+        needle: Needle,
+        query: &str,
+        run: &mut SearchRun,
+    ) -> Result<Vec<Hit>, LogError> {
+        let size = run.start(fp);
+        let SearchRun {
+            scanner,
+            budget,
+            stopped,
+            ..
+        } = run;
+        let limit = budget
+            .limits()
+            .per_session
+            .min(budget.limits().max_hits.saturating_sub(budget.hits()));
+        if limit == 0 {
+            return Ok(Vec::new());
         }
+        let mut hits: Vec<Hit> = Vec::new();
+        let mut chain: Option<Arc<Chain>> = None;
+        let mut failed: Option<LogError> = None;
+        scanner
+            .scan_file(&file, size, &needle, budget, |c| {
+                // The scan matched bytes; what counts is the scrubbed text of a record on the active branch.
+                if !may_hold_text(c.bytes) {
+                    return ControlFlow::Continue(());
+                }
+                let Ok(v) = serde_json::from_slice::<Value>(c.bytes) else {
+                    return ControlFlow::Continue(()); // torn
+                };
+                let Some(uuid) = v.get("uuid").and_then(Value::as_str) else {
+                    return ControlFlow::Continue(());
+                };
+                if chain.is_none() {
+                    match self.chain(&file, &path, fp) {
+                        Ok(c) => chain = Some(c),
+                        Err(e) => {
+                            failed = Some(e);
+                            return ControlFlow::Break(());
+                        }
+                    }
+                }
+                if !chain.as_ref().is_some_and(|c| c.index.contains_key(uuid)) {
+                    return ControlFlow::Continue(());
+                }
+                for (n, p) in parts(&v).into_iter().enumerate() {
+                    if matches!(p.kind, Kind::Tool | Kind::Notice) {
+                        continue;
+                    }
+                    let Some((snippet, highlight)) = snippet(&p.text, query) else {
+                        continue;
+                    };
+                    hits.push(Hit {
+                        turn: turn_id(uuid, n),
+                        kind: p.kind,
+                        snippet,
+                        highlight,
+                        at: v
+                            .get("timestamp")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    });
+                }
+                // The cap is checked between records, so a record's hits are never split across two pages.
+                if hits.len() >= limit {
+                    return ControlFlow::Break(());
+                }
+                ControlFlow::Continue(())
+            })
+            .map_err(|_| LogError::Unreadable)?;
+        *stopped = scanner.stopped_at();
+        if let Some(e) = failed {
+            return Err(e);
+        }
+        for _ in &hits {
+            let _ = budget.record_hit();
+        }
+        Ok(hits)
+    }
+
+    /// A listed file, opened without following a link. Its head is read again only if it changed since the walk.
+    fn open_listed(&self, path: &Path) -> Result<(File, Fingerprint), LogError> {
+        let file = open_regular(path).map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound => LogError::Missing,
+            _ => LogError::Unreadable,
+        })?;
+        let meta = file.metadata().map_err(|_| LogError::Unreadable)?;
+        let fp = Fingerprint::of_meta(&meta);
+        if self.heads.get(path, &fp).is_none() {
+            check_head(&file, fp.size)?;
+        }
+        Ok((file, fp))
     }
 
     fn open(&self, s: &SessionRef) -> Result<(PathBuf, File, Fingerprint), LogError> {
@@ -149,11 +216,9 @@ impl ClaudeLog {
             io::ErrorKind::NotFound => LogError::Missing,
             // A directory name past the file system's limit: Claude shortened it and no such directory was found.
             _ if e.raw_os_error() == Some(36) => LogError::Missing,
-            _ => LogError::Disabled(UNREADABLE),
+            _ => LogError::Unreadable,
         })?;
-        let meta = file
-            .metadata()
-            .map_err(|_| LogError::Disabled(UNREADABLE))?;
+        let meta = file.metadata().map_err(|_| LogError::Unreadable)?;
         let fp = Fingerprint::of_meta(&meta);
         check_head(&file, fp.size)?;
         Ok((path, file, fp))
@@ -170,7 +235,7 @@ impl ClaudeLog {
         {
             return Ok(c.clone());
         }
-        let chain = Arc::new(Chain::build(file, fp).map_err(|_| LogError::Disabled(UNREADABLE))?);
+        let chain = Arc::new(Chain::build(file, fp).map_err(|_| LogError::Unreadable)?);
         let mut cache = self.chains.lock().unwrap();
         cache.retain(|(p, _)| p != path);
         cache.push((path.to_path_buf(), chain.clone()));
@@ -180,8 +245,6 @@ impl ClaudeLog {
         Ok(chain)
     }
 }
-
-pub(super) const UNREADABLE: &str = "unreadable file";
 
 /// The most of a file's head read to find where the session ran.
 const CWD_HEAD: usize = 64 * 1024;
@@ -216,7 +279,7 @@ fn check_head(file: &File, size: u64) -> Result<(), LogError> {
     }
     let mut buf = vec![0u8; len];
     file.read_exact_at(&mut buf, 0)
-        .map_err(|_| LogError::Disabled(UNREADABLE))?;
+        .map_err(|_| LogError::Unreadable)?;
     let mut pieces: Vec<&[u8]> = buf.split(|b| *b == b'\n').collect();
     pieces.pop(); // after the last newline: empty, or a line not finished
     if pieces.is_empty() {
@@ -513,7 +576,7 @@ fn entries_of(file: &File, node: &Node) -> Result<Vec<Entry>, LogError> {
     file.read_exact_at(&mut buf, node.offset)
         .map_err(|e| match e.kind() {
             io::ErrorKind::UnexpectedEof => LogError::StaleCursor,
-            _ => LogError::Disabled(UNREADABLE),
+            _ => LogError::Unreadable,
         })?;
     let Ok(v) = serde_json::from_slice::<Value>(&buf) else {
         return Ok(vec![Entry::notice(&node.uuid, UNMAPPABLE)]);
@@ -544,89 +607,86 @@ impl SessionLog for ClaudeLog {
             return Ok(Vec::new());
         };
         let (path, file, fp) = self.open(s)?;
-        let size = run.start(fp);
-        let SearchRun {
-            scanner,
-            budget,
-            stopped,
-            ..
-        } = run;
-        let limit = budget
-            .limits()
-            .per_session
-            .min(budget.limits().max_hits.saturating_sub(budget.hits()));
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-        let mut hits: Vec<Hit> = Vec::new();
-        let mut chain: Option<Arc<Chain>> = None;
-        let mut failed: Option<LogError> = None;
-        scanner
-            .scan_file(&file, size, &needle, budget, |c| {
-                // The scan matched bytes; what counts is the scrubbed text of a record on the active branch.
-                if !may_hold_text(c.bytes) {
-                    return ControlFlow::Continue(());
-                }
-                let Ok(v) = serde_json::from_slice::<Value>(c.bytes) else {
-                    return ControlFlow::Continue(()); // torn
-                };
-                let Some(uuid) = v.get("uuid").and_then(Value::as_str) else {
-                    return ControlFlow::Continue(());
-                };
-                if chain.is_none() {
-                    match self.chain(&file, &path, fp) {
-                        Ok(c) => chain = Some(c),
-                        Err(e) => {
-                            failed = Some(e);
-                            return ControlFlow::Break(());
-                        }
-                    }
-                }
-                if !chain.as_ref().is_some_and(|c| c.index.contains_key(uuid)) {
-                    return ControlFlow::Continue(());
-                }
-                for (n, p) in parts(&v).into_iter().enumerate() {
-                    if matches!(p.kind, Kind::Tool | Kind::Notice) {
-                        continue;
-                    }
-                    let Some((snippet, highlight)) = snippet(&p.text, query) else {
-                        continue;
-                    };
-                    hits.push(Hit {
-                        turn: turn_id(uuid, n),
-                        kind: p.kind,
-                        snippet,
-                        highlight,
-                        at: v
-                            .get("timestamp")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                    });
-                }
-                // The cap is checked between records, so a record's hits are never split across two pages.
-                if hits.len() >= limit {
-                    return ControlFlow::Break(());
-                }
-                ControlFlow::Continue(())
-            })
-            .map_err(|_| LogError::Disabled(UNREADABLE))?;
-        *stopped = scanner.stopped_at();
-        if let Some(e) = failed {
-            return Err(e);
-        }
-        for _ in &hits {
-            let _ = budget.record_hit();
-        }
-        Ok(hits)
+        self.search_opened(path, file, fp, needle, query, run)
     }
 
-    fn list(&self, since: Option<std::time::SystemTime>) -> Listing {
-        let mut out = Listing::default();
+    fn search_file(
+        &self,
+        f: &SessionFile,
+        query: &str,
+        run: &mut SearchRun,
+    ) -> Result<Vec<Hit>, LogError> {
+        let Some(needle) = Needle::new(query) else {
+            return Ok(Vec::new());
+        };
+        let (file, fp) = self.open_listed(&f.path)?;
+        self.search_opened(f.path.clone(), file, fp, needle, query, run)
+    }
+
+    fn list(&self, since: Option<std::time::SystemTime>, budget: &mut Budget) -> Listing {
+        let mut cands = Vec::new();
         for folder in real_entries(&self.root, true) {
-            self.list_folder(&folder.path(), since, &mut out);
+            if budget.cancelled() {
+                break;
+            }
+            for e in real_entries(&folder.path(), false) {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let Some(id) = name.strip_suffix(".jsonl").filter(|i| plain_id(i)) else {
+                    continue;
+                };
+                let Ok(meta) = e.metadata() else { continue };
+                let Ok(mtime) = meta.modified() else { continue };
+                cands.push(Cand {
+                    id: id.to_string(),
+                    path: e.path(),
+                    fp: Fingerprint::of_meta(&meta),
+                    mtime,
+                });
+            }
         }
-        out.files.sort_by(|a, b| b.mtime.cmp(&a.mtime));
-        out
+        let cost = (BLOCK + CWD_HEAD) as u64;
+        walk_heads(
+            AGENT,
+            cands,
+            since,
+            budget,
+            &self.heads,
+            cost,
+            |file, len| {
+                check_head(file, len).ok()?;
+                head_cwd(file, len)
+            },
+        )
+    }
+
+    fn find(&self, id: &str, cancel: &Cancel) -> Option<SessionFile> {
+        if !plain_id(id) {
+            return None;
+        }
+        let name = format!("{id}.jsonl");
+        for folder in real_entries(&self.root, true) {
+            if cancel.is_cancelled() {
+                return None;
+            }
+            let path = folder.path().join(&name);
+            if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
+                continue;
+            }
+            let Ok((file, fp)) = self.open_listed(&path) else {
+                continue;
+            };
+            let Some(dir) = head_cwd(&file, fp.size) else {
+                continue;
+            };
+            return Some(SessionFile {
+                agent: AGENT.into(),
+                id: id.to_string(),
+                dir,
+                path,
+                mtime: std::time::UNIX_EPOCH + std::time::Duration::from_nanos(fp.mtime_ns as u64),
+            });
+        }
+        None
     }
 
     fn last_event(&self, s: &SessionRef) -> Option<std::time::SystemTime> {
