@@ -67,6 +67,7 @@
 | 0067 | A dispatch-only workflow cannot be run until its file is on the default branch, and issue and comment workflows run the default branch's copy with a write token | ci, github, security | active |
 | 0068 | GitHub Markdown does not play a repository MP4 inline, and a chapter-length GIF is several megabytes | docs, video, github | active |
 | 0069 | The Electron community template pins an end-of-life Electron 26, and the wrappers use Electron 45 | desktop, platform, security | active |
+| 0071 | Claude Code status runs through three parallel paths that can disagree, and its asks lose their question text | agents, server, client, notifications | active |
 
 <!-- bootstrap-generated: true -->
 | 0070 | One person has about 28,800 seconds of attention a day, which is 1.2 seconds per agent-hour at 1,000 agents and 0.12 at 10,000 | product, control-plane, agents | active |

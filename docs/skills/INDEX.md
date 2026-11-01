@@ -22,3 +22,4 @@ add-a-decision-class-to-the-deputy,"Add a decision class to the deputy and move 
 write-a-mission-contract-template,"Write a mission contract template for a kind of work","control-plane, agents, security, automation, procedural",active
 dogfood-a-control-plane-slice,"Dogfood a control-plane slice on the owner's own fleet and record the reading","control-plane, dogfood, process, procedural",active
 run-a-plan-with-the-dispatcher-discipline,"Run a plan with the dispatcher discipline: pre-flight, outcome checks, decomposition, routing, combining and a run log","control-plane, process, agents, procedural",active
+add-a-status-transition,"Add or change a status transition, event or evidence source","agents, server, client, procedural",active
