@@ -115,6 +115,9 @@ pub enum NodeMessage {
         /// The one-time enrolment secret, first connection only.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         enrol: Option<String>,
+        /// The node's signature over the conductor's challenge nonce, base64url.
+        #[serde(default)]
+        sig: String,
     },
     Snapshot {
         epoch: u64,
@@ -193,6 +196,7 @@ impl NodeMessage {
                 version,
                 caps,
                 enrol,
+                sig,
             } => NodeMessage::Hello {
                 v,
                 node,
@@ -201,6 +205,7 @@ impl NodeMessage {
                 version: cap(&version, MAX_NAME),
                 caps: caps.iter().take(16).map(|c| cap(c, MAX_NAME)).collect(),
                 enrol,
+                sig,
             },
             NodeMessage::Snapshot {
                 epoch,
@@ -331,6 +336,7 @@ mod tests {
             version: "1.0".into(),
             caps: vec![],
             enrol: Some("s".into()),
+            sig: "x".into(),
         });
         round(NodeMessage::Snapshot {
             epoch: 7,

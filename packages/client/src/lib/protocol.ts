@@ -526,7 +526,7 @@ export type ClearedBy = 'fact' | 'ack' | 'answer' | 'rule';
 
 /** Node to conductor. `epoch` is the node's process epoch, `seq` counts messages within it. */
 export type NodeMessage =
-  | { type: 'hello'; v: number; node: string; name: string; epoch: number; version: string; caps?: string[]; enrol?: string }
+  | { type: 'hello'; v: number; node: string; name: string; epoch: number; version: string; caps?: string[]; enrol?: string; sig?: string }
   | { type: 'snapshot'; epoch: number; items: ConductorObligation[]; workspaces?: { workspace: string; activity: string }[] }
   | { type: 'raised'; epoch: number; seq: number; obligation: ConductorObligation }
   | { type: 'cleared'; epoch: number; seq: number; id: string; by: ClearedBy }

@@ -27,6 +27,7 @@ mod candidates;
 mod cert;
 mod claude_hooks;
 mod cloudflare;
+mod conductor_link;
 mod connection;
 mod container;
 mod control;
@@ -171,6 +172,11 @@ struct Args {
     /// interfaces (at most 4 are kept).
     #[arg(long, env = "TERMENBOX_LAN_ADDRS")]
     lan_addrs: Option<String>,
+
+    /// Report this node's attention to a conductor (decision 0170): a conductor pairing link, enrols once and is
+    /// remembered; `off` stops the link and keeps the pin. Without it, and with nothing remembered, the node dials nothing.
+    #[arg(long, env = "TERMENBOX_CONDUCTOR")]
+    conductor: Option<String>,
 
     /// Print the pairing link and QR for this server (a signed candidate bundle; works with no directory) and exit.
     #[arg(long, default_value = "false")]
@@ -865,6 +871,28 @@ async fn main() -> anyhow::Result<()> {
     });
     let push = push::Push::load(&args.config_dir);
     push::spawn_watcher(push.clone(), hub.clone());
+    match conductor_link::configure(&args.config_dir, args.conductor.as_deref()) {
+        Ok(Some(pin)) => {
+            let node = conductor_link::Node {
+                key: directory::ServerKey::load_or_create(&args.config_dir)?,
+                name: args.server_name.clone(),
+                version: version(),
+                hub: hub.clone(),
+            };
+            let backoff = signal::Backoff::new(
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(60),
+            );
+            tokio::spawn(conductor_link::run(
+                args.config_dir.clone(),
+                pin,
+                node,
+                backoff,
+            ));
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!("conductor link not started: {e:#}"),
+    }
     if let Some(dir) = args.requests_dir.parent() {
         push::spawn_update_watcher(push.clone(), dir.to_path_buf(), args.server_name.clone());
     }

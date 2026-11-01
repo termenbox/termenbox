@@ -72,7 +72,7 @@ Context: Guardrails `conductor-links-carry-attention-metadata-only` and `operato
 Do: Add `NodeMessage` and `ConductorMessage` enums to `packages/core/src/protocol.rs` per the spike, every answer and acknowledgement carrying `actor` and `owner`, agent text length-capped; mirror them in `packages/client/src/lib/protocol.ts`; add round-trip tests with old-client compatibility (unknown variants ignored).
 Done-when: the tests pass, including one that fails on an answer without `actor`.
 
-### 2.3 Node side: the outbound link — [ ]
+### 2.3 Node side: the outbound link — [x] (answers, acks and terminal opens arriving from the conductor are ignored here; they land in 2.4 and 2.6. Candidates are tried in order, not raced. A clear is reported as `by: fact` until the answer path of 2.4 can say otherwise)
 Class: implement · Needs: 2.2 · Check: `scripts/dev.sh cargo test -p termenbox-server conductor_link`
 Context: A node behind NAT must reach the conductor with no open port. Decision 0170.
 Do: Add `packages/server/src/conductor_link.rs` and a `--conductor <pairing>` option in `main.rs`: one outbound connection with backoff, sending the node's attention changes and health, a bounded queue while disconnected (drop oldest with a counted notice), and a switch that disables it. Off unless configured. Test with a fake conductor: reconnect, queue bound, no terminal bytes sent.

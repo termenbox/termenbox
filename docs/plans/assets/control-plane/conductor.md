@@ -12,7 +12,7 @@ Two enums in `packages/core/src/protocol.rs` (step 2.2), JSON like the rest, unk
 
 | Variant | Fields | When |
 |---|---|---|
-| `Hello` | `v`, `node` (server id), `name`, `epoch`, `version`, `caps` | once per connection, after the handshake of section 2 |
+| `Hello` | `v`, `node` (server id), `name`, `epoch`, `version`, `caps`, `enrol` (first time), `sig` (signature over the challenge nonce) | once per connection, after the handshake of section 2 |
 | `Snapshot` | `epoch`, `items: [Obligation]`, `workspaces: [WorkspaceState]` | right after `Hello`, and when the conductor asks (`Resync`) |
 | `Raised` | `epoch`, `seq`, `obligation` | an Attention item is raised (`events.rs` `raise`) |
 | `Cleared` | `epoch`, `seq`, `id`, `by` (`fact`, `ack`, `answer`, `rule`) | cleared by fact, ack or an answer |
@@ -43,7 +43,7 @@ The node validates an `Answer` exactly as it validates one from a local device (
 Reuses what a phone already does (decision 0123, `candidates.rs` `pairing_bundle`, `main.rs` `--print-pairing`), so there is one trust model.
 
 1. **On the conductor:** `termenbox-server --conductor-enrol` (or a button in Settings) prints a link and QR of the same shape as the pairing block: the conductor's signed `Bundle` (its server key, fingerprint and candidate addresses) in the fragment, plus a one-time `enrol` secret outside the signed part, valid 15 minutes, single use, held in memory only (`security-secrets-handling`).
-2. **On the node:** `termenbox-server --conductor '<link>'` verifies the bundle signature, pins the conductor's key and fingerprint, then dials the candidates, racing them as clients do, with the node's own server key as identity. It does not trust an address that fails the pinned fingerprint.
+2. **On the node:** `termenbox-server --conductor '<link>'` verifies the bundle signature, pins the conductor's key and fingerprint, then dials the candidates, racing them as clients do, with the node's own server key as identity (built in step 2.3: candidates are tried in order, a race is later work). It does not trust an address that fails the pinned fingerprint.
 3. **Handshake:** the conductor sends the existing `Challenge { nonce, server_id }`. The node answers `NodeHello` with its server id, `name`, the `enrol` secret (first time only) and a signature over the nonce with its server key. The conductor checks the secret, records the node key as enrolled, and burns the secret.
 4. **Owner tap:** the conductor shows "Add node *name* (key fingerprint)?" to the owner's device; one tap confirms. Until the tap the node is `pending` and its messages are discarded. This is the single human step. (The tap is on the owner device at the conductor, which the owner already holds; the node's own owner device is not needed because the secret proved physical access to the node's terminal.)
 5. **Afterwards** the node is identified by its key alone: it reconnects with a signed nonce, no secret. Removing a node deletes its key and sends `Disable` if connected.
