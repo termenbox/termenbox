@@ -122,7 +122,7 @@ what a scheduled wakeup or loop emits; what a 429 retry loop emits before `StopF
 Done-when: Fact 0073 answers each question above with a measured result or "could not reproduce, how tried".
 Progress: done 2026-11-01. `scripts/status-events.mjs`, fact 0073, fixtures in `testdata/events/a2/`. Key results for B.2 to B.5: `Stop` carries `background_tasks` and `session_crons` (the `bg` badge needs no scan); a finished background task or a wake opens a turn through `UserPromptSubmit`; retries emit no hook, so `retrying` is screen-only until `StopFailure` (about 3 min); `PermissionDenied` and context overflow were not reproduced (n = 1, no claude credentials for an error of that class).
 
-### A.3 Measure the progress proofs for a silent tool and set the quiet window — [ ]
+### A.3 Measure the progress proofs for a silent tool and set the quiet window — [x]
 Class: explore · Needs: A.1 · Check: `grep -q "quiet window" docs/decisions/0181-working-means-in-progress-except-human-input-and-background-work-is-a-badge.md && grep -q "retry threshold" docs/decisions/0185-failures-are-classed-by-whether-the-turn-ended.md`
 Context: Decision 0181 shows `working(quiet)` when no progress proof arrives for a window, and 0185 raises an `info`
 item when a session is `retrying` too long; both numbers are TBD. Progress proofs: hook edge, transcript append, pane
@@ -131,6 +131,7 @@ Do: Using A.1's script, run a 20-minute silent tool (sleep loop, a real test run
 mid-inference). Record which proofs keep arriving. Pick the quiet window and the retry threshold with the evidence,
 and write them into 0181 and 0185 as "quiet window" and "retry threshold" with the measured basis.
 Done-when: Both decisions state a number and the run it comes from.
+Progress: done 2026-11-01. `scripts/status-quiet.mjs` (rerunnable; the stall uses a local blackhole proxy, no host network change). Quiet window 60 s, retry threshold 120 s, written into 0181 and 0185. Findings for B.2/B.5: a 20-minute silent tool has no hook or transcript line but a live child process the whole time, so the child is the proof that matters; the raw pane is never a proof (spinner, counters, status line tick); a stalled turn ends in `StopFailure server_error` after 687 s (A.2 said about 3 min, which was for retries that kept progressing), with retry screens in between. n = 1 per run.
 
 ### B.1 Core types for sub-reason, tier, cause and bg — [ ]
 Class: implement · Needs: none · Check: `scripts/dev.sh cargo test -p termenbox-core events`
