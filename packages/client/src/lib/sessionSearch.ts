@@ -355,8 +355,10 @@ export function saveGroupMode(mode: GroupMode, store: Pick<Storage, 'setItem'> |
 }
 
 /**
- * Hits grouped by `mode`, the group with the newest hit first, the newest hit first inside it. `workspace` groups by
- * workspace (`nameOf` gives its current name), `agent` by agent per server, `none` is one flat list with no header.
+ * Hits grouped by `mode`. `workspace` groups by workspace (`nameOf` gives its current name), `agent` by agent per server,
+ * `none` is one flat list with no header. Nothing is sorted: the server sends the open workspaces' conversations first,
+ * then the files of each root newest first, a group sits where its first hit arrived and a hit goes to the end of its
+ * group. A row never moves because another one arrived, so a tap lands on what was read (decision 0082).
  */
 export function groupHits(hits: Hit[], mode: GroupMode, nameOf: (serverId: string, workspace: string) => string | undefined): Group[] {
   const by = new Map<string, Group>();
@@ -372,9 +374,7 @@ export function groupHits(hits: Hit[], mode: GroupMode, nameOf: (serverId: strin
     }
     g.hits.push(h);
   }
-  const newest = (g: Group) => g.hits.reduce((m, h) => Math.max(m, h.at ?? 0), 0);
-  for (const g of by.values()) g.hits.sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
-  return [...by.values()].sort((a, b) => newest(b) - newest(a));
+  return [...by.values()];
 }
 
 /** The first `n` hits of the groups in their order, groups left empty dropped: what is drawn so far. */

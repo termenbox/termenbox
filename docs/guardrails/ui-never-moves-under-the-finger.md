@@ -11,4 +11,4 @@ tags: [client, mobile]
 # Guardrail: The interface never moves under the finger
 
 ## Rule
-**MUST NOT** switch the active tab or session on its own, whatever arrives. **MUST NOT** reorder, insert or remove a card or tab while a touch is down, a card is expanded, or for 2 s after a scroll; apply the change afterwards without an animation that moves a control. **MUST** attach a one-tap answer to the prompt it was read from.
+**MUST NOT** switch the active tab or session on its own, whatever arrives. **MUST NOT** reorder, insert or remove a card or tab while a touch is down, a card is expanded, or for 2 s after a scroll; apply the change afterwards without an animation that moves a control. **MUST** attach a one-tap answer to the prompt it was read from. A list that fills while it is read (search results) meets the first rule by being append-only: it never sorts or regroups on arrival (decision 0082).
