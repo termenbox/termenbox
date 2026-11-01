@@ -1,0 +1,120 @@
+name: Template Review
+
+# Decision 0167 (amended 2026-11-01): the owner accepts a UI slice's templates on its probe page, with one tap, before the slice is wired.
+# Dispatch builds the e2e probe pages, publishes them to a Cloudflare Pages preview on their own branch alias (never production) and
+# opens a review issue with a link and a checkbox per page. Ticking a box (anyone with write access) labels the issue `accepted-<page>`
+# and comments. Issue events run THIS file from the default branch with the repository token for anyone who can edit, so the accept
+# job checks the actor's permission first; the issue body reaches the script only through env.
+on:
+  workflow_dispatch:
+    inputs:
+      pages:
+        description: Probe pages to publish, space separated (packages/client/e2e/<page>.html), for example "fleet"
+        type: string
+        required: true
+  issues:
+    types: [edited]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  publish:
+    name: Publish the probe pages and open the review
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build the client and its e2e pages
+        working-directory: packages/client
+        run: pnpm run e2e:build
+
+      - name: Check the pages exist
+        env:
+          PAGES: ${{ inputs.pages }}
+        run: |
+          for p in $PAGES; do
+            case "$p" in *[!a-z0-9-]*|'') echo "bad page name: $p"; exit 1 ;; esac
+            [ -f "packages/client/e2e/dist/$p.html" ] || { echo "no probe page $p"; exit 1; }
+          done
+
+      - name: Install Wrangler
+        run: npm install -g wrangler
+
+      - name: Publish the preview
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PROJECT: ${{ vars.TERMENBOX_SITE_PROJECT_NAME || 'termenbox-site' }}
+        run: |
+          sha=$(git rev-parse --short=8 HEAD)
+          wrangler pages deploy packages/client/e2e/dist --project-name="$PROJECT" --branch="review-$sha"
+          echo "SHA=$sha" >> "$GITHUB_ENV"
+          echo "PREVIEW_URL=https://review-$sha.$PROJECT.pages.dev" >> "$GITHUB_ENV"
+
+      - name: Open the review issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAGES: ${{ inputs.pages }}
+        run: |
+          # shellcheck disable=SC2086
+          node scripts/template-review.mjs body "$SHA" "$PREVIEW_URL" $PAGES > "$RUNNER_TEMP/body.md"
+          gh label create template-review --color 5319e7 --description "Template review" 2>/dev/null || true
+          title="Template review $SHA"
+          n=$(gh issue list --label template-review --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$n" ]; then gh issue edit "$n" --body-file "$RUNNER_TEMP/body.md"
+          else gh issue create --title "$title" --label template-review --body-file "$RUNNER_TEMP/body.md"; fi
+
+  accept:
+    name: Record an acceptance
+    if: github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'template-review') && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: template-review-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - name: Check the actor's permission
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          perm=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$ACTOR/permission" --jq .permission 2>/dev/null || echo none)
+          case "$perm" in write|maintain|admin) echo "ok=true" >> "$GITHUB_OUTPUT" ;; *) echo "ignored: $ACTOR has $perm" ;; esac
+
+      - uses: actions/checkout@v7
+        if: steps.gate.outputs.ok == 'true'
+
+      - uses: actions/setup-node@v7
+        if: steps.gate.outputs.ok == 'true'
+        with:
+          node-version: '24'
+
+      - name: Label and comment on each newly ticked page
+        if: steps.gate.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.changes.body.from }}
+          AFTER: ${{ github.event.issue.body }}
+          ISSUE: ${{ github.event.issue.number }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          node scripts/template-review.mjs ticked | jq -r '.ticked[] | "\(.page) \(.sha)"' | while read -r page sha; do
+            gh label create "accepted-$page" --color 0e8a16 --description "Template accepted by the owner" 2>/dev/null || true
+            gh issue edit "$ISSUE" --add-label "accepted-$page"
+            gh issue comment "$ISSUE" --body "Accepted \`$page\` at \`$sha\` (ticked by @$ACTOR). The wiring step may start."
+          done
