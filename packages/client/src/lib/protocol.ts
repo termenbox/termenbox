@@ -496,3 +496,52 @@ export const CONTROL_TYPES: ReadonlySet<string> = new Set([
   'rename_workspace', 'new_workspace', 'new_window', 'close_window', 'select_window', 'new_tab', 'rename_tab',
   'close_tab', 'move_tab', 'focus_tab', 'move_workspace', 'resize', 'foreground',
 ]);
+
+/** The conductor link (decision 0170, packages/core/src/conductor.rs). Attention metadata only; mirrored by hand. */
+export interface ConductorObligation {
+  id: string;
+  workspace: string;
+  tab?: string;
+  kind: AttentionKind;
+  raised_at: number;
+  urgency?: string;
+  class_features?: string[];
+  task?: string;
+  prompt?: string;
+}
+
+export interface ConductorUsageRow {
+  workspace: string;
+  tab?: string;
+  agent?: string;
+  model?: string;
+  tokens_in?: number;
+  tokens_out?: number;
+  cache_read?: number;
+  cost_micro?: number;
+  working_s?: number;
+}
+
+export type ClearedBy = 'fact' | 'ack' | 'answer' | 'rule';
+
+/** Node to conductor. `epoch` is the node's process epoch, `seq` counts messages within it. */
+export type NodeMessage =
+  | { type: 'hello'; v: number; node: string; name: string; epoch: number; version: string; caps?: string[]; enrol?: string }
+  | { type: 'snapshot'; epoch: number; items: ConductorObligation[]; workspaces?: { workspace: string; activity: string }[] }
+  | { type: 'raised'; epoch: number; seq: number; obligation: ConductorObligation }
+  | { type: 'cleared'; epoch: number; seq: number; id: string; by: ClearedBy }
+  | { type: 'acked'; epoch: number; seq: number; id: string; actor: string; owner: string }
+  | { type: 'answered'; epoch: number; seq: number; id: string; actor: string; owner: string; device: string; option: string }
+  | { type: 'usage'; epoch: number; seq: number; rows: ConductorUsageRow[] }
+  | { type: 'incident'; epoch: number; seq: number; cause: string; workspace?: string; detail?: string }
+  | { type: 'health'; epoch: number; seq: number; agents: number; working: number; waiting: number; load?: number; queue_dropped?: number };
+
+/** Conductor to node. An answer or ack without `actor` and `owner` is not valid. */
+export type ConductorMessage =
+  | { type: 'welcome'; epoch_ack: number; heartbeat_s: number; conductor_epoch?: number }
+  | { type: 'resync' }
+  | { type: 'answer'; target: { workspace: string; tab?: string; prompt_id: string }; id: string; actor: string; owner: string; device: string; option: string; idem: string }
+  | { type: 'ack'; id: string; actor: string; owner: string; idem: string }
+  | { type: 'open_terminal'; ticket: string; workspace: string; tab: string; cols: number; rows: number }
+  | { type: 'close_terminal'; ticket: string }
+  | { type: 'disable' };

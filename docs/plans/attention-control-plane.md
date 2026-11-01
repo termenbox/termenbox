@@ -66,7 +66,7 @@ Context: Decision 0170 and guardrail `conductor-links-carry-attention-metadata-o
 Do: Write `docs/plans/assets/control-plane/conductor.md`: the node-to-conductor messages (hello with node key and name, obligation raised, cleared, acked, answered, usage, incident, node health), the enrolment flow (a pairing link from the conductor, one tap on the node's owner device, using the pairing in `--print-pairing`), how ids are keyed `(node, workspace, tab, obligation)`, reconnect and bounded-queue behaviour while a node is away, what the conductor shows when a node is silent, how a device opens a terminal on a node (proxy through the conductor, or a signed path), and the budget for 50 idle agents per node in bytes per minute. State the standby design for later step 2.8.
 Done-when: the file exists and has a section for each item above.
 
-### 2.2 Conductor wire types — [ ]
+### 2.2 Conductor wire types — [x] (in `packages/core/src/conductor.rs`, a module of its own rather than `protocol.rs`, which is already 2,000 lines)
 Class: implement · Needs: 2.1 · Check: `scripts/dev.sh cargo test -p termenbox-core conductor`
 Context: Guardrails `conductor-links-carry-attention-metadata-only` and `operator-actions-carry-an-actor-id-apart-from-the-owner`. Types are shared in `packages/core/src/protocol.rs` and mirrored by hand.
 Do: Add `NodeMessage` and `ConductorMessage` enums to `packages/core/src/protocol.rs` per the spike, every answer and acknowledgement carrying `actor` and `owner`, agent text length-capped; mirror them in `packages/client/src/lib/protocol.ts`; add round-trip tests with old-client compatibility (unknown variants ignored).
