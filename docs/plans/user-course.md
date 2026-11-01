@@ -169,6 +169,8 @@ Done-when: the Check exits 0; after a release `https://termenbox.dev/course/` li
 
 Progress (2026-11-01): done (1) `scripts/build-site.mjs` builds `site-dist/` (git-ignored: landing page, `/media/`, `/course/` with a `<video>` player per chapter, sitemap; CI runs its self-test and a build); (2) Course nav link and section on the landing page, README line; (3) `_headers` gives `/course/*` `media-src 'self'`; (4) `deploy-site.yaml` builds and deploys `site-dist` and watches `docs/course/**`, `docs/media/**`. Left: (5) poster links to the player page and `check` for a missing video in the site output (waits for 5.1d, which changes the same block); (6) see it on an iPhone through the preview, then a release; the live deploy was not run.
 
+Pull request #478 (branch `feat/course-site-player`) opened 2026-11-01; every CI check passed (including the site check and the build self-test). Waits for merge; then the preview or a release is where the iPhone check (6) happens.
+
 ### 5.1a Take the "rendered walkthrough" label off the videos and docs — [ ]
 Class: implement · Needs: 5.1, 5.1c · Check: `git grep -n -i "rendered walkthrough" -- packages scripts docs/course docs/guide README.md`
 Context: owner's word, 2026-11-01: "remove text 'a rendered walkthrough...'". The label is a MUST in guardrail `nothing-is-published-without-a-matching-approval-record` (last rule line: every published video and still carries it) and in the procedures `render-a-feature-video` (step 5) and `review-and-publish-docs-media` (step 2), so those change first or the check and the review keep demanding it.
