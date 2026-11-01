@@ -325,6 +325,14 @@ pub const MAX_SIDE: usize = 200;
 pub struct SearchRun {
     pub scanner: PooledScanner,
     pub budget: Budget,
+    /// Input to the next `search_in`: continue the file where a page stopped. A file that was rewritten since starts
+    /// over, and `restarted` says so.
+    pub resume: Option<Cursor>,
+    pub restarted: bool,
+    /// Output of `search_in`: where it stopped before the start of the file, or none when it read to the start.
+    pub stopped: Option<u64>,
+    /// Output of `search_in`: the file as it was read, to tie a continuation to it.
+    pub seen: Option<Fingerprint>,
 }
 
 impl SearchRun {
@@ -332,6 +340,24 @@ impl SearchRun {
         SearchRun {
             scanner: PooledScanner::take(),
             budget: Budget::new(limits, cancel),
+            resume: None,
+            restarted: false,
+            stopped: None,
+            seen: None,
+        }
+    }
+
+    /// How many bytes of the file to read, from its start: all of it, or up to where a continuation left off. Records
+    /// the file as it is, to tie the next continuation to it.
+    pub fn start(&mut self, fp: Fingerprint) -> u64 {
+        self.seen = Some(fp);
+        match self.resume.take() {
+            Some(c) if c.fingerprint.still_holds(&fp) => c.pos.min(fp.size),
+            Some(_) => {
+                self.restarted = true;
+                fp.size
+            }
+            None => fp.size,
         }
     }
 

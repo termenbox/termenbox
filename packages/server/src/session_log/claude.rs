@@ -109,12 +109,7 @@ impl ClaudeLog {
     }
 
     /// The sessions of one project folder of the root, as `list` finds them.
-    fn list_folder(
-        &self,
-        folder: &Path,
-        since: Option<std::time::SystemTime>,
-        out: &mut Listing,
-    ) {
+    fn list_folder(&self, folder: &Path, since: Option<std::time::SystemTime>, out: &mut Listing) {
         for e in real_entries(folder, false) {
             let name = e.file_name().to_string_lossy().into_owned();
             let Some(id) = name.strip_suffix(".jsonl").filter(|i| plain_id(i)) else {
@@ -549,7 +544,13 @@ impl SessionLog for ClaudeLog {
             return Ok(Vec::new());
         };
         let (path, file, fp) = self.open(s)?;
-        let SearchRun { scanner, budget } = run;
+        let size = run.start(fp);
+        let SearchRun {
+            scanner,
+            budget,
+            stopped,
+            ..
+        } = run;
         let limit = budget
             .limits()
             .per_session
@@ -561,7 +562,7 @@ impl SessionLog for ClaudeLog {
         let mut chain: Option<Arc<Chain>> = None;
         let mut failed: Option<LogError> = None;
         scanner
-            .scan_file(&file, fp.size, &needle, budget, |c| {
+            .scan_file(&file, size, &needle, budget, |c| {
                 // The scan matched bytes; what counts is the scrubbed text of a record on the active branch.
                 if !may_hold_text(c.bytes) {
                     return ControlFlow::Continue(());
@@ -601,13 +602,15 @@ impl SessionLog for ClaudeLog {
                             .and_then(Value::as_str)
                             .map(str::to_string),
                     });
-                    if hits.len() >= limit {
-                        return ControlFlow::Break(());
-                    }
+                }
+                // The cap is checked between records, so a record's hits are never split across two pages.
+                if hits.len() >= limit {
+                    return ControlFlow::Break(());
                 }
                 ControlFlow::Continue(())
             })
             .map_err(|_| LogError::Disabled(UNREADABLE))?;
+        *stopped = scanner.stopped_at();
         if let Some(e) = failed {
             return Err(e);
         }

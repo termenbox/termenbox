@@ -345,7 +345,15 @@ impl WorkspaceManager {
 
     /// Starts the search `id` of connection `conn` off the async threads; hits reach `tx` as they are found. The
     /// query is moved into the task and goes nowhere else: no log line, no error text.
-    fn start_search(&self, conn: u64, id: u64, query: String, since: Option<u64>, tx: &LinkTx) {
+    fn start_search(
+        &self,
+        conn: u64,
+        id: u64,
+        query: String,
+        since: Option<u64>,
+        page: crate::session_search::Page,
+        tx: &LinkTx,
+    ) {
         let cancel = crate::session_log::scan::Cancel::default();
         self.searches.lock().unwrap().insert(conn, cancel.clone());
         let (logs, sessions, limits) = (
@@ -359,24 +367,32 @@ impl WorkspaceManager {
         let (hits_tx, mut hits_rx) = tokio::sync::mpsc::channel::<ServerMessage>(32);
         let scan_cancel = cancel.clone();
         let scan = tokio::task::spawn_blocking(move || {
-            crate::session_search::run(&logs, sessions, &query, limits, scan_cancel, |s, h| {
-                let msg = ServerMessage::SearchHit {
-                    id,
-                    workspace: s.workspace.clone(),
-                    tab: s.tab.clone(),
-                    agent: s.agent.clone(),
-                    up: s.open,
-                    state: if s.open { "open" } else { "resume" }.into(),
-                    dir: s.dir.to_string_lossy().into_owned(),
-                    session: s.session_id.clone(),
-                    turn: h.turn,
-                    kind: kind_name(h.kind).into(),
-                    snippet: h.snippet,
-                    highlight: (h.highlight.0 as u32, h.highlight.1 as u32),
-                    at: h.at,
-                };
-                hits_tx.blocking_send(msg).is_ok()
-            })
+            crate::session_search::run_page(
+                &logs,
+                sessions,
+                &query,
+                limits,
+                scan_cancel,
+                &page,
+                |s, h| {
+                    let msg = ServerMessage::SearchHit {
+                        id,
+                        workspace: s.workspace.clone(),
+                        tab: s.tab.clone(),
+                        agent: s.agent.clone(),
+                        up: s.open,
+                        state: if s.open { "open" } else { "resume" }.into(),
+                        dir: s.dir.to_string_lossy().into_owned(),
+                        session: s.session_id.clone(),
+                        turn: h.turn,
+                        kind: kind_name(h.kind).into(),
+                        snippet: h.snippet,
+                        highlight: (h.highlight.0 as u32, h.highlight.1 as u32),
+                        at: h.at,
+                    };
+                    hits_tx.blocking_send(msg).is_ok()
+                },
+            )
         });
         let (tx, searches) = (tx.clone(), self.searches.clone());
         tokio::spawn(async move {
@@ -402,6 +418,8 @@ impl WorkspaceManager {
                             reason: reason.to_string(),
                         })
                         .collect(),
+                    next: summary.next,
+                    restarted: summary.restarted,
                 };
                 let _ = send(&tx, &done).await;
             }
@@ -2037,6 +2055,8 @@ impl WorkspaceManager {
                 query,
                 cancel,
                 since,
+                session,
+                after,
             } => {
                 // Searching reads every conversation on the machine: the owner only.
                 if !Self::is_owner(auth, identity) {
@@ -2053,6 +2073,8 @@ impl WorkspaceManager {
                             cut: cancel.then(|| "cancelled".to_string()),
                             older: 0,
                             off: Vec::new(),
+                            next: None,
+                            restarted: false,
                         },
                     )
                     .await?;
@@ -2060,7 +2082,8 @@ impl WorkspaceManager {
                 }
                 // Who searched, never for what.
                 info!(target: "audit", event = "session_search", provider = %identity.provider, account_id = %identity.id);
-                self.start_search(conn, id, query, since, tx);
+                let page = crate::session_search::Page { session, after };
+                self.start_search(conn, id, query, since, page, tx);
             }
             ClientMessage::ResumeSession { agent, session } => {
                 if !Self::is_owner(auth, identity) {
@@ -4149,6 +4172,8 @@ mod search_tests {
             query: query.into(),
             cancel: false,
             since: None,
+            session: None,
+            after: None,
         }
     }
 
@@ -4198,6 +4223,8 @@ mod search_tests {
             query: String::new(),
             cancel: true,
             since: None,
+            session: None,
+            after: None,
         };
         send_msg(&rig, "1", cancel, &link).await.unwrap();
         let got = until(&mut end, "search_done").await;

@@ -358,6 +358,8 @@ pub struct Scanner {
     line: Vec<u8>,
     fold: Vec<u8>,
     spans: Vec<(usize, usize)>,
+    /// Where the last `scan_file` left off when it did not finish: the file's bytes before it were not looked at.
+    stopped: Option<u64>,
 }
 
 impl Default for Scanner {
@@ -374,7 +376,14 @@ impl Scanner {
             line: Vec::new(),
             fold: Vec::new(),
             spans: Vec::new(),
+            stopped: None,
         }
+    }
+
+    /// The offset a stopped or cut `scan_file` ended at, always just after a newline (or the file's size): scanning
+    /// the file again as if it were that long continues where it left off. None when the last scan ran to its end.
+    pub fn stopped_at(&self) -> Option<u64> {
+        self.stopped
     }
 
     /// Empties the working buffers and drops the ones a huge line grew, so an idle scanner stays small.
@@ -399,7 +408,25 @@ impl Scanner {
         size: u64,
         needle: &Needle,
         budget: &mut Budget,
+        on_candidate: impl FnMut(Candidate<'_>) -> ControlFlow<()>,
+    ) -> io::Result<End> {
+        let last = std::cell::Cell::new(size);
+        self.stopped = None;
+        let end = self.scan_inner(file, size, needle, budget, on_candidate, &last)?;
+        if matches!(end, End::Stopped | End::Cut(_)) {
+            self.stopped = Some(last.get());
+        }
+        Ok(end)
+    }
+
+    fn scan_inner(
+        &mut self,
+        file: &File,
+        size: u64,
+        needle: &Needle,
+        budget: &mut Budget,
         mut on_candidate: impl FnMut(Candidate<'_>) -> ControlFlow<()>,
+        last: &std::cell::Cell<u64>,
     ) -> io::Result<End> {
         let Scanner {
             buf,
@@ -407,6 +434,7 @@ impl Scanner {
             line,
             fold,
             spans,
+            ..
         } = self;
         carry.clear();
         let mut skipping = false;
@@ -426,6 +454,7 @@ impl Scanner {
                 {
                     return ControlFlow::Continue(());
                 }
+                last.set(offset);
                 on_candidate(Candidate {
                     offset,
                     bytes,
@@ -434,6 +463,8 @@ impl Scanner {
             };
 
         while end > 0 {
+            // The carry is the tail of a line that starts before `end`: the file up to its last byte is still to read.
+            last.set(end + carry.len() as u64);
             if let Err(why) = budget.check() {
                 return Ok(End::Cut(why));
             }

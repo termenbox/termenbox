@@ -92,7 +92,7 @@ export type ClientMessage =
   /** Forgets the server's whole history. */
   | { type: 'history_delete' }
   /** R78: searches the agents' own conversation files. Hits stream as `search_hit`, then `search_done`. A newer `id`, or `cancel`, stops the previous search. Owner only. */
-  | { type: 'search'; id: number; query: string; cancel?: boolean; /** Only records at or after this time (ms since the epoch); absent searches any age. */ since?: number }
+  | { type: 'search'; id: number; query: string; cancel?: boolean; /** Only records at or after this time (ms since the epoch); absent searches any age. */ since?: number; /** Only this conversation (a hit's `session`), all its matches up to a fixed cap. */ session?: string; /** The `next` of an earlier `search_done` of the same query: continue after it. */ after?: string }
   /** Resume a conversation a search found: the server switches to the workspace that holds it, else creates one in the session's directory and runs the agent's resume command; the answer is `session_resumed`. Owner only. */
   | { type: 'resume_session'; agent: string; session: string }
   /** The turns around `turn` of the session of a tab (`tab` empty for an ACP workspace); the answer is `session_window`. Owner only. */
@@ -222,6 +222,10 @@ export interface SearchDoneMessage {
   /** Conversations the `since` bound skipped or stopped reading. */
   older?: number;
   off: { agent: string; reason: string }[];
+  /** Present when the search stopped with more to look at: send it as `after`. */
+  next?: string;
+  /** The conversation the cursor pointed into was rewritten, so it was read again from its newest line. */
+  restarted?: boolean;
 }
 
 export type SessionEntryKind = 'user' | 'message' | 'thought' | 'tool' | 'plan' | 'notice' | string;

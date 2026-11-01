@@ -13,7 +13,10 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use crate::registry::KnownSession;
 use crate::session_log::scan::{Cancel, Cut, Limits};
-use crate::session_log::{Hit, LogError, SearchRun, SessionLogs, SessionRef, Window, MAX_SIDE};
+use crate::session_log::{
+    plain_id, Cursor, Hit, LogError, SearchRun, SessionFile, SessionLogs, SessionRef, Window,
+    MAX_SIDE,
+};
 
 /// How a search ended: the cap that cut it, if any, and the agents whose search is off.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -22,6 +25,78 @@ pub struct Summary {
     /// Sessions the `since` bound kept from being read in full.
     pub older: usize,
     pub off: Vec<(String, &'static str)>,
+    /// Where to continue when the search stopped before it had looked everywhere (opaque to the client).
+    pub next: Option<String>,
+    /// The cursor's file was rewritten since the last page, so it was read again from its newest line.
+    pub restarted: bool,
+}
+
+/// Most hits of the one conversation a per-session search returns.
+pub const SESSION_CAP: usize = 200;
+
+/// Which part of the corpus a search covers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Page {
+    /// Only this conversation, with all its matches up to `SESSION_CAP`.
+    pub session: Option<String>,
+    /// A cursor from an earlier `Summary::next`: continue after it.
+    pub after: Option<String>,
+}
+
+/// Where a page stopped: the last conversation it reached, and how far into it. The listing is newest first, so
+/// "after" means older; the server keeps nothing between pages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Pos {
+    agent: String,
+    id: String,
+    mtime_ns: u128,
+    /// How far into the file the scan got, or none when the conversation was finished.
+    at: Option<Cursor>,
+}
+
+impl Pos {
+    fn token(&self) -> String {
+        let at = self.at.map_or("-".to_string(), Cursor::to_token);
+        format!("{}:{}:{:x}:{}", self.agent, self.id, self.mtime_ns, at)
+    }
+
+    fn parse(token: &str) -> Option<Pos> {
+        let mut p = token.splitn(4, ':');
+        let (agent, id) = (p.next()?, p.next()?);
+        let mtime_ns = u128::from_str_radix(p.next()?, 16).ok()?;
+        let at = match p.next()? {
+            "-" => None,
+            t => Some(Cursor::from_token(t)?),
+        };
+        (plain_id(agent) && plain_id(id)).then(|| Pos {
+            agent: agent.into(),
+            id: id.into(),
+            mtime_ns,
+            at,
+        })
+    }
+
+    fn of(f: &SessionFile, at: Option<Cursor>) -> Pos {
+        Pos {
+            agent: f.agent.clone(),
+            id: f.id.clone(),
+            mtime_ns: mtime_ns(f),
+            at,
+        }
+    }
+}
+
+fn mtime_ns(f: &SessionFile) -> u128 {
+    f.mtime
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos())
+}
+
+/// The listing order: newest first, ties by name so a page boundary is the same on every walk.
+fn order(a: &SessionFile, b: &SessionFile) -> std::cmp::Ordering {
+    mtime_ns(b)
+        .cmp(&mtime_ns(a))
+        .then_with(|| (&a.agent, &a.id).cmp(&(&b.agent, &b.id)))
 }
 
 pub fn cut_name(cut: Cut) -> &'static str {
@@ -80,8 +155,27 @@ pub fn run(
     query: &str,
     limits: Limits,
     cancel: Cancel,
+    emit: impl FnMut(&Found, Hit) -> bool,
+) -> Summary {
+    run_page(logs, known, query, limits, cancel, &Page::default(), emit)
+}
+
+/// `run` for one page: a single conversation (`page.session`), or the corpus after the cursor (`page.after`).
+pub fn run_page(
+    logs: &SessionLogs,
+    known: Vec<KnownSession>,
+    query: &str,
+    mut limits: Limits,
+    cancel: Cancel,
+    page: &Page,
     mut emit: impl FnMut(&Found, Hit) -> bool,
 ) -> Summary {
+    if page.session.is_some() {
+        // All of one conversation, whatever its age.
+        limits.since_ms = None;
+        limits.per_session = SESSION_CAP;
+        limits.max_hits = SESSION_CAP;
+    }
     let mut run = SearchRun::new(limits, cancel.clone());
     let mut summary = Summary::default();
     let since = run
@@ -103,11 +197,48 @@ pub fn run(
             note_off(&mut summary, agent, why);
         }
     }
+    let mut files = listing.files;
+    files.sort_by(order);
+    if let Some(id) = &page.session {
+        files.retain(|f| f.id == *id);
+    }
+    // A cursor that does not parse starts from the top: it holds no more than a position.
+    let after = page.after.as_deref().and_then(Pos::parse);
+    if let Some(c) = &after {
+        let this = |f: &SessionFile| f.agent == c.agent && f.id == c.id;
+        let key = |f: &SessionFile| {
+            (
+                std::cmp::Reverse(mtime_ns(f)),
+                f.agent.clone(),
+                f.id.clone(),
+            )
+        };
+        let at = (std::cmp::Reverse(c.mtime_ns), c.agent.clone(), c.id.clone());
+        // The conversation the page stopped in goes first, wherever it sorts now; the rest are those that sort
+        // after it, which a conversation that grew since is not any more.
+        let mine = files.iter().position(this).filter(|_| c.at.is_some());
+        let head = mine.map(|i| files.remove(i));
+        files.retain(|f| !this(f) && key(f) > at);
+        if let Some(h) = head {
+            files.insert(0, h);
+        }
+    }
+    let per_session = run.budget.limits().per_session;
+    let max_hits = run.budget.limits().max_hits;
+    let mut last: Option<Pos> = None;
     let mut dropped = false;
-    for f in listing.files {
+    for f in files {
         if run.budget.check().is_err() {
             break;
         }
+        run.resume = after
+            .as_ref()
+            .filter(|c| c.agent == f.agent && c.id == f.id)
+            .and_then(|c| c.at);
+        run.stopped = None;
+        run.seen = None;
+        run.restarted = false;
+        let pos = Pos::of(&f, None);
         let adapter = match logs.get(&f.agent) {
             Ok(a) => a,
             Err(LogError::Disabled(why)) => {
@@ -139,8 +270,10 @@ pub fn run(
             id: f.id,
             dir: f.dir,
         };
+        let mut shown = 0;
         match adapter.search_in(&session, query, &mut run) {
             Ok(hits) => {
+                shown = hits.len();
                 for hit in hits {
                     if !emit(&found, hit) {
                         dropped = true;
@@ -155,6 +288,18 @@ pub fn run(
                 }
             }
         }
+        summary.restarted |= run.restarted;
+        // The per-session cap ends a conversation for this page (the sheet asks for the rest of it on its own); any
+        // other stop leaves the rest of the file for the next page.
+        let capped = shown >= per_session && per_session < max_hits;
+        let at = match (run.stopped, run.seen) {
+            (Some(pos), Some(fp)) if !capped => Some(Cursor {
+                fingerprint: fp,
+                pos,
+            }),
+            _ => None,
+        };
+        last = Some(Pos { at, ..pos });
         if dropped {
             cancel.cancel();
             let _ = run.budget.check();
@@ -162,11 +307,13 @@ pub fn run(
         }
     }
     summary.older = run.budget.older() + listing.older;
-    summary.cut = run
-        .budget
-        .cut()
-        .map(cut_name)
-        .or((summary.older > 0).then_some(RANGE));
+    let cut = run.budget.cut();
+    summary.cut = cut.map(cut_name).or((summary.older > 0).then_some(RANGE));
+    let stopped_early = matches!(cut, Some(Cut::Hits | Cut::Bytes | Cut::Time));
+    let mid_file = last.as_ref().is_some_and(|p| p.at.is_some());
+    if !dropped && cut != Some(Cut::Cancelled) && (stopped_early || mid_file) {
+        summary.next = last.or(after).map(|p| p.token());
+    }
     summary
 }
 
@@ -530,5 +677,185 @@ mod tests {
             !text.contains("secret-id") && !text.contains("private"),
             "{text}"
         );
+    }
+
+    /// A Claude session of `n` user records, each holding "quokka", chained so all are on the active branch.
+    fn write_quokka(root: &Path, id: &str, from: usize, n: usize, append: bool) {
+        use std::io::Write;
+        let path = root
+            .join("-home-fixture-project")
+            .join(format!("{id}.jsonl"));
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(append)
+            .truncate(!append)
+            .open(path)
+            .unwrap();
+        for i in from..from + n {
+            let parent = if i == 0 {
+                "null".to_string()
+            } else {
+                format!("\"{id}-{}\"", i - 1)
+            };
+            writeln!(
+                f,
+                "{{\"parentUuid\":{parent},\"type\":\"user\",\"uuid\":\"{id}-{i}\",\"cwd\":\"{DIR}\",\"version\":\"2.1.0\",\"message\":{{\"role\":\"user\",\"content\":\"quokka number {i}\"}}}}"
+            )
+            .unwrap();
+        }
+    }
+
+    fn page(root: &Path, limits: Limits, page: &Page, got: &mut Vec<(String, String)>) -> Summary {
+        run_page(
+            &logs(root),
+            Vec::new(),
+            "quokka",
+            limits,
+            Cancel::default(),
+            page,
+            |f, h| {
+                got.push((f.session_id.clone(), h.turn));
+                true
+            },
+        )
+    }
+
+    fn paged_limits() -> Limits {
+        Limits {
+            max_hits: 20,
+            per_session: 100,
+            ..Limits::default()
+        }
+    }
+
+    #[test]
+    fn paging_past_the_cap_sees_each_hit_exactly_once() {
+        let root = projects();
+        write_quokka(&root, "paged-a", 0, 70, false);
+        write_quokka(&root, "paged-b", 0, 30, false);
+        let mut whole = Vec::new();
+        let all = Limits {
+            max_hits: 1000,
+            per_session: 1000,
+            ..Limits::default()
+        };
+        assert_eq!(page(&root, all, &Page::default(), &mut whole).next, None);
+        assert_eq!(whole.len(), 100);
+
+        let mut got = Vec::new();
+        let mut after = None;
+        let mut pages = 0;
+        loop {
+            let before = got.len();
+            let s = page(
+                &root,
+                paged_limits(),
+                &Page {
+                    session: None,
+                    after,
+                },
+                &mut got,
+            );
+            assert!(got.len() - before >= 20 || s.next.is_none(), "{pages}");
+            pages += 1;
+            assert!(pages < 20, "the cursor never ends");
+            match s.next {
+                Some(n) => after = Some(n),
+                None => break,
+            }
+        }
+        let mut sorted = got.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), got.len(), "a hit came twice");
+        let mut want = whole;
+        want.sort();
+        assert_eq!(sorted, want, "a hit was skipped");
+        assert!(pages >= 5);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_file_appended_between_pages_repeats_and_skips_nothing() {
+        let root = projects();
+        write_quokka(&root, "paged-a", 0, 70, false);
+        write_quokka(&root, "paged-b", 0, 30, false);
+        let mut first = Vec::new();
+        let s = page(&root, paged_limits(), &Page::default(), &mut first);
+        let (id, _) = first.last().unwrap().clone();
+        // The conversation the page stopped in grows. (One not reached yet that grows moves to the front of the
+        // listing, so a later page leaves it to a fresh search rather than risk showing a hit twice.)
+        let len = if id == "paged-a" { 70 } else { 30 };
+        write_quokka(&root, &id, len, 5, true);
+        let mut got = first.clone();
+        let mut after = s.next;
+        while let Some(n) = after.take() {
+            let s = page(
+                &root,
+                paged_limits(),
+                &Page {
+                    session: None,
+                    after: Some(n),
+                },
+                &mut got,
+            );
+            assert!(!s.restarted, "an append is not a rewrite");
+            after = s.next;
+        }
+        let mut sorted = got.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), got.len(), "a hit came twice");
+        // Every hit that was there before the append is seen once; the appended ones are the newest, past the cursor.
+        let mut before: Vec<_> = got.iter().filter(|(s, _)| *s == id).collect();
+        before.sort();
+        assert_eq!(before.len(), if id == "paged-a" { 70 } else { 30 });
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_rewritten_file_restarts_and_says_so() {
+        let root = projects();
+        write_quokka(&root, "paged-a", 0, 70, false);
+        let mut first = Vec::new();
+        let s = page(&root, paged_limits(), &Page::default(), &mut first);
+        // Compacted: another inode, fewer bytes.
+        std::fs::remove_file(root.join("-home-fixture-project/paged-a.jsonl")).unwrap();
+        write_quokka(&root, "paged-a", 0, 10, false);
+        let mut got = Vec::new();
+        let s = page(
+            &root,
+            paged_limits(),
+            &Page {
+                session: None,
+                after: s.next,
+            },
+            &mut got,
+        );
+        assert!(s.restarted);
+        assert_eq!(got.len(), 10);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn one_conversation_returns_all_its_matches_whatever_the_overall_cap() {
+        let root = projects();
+        write_quokka(&root, "paged-a", 0, 70, false);
+        write_quokka(&root, "paged-b", 0, 30, false);
+        let mut got = Vec::new();
+        let s = page(
+            &root,
+            Limits::default(),
+            &Page {
+                session: Some("paged-b".into()),
+                after: None,
+            },
+            &mut got,
+        );
+        assert_eq!(got.len(), 30);
+        assert!(got.iter().all(|(id, _)| id == "paged-b"));
+        assert_eq!(s.next, None);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

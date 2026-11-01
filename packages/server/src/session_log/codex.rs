@@ -416,7 +416,13 @@ impl SessionLog for CodexLog {
             return Ok(Vec::new());
         };
         let (_, file, fp) = self.open(s)?;
-        let SearchRun { scanner, budget } = run;
+        let size = run.start(fp);
+        let SearchRun {
+            scanner,
+            budget,
+            stopped,
+            ..
+        } = run;
         let limit = budget
             .limits()
             .per_session
@@ -426,7 +432,7 @@ impl SessionLog for CodexLog {
         }
         let mut hits: Vec<Hit> = Vec::new();
         scanner
-            .scan_file(&file, fp.size, &needle, budget, |c| {
+            .scan_file(&file, size, &needle, budget, |c| {
                 // The scan matched bytes; what counts is the scrubbed text of a conversation record.
                 if !may_hold_text(c.bytes) {
                     return ControlFlow::Continue(());
@@ -454,13 +460,15 @@ impl SessionLog for CodexLog {
                             .and_then(Value::as_str)
                             .map(str::to_string),
                     });
-                    if hits.len() >= limit {
-                        return ControlFlow::Break(());
-                    }
+                }
+                // The cap is checked between records, so a record's hits are never split across two pages.
+                if hits.len() >= limit {
+                    return ControlFlow::Break(());
                 }
                 ControlFlow::Continue(())
             })
             .map_err(|_| LogError::Disabled(UNREADABLE))?;
+        *stopped = scanner.stopped_at();
         for _ in &hits {
             let _ = budget.record_hit();
         }

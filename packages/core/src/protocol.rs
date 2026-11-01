@@ -542,6 +542,14 @@ pub enum ClientMessage {
         /// Only records at or after this time (ms since the epoch) are searched; absent means any age.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since: Option<u64>,
+        /// Only this conversation (its `search_hit.session`), with all its matches up to a fixed cap and whatever its
+        /// age: the rest of a conversation a page showed three hits of.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+        /// The `next` of an earlier `search_done` of the same query: continue after it. The server keeps no search
+        /// state, so the cursor holds the position and the file's identity.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
     },
     /// Resume a conversation a search found (decision 0167): switch to the workspace that already holds `session` of
     /// `agent`, else create a workspace in the directory the session's file names and start the agent's resume command
@@ -1004,6 +1012,13 @@ pub enum ServerMessage {
         #[serde(default, skip_serializing_if = "is_zero")]
         older: u32,
         off: Vec<SearchOff>,
+        /// Set when the search stopped with more to look at: send it as `after` for the next page.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next: Option<String>,
+        /// The conversation the cursor pointed into was rewritten, so it was read again from its newest line and a
+        /// hit may repeat.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        restarted: bool,
     },
     /// Answers `window`: entries in conversation order, at most 48 KiB of text. `anchor` is the index of the asked turn.
     /// `fingerprint` changes when the session file was rewritten: hits found earlier may no longer hold.
