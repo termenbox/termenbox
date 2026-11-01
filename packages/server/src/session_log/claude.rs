@@ -108,6 +108,46 @@ impl ClaudeLog {
         Some(found.unwrap_or(direct))
     }
 
+    /// The sessions of one project folder of the root, as `list` finds them.
+    fn list_folder(
+        &self,
+        folder: &Path,
+        since: Option<std::time::SystemTime>,
+        out: &mut Listing,
+    ) {
+        for e in real_entries(folder, false) {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Some(id) = name.strip_suffix(".jsonl").filter(|i| plain_id(i)) else {
+                continue;
+            };
+            let Ok(mtime) = e.metadata().and_then(|m| m.modified()) else {
+                continue;
+            };
+            if since.is_some_and(|s| mtime < s) {
+                out.older += 1;
+                continue;
+            }
+            let Ok(file) = File::open(e.path()) else {
+                continue;
+            };
+            let Ok(meta) = file.metadata() else {
+                continue;
+            };
+            if check_head(&file, meta.len()).is_err() {
+                continue;
+            }
+            let Some(dir) = head_cwd(&file, meta.len()) else {
+                continue;
+            };
+            out.files.push(SessionFile {
+                agent: AGENT.into(),
+                id: id.to_string(),
+                dir,
+                mtime,
+            });
+        }
+    }
+
     fn open(&self, s: &SessionRef) -> Result<(PathBuf, File, Fingerprint), LogError> {
         let path = self.path(s).ok_or(LogError::Missing)?;
         let file = File::open(&path).map_err(|e| match e.kind() {
@@ -147,6 +187,31 @@ impl ClaudeLog {
 }
 
 pub(super) const UNREADABLE: &str = "unreadable file";
+
+/// The most of a file's head read to find where the session ran.
+const CWD_HEAD: usize = 64 * 1024;
+
+/// The directory the session ran in: the first record that names a `cwd`, within the head of the file. The folder
+/// name is lossy (every non-alphanumeric is a "-"), so the path comes from the records.
+fn head_cwd(file: &File, size: u64) -> Option<PathBuf> {
+    #[derive(Deserialize)]
+    struct Rec<'a> {
+        #[serde(borrow)]
+        cwd: Option<Cow<'a, str>>,
+    }
+    let len = (size as usize).min(CWD_HEAD);
+    let mut buf = vec![0u8; len];
+    file.read_exact_at(&mut buf, 0).ok()?;
+    let mut lines: Vec<&[u8]> = buf.split(|b| *b == b'\n').collect();
+    if size as usize > len || buf.last() != Some(&b'\n') {
+        lines.pop(); // not a whole line
+    }
+    lines
+        .into_iter()
+        .filter_map(|l| serde_json::from_slice::<Rec>(l).ok()?.cwd)
+        .map(|c| PathBuf::from(c.into_owned()))
+        .find(|p| p.is_absolute())
+}
 
 /// Whether the head of the file looks like a Claude session this code understands.
 fn check_head(file: &File, size: u64) -> Result<(), LogError> {
@@ -550,6 +615,15 @@ impl SessionLog for ClaudeLog {
             let _ = budget.record_hit();
         }
         Ok(hits)
+    }
+
+    fn list(&self, since: Option<std::time::SystemTime>) -> Listing {
+        let mut out = Listing::default();
+        for folder in real_entries(&self.root, true) {
+            self.list_folder(&folder.path(), since, &mut out);
+        }
+        out.files.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+        out
     }
 
     fn last_event(&self, s: &SessionRef) -> Option<std::time::SystemTime> {

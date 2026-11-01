@@ -1,9 +1,15 @@
-//! Cross-session search (decision 0156): runs the `SessionLog` adapters over the sessions the server has a record of,
-//! and answers the `window` request. Blocking; the connection runs it on a blocking thread.
+//! Cross-session search (decisions 0156 and 0167): runs the `SessionLog` adapters over every session file in the
+//! agents' own session roots, and answers the `window` request. Blocking; the connection runs it on a blocking thread.
+//!
+//! The corpus is what the adapters list, not what the registry knows: a closed tab, a replaced session and a session
+//! run in a plain terminal are found too. The registry's sessions only say which hit a running tab holds (`open`) and
+//! which workspace holds it; every other hit is `resume`.
 //!
 //! The query and the snippets are the user's conversations. Nothing here logs, formats into an error or keeps one:
 //! the only outputs are the `emit` callback and the returned summary, which holds fixed strings.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::time::{Duration, UNIX_EPOCH};
 
 use crate::registry::KnownSession;
 use crate::session_log::scan::{Cancel, Cut, Limits};
@@ -30,6 +36,24 @@ pub fn cut_name(cut: Cut) -> &'static str {
 /// The cut reason when the time bound is the only thing that kept the search from looking everywhere.
 pub const RANGE: &str = "range";
 
+/// A conversation a hit belongs to. `workspace` and `tab` name the tab that holds it, and are empty when no tab does.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Found {
+    pub agent: String,
+    pub session_id: String,
+    pub dir: PathBuf,
+    pub workspace: String,
+    pub tab: String,
+    /// A running tab holds the session; otherwise the hit offers Resume.
+    pub open: bool,
+}
+
+impl std::fmt::Debug for Found {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Found({})", self.agent) // the id and the directory are not logged
+    }
+}
+
 fn session_ref(s: &KnownSession) -> SessionRef {
     SessionRef {
         agent: s.agent.clone(),
@@ -47,54 +71,87 @@ pub fn distinct(mut sessions: Vec<KnownSession>) -> Vec<KnownSession> {
     sessions
 }
 
-/// Searches `sessions` for `query` under `limits`, handing each hit to `emit` as it is found. `emit` returns false
-/// when nobody listens any more, which ends the search like a cancel.
+/// Searches every session file the adapters list for `query` under `limits`, handing each hit to `emit` as it is
+/// found. `known` marks the sessions a tab holds. `emit` returns false when nobody listens any more, which ends the
+/// search like a cancel.
 pub fn run(
     logs: &SessionLogs,
-    sessions: Vec<KnownSession>,
+    known: Vec<KnownSession>,
     query: &str,
     limits: Limits,
     cancel: Cancel,
-    mut emit: impl FnMut(&KnownSession, Hit) -> bool,
+    mut emit: impl FnMut(&Found, Hit) -> bool,
 ) -> Summary {
     let mut run = SearchRun::new(limits, cancel.clone());
     let mut summary = Summary::default();
+    let since = run
+        .budget
+        .limits()
+        .since_ms
+        .map(|ms| UNIX_EPOCH + Duration::from_millis(ms));
+    let (listing, off) = logs.list(since);
+    for (agent, why) in off {
+        note_off(&mut summary, &agent, why);
+    }
+    let held: HashMap<(String, String), KnownSession> = distinct(known)
+        .into_iter()
+        .map(|k| ((k.agent.clone(), k.session_id.clone()), k))
+        .collect();
+    // An agent a tab runs that has no adapter is reported off, as before.
+    for (agent, _) in held.keys() {
+        if let Err(LogError::Disabled(why)) = logs.get(agent) {
+            note_off(&mut summary, agent, why);
+        }
+    }
     let mut dropped = false;
-    for s in distinct(sessions) {
+    for f in listing.files {
         if run.budget.check().is_err() {
             break;
         }
-        let adapter = match logs.get(&s.agent) {
+        let adapter = match logs.get(&f.agent) {
             Ok(a) => a,
             Err(LogError::Disabled(why)) => {
-                note_off(&mut summary, &s.agent, why);
+                note_off(&mut summary, &f.agent, why);
                 continue;
             }
             Err(_) => continue,
         };
-        if let Some(since) = run.budget.limits().since_ms {
-            let last = adapter
-                .last_event(&session_ref(&s))
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as u64);
-            if last.is_some_and(|t| t < since) {
-                run.budget.note_older();
-                continue;
-            }
-        }
-        match adapter.search_in(&session_ref(&s), query, &mut run) {
+        let found = match held.get(&(f.agent.clone(), f.id.clone())) {
+            Some(k) => Found {
+                agent: f.agent.clone(),
+                session_id: f.id.clone(),
+                dir: f.dir.clone(),
+                workspace: k.workspace.clone(),
+                tab: k.tab.clone(),
+                open: k.up,
+            },
+            None => Found {
+                agent: f.agent.clone(),
+                session_id: f.id.clone(),
+                dir: f.dir.clone(),
+                workspace: String::new(),
+                tab: String::new(),
+                open: false,
+            },
+        };
+        let session = SessionRef {
+            agent: f.agent,
+            id: f.id,
+            dir: f.dir,
+        };
+        match adapter.search_in(&session, query, &mut run) {
             Ok(hits) => {
                 for hit in hits {
-                    if !emit(&s, hit) {
+                    if !emit(&found, hit) {
                         dropped = true;
                         break;
                     }
                 }
             }
             Err(e) => {
-                logs.note(&s.agent, &e);
+                logs.note(&found.agent, &e);
                 if let LogError::Disabled(why) = e {
-                    note_off(&mut summary, &s.agent, why);
+                    note_off(&mut summary, &found.agent, why);
                 }
             }
         }
@@ -104,7 +161,7 @@ pub fn run(
             break;
         }
     }
-    summary.older = run.budget.older();
+    summary.older = run.budget.older() + listing.older;
     summary.cut = run
         .budget
         .cut()
@@ -296,10 +353,15 @@ mod tests {
     #[test]
     fn a_session_last_written_before_the_bound_is_not_opened() {
         let root = projects();
-        let old = root.join("-home-fixture-project/short.jsonl");
-        let file = std::fs::File::options().write(true).open(&old).unwrap();
-        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000))
-            .unwrap();
+        // Every session file of the root was last written long ago.
+        for f in std::fs::read_dir(root.join("-home-fixture-project")).unwrap() {
+            let file = std::fs::File::options()
+                .write(true)
+                .open(f.unwrap().path())
+                .unwrap();
+            file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000))
+                .unwrap();
+        }
         let limits = Limits {
             since_ms: Some(2_000_000 * 1000),
             ..Limits::default()
@@ -317,7 +379,8 @@ mod tests {
             },
         );
         assert_eq!(n, 0);
-        assert_eq!((summary.older, summary.cut), (1, Some("range")));
+        assert_eq!(summary.cut, Some("range"));
+        assert!(summary.older >= 1);
         // With no bound the same session is searched.
         let summary = run(
             &logs(&root),
@@ -365,5 +428,82 @@ mod tests {
             LogError::Missing
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn hits_of(root: &Path, known: Vec<KnownSession>, query: &str) -> Vec<(Found, Hit)> {
+        let mut got = Vec::new();
+        run(
+            &logs(root),
+            known,
+            query,
+            Limits::default(),
+            Cancel::default(),
+            |f, h| {
+                got.push((f.clone(), h));
+                true
+            },
+        );
+        got
+    }
+
+    #[test]
+    fn sessions_no_tab_holds_are_found_and_a_held_one_names_its_tab() {
+        let root = projects();
+        // The registry knows nothing (a closed tab, a closed workspace, a session started in a plain terminal).
+        let got = hits_of(&root, Vec::new(), "by size");
+        assert!(!got.is_empty());
+        assert!(got.iter().all(|(f, _)| !f.open && f.workspace.is_empty()));
+        assert!(got.iter().all(|(f, _)| f.dir == PathBuf::from(DIR)));
+        // A replaced session is no longer the tab's, yet its file is still searched: only `short` is held.
+        let got = hits_of(&root, vec![known("short", "ws-up", "t1", true)], "by size");
+        let held: Vec<_> = got.iter().filter(|(f, _)| f.session_id == "short").collect();
+        assert!(!held.is_empty() && held.iter().all(|(f, _)| f.open && f.workspace == "ws-up"));
+        assert!(got.iter().any(|(f, _)| f.session_id == "rewind" && !f.open));
+        // A dormant workspace holds a session without running it: named, but `resume`.
+        let got = hits_of(&root, vec![known("short", "ws-down", "t1", false)], "by size");
+        assert!(got
+            .iter()
+            .any(|(f, _)| f.session_id == "short" && f.workspace == "ws-down" && !f.open));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_symlink_out_of_the_root_is_never_read_and_an_unknown_format_is_skipped() {
+        let root = projects();
+        let outside = std::env::temp_dir().join(format!("tm-outside-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&outside).unwrap();
+        let line = |t: &str| {
+            format!(
+                "{{\"type\":\"user\",\"uuid\":\"o1\",\"parentUuid\":null,\"cwd\":\"/home/fixture/project\",\"version\":\"2.1.0\",\"message\":{{\"role\":\"user\",\"content\":\"{t}\"}}}}\n"
+            )
+        };
+        std::fs::write(outside.join("out.jsonl"), line("zebrafinch outside")).unwrap();
+        let project = root.join("-home-fixture-project");
+        std::os::unix::fs::symlink(outside.join("out.jsonl"), project.join("link.jsonl")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("-linked-folder")).unwrap();
+        std::fs::write(project.join("junk.jsonl"), "not json at all\nzebrafinch junk\n").unwrap();
+        assert!(hits_of(&root, Vec::new(), "zebrafinch").is_empty());
+        // The same file, really inside the root, is found: the link was the only reason it was not.
+        std::fs::copy(outside.join("out.jsonl"), project.join("real.jsonl")).unwrap();
+        let got = hits_of(&root, Vec::new(), "zebrafinch");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0.session_id, "real");
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn a_found_session_prints_the_agent_only() {
+        let f = known("secret-id", "w", "t", true);
+        let found = Found {
+            agent: f.agent,
+            session_id: f.session_id,
+            dir: PathBuf::from("/private/dir"),
+            workspace: f.workspace,
+            tab: f.tab,
+            open: true,
+        };
+        let text = format!("{found:?}");
+        assert!(!text.contains("secret-id") && !text.contains("private"), "{text}");
     }
 }

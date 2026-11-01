@@ -467,6 +467,52 @@ impl SessionLog for CodexLog {
         Ok(hits)
     }
 
+    fn list(&self, since: Option<std::time::SystemTime>) -> Listing {
+        let mut out = Listing::default();
+        // `<root>/YYYY/MM/DD/rollout-<stamp>-<id>.jsonl`, three real directories deep; a link is never entered.
+        let days = real_entries(&self.root, true)
+            .into_iter()
+            .flat_map(|y| real_entries(&y.path(), true))
+            .flat_map(|m| real_entries(&m.path(), true));
+        for day in days {
+            for e in real_entries(&day.path(), false) {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let Some(id) = name
+                    .strip_prefix("rollout-")
+                    .and_then(|r| r.strip_suffix(".jsonl"))
+                    .and_then(|r| r.get(STAMP_LEN + 1..))
+                    .filter(|i| plain_id(i))
+                else {
+                    continue;
+                };
+                let Ok(mtime) = e.metadata().and_then(|m| m.modified()) else {
+                    continue;
+                };
+                if since.is_some_and(|s| mtime < s) {
+                    out.older += 1;
+                    continue;
+                }
+                let Ok(file) = File::open(e.path()) else {
+                    continue;
+                };
+                let Ok(meta) = file.metadata() else {
+                    continue;
+                };
+                let Ok(Some(dir)) = check_head(&file, meta.len()) else {
+                    continue;
+                };
+                out.files.push(SessionFile {
+                    agent: AGENT.into(),
+                    id: id.to_string(),
+                    dir,
+                    mtime,
+                });
+            }
+        }
+        out.files.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+        out
+    }
+
     fn last_event(&self, s: &SessionRef) -> Option<std::time::SystemTime> {
         std::fs::metadata(self.locate(&s.id)?).ok()?.modified().ok()
     }

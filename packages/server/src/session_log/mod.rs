@@ -54,6 +54,51 @@ impl fmt::Debug for SessionRef {
     }
 }
 
+/// A session file found by walking an adapter's root (decision 0167): the agent, its own session id, the directory the
+/// file says it ran in, and when it was last written.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SessionFile {
+    pub agent: String,
+    pub id: String,
+    pub dir: PathBuf,
+    pub mtime: std::time::SystemTime,
+}
+
+impl fmt::Debug for SessionFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SessionFile({})", self.agent) // the id and the directory are not logged
+    }
+}
+
+/// What walking a root found: the files to search, newest first, and how many the `since` bound ruled out unopened.
+#[derive(Debug, Default)]
+pub struct Listing {
+    pub files: Vec<SessionFile>,
+    pub older: usize,
+}
+
+/// The entries of `dir` that are real directories or real files, as the walk of a root sees them. A symlink is neither
+/// (`DirEntry::file_type` does not follow it), so nothing a link points at, inside the root or out of it, is read.
+pub(crate) fn real_entries(dir: &Path, want_dir: bool) -> Vec<std::fs::DirEntry> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            e.file_type()
+                .is_ok_and(|t| if want_dir { t.is_dir() } else { t.is_file() })
+        })
+        .collect()
+}
+
+/// A session id the adapters accept in a path: a plain name.
+pub(crate) fn plain_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
@@ -348,6 +393,12 @@ pub trait SessionLog: Send + Sync {
     ) -> Result<Vec<Hit>, LogError> {
         self.search(session, query, run.budget.limits().per_session)
     }
+    /// Every session file in the adapter's root, newest first, without following a symlink and without opening a file
+    /// last written before `since`, which is counted in `older`. A file of a format the adapter does not recognise is
+    /// left out. The default lists nothing.
+    fn list(&self, _since: Option<std::time::SystemTime>) -> Listing {
+        Listing::default()
+    }
     /// When the session's file was last written, read without opening it, or none when it cannot be told. Files are
     /// append-only, so nothing in one is newer. The ledger's recorded time will win over this when there is one.
     fn last_event(&self, _session: &SessionRef) -> Option<std::time::SystemTime> {
@@ -424,6 +475,28 @@ impl SessionLogs {
             self.note(&session.agent, e);
         }
         result
+    }
+
+    /// The files of every agent that is on, merged newest first, and the agents that are off with their reasons.
+    pub fn list(
+        &self,
+        since: Option<std::time::SystemTime>,
+    ) -> (Listing, Vec<(String, &'static str)>) {
+        let mut all = Listing::default();
+        let mut off = Vec::new();
+        for agent in self.adapters.keys() {
+            match self.get(agent) {
+                Ok(a) => {
+                    let l = a.list(since);
+                    all.older += l.older;
+                    all.files.extend(l.files);
+                }
+                Err(LogError::Disabled(why)) => off.push((agent.clone(), why)),
+                Err(_) => {}
+            }
+        }
+        all.files.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+        (all, off)
     }
 
     /// Each registered agent with the reason its search is off, if it is.

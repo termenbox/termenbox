@@ -195,6 +195,10 @@ export interface SearchHitMessage {
   tab: string;
   agent: string;
   up: boolean;
+  /** `open`: a running tab holds the conversation; `resume`: none does. Absent from an older server. */
+  state?: 'open' | 'resume' | string;
+  /** Where the session ran, from its file. */
+  dir?: string;
   turn: string;
   kind: SessionEntryKind;
   snippet: string;

@@ -950,14 +950,20 @@ pub enum ServerMessage {
     HistoryDeleted {
         removed: u64,
     },
-    /// One match of a `search`. `workspace` and `tab` locate it, `up` says whether the workspace is running (a hit in a
-    /// dormant one offers Resume). `snippet` is scrubbed; `highlight` is the matched part, in characters of `snippet`.
+    /// One match of a `search`. `workspace` and `tab` locate the tab that holds the conversation (empty when none
+    /// does). `state` is `open` (a running tab holds it) or `resume`; `up` is the same as a flag, for older clients.
+    /// `dir` is where the session ran, read from its file. `snippet` is scrubbed; `highlight` is the matched part, in
+    /// characters of `snippet`.
     SearchHit {
         id: u64,
         workspace: String,
         tab: String,
         agent: String,
         up: bool,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        state: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        dir: String,
         turn: String,
         kind: String,
         snippet: String,
