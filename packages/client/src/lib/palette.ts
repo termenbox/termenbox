@@ -15,6 +15,7 @@ export interface PaletteInput { servers: HubServer[]; workspaces: HubWorkspace[]
 export function buildEntries(i: PaletteInput): PaletteEntry[] {
   const out: PaletteEntry[] = DESTINATIONS.map((d) => ({ id: `dest:${d.id}`, kind: 'destination', label: d.label, detail: 'Go to' }));
   if (i.canCreate) out.push({ id: 'action:new-workspace', kind: 'action', label: 'New workspace', detail: 'Action' });
+  out.push({ id: 'action:search-sessions', kind: 'action', label: 'Search conversations', detail: 'Action' });
   // The same as the Alt keys, for where those keys belong to the terminal or a field (the terminal keeps the focus when a workspace opens).
   out.push({ id: 'action:next-needs-you', kind: 'action', label: 'Open the next workspace that needs you', detail: 'Action' });
   out.push({ id: 'action:approve-decision', kind: 'action', label: 'Answer Yes to the open decision', detail: 'Action' });

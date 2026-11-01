@@ -58,6 +58,8 @@ mod registry;
 mod release;
 mod requests;
 mod rtc;
+mod session_log;
+mod session_search;
 mod signal;
 mod stun;
 mod tabstatus;
@@ -826,7 +828,11 @@ async fn main() -> anyhow::Result<()> {
             None
         }
     };
+    let registry = Arc::new(registry::Registry::load(
+        args.config_dir.join("workspaces.json"),
+    ));
     let mut hub = events::EventHub::load_or_create(&args.config_dir)?;
+    hub = hub.with_registry(registry.clone());
     hub = hub.with_tab_status(Arc::new(tabstatus::TabStatus::default()));
     if let Some(history) = &history {
         hub = hub.with_history(history.clone());
@@ -924,9 +930,6 @@ async fn main() -> anyhow::Result<()> {
         build_backend(&args, &kinds[0], &mode, env, "")?
     };
     info!("Workspace backend: {}", backend.name());
-    let registry = Arc::new(registry::Registry::load(
-        args.config_dir.join("workspaces.json"),
-    ));
     // Server health (U14): sampled every 10 s into memory; the data directory is the disk it reports.
     let health = Arc::new(HealthCollector::new());
     health.spawn(args.config_dir.clone());
@@ -957,6 +960,7 @@ async fn main() -> anyhow::Result<()> {
             .with_prefix(tmux_prefix.clone())
             .with_push(push.clone())
             .with_events(hub.clone())
+            .with_session_logs(Arc::new(session_log::SessionLogs::standard()))
             .with_health(health)
             .with_previous_exit(previous_run.message())
             .with_agent_hooks(agent_hooks::Targets {

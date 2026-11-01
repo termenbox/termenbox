@@ -123,7 +123,7 @@ Next ready step: [R07](roadmap/R07.md).
 | 52 | [R44](roadmap/R44.md) | Pro: reliable push and inbox retention (P.5) | paid | both | blocked (R40, the free gate) | 1.2 | 1.2 | R43 |
 | 53 | [R45](roadmap/R45.md) | Pro: fleet view and usage reports (P.6) | paid | both | blocked (R40, the free gate) | 1.2 | 1.2 | R43 |
 
-53 open steps. 36 done and 9 superseded or folded steps are in `roadmap/archive/` (their text is kept; `grep -h '^Status' roadmap/archive/*.md`).
+53 open steps. 37 done and 9 superseded or folded steps are in `roadmap/archive/` (their text is kept; `grep -h '^Status' roadmap/archive/*.md`).
 <!-- order:end -->
 
 ## Product tiers (free, Pro, Team, Enterprise)

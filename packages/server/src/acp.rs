@@ -2054,6 +2054,29 @@ impl WorkspaceBackend for AcpBackend {
         v
     }
 
+    fn acp_sessions(&self) -> Vec<crate::registry::KnownSession> {
+        let g = self.workspaces.lock_or_recover();
+        g.iter()
+            .filter_map(|(id, e)| {
+                let (session, up) = match &e.live {
+                    Some(l) => (l.inner.lock_or_recover().acp_id.clone(), true),
+                    None => (e.acp_id.clone(), false),
+                };
+                if session.is_empty() {
+                    return None;
+                }
+                Some(crate::registry::KnownSession {
+                    agent: e.agent.clone(),
+                    session_id: session,
+                    dir: std::path::PathBuf::from(&e.dir),
+                    workspace: id.clone(),
+                    tab: String::new(),
+                    up,
+                })
+            })
+            .collect()
+    }
+
     fn acp_watch(&self, id: &str) -> Result<watch::Receiver<u64>> {
         let g = self.workspaces.lock_or_recover();
         let e = g.get(id).ok_or_else(|| anyhow!("Unknown workspace"))?;

@@ -7,6 +7,8 @@
   import { contextPercent, isNewEntry, OPEN_WAIT_MS, openingText, search, toolsAsking, transcriptText, type StreamState } from './lib/acpStream';
   import { promptsOf } from './lib/acpPrompt';
   import { loadSaved, placeFor, save, type Place } from './lib/acpStore';
+  import { join } from './lib/acpHistory';
+  import type { SessionWindowMessage } from './lib/protocol';
   import { copyText } from './lib/clipboard';
   import { Settle } from './lib/home';
   import { TIER_LABEL } from './lib/sessionView';
@@ -17,8 +19,10 @@
    *  holds still while a finger is down and for 2 s after a scroll, and applies what arrived after that; it follows the
    *  end only while the reader is at the end; and nothing above the reader's place changes their place. */
   let { workspaceKey, name, agent, fleet = 'idle', stream, connState = 'connected', now = Date.now(), canShell = false,
-    onprompt, oninterrupt, onanswer, onmode, onshell }: {
+    onprompt, oninterrupt, onanswer, onmode, onshell, focus = null, window: fileWindow, changed = false, onwindow }: {
     workspaceKey: string; name: string; agent?: string; fleet?: FleetState; stream?: StreamState; connState?: string; now?: number; canShell?: boolean;
+    /** R78: a search hit to land on. `query` is the matched text, `nonce` tells one tap from the next. The view asks for the turn with `onwindow` and shows what comes back as `window`. */
+    focus?: { turn: string; query: string; nonce: number } | null; window?: SessionWindowMessage; changed?: boolean; onwindow?: (turn: string) => void;
     onprompt: (text: string) => void; oninterrupt: () => void; onanswer: (promptId: string, optionId: string) => void; onmode: (mode: string) => void; onshell: () => void;
   } = $props();
 
@@ -60,6 +64,42 @@
   let beat = $state(0);
   const shown = $derived.by(() => { beat; return settle.view(entries, Date.now()); });
   const held = $derived(shown !== entries);
+
+  // ---- Older turns from the agent's own file (R78). They sit above the live list and never enter the reducer; the live
+  // list wins where the two overlap (lib/acpHistory.ts).
+  const joined = $derived(fileWindow ? join(fileWindow, entries) : undefined);
+  const history = $derived(joined?.history ?? []);
+  const hitId = $derived(joined?.anchor?.entry.id ?? joined?.live?.id);
+  let hitQuery = $state('');
+  let landing = $state(false); // between the tap and the scroll: nothing else may move the view
+  let missing = $state(false);
+  let asked = -1;
+  $effect(() => {
+    const f = focus;
+    if (!f || f.nonce === asked) return;
+    asked = f.nonce;
+    hitQuery = f.query;
+    missing = false;
+    landing = true;
+    onwindow?.(f.turn);
+    const t = setTimeout(() => { if (landing) { landing = false; missing = true; } }, 5000); // no answer: do not hold the view
+    return () => clearTimeout(t);
+  });
+  $effect(() => {
+    const w = fileWindow;
+    const f = focus;
+    if (!landing || !w || !f || w.turn !== f.turn) return;
+    const id = untrack(() => hitId);
+    void tick().then(() => tick()).then(() => {
+      landing = false;
+      const el = scroller;
+      const target = id === undefined ? null : el?.querySelector<HTMLElement>(`[data-entry="${id}"]`);
+      if (!el || !target) { missing = true; return; }
+      following = false;
+      const box = el.getBoundingClientRect();
+      setTop(el.scrollTop + target.getBoundingClientRect().top - box.top - box.height / 3);
+    });
+  });
   onMount(() => { const t = setInterval(() => beat++, 400); return () => clearInterval(t); });
 
   // ---- Scrolling: follow the end while the reader is there, keep the place otherwise.
@@ -114,13 +154,14 @@
     setTop(el.scrollTop + row.getBoundingClientRect().top - el.getBoundingClientRect().top - place.offset);
   }
   let anchor: Place | undefined;
-  $effect.pre(() => { shown; if (scroller && !following) anchor = placeOf(); else anchor = undefined; });
+  $effect.pre(() => { shown; history; if (scroller && !following) anchor = placeOf(); else anchor = undefined; });
   let first = true;
   $effect(() => {
-    shown; scroller;
+    shown; history; scroller;
     if (!scroller) return;
     const a = anchor;
     void tick().then(() => {
+      if (landing) return; // the tap's own scroll follows
       if (first && entries.length) { first = false; restore(saved.place); return; }
       if (following) setTop(scroller!.scrollHeight);
       else if (a) restore(a);
@@ -142,7 +183,7 @@
     ro.observe(el);
     return () => ro.disconnect();
   });
-  const toEnd = () => { following = true; settle.scrolled(-Infinity); beat++; void tick().then(() => setTop(scroller!.scrollHeight)); };
+  const toEnd = () => { hitQuery = ''; following = true; settle.scrolled(-Infinity); beat++; void tick().then(() => setTop(scroller!.scrollHeight)); };
 
   // ---- Search through everything held
   let searching = $state(false);
@@ -268,10 +309,22 @@
         {:else if !shown.length}
           <EmptyState title={ended ? 'Nothing was said' : 'Say what you want done'} body={ended ? 'This workspace ended before anything was kept.' : 'Write a prompt below. Type / for the commands this agent offers.'} />
         {/if}
+        {#if history.length}
+          <p class="text-center text-xs text-muted" data-testid="history-note" role="note">Earlier in this conversation, read from the agent’s own file.</p>
+          {#each history as h (h.entry.id)}
+            <div data-entry={h.entry.id} data-turn={h.turn}>
+              <AcpEntryView entry={h.entry} query={h.entry.id === hitId ? hitQuery : ''} current={h.entry.id === hitId ? 0 : -1} announce={false} {opened} ontoggle={toggleOpen}
+                {onanswer} {workspaceKey} {name} agent={info?.agent || agent} {now} />
+            </div>
+          {/each}
+          <hr class="border-line" aria-hidden="true" />
+        {/if}
+        {#if changed}<p class="rounded-control bg-raised px-3 py-2 text-sm text-soft" data-testid="history-changed" role="status">The conversation file changed since the search, so the place found may have moved. Search again to be sure.</p>{/if}
+        {#if missing}<p class="rounded-control bg-raised px-3 py-2 text-sm text-soft" data-testid="history-missing" role="status">That turn could not be found in the conversation file.</p>{/if}
         {#each shown as e (e.id)}
-          {@const m = cur && cur.entry === e.id ? cur.index : -1}
+          {@const m = searching && cur && cur.entry === e.id ? cur.index : !searching && e.id === hitId ? 0 : -1}
           <div data-entry={e.id}>
-            <AcpEntryView entry={e} query={searching ? query.trim() : ''} current={m} asking={e.kind === 'tool' && asking.has(e.toolId)} announce={isNewEntry(e, baseRev)} {opened} ontoggle={toggleOpen}
+            <AcpEntryView entry={e} query={searching ? query.trim() : e.id === hitId ? hitQuery : ''} current={m} asking={e.kind === 'tool' && asking.has(e.toolId)} announce={isNewEntry(e, baseRev)} {opened} ontoggle={toggleOpen}
               {onanswer} {workspaceKey} {name} agent={info?.agent || agent} {now} />
           </div>
         {/each}

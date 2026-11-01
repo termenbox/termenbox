@@ -134,6 +134,7 @@ mod tests {
             ServerMessage::WorkspaceAttached {
                 workspace_id: "s".into(),
                 tab: None,
+                resumed: vec![],
             },
             ServerMessage::Snapshot {
                 workspace: "s".into(),

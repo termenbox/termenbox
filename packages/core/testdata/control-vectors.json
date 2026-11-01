@@ -108,6 +108,19 @@
   ],
   "bulk_or_other": [
     {
+      "type": "search",
+      "id": 1,
+      "query": "q"
+    },
+    {
+      "type": "window",
+      "workspace": "s",
+      "tab": "t",
+      "turn": "1",
+      "before": 2,
+      "after": 2
+    },
+    {
       "type": "list_dir",
       "path": "/home/me",
       "prefix": "co",

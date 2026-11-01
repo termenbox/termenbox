@@ -31,6 +31,8 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 p256 = { version = "0.13", features = ["ecdsa", "ecdh", "std"] }
 aes-gcm = "0.10"
 libc = "0.2"
+memchr = "2"
+unicode-normalization = "0.1"
 toml = { version = "0.8", default-features = false, features = ["parse"] }
 semver = "1"
 percent-encoding = "2.3"

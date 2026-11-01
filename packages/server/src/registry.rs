@@ -15,7 +15,7 @@ use std::sync::Mutex;
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use termenbox_core::protocol::{Label, TabInfo, WorkspaceInfo};
+use termenbox_core::protocol::{Label, TabInfo, TabResumed, WorkspaceInfo};
 
 use crate::backend::{
     clean_label, tab_label, valid_dir, valid_template, CreatedWorkspace, TabSpec, WorkspaceBackend,
@@ -42,6 +42,27 @@ pub struct TabRecord {
     /// The tmux window it runs in; absent while the workspace is dormant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<String>,
+    /// The id the tab's agent reports in its own hook events (decision 0152). The id only, never logged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session: Option<String>,
+}
+
+/// An agent conversation the server has a record of, and where it ran.
+#[derive(Clone, PartialEq, Eq)]
+pub struct KnownSession {
+    pub agent: String,
+    pub session_id: String,
+    pub dir: PathBuf,
+    pub workspace: String,
+    pub tab: String,
+    /// False while the workspace is dormant: its agent is not running, and Resume applies.
+    pub up: bool,
+}
+
+impl std::fmt::Debug for KnownSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "KnownSession({})", self.agent) // the id is not logged
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -269,6 +290,7 @@ impl Registry {
             kind: kind.into(),
             // A workspace without a directory starts where tmux starts; the real path is read back below.
             dir: explicit.clone().unwrap_or_default(),
+            resume: None,
         };
         let kinds = backend.kinds();
         let chosen = backend_kind
@@ -323,6 +345,7 @@ impl Registry {
                 dir: String::new(),
                 order: 0,
                 window: made.window,
+                agent_session: None,
             }],
             next_tab: 2,
         };
@@ -376,7 +399,7 @@ impl Registry {
         if record.tabs.iter().any(|t| t.window.is_none())
             || backend.windows(&record.id).await.is_err()
         {
-            self.ensure_windows(backend, &record).await?;
+            self.ensure_windows(backend, &record, false).await?;
         }
         let absolute = resolve_tab_dir(&root, dir)?;
         let (tab, window) = self
@@ -417,6 +440,7 @@ impl Registry {
             label: unique_label(&label, &record.tabs),
             kind: kind.into(),
             dir: absolute.into(),
+            resume: None,
         };
         let window = backend.new_tab(&record.id, &spec).await?;
         Ok((
@@ -427,6 +451,7 @@ impl Registry {
                 dir: relative.into(),
                 order: record.tabs.len() as u32,
                 window: Some(window.clone()),
+                agent_session: None,
             },
             window,
         ))
@@ -552,6 +577,7 @@ impl Registry {
             label: label.clone(),
             kind: "shell".into(),
             dir: record.dir.clone(),
+            resume: None,
         };
         let window = backend
             .ensure_session(&record.id, record.label.as_str(), &record.dir, &spec)
@@ -570,6 +596,7 @@ impl Registry {
             dir: String::new(),
             order: 0,
             window: Some(window),
+            agent_session: None,
         });
         record.focus = record.tabs.last().map(|t| t.id.clone());
         record.next_tab = record.next_tab.max(record.tabs.len() as u32 + 1);
@@ -705,7 +732,7 @@ impl Registry {
         tab: Option<&str>,
         cols: u16,
         rows: u16,
-    ) -> Result<(String, Attachment)> {
+    ) -> Result<(String, Attachment, Vec<TabResumed>)> {
         let (record, tab) = {
             let state = self.state.lock().unwrap();
             let record = state
@@ -721,7 +748,7 @@ impl Registry {
                 .ok_or_else(|| anyhow!("This workspace has no tabs"))?;
             (record, id)
         };
-        self.ensure_windows(backend, &record).await?;
+        let resumed = self.ensure_windows(backend, &record, true).await?;
         let record = self
             .state
             .lock()
@@ -740,18 +767,23 @@ impl Registry {
             }
             self.save(&state);
         }
-        Ok((tab, attachment))
+        Ok((tab, attachment, resumed))
     }
 
-    /// Recreates the tmux session and every tab as a shell when it is dormant (decision 0149).
+    /// Recreates the tmux session and every tab when it is dormant (decision 0149). A tab that held an agent
+    /// conversation starts that agent's resume command (decision 0152) and is reported as `resumed`; one that cannot
+    /// is a shell again and says why. Nothing else resumes an agent: `reopen` is true only when a person attaches to the
+    /// workspace, never for a peek, a prompt answer or a new tab.
+    /// An empty list when the session was alive.
     async fn ensure_windows(
         &self,
         backend: &dyn WorkspaceBackend,
         record: &WorkspaceRecord,
-    ) -> Result<()> {
+        reopen: bool,
+    ) -> Result<Vec<TabResumed>> {
         if backend.windows(&record.id).await.is_ok() {
             // The session is alive; a tab whose window was closed outside is recreated alone, by window_for_tab.
-            return Ok(());
+            return Ok(vec![]);
         }
         if record.tabs.is_empty() {
             let id = format!("t{}", record.next_tab.max(1));
@@ -760,6 +792,7 @@ impl Registry {
                 label: "Shell".into(),
                 kind: "shell".into(),
                 dir: record.dir.clone(),
+                resume: None,
             };
             let window = backend
                 .ensure_session(&record.id, record.label.as_str(), &record.dir, &spec)
@@ -773,20 +806,28 @@ impl Registry {
                     dir: String::new(),
                     order: 0,
                     window: Some(window),
+                    agent_session: None,
                 });
                 r.focus = Some(id);
                 renumber_tabs(r);
                 self.save(&state);
             }
-            return Ok(());
+            return Ok(vec![]);
         }
         let mut windows = HashMap::new();
+        let mut resumed = Vec::new();
         for (i, tab) in record.tabs.iter().enumerate() {
+            let (kind, resume) = if reopen {
+                self.reopen_plan(tab, &mut resumed)
+            } else {
+                ("shell".into(), None)
+            };
             let spec = TabSpec {
                 id: tab.id.clone(),
                 label: tab.label.as_str().to_string(),
-                kind: "shell".into(),
+                kind,
                 dir: resolve_tab_dir(&record.dir, &tab.dir)?,
+                resume,
             };
             let window = if i == 0 {
                 backend
@@ -806,7 +847,35 @@ impl Registry {
             }
             self.save(&state);
         }
-        Ok(())
+        Ok(resumed)
+    }
+
+    /// The template and resume command a dormant tab reopens with, and what is said about it. The session id is never
+    /// logged or sent: the reply names the tab only.
+    fn reopen_plan(&self, tab: &TabRecord, said: &mut Vec<TabResumed>) -> (String, Option<String>) {
+        if tab.kind == "shell" {
+            return ("shell".into(), None);
+        }
+        let why = match tab.agent_session.as_deref() {
+            None => "no conversation was recorded for this tab",
+            Some(id) => match crate::adapters::resume_command(&tab.kind, id) {
+                Some(command) => {
+                    said.push(TabResumed {
+                        tab: tab.id.clone(),
+                        outcome: "resumed".into(),
+                        reason: None,
+                    });
+                    return (tab.kind.clone(), Some(command));
+                }
+                None => "this agent cannot resume a conversation",
+            },
+        };
+        said.push(TabResumed {
+            tab: tab.id.clone(),
+            outcome: "shell".into(),
+            reason: Some(why.into()),
+        });
+        ("shell".into(), None)
     }
 
     /// The window of a tab, for a peek or a prompt answer.
@@ -831,7 +900,7 @@ impl Registry {
             (record, id)
         };
         if backend.windows(&record.id).await.is_err() {
-            self.ensure_windows(backend, &record).await?;
+            self.ensure_windows(backend, &record, false).await?;
         }
         let Some(tab) = tab else {
             return Ok(None);
@@ -872,6 +941,7 @@ impl Registry {
             label: known.label.as_str().to_string(),
             kind: "shell".into(),
             dir: resolve_tab_dir(&record.dir, &known.dir)?,
+            resume: None,
         };
         let window = backend.new_tab(&record.id, &spec).await?;
         let mut state = self.state.lock().unwrap();
@@ -897,6 +967,57 @@ impl Registry {
                 tabs
             })
             .unwrap_or_default()
+    }
+
+    /// Keeps the id an agent reported on the tab it runs in (decision 0152); a new session in the same tab replaces
+    /// it. True when the record changed. The id is never logged.
+    pub fn set_agent_session(&self, workspace: &str, tab: &str, id: &str) -> bool {
+        let mut state = self.state.lock().unwrap();
+        let Some(t) = state
+            .workspaces
+            .iter_mut()
+            .find(|r| r.id == workspace)
+            .and_then(|r| r.tabs.iter_mut().find(|t| t.id == tab))
+        else {
+            return false;
+        };
+        if t.kind == "shell" || t.agent_session.as_deref() == Some(id) {
+            return false;
+        }
+        t.agent_session = Some(id.to_string());
+        self.save(&state);
+        true
+    }
+
+    /// The agent sessions the registry has a record of, for cross-session search (decision 0156): one per tab that
+    /// has an `agent_session`, with the directory the tab runs in. Nothing outside a known workspace's tabs is
+    /// returned, so a search can only read sessions of directories the owner opened. ACP workspaces keep their
+    /// session id in the ACP manager, which adds them (step 7).
+    pub fn known_sessions(&self) -> Vec<KnownSession> {
+        let state = self.state.lock().unwrap();
+        let mut out = Vec::new();
+        for r in &state.workspaces {
+            let up = r.tabs.iter().any(|t| t.window.is_some());
+            for t in &r.tabs {
+                let Some(id) = t.agent_session.clone() else {
+                    continue;
+                };
+                let dir = if t.dir.is_empty() {
+                    PathBuf::from(&r.dir)
+                } else {
+                    Path::new(&r.dir).join(&t.dir)
+                };
+                out.push(KnownSession {
+                    agent: t.kind.clone(),
+                    session_id: id,
+                    dir,
+                    workspace: r.id.clone(),
+                    tab: t.id.clone(),
+                    up,
+                });
+            }
+        }
+        out
     }
 
     pub fn has(&self, workspace: &str) -> bool {
@@ -1104,6 +1225,7 @@ fn reconcile_record(record: &mut WorkspaceRecord, windows: &[WindowState], label
             dir: relative_to(&record.dir, &window.info.path),
             order: record.tabs.len() as u32,
             window: Some(window.window_id.clone()),
+            agent_session: None,
         });
     }
     if record.focus.is_none()

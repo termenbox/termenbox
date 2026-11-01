@@ -10,6 +10,9 @@
   import NavigationBar from './NavigationBar.svelte';
   import MenuSheet from './MenuSheet.svelte';
   import InboxSheet from './InboxSheet.svelte';
+  import SearchSheet from './SearchSheet.svelte';
+  import { fileChanged, withWindow, type WindowMap } from './lib/acpHistory';
+  import { SessionSearch, landingOf, resumeOutcome, parts as hitParts, IDLE as SEARCH_IDLE, type SearchState } from './lib/sessionSearch';
   import { inbox, mergeAttention, markAllRead, unreadCount } from './lib/inbox';
   import { currentEndpoint, disablePush, enablePush, pushSupported } from './lib/push';
   import WorkspaceActions from './WorkspaceActions.svelte';
@@ -178,17 +181,23 @@
         if (!away && id === activeServerId && key === activeKey) showWorkspace(key, activeTabId ?? undefined);
       });
     },
-    onDrop: (_id, reason, upMs) => { dirClients.get(_id)?.fail('The connection was lost.'); noteError(`connection lost after ${Math.round(upMs / 1000)} s: ${reason}`); },
+    onDrop: (_id, reason, upMs) => { sessionSearch.lost(_id); dirClients.get(_id)?.fail('The connection was lost.'); noteError(`connection lost after ${Math.round(upMs / 1000)} s: ${reason}`); },
     onFatal: (_id, reason) => { noteError(`connection: ${reason}`); showToast(reason, 'error'); },
     onMessage: (_id, msg) => {
       const id = _id;
       dirClients.get(_id)?.handle(msg);
+      if (msg.type === 'search_hit' || msg.type === 'search_done') sessionSearch.handle(_id, msg);
       if (msg.type === 'snapshot') snapshots.apply(workspaceKey(_id, msg.workspace), msg);
-      else if (msg.type === 'workspace_attached') { preview = null; if (id === activeServerId && msg.workspace_id === activeWorkspaceId && msg.tab) { activeTab = msg.tab; saveActiveTab(workspaceKey(id, msg.workspace_id), msg.tab); } }
+      else if (msg.type === 'workspace_attached') { resumedReply(_id, msg); preview = null; if (id === activeServerId && msg.workspace_id === activeWorkspaceId && msg.tab) { activeTab = msg.tab; saveActiveTab(workspaceKey(id, msg.workspace_id), msg.tab); } }
       else if (msg.type === 'workspace_view') { if (id === activeServerId && msg.workspace === activeWorkspaceId) heldView = mergeView(heldView, msg); }
       else if (msg.type === 'acp_view') acpStreams.update(m => applyAcp(m, workspaceKey(_id, msg.workspace), msg.workspace, msg));
       else if (msg.type === 'workspaces') { openPending(_id, msg.workspaces); openPendingTab(_id, msg.workspaces); syncActiveTab(_id, msg.workspaces); acpStreams.update(m => forgetAcp(m, `${_id}/`, new Set(msg.workspaces.map(x => workspaceKey(_id, x.id))))); }
       else if (msg.type === 'attention') inbox.update(l => mergeAttention(l, _id, msg.items, s => workspaceKey(_id, s), s => hub.findWorkspace(workspaceKey(_id, s))?.name ?? s));
+      else if (msg.type === 'session_window') {
+        const k = workspaceKey(_id, msg.workspace);
+        windowChanged = { ...windowChanged, [k]: fileChanged(fileWindows[k], msg) };
+        fileWindows = withWindow(fileWindows, k, msg);
+      }
       else if (msg.type === 'history') historyMap = answered(historyMap, _id, msg);
       else if (msg.type === 'health_history') healthMap = answeredHealth(healthMap, _id, msg);
       else if (msg.type === 'history_deleted') historyDeletes.reply(_id, msg.removed);
@@ -343,6 +352,49 @@
   let sheetHeld = false;
   let menuOpen = false;
   let inboxOpen = false;
+  // Cross-session search (R78): one query, asked of every connected server; the query is kept only while the sheet is open.
+  let searchOpen = false;
+  let searchState: SearchState = SEARCH_IDLE;
+  const sessionSearch = new SessionSearch({
+    servers: () => $hubServers.filter(s => s.state === 'connected').map(s => ({ id: s.id, name: s.server.server_name || 'Server' })),
+    send: (id, m) => hub.send(id, m),
+    onchange: s => (searchState = s),
+  });
+  // Older turns of an ACP workspace, read from the agent's file for the hit that was tapped (step 9 of R78).
+  let fileWindows: WindowMap = {};
+  let windowChanged: Record<string, boolean> = {};
+  let acpFocus: { key: string; turn: string; query: string; nonce: number } | null = null;
+  function landOnHit(h: { serverId: string; workspace: string; turn: string; snippet: string; highlight: [number, number] }) {
+    acpFocus = { key: workspaceKey(h.serverId, h.workspace), turn: h.turn, query: hitParts(h).match, nonce: (acpFocus?.nonce ?? 0) + 1 };
+  }
+  function closeSearch() { searchOpen = false; sessionSearch.close(); }
+  // The three landings (decision 0156): an open terminal tab is switched to; an open ACP workspace is switched to and
+  // scrolled to the turn; a dormant one is reopened only after the person chose Resume, and says what became of the agent.
+  type TappedHit = { serverId: string; workspace: string; tab: string; agent: string; up: boolean; turn: string; snippet: string; highlight: [number, number] };
+  let resumeAsked: { key: string; hit: TappedHit } | null = null;
+  function pickHit(h: TappedHit) {
+    closeSearch();
+    const key = workspaceKey(h.serverId, h.workspace);
+    void attach(key, h.tab || undefined);
+    if (landingOf(h) === 'jump') landOnHit(h);
+  }
+  function resumeHit(h: TappedHit) {
+    closeSearch();
+    const key = workspaceKey(h.serverId, h.workspace);
+    void attach(key, h.tab || undefined);
+    // An ACP workspace is restored by opening its view, which sends no `workspace_attached`: say it now and go to the turn.
+    if (!h.tab) { showToast(resumeOutcome(h, undefined).message); landOnHit(h); return; }
+    resumeAsked = { key, hit: h };
+  }
+  /** The reply to the attach that reopened a dormant workspace. */
+  function resumedReply(serverId: string, msg: { workspace_id: string; resumed?: import('./lib/protocol').TabResumed[] }) {
+    const ask = resumeAsked;
+    if (!ask || ask.key !== workspaceKey(serverId, msg.workspace_id)) return;
+    resumeAsked = null;
+    const r = resumeOutcome(ask.hit, msg.resumed);
+    showToast(r.message, r.ok ? undefined : 'error');
+    if (r.jump) landOnHit(ask.hit);
+  }
   let pushInfos: Record<string, Extract<import('./lib/protocol').ServerMessage, { type: 'push_info' }>> = {};
   let pushOn = false;
   void currentEndpoint().then(e => (pushOn = !!e && typeof Notification !== 'undefined' && Notification.permission === 'granted'));
@@ -984,6 +1036,7 @@
   function runAction(id: string) {
     const [name, arg] = id.split(':');
     if (name === 'new-workspace') newWorkspace();
+    else if (name === 'search-sessions') searchOpen = true;
     else if (name === 'pause' && arg) hub.pause(arg);
     else if (name === 'resume' && arg) hub.resume(arg);
     else if (['approve-decision', 'deny-decision', 'next-needs-you', 'focus-composer'].includes(name)) setTimeout(() => handleShortcut(name), 0); // after the palette has closed and let go of focus
@@ -1258,7 +1311,7 @@
                 onmove={tabsAnywhere ? (key, index) => hub.moveWorkspace(key, index) : undefined} />
             {:else if connection && connState !== 'paused' && activeIsAcp && activeWorkspace}
               {#key activeKey}
-                <AcpView workspaceKey={activeWorkspace.key} name={activeWorkspace.name} agent={activeRow?.agent} fleet={activeRow?.state} stream={$acpStreams[activeWorkspace.key]} {connState} {now} {canShell}
+                <AcpView focus={acpFocus?.key === activeWorkspace.key ? acpFocus : null} window={fileWindows[activeWorkspace.key]} changed={!!windowChanged[activeWorkspace.key]} onwindow={(turn) => sendAcp({ type: 'window', workspace: activeWorkspace.key, turn, before: 12, after: 6 })} workspaceKey={activeWorkspace.key} name={activeWorkspace.name} agent={activeRow?.agent} fleet={activeRow?.state} stream={$acpStreams[activeWorkspace.key]} {connState} {now} {canShell}
                   onprompt={(text) => sendAcp({ type: 'acp_prompt', workspace: activeWorkspace.key, text })} oninterrupt={() => sendAcp({ type: 'acp_interrupt', workspace: activeWorkspace.key })}
                   onanswer={(promptId, optionId) => sendAcp({ type: 'acp_answer', workspace: activeWorkspace.key, prompt_id: promptId, option_id: optionId })}
                   onmode={(mode) => sendAcp({ type: 'acp_mode', workspace: activeWorkspace.key, mode })} onshell={() => openShell(activeWorkspace.key)} />
@@ -1306,7 +1359,8 @@
     </AppFrame>
   {/if}
 
-  {#if menuOpen && user}<MenuSheet {user} {avatar} onservers={leaveServer} onsettings={() => go('settings')} onreport={openReport} ondiagnostics={() => openDiagnostics()} onlogout={logout} onclose={() => menuOpen = false} unread={unreadCount($inbox)} oninbox={() => inboxOpen = true} />{/if}
+  {#if menuOpen && user}<MenuSheet {user} {avatar} onservers={leaveServer} onsettings={() => go('settings')} onreport={openReport} ondiagnostics={() => openDiagnostics()} onlogout={logout} onclose={() => menuOpen = false} unread={unreadCount($inbox)} oninbox={() => inboxOpen = true} onsearch={() => searchOpen = true} />{/if}
+  {#if searchOpen}<SearchSheet bind:open={searchOpen} {wide} search={searchState} {now} nameOf={(sid, w) => hub.findWorkspace(workspaceKey(sid, w))?.name} onquery={(t) => sessionSearch.run(t)} onstop={() => sessionSearch.stop()} onpick={pickHit} onresume={resumeHit} onclose={closeSearch} />{/if}
   {#if inboxOpen}<InboxSheet items={$inbox} {now} agents={$allAgents} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} onreply={(key, text) => sendWorkspace({ type: 'reply', workspace: key, text })} onopen={openWaiting} onhome={() => go('home')} onread={() => inbox.update(markAllRead)} onclear={() => inbox.set([])} onclose={() => { inboxOpen = false; inbox.update(markAllRead); }} />{/if}
   {#if actionWorkspace}<WorkspaceActions workspace={actionWorkspace} canClose={['tmux', 'acp'].includes(backendOf(actionWorkspace))} confirmFirst={actionConfirm} onrename={(name) => renameWorkspace(actionWorkspace.key, name)} placement={placementOf($allWorkspaces, actionWorkspace.key)} onmove={(to) => moveWorkspace($allWorkspaces, actionWorkspace.key, to)} ondetach={() => detach(actionWorkspace.key)} oncloseworkspace={() => closeWorkspace(actionWorkspace.key)} onclose={() => actionKey = null} />{/if}
   {#if tabMenuOpen}
