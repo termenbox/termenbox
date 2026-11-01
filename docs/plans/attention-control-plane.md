@@ -20,7 +20,7 @@ Termenbox is a web terminal for remote AI coding agents: Rust server `packages/s
 
 ## Slice 0: scaffolding and the map
 
-### 0.1 Dogfood log and its format — [ ]‖
+### 0.1 Dogfood log and its format — [x]‖
 Class: implement · Needs: none · Check: `test -f docs/plans/assets/control-plane/dogfood.md && grep -q "Template" docs/plans/assets/control-plane/dogfood.md`
 Context: Guardrail `control-plane-steps-are-dogfooded-before-they-are-done` requires a dated owner note per step in `docs/plans/assets/control-plane/dogfood.md`. The file does not exist yet.
 Do: Create the file with a short header and a "Template" section: `## <step id> <date>` then lines `Days used:`, `Before (s per agent-hour):`, `After:`, `Hurt:` (three items), `Keep / change / revert:`. Add nothing else. Do not fill any note: only the owner does.
