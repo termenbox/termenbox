@@ -6,7 +6,7 @@ import type { AgentMap, WorkspaceAgent } from './agents';
 import type { HubServer, HubWorkspace } from './hub';
 import type { TabAgentState } from './protocol';
 import type { FleetState } from './ds/states';
-import { aggregateStatus, tabAgentStates } from './workspaceTabs';
+import { aggregateStatus, tabAgentStates } from './status';
 
 export function fleetOf(agent?: WorkspaceAgent): FleetState {
   if (!agent) return 'idle';

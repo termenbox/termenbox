@@ -1,7 +1,8 @@
 import { derived, writable } from 'svelte/store';
 import { Connection, type ConnectionOptions, type ConnState } from './connection';
 import { applyStatusFrame, knowsFrame } from './status';
-import { applyActivity, applyAttention, applyEvents, applySnapshot, syncRequest, type AgentMap } from './agents';
+import { applyEvents, applySnapshot, syncRequest, type AgentMap } from './agents';
+import { applyActivity, applyAttention } from './status';
 import type { AttentionDay, ClientMessage, ConductorCardInfo, ConductorNodeInfo, ServerHealth, ServerListItem, ServerMessage, TabAgentState, UpdateInfo, WorkspaceInfo } from './protocol';
 import { CHECK_WAIT_MS, checkAnswered, type UpdateAction } from './updateState';
 import type { Target } from './transport';

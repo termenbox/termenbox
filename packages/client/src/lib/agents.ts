@@ -1,7 +1,8 @@
 // The agent event store (plan v6, P.6): the latest state per workspace, kept up to date from the server's
 // snapshot and event stream. No UI here (cards are v8). Text in events is untrusted: render it as text only.
 import { get, writable } from 'svelte/store';
-import type { Activity, AgentEvent, SubReason, AgentState, Attention, ClientMessage, ServerMessage, WorkspaceActivity, WorkspaceAgentState, Task } from './protocol';
+import type { Activity, AgentEvent, SubReason, AgentState, Attention, ClientMessage, ServerMessage, WorkspaceAgentState, Task } from './protocol';
+import { settled } from './status';
 
 export interface WorkspaceAgent {
   state: AgentState;
@@ -51,49 +52,6 @@ export function isStale(a: WorkspaceAgent, nowMs: number, skewMs = 0): boolean {
   return !a.serverStatus && a.state === 'working' && (a.stale || nowMs + skewMs - a.ts > STALE_AFTER_MS);
 }
 
-const URGENCY: Record<string, number> = { needs_input: 0, failed: 1, finished_unseen: 2 };
-
-/** With server status, the legacy `state` is what Activity and Attention say, so cards and tabs read one thing. */
-function derived(a: WorkspaceAgent): WorkspaceAgent {
-  if (!a.serverStatus) return a;
-  const kind = a.attention?.kind;
-  let state: AgentState;
-  if (kind === 'needs_input') state = 'needs_input';
-  else if (kind === 'failed') state = 'error';
-  else if (a.activity === 'working') state = 'working';
-  else if (a.activity === 'blocked') state = 'needs_input';
-  else if (a.activity === 'idle') state = kind === 'finished_unseen' ? 'done' : 'idle';
-  else state = 'unknown';
-  const waitingSince = kind === 'needs_input' || kind === 'failed' ? a.attention?.raised_at : undefined;
-  return { ...a, state, stale: false, waitingSince };
-}
-
-/** Activity of workspaces, as the server derived it. An unknown activity value counts as `unknown`. */
-export function applyActivity(map: AgentMap, workspaces: WorkspaceActivity[], receivedAt: number): AgentMap {
-  const next: AgentMap = { ...map };
-  for (const s of workspaces) {
-    const cur = next[s.workspace] ?? { state: 'unknown' as AgentState, seq: 0, stale: false, ts: s.ts };
-    next[s.workspace] = derived({ ...cur, serverStatus: true, activity: s.activity, task: s.task, subReason: s.sub_reason, bg: s.bg ?? 0, agent: s.agent ?? cur.agent,
-      clockOffset: s.ts - receivedAt, ts: Math.max(cur.ts, s.ts) });
-  }
-  return next;
-}
-
-/** The server sends all open items at once: a workspace without one has none. */
-export function applyAttention(map: AgentMap, items: Attention[]): AgentMap {
-  const best = new Map<string, Attention>();
-  for (const it of items) {
-    const cur = best.get(it.workspace);
-    if (!cur || (URGENCY[it.kind] ?? 9) < (URGENCY[cur.kind] ?? 9)) best.set(it.workspace, it);
-  }
-  const next: AgentMap = {};
-  for (const [k, a] of Object.entries(map)) next[k] = derived({ ...a, serverStatus: true, attention: best.get(k) });
-  for (const [k, it] of best) {
-    if (!next[k]) next[k] = derived({ state: 'unknown', seq: 0, stale: false, ts: it.raised_at, serverStatus: true, attention: it });
-  }
-  return next;
-}
-
 /** Items to acknowledge: finished or failed ones of a workspace that is shown in the foreground of a visible page. A
  *  `needs_input` is never acknowledged by looking; only the prompt going away clears it. */
 export function attentionToAck(a: WorkspaceAgent | undefined, foreground: boolean, pageVisible: boolean, done: Set<string>, visibleTab?: string | null): string[] {
@@ -116,7 +74,7 @@ export function applySnapshot(map: AgentMap, states: WorkspaceAgentState[]): Age
     const old = map[s.workspace];
     // A lower seq than ours means the server restarted its counters: what we hold is from before, drop it.
     const keep = old && old.seq <= s.seq ? old : {};
-    next[s.workspace] = derived({ ...keep, state: s.state, seq: s.seq, stale: s.stale, ts: s.ts, agent: s.agent, lastResponseAt: s.last_response_at,
+    next[s.workspace] = settled({ ...keep, state: s.state, seq: s.seq, stale: s.stale, ts: s.ts, agent: s.agent, lastResponseAt: s.last_response_at,
       waitingSince: waiting(s.state) ? s.waiting_since ?? (old && old.seq <= s.seq && waiting(old.state) ? old.waitingSince ?? old.ts : s.ts) : undefined });
   }
   return next;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { get } from 'svelte/store';
-import { agents, applyActivity, applyAttention, applyEvents, applySnapshot, attentionToAck, handleAgentMessage, isStale, resetAgents, runningMs, syncRequest, type AgentMap } from './agents';
+import { agents, applyEvents, applySnapshot, attentionToAck, handleAgentMessage, isStale, resetAgents, runningMs, syncRequest, type AgentMap } from './agents';
+import { applyActivity, applyAttention } from './status';
 import { needsYou } from './tabs';
 import type { AgentEvent, ClientMessage, ServerMessage } from './protocol';
 
