@@ -17,6 +17,9 @@ pub const GRACE_MS: u64 = 4_000;
 pub const QUIET_MS: u64 = 60_000;
 /// `retrying` for this long raises a silent info item (decision 0185).
 pub const RETRY_INFO_MS: u64 = 120_000;
+/// An `AskContent` key that names no ask: the text belongs to the one open ask that has none yet. A late
+/// `Notification` carries words but no key (fact 0072).
+pub const ANY_ASK: &str = "";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Status {
@@ -347,6 +350,16 @@ impl Machine {
             }
             Event::AskContent { key, text, options } => {
                 // Content attaches to the open ask of the same key only; a late one for a closed ask is dropped.
+                // `ANY_ASK` resolves to the only open ask without text, and to nothing when that is ambiguous.
+                let key = if key == ANY_ASK {
+                    let mut bare = self.asks.iter().filter(|(_, a)| a.text.is_none());
+                    match (bare.next(), bare.next()) {
+                        (Some((k, _)), None) => k.clone(),
+                        _ => return out,
+                    }
+                } else {
+                    key
+                };
                 if let Some(a) = self.asks.get_mut(&key) {
                     if a.text.as_deref() != Some(text.as_str()) || a.options != options {
                         a.text = Some(text.clone());

@@ -390,6 +390,43 @@ fn rows() -> Vec<Row> {
         )
     });
     r.push(Row {
+        asks: 1,
+        sub: None,
+        ..row(
+            "a keyless notification text fills the one bare open ask",
+            vec![
+                start(),
+                turn(1_000),
+                ask(2_000, "Bash", Permission),
+                content(4_000, super::machine::ANY_ASK, "needs your permission"),
+            ],
+            Status::NeedsYou,
+            vec![
+                raise_ask("Bash", Permission),
+                Effect::FillAsk {
+                    key: "Bash".into(),
+                    text: "needs your permission".into(),
+                    options: vec!["a".into(), "b".into()],
+                },
+            ],
+        )
+    });
+    r.push(Row {
+        asks: 2,
+        ..row(
+            "a keyless notification text with two bare asks is dropped",
+            vec![
+                start(),
+                turn(1_000),
+                ask(2_000, "p1", Permission),
+                ask(2_100, "p2", Plan),
+                content(4_000, super::machine::ANY_ASK, "which one?"),
+            ],
+            Status::NeedsYou,
+            vec![raise_ask("p1", Permission), raise_ask("p2", Plan)],
+        )
+    });
+    r.push(Row {
         asks: 2,
         ..row(
             "two asks in a tab are both tracked",

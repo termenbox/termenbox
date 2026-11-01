@@ -159,7 +159,7 @@ out-of-order delivery. One constant for the grace and for the disagreement count
 Done-when: The test enumerates every status, sub-reason, failure cause and event kind and fails if one has no row.
 Progress: done 2026-11-01. `packages/server/src/status/{event,machine,transitions}.rs`: `Event` (20 kinds), `Machine::apply/tick/view`, `rollup`, constants `GRACE_MS` 4 s, `DISAGREE_SCANS` 2 (a transcript reading counts once), `QUIET_MS` 60 s, `RETRY_INFO_MS` 120 s. 56 transition rows plus the coverage test (`every_status_reason_cause_and_event_has_a_row`). Not read by anything yet (`#![allow(dead_code)]` in `status/mod.rs`, drop it in B.6). Choices B.3 to B.5 must honour: `TurnEnd` carries `bg` (from `Stop`); a `ToolStart` within `GRACE_MS` of a turn end is late and opens nothing; `AskContent` attaches only to an open ask of the same key; `ProcessGone` with an open turn or ask is `failed(crashed)`; screen `Blocked` with no ask is a hint only; the Esc paths close through `Observe` (screen twice, transcript once) or `AskClose{Escaped}`. Catalogue cases beyond the transitions (two tabs, restart, devices) stay for D.1/D.5.
 
-### B.3 Adapters emit typed events, with full ask content — [ ]
+### B.3 Adapters emit typed events, with full ask content — [x]
 Class: implement · Needs: A.2, B.2 · Check: `scripts/dev.sh cargo test -p termenbox-server adapters`
 Context: `packages/server/src/adapters.rs` `claude` maps 13 hooks to edges; `claude_hooks.rs` installs them.
 `tool_summary` returns "" for `AskUserQuestion` and `ExitPlanMode`, so their question and plan text are lost
@@ -170,6 +170,7 @@ new hooks found in A.2 in `claude_hooks.rs` and keep the opt-in consent flow (de
 recorded payloads from A.1 and A.2.
 Done-when: Each recorded fixture maps to the expected typed event, and an AskUserQuestion fixture yields its question
 and options.
+Progress: done 2026-11-01. `adapters::claude_events` maps every hook to `status::event::Event` (the legacy `claude()` stays until B.6); `AskUserQuestion` question and options, the `ExitPlanMode` plan and the permission tool come from `tool_input`, cleaned and capped. `claude_hooks::EVENTS` now has 17 (added `SubagentStart/Stop`, `PreCompact/PostCompact`; the opt-in consent flow is unchanged). Choices later steps rely on: asks are keyed by tool name, elicitations by `elicit:<server>`; a `Notification` yields `AskContent` with the new `machine::ANY_ASK` key, which the machine resolves to the one open ask without text (none or two: dropped, two new transition rows); `SubagentStop` with an empty `agent_type` is noise (fires after every `Stop`) and is ignored; `Stop` `bg` = `background_tasks` + `session_crons`; `StopFailure.error` maps `rate_limit`, `server_error` (measured) and `authentication_failed`, `billing_error`, `invalid_request`, `max_output_tokens` (documented, not measured) to causes, else `Unknown`. Also fixed `profile` test that broke on A.1's `testdata/screens/lag/` directory. Not yet read by the server: the new items carry `allow(dead_code)` until B.6.
 
 ### B.4 Transcript as an evidence source — [ ]
 Class: implement · Needs: A.1, B.2 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log`

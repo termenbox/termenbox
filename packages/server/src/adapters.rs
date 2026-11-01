@@ -2,7 +2,13 @@
 //! tool's own data, so they are covered by recorded samples (`testdata/events/`). Text is not cleaned
 //! here; the hub does that for every source.
 use serde_json::Value;
-use termenbox_core::events::{AgentState, Confidence, EventKind, Source, ToolPhase};
+use termenbox_core::events::{
+    AgentState, AskKind, Confidence, EventKind, FailureCause, Source, ToolPhase,
+};
+
+use crate::events::{sanitize_block, sanitize_text};
+use crate::status::event::{AskOutcome, Event, Outcome, SessionSource};
+use crate::status::machine::ANY_ASK;
 
 pub type Adapted = (Source, Confidence, Vec<EventKind>);
 
@@ -150,6 +156,201 @@ pub fn claude(d: &Value) -> Option<Adapted> {
         _ => return None,
     };
     Some((Source::Hook, Confidence::High, kinds))
+}
+
+/// Untrusted agent text on a card (decision 0095): the question, an option, the plan.
+#[allow(dead_code)] // read by the status machine from B.6
+const ASK_TEXT_CHARS: usize = 600;
+#[allow(dead_code)] // read by the status machine from B.6
+const PLAN_CHARS: usize = 2_000;
+#[allow(dead_code)] // read by the status machine from B.6
+const PLAN_LINES: usize = 40;
+#[allow(dead_code)] // read by the status machine from B.6
+const ASK_OPTION_CHARS: usize = 80;
+#[allow(dead_code)] // read by the status machine from B.6
+const ASK_OPTIONS: usize = 8;
+
+/// What a dialog asks, read from `tool_input`: `AskUserQuestion` carries the question and its options, `ExitPlanMode`
+/// the plan, any other tool the tool and its summary (fact 0071: these were dropped before).
+#[allow(dead_code)] // read by the status machine from B.6
+fn ask_content(name: &str, input: &Value) -> Option<(String, Vec<String>)> {
+    match name {
+        "AskUserQuestion" => {
+            let q = input.get("questions")?.as_array()?.first()?;
+            let text = sanitize_text(text(q, "question"), ASK_TEXT_CHARS);
+            let options = q
+                .get("options")
+                .and_then(Value::as_array)
+                .map(|o| {
+                    o.iter()
+                        .map(|o| sanitize_text(text_of(o), ASK_OPTION_CHARS))
+                        .filter(|o| !o.is_empty())
+                        .take(ASK_OPTIONS)
+                        .collect()
+                })
+                .unwrap_or_default();
+            (!text.is_empty()).then_some((text, options))
+        }
+        "ExitPlanMode" => {
+            let plan = sanitize_block(text(input, "plan"), PLAN_CHARS, PLAN_LINES);
+            (!plan.is_empty()).then_some((plan, Vec::new()))
+        }
+        _ => {
+            let summary = sanitize_text(&tool_summary(name, input), ASK_TEXT_CHARS);
+            let name = sanitize_text(name, 40);
+            (!name.is_empty()).then(|| {
+                let text = if summary.is_empty() {
+                    name
+                } else {
+                    format!("{name}: {summary}")
+                };
+                (text, Vec::new())
+            })
+        }
+    }
+}
+
+/// An option is `{label, description}` in Claude's payload; a bare string is accepted too.
+#[allow(dead_code)] // read by the status machine from B.6
+fn text_of(o: &Value) -> &str {
+    o.as_str().unwrap_or_else(|| text(o, "label"))
+}
+
+#[allow(dead_code)] // read by the status machine from B.6
+fn ask_kind(tool: &str) -> AskKind {
+    match tool {
+        "AskUserQuestion" => AskKind::Question,
+        "ExitPlanMode" => AskKind::Plan,
+        _ => AskKind::Permission,
+    }
+}
+
+/// `StopFailure.error` to the class of decision 0185. Anything unrecognised is `Unknown`, still a failure.
+#[allow(dead_code)] // read by the status machine from B.6
+fn failure_cause(error: &str) -> FailureCause {
+    match error {
+        "rate_limit" => FailureCause::RateLimit,
+        "authentication_failed" | "auth" | "billing_error" => FailureCause::Auth,
+        "server_error" | "invalid_request" | "max_output_tokens" => FailureCause::ApiError,
+        e if e.contains("context") => FailureCause::Context,
+        _ => FailureCause::Unknown,
+    }
+}
+
+/// Claude Code hook payloads as typed events for the per-session machine (`status::machine`, decision 0182).
+/// A hook states what happened, never the status. Every hook maps to something or is deliberately ignored:
+/// `SubagentStop` with no `agent_type` fires from the main loop after each `Stop` and is noise (fact 0073), and
+/// `idle_prompt` carries no information the `Stop` before it did not (fact 0073).
+///
+/// An ask is keyed by the tool name (`PermissionRequest` has no `tool_use_id`), an elicitation by its server.
+/// `Notification` text has no key: it fills the one open ask that has none (`ANY_ASK`).
+#[allow(dead_code)] // read by the status machine from B.6
+pub fn claude_events(d: &Value) -> Vec<Event> {
+    let tool = || text(d, "tool_name").to_string();
+    let input = || d.get("tool_input").unwrap_or(&Value::Null);
+    let open = |key: String, kind: AskKind, content: Option<(String, Vec<String>)>| {
+        let mut v = vec![Event::AskOpen {
+            key: key.clone(),
+            kind,
+        }];
+        if let Some((text, options)) = content {
+            v.push(Event::AskContent { key, text, options });
+        }
+        v
+    };
+    let close = |key: String, outcome| vec![Event::AskClose { key, outcome }];
+    match text(d, "hook_event_name") {
+        "SessionStart" => vec![Event::SessionStart(match text(d, "source") {
+            "resume" => SessionSource::Resume,
+            "clear" => SessionSource::Clear,
+            "compact" => SessionSource::Compact,
+            _ => SessionSource::Startup,
+        })],
+        "SessionEnd" => vec![Event::SessionEnd],
+        "UserPromptSubmit" => {
+            // The first line names the task; the rest of the prompt is never copied.
+            let first = sanitize_text(text(d, "prompt").lines().next().unwrap_or(""), 120);
+            vec![Event::TurnStart {
+                title: (!first.is_empty()).then_some(first),
+            }]
+        }
+        "PreToolUse" => {
+            let name = tool();
+            let mut v = vec![Event::ToolStart { name: name.clone() }];
+            if matches!(name.as_str(), "AskUserQuestion" | "ExitPlanMode") {
+                v.extend(open(
+                    name.clone(),
+                    ask_kind(&name),
+                    ask_content(&name, input()),
+                ));
+            }
+            v
+        }
+        "PostToolUse" | "PostToolUseFailure" => {
+            let name = tool();
+            let mut v = close(name.clone(), AskOutcome::Answered);
+            v.push(Event::ToolEnd { name });
+            v
+        }
+        "PermissionRequest" => {
+            let name = tool();
+            open(name.clone(), ask_kind(&name), ask_content(&name, input()))
+        }
+        // The tool is not run; the agent carries on with the refusal.
+        "PermissionDenied" => close(tool(), AskOutcome::Declined),
+        "Elicitation" => {
+            let key = format!("elicit:{}", sanitize_text(text(d, "mcp_server_name"), 40));
+            let msg = sanitize_text(text(d, "message"), ASK_TEXT_CHARS);
+            open(
+                key,
+                AskKind::Elicitation,
+                (!msg.is_empty()).then(|| (msg, Vec::new())),
+            )
+        }
+        "ElicitationResult" => {
+            let key = format!("elicit:{}", sanitize_text(text(d, "mcp_server_name"), 40));
+            let outcome = match text(d, "action") {
+                "accept" => AskOutcome::Answered,
+                _ => AskOutcome::Declined,
+            };
+            close(key, outcome)
+        }
+        "Notification" => match text(d, "notification_type") {
+            // Only the words: the ask itself is opened by `PermissionRequest` or `Elicitation`, and a notification
+            // that comes first or never changes nothing (decision 0183).
+            "" | "permission_prompt" | "elicitation_dialog" => {
+                let msg = sanitize_text(text(d, "message"), ASK_TEXT_CHARS);
+                if msg.is_empty() {
+                    vec![]
+                } else {
+                    vec![Event::AskContent {
+                        key: ANY_ASK.into(),
+                        text: msg,
+                        options: Vec::new(),
+                    }]
+                }
+            }
+            _ => vec![],
+        },
+        "Stop" => vec![Event::TurnEnd {
+            outcome: Outcome::Done,
+            // `background_tasks` and `session_crons` are what is still alive after the turn (fact 0073).
+            bg: ["background_tasks", "session_crons"]
+                .iter()
+                .filter_map(|k| d.get(*k).and_then(Value::as_array))
+                .map(|a| a.len() as u32)
+                .sum(),
+        }],
+        "StopFailure" => vec![Event::TurnEnd {
+            outcome: Outcome::Failed(failure_cause(text(d, "error"))),
+            bg: 0,
+        }],
+        "SubagentStart" => vec![Event::SubagentStart],
+        "SubagentStop" if !text(d, "agent_type").is_empty() => vec![Event::SubagentEnd],
+        "PreCompact" => vec![Event::CompactStart],
+        "PostCompact" => vec![Event::CompactEnd],
+        _ => vec![],
+    }
 }
 
 fn turn_end(outcome: AgentState) -> EventKind {
@@ -911,6 +1112,223 @@ mod tests {
         assert_eq!(resume_command("gemini", "x"), None);
         for bad in ["", "a b", "a;b", "$(x)", "-x y", &"a".repeat(129), "é"] {
             assert_eq!(resume_command("claude", bad), None, "{bad:?}");
+        }
+    }
+
+    /// The payloads of one recorded A.2 run, in arrival order.
+    fn run(name: &str) -> Vec<Value> {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/events/a2")
+            .join(format!("claude-{name}.jsonl"));
+        std::fs::read_to_string(&p)
+            .unwrap_or_else(|e| panic!("{p:?}: {e}"))
+            .lines()
+            .map(|l| serde_json::from_str(l.split_once('\t').unwrap().1).unwrap())
+            .collect()
+    }
+
+    fn events(name: &str) -> Vec<Event> {
+        run(name).iter().flat_map(claude_events).collect()
+    }
+
+    fn ask(key: &str, kind: AskKind) -> Event {
+        Event::AskOpen {
+            key: key.into(),
+            kind,
+        }
+    }
+
+    fn close(key: &str, outcome: AskOutcome) -> Event {
+        Event::AskClose {
+            key: key.into(),
+            outcome,
+        }
+    }
+
+    #[test]
+    fn an_ask_user_question_yields_its_question_and_options() {
+        let ev = claude_events(&sample("claude-pretooluse-askuserquestion.json"));
+        assert_eq!(
+            ev,
+            vec![
+                Event::ToolStart {
+                    name: "AskUserQuestion".into()
+                },
+                ask("AskUserQuestion", AskKind::Question),
+                Event::AskContent {
+                    key: "AskUserQuestion".into(),
+                    text: "Which colour do you like?".into(),
+                    options: vec!["Red".into(), "Blue".into()],
+                },
+            ]
+        );
+        assert_eq!(
+            claude_events(&sample("claude-posttooluse-askuserquestion.json")),
+            vec![
+                close("AskUserQuestion", AskOutcome::Answered),
+                Event::ToolEnd {
+                    name: "AskUserQuestion".into()
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn a_plan_and_a_permission_carry_their_text_and_untrusted_text_is_cleaned() {
+        let plan = json!({"hook_event_name": "PreToolUse", "tool_name": "ExitPlanMode",
+            "tool_input": {"plan": "1. do it\x1b[31m\n2. check"}});
+        let ev = claude_events(&plan);
+        assert_eq!(ev[1], ask("ExitPlanMode", AskKind::Plan));
+        let Event::AskContent { text, .. } = &ev[2] else {
+            panic!("{ev:?}")
+        };
+        assert!(
+            text.starts_with("1. do it") && text.contains("2. check") && !text.contains('\x1b')
+        );
+
+        let perm = claude_events(&sample("claude-permissionrequest.json"));
+        assert_eq!(perm.len(), 2);
+        assert!(matches!(
+            &perm[0],
+            Event::AskOpen {
+                kind: AskKind::Permission,
+                ..
+            }
+        ));
+        let long = json!({"hook_event_name": "PermissionRequest", "tool_name": "Bash",
+            "tool_input": {"command": "x".repeat(5_000)}});
+        let Event::AskContent { text, .. } = &claude_events(&long)[1] else {
+            panic!()
+        };
+        assert!(text.chars().count() <= ASK_TEXT_CHARS);
+    }
+
+    #[test]
+    fn the_plain_recorded_turn_maps_to_typed_events() {
+        let start = claude_events(&sample("claude-userpromptsubmit.json"));
+        assert!(matches!(&start[..], [Event::TurnStart { title: Some(_) }]));
+        assert_eq!(
+            claude_events(&sample("claude-stop.json")),
+            vec![Event::TurnEnd {
+                outcome: Outcome::Done,
+                bg: 0
+            }]
+        );
+        assert_eq!(
+            claude_events(&sample("claude-pretooluse.json"))[0],
+            Event::ToolStart {
+                name: sample("claude-pretooluse.json")["tool_name"]
+                    .as_str()
+                    .unwrap()
+                    .into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_stop_counts_background_work_and_scheduled_wakeups() {
+        let stops = |name| -> Vec<u32> {
+            events(name)
+                .into_iter()
+                .filter_map(|e| match e {
+                    Event::TurnEnd { bg, .. } => Some(bg),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(stops("bg_bash"), [1, 0]);
+        assert_eq!(stops("wakeup"), [1, 0]);
+    }
+
+    #[test]
+    fn subagent_and_compaction_hooks_map_and_the_noise_after_each_stop_does_not() {
+        let ev = events("subagent");
+        assert_eq!(ev.iter().filter(|e| **e == Event::SubagentStart).count(), 1);
+        assert_eq!(ev.iter().filter(|e| **e == Event::SubagentEnd).count(), 1);
+        let ev = events("compact");
+        assert!(ev.contains(&Event::CompactStart) && ev.contains(&Event::CompactEnd));
+        assert!(ev.contains(&Event::SessionStart(SessionSource::Compact)));
+        assert!(!ev.contains(&Event::SubagentEnd));
+        assert!(events("resume").contains(&Event::SessionStart(SessionSource::Resume)));
+    }
+
+    #[test]
+    fn an_elicitation_opens_with_its_message_and_closes_by_the_action() {
+        let ev = events("elicitation");
+        assert!(ev.contains(&ask("elicit:probe", AskKind::Elicitation)));
+        assert!(ev.contains(&Event::AskContent {
+            key: "elicit:probe".into(),
+            text: "What is your name?".into(),
+            options: vec![]
+        }));
+        assert!(ev.contains(&close("elicit:probe", AskOutcome::Declined)));
+        // The keyless notification text is only content, never an ask of its own.
+        assert!(!ev
+            .iter()
+            .any(|e| matches!(e, Event::AskOpen { key, .. } if key.is_empty())));
+    }
+
+    #[test]
+    fn a_notification_only_fills_text_and_an_idle_prompt_is_ignored() {
+        let n = claude_events(&sample("claude-notification.json"));
+        assert!(
+            matches!(&n[..], [Event::AskContent { key, .. }] if key == ANY_ASK) || n.is_empty()
+        );
+        assert!(events("idle_prompt")
+            .iter()
+            .all(|e| !matches!(e, Event::AskContent { .. })));
+    }
+
+    #[test]
+    fn a_denied_permission_closes_as_declined() {
+        let d = json!({"hook_event_name": "PermissionDenied", "tool_name": "Bash"});
+        assert_eq!(claude_events(&d), vec![close("Bash", AskOutcome::Declined)]);
+    }
+
+    #[test]
+    fn a_stop_failure_is_a_failed_turn_with_its_class() {
+        let fail = |name: &str| {
+            events(name).into_iter().find_map(|e| match e {
+                Event::TurnEnd { outcome, .. } => Some(outcome),
+                _ => None,
+            })
+        };
+        assert_eq!(
+            fail("err_429"),
+            Some(Outcome::Failed(FailureCause::RateLimit))
+        );
+        assert_eq!(
+            fail("err_500"),
+            Some(Outcome::Failed(FailureCause::ApiError))
+        );
+        assert_eq!(failure_cause("authentication_failed"), FailureCause::Auth);
+        assert_eq!(failure_cause("something new"), FailureCause::Unknown);
+    }
+
+    #[test]
+    fn every_recorded_hook_and_every_unknown_payload_maps_without_panicking() {
+        for name in [
+            "bg_bash",
+            "compact",
+            "denied",
+            "elicitation",
+            "err_401",
+            "idle_prompt",
+            "parallel",
+            "resume",
+            "subagent",
+            "wakeup",
+        ] {
+            assert!(!events(name).is_empty(), "{name}");
+        }
+        for junk in [
+            json!(null),
+            json!({}),
+            json!({"hook_event_name": 5}),
+            json!({"hook_event_name": "Nope"}),
+            json!({"hook_event_name": "PreToolUse", "tool_input": 3}),
+        ] {
+            let _ = claude_events(&junk);
         }
     }
 }

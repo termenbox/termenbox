@@ -623,7 +623,12 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/screens");
         let mut seen = 0;
         for entry in std::fs::read_dir(dir).unwrap() {
-            let text = std::fs::read_to_string(entry.unwrap().path()).unwrap();
+            let path = entry.unwrap().path();
+            // `lag/` holds the runs of `scripts/status-lag.mjs`, not profile fixtures.
+            if path.is_dir() {
+                continue;
+            }
+            let text = std::fs::read_to_string(path).unwrap();
             for agent in [None, Some("claude")] {
                 let (p, _) = profiles().for_agent(agent);
                 let Some(prompt) = p.read(&text).prompt else {

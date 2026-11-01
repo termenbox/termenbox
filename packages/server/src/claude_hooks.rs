@@ -11,7 +11,7 @@ use crate::agent_hooks::Reply;
 /// Every event the turn-and-obligation reducer reads (`adapters::claude`). `PermissionRequest` is the one that
 /// says a dialog is open (`Notification` follows it by seconds and covers only some of them); the rest end a wait
 /// or a turn. Settings written by an earlier version lack the newer ones: `merge` adds them, nothing else.
-pub const EVENTS: [&str; 13] = [
+pub const EVENTS: [&str; 17] = [
     "SessionStart",
     "SessionEnd",
     "UserPromptSubmit",
@@ -25,6 +25,11 @@ pub const EVENTS: [&str; 13] = [
     "Notification",
     "Stop",
     "StopFailure",
+    // Subagent and compaction edges feed the status machine (fact 0073).
+    "SubagentStart",
+    "SubagentStop",
+    "PreCompact",
+    "PostCompact",
 ];
 /// Marks an entry as ours; `remove` touches nothing else.
 const MARKER: &str = "--hook claude";
