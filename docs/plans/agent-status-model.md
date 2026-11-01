@@ -205,6 +205,24 @@ Drop `task` on idle. Remove the dead `TabPrompt` branch or fill it from the ask 
 Delete the duplicated `GRACE_MS`. Keep the ack and the push ladder behaviour.
 Done-when: `cargo test --workspace` passes and `grep -n "set_screen_state\|PIN_MAX_MS" packages/server/src` finds no
 writer outside the machine.
+Progress: split on 2026-11-01 after reading the code: it is one diff across `events.rs` (3.5k lines, `feed`,
+`settle_tab`, `reconcile_at`, `push_reduced`, `derive_activity`, ~60 tests that pin today's behaviour), `tabstatus.rs`,
+`reducer.rs`, `agentwatch.rs` and `workspaces.rs` (the 500 ms poll), too large to land safely as one commit. Do it as
+three commits, each green on its own:
+- **B.6a Machines in the hub, fed beside the old paths.** `EventHub` owns one `Machine` per (workspace, tab) behind one
+  lock; the hook route feeds it `adapters::claude_events`, the scan feeds it `PaneWatch` events, a `Tail` per live
+  session feeds it transcript events (start `Tail::from(len)`). Nothing reads the machines yet, except a test that
+  runs each A.1/A.2 fixture through both paths and lists the disagreements. Done-when: the new test passes and the
+  disagreement list is committed as a fixture, so B.6b changes are visible as a diff.
+- **B.6b Read from the machines.** `TabStatus` becomes a view of `Machine::view`; the workspace `Activity` is `rollup`
+  of the machines (drops the 60 s decay); Attention is raised and cleared from `Effect`s (`RaiseAsk`, `FillAsk`,
+  `RaiseFinished`, `RaiseFailed`, `RaiseInfo`, `Clear`), clear only on `Viewed`/`Dismiss`; `task` dropped on idle;
+  `TabPrompt` filled from the ask. Port the `events.rs` tests that pin behaviour the decisions keep, delete those that
+  pin behaviour they replace (say which in the commit body). Done-when: `cargo test --workspace` passes.
+- **B.6c Delete the old paths.** Remove `Reducer`, `reducer.rs` (keep `Screen` and `WEAK_KEY` where used),
+  `set_*_state`, `apply_pane`, `PIN_MAX_MS`, the duplicated `GRACE_MS`, `#![allow(dead_code)]` in `status/mod.rs`.
+  Done-when: the original grep finds nothing and `cargo test --workspace` passes.
+Not started: no code changed. The branch is 6 commits behind `develop`; rebase before B.6a.
 
 ### B.7 One snapshot frame on the status channel — [ ]
 Class: implement · Needs: B.6 · Check: `scripts/dev.sh cargo test -p termenbox-server e2e`
