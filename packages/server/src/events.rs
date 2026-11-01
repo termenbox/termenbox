@@ -1313,6 +1313,9 @@ impl EventHub {
             raised_at: now,
             task,
             prompt: None,
+            tier: None,
+            ask: None,
+            cause: None,
         });
         let mut dropped = replaced;
         while list.len() > MAX_ATTENTION {
@@ -1446,6 +1449,8 @@ impl EventHub {
                 } else {
                     derive_hint(r, now)
                 },
+                sub_reason: None,
+                bg: 0,
             };
             let same = derived.get(workspace).is_some_and(|d| {
                 (d.activity, &d.task, &d.agent, d.hint)

@@ -133,7 +133,7 @@ and write them into 0181 and 0185 as "quiet window" and "retry threshold" with t
 Done-when: Both decisions state a number and the run it comes from.
 Progress: done 2026-11-01. `scripts/status-quiet.mjs` (rerunnable; the stall uses a local blackhole proxy, no host network change). Quiet window 60 s, retry threshold 120 s, written into 0181 and 0185. Findings for B.2/B.5: a 20-minute silent tool has no hook or transcript line but a live child process the whole time, so the child is the proof that matters; the raw pane is never a proof (spinner, counters, status line tick); a stalled turn ends in `StopFailure server_error` after 687 s (A.2 said about 3 min, which was for retries that kept progressing), with retry screens in between. n = 1 per run.
 
-### B.1 Core types for sub-reason, tier, cause and bg — [ ]
+### B.1 Core types for sub-reason, tier, cause and bg — [x]
 Class: implement · Needs: none · Check: `scripts/dev.sh cargo test -p termenbox-core events`
 Context: Shared protocol types are in `packages/core/src/events.rs` (`Activity` working/blocked/idle/unknown,
 `Attention`/`AttentionKind`, `Task`, `WorkspaceActivity`; every enum has an `Unknown` fallback so an older peer ignores
@@ -143,6 +143,7 @@ ask kind (`permission|question|plan|trust|elicitation`) with `Unknown` fallbacks
 and old clients still parse. Add wire round-trip tests including unknown values.
 Done-when: `cargo test -p termenbox-core events` passes with a round-trip test for each new type and for an unknown
 value of each.
+Progress: done 2026-11-01. `SubReason`, `AskKind`, `FailureCause`, `AttentionTier` in `core/src/events.rs`; `Attention` gained optional `tier`, `ask`, `cause`, `WorkspaceActivity` gained `sub_reason` and `bg` (all defaulted, off the wire when empty). Writers fill them from B.2/B.6; the server literals set `None`/0 for now. Note for later steps: `cargo clippy --workspace` fails in `bridge-contract` (`explicit_counter_loop`, not ours), so clippy `-p termenbox-core` only; the two `e2e::agent_events_flow...` tests fail in the plain image on the clean baseline too.
 
 ### B.2 The pure per-session machine and its transition table — [ ]
 Class: implement · Needs: B.1 · Check: `scripts/dev.sh cargo test -p termenbox-server status::`

@@ -220,6 +220,58 @@ pub enum AttentionKind {
     Unknown,
 }
 
+/// Why a `working` session is working (decision 0181); the tool name rides beside it.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubReason {
+    Inferring,
+    Tool,
+    Subagent,
+    Compacting,
+    Retrying,
+    /// No progress proof for the quiet window.
+    Quiet,
+    #[serde(other)]
+    Unknown,
+}
+
+/// What a `needs_you` item waits for (decision 0183).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AskKind {
+    Permission,
+    Question,
+    Plan,
+    Trust,
+    Elicitation,
+    #[serde(other)]
+    Unknown,
+}
+
+/// Why a turn ended badly (decision 0185).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureCause {
+    RateLimit,
+    Auth,
+    ApiError,
+    Context,
+    Crashed,
+    #[serde(other)]
+    Unknown,
+}
+
+/// How loud an Attention item is (decision 0186): `needs_you` and `result` alert, `info` is silent.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionTier {
+    NeedsYou,
+    Result,
+    Info,
+    #[serde(other)]
+    Unknown,
+}
+
 /// The current piece of work of a workspace: the first line of the prompt, or the plan item in progress.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Task {
@@ -244,6 +296,15 @@ pub struct Attention {
     /// The question of a `needs_input`; never sent in a push.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+    /// Absent from an older server; the client then derives the tier from `kind`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<AttentionTier>,
+    /// The typed kind of a `needs_you` item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<AskKind>,
+    /// The cause of a `failed` result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<FailureCause>,
 }
 
 /// The derived Activity of one workspace with its task, as the status channel carries it.
@@ -259,6 +320,16 @@ pub struct WorkspaceActivity {
     /// What scan or screen suspect without a hook to confirm it: low confidence, never pushed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<AttentionKind>,
+    /// Why it is `working`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_reason: Option<SubReason>,
+    /// Background work still running after the turn ended (the `bg: N` badge).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub bg: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 #[cfg(test)]
@@ -347,6 +418,9 @@ mod tests {
                 source: Source::Hook,
             }),
             prompt: None,
+            tier: None,
+            ask: None,
+            cause: None,
         };
         let v = serde_json::to_value(&a).unwrap();
         assert_eq!(v["kind"], "finished_unseen");
@@ -361,5 +435,57 @@ mod tests {
             serde_json::from_str(r#"{"workspace":"s","activity":"dreaming","ts":1}"#).unwrap();
         assert_eq!(act.activity, Activity::Unknown);
         assert_eq!(serde_json::to_value(Activity::Blocked).unwrap(), "blocked");
+    }
+
+    #[test]
+    fn every_new_status_type_round_trips_and_ignores_an_unknown_value() {
+        fn check<
+            T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
+        >(
+            v: T,
+            wire: &str,
+            unknown: T,
+        ) {
+            assert_eq!(serde_json::to_value(&v).unwrap(), wire);
+            assert_eq!(serde_json::from_value::<T>(wire.into()).unwrap(), v);
+            assert_eq!(
+                serde_json::from_value::<T>("levitating".into()).unwrap(),
+                unknown
+            );
+        }
+        check(SubReason::Retrying, "retrying", SubReason::Unknown);
+        check(SubReason::Quiet, "quiet", SubReason::Unknown);
+        check(AskKind::Elicitation, "elicitation", AskKind::Unknown);
+        check(FailureCause::RateLimit, "rate_limit", FailureCause::Unknown);
+        check(FailureCause::ApiError, "api_error", FailureCause::Unknown);
+        check(AttentionTier::NeedsYou, "needs_you", AttentionTier::Unknown);
+        check(AttentionTier::Info, "info", AttentionTier::Unknown);
+    }
+
+    #[test]
+    fn the_new_attention_and_activity_fields_default_for_an_older_peer_and_stay_off_the_wire_when_empty(
+    ) {
+        let a: Attention = serde_json::from_str(
+            r#"{"id":"a","workspace":"s","kind":"needs_input","raised_at":1}"#,
+        )
+        .unwrap();
+        assert_eq!((a.tier, a.ask, a.cause), (None, None, None));
+        let act: WorkspaceActivity =
+            serde_json::from_str(r#"{"workspace":"s","activity":"idle","ts":1}"#).unwrap();
+        assert_eq!((act.sub_reason, act.bg), (None, 0));
+        let v = serde_json::to_value(&act).unwrap();
+        assert!(v.get("sub_reason").is_none() && v.get("bg").is_none());
+        let full: Attention = serde_json::from_str(
+            r#"{"id":"a","workspace":"s","kind":"failed","raised_at":1,"tier":"result","cause":"crashed","ask":"trust"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (full.tier, full.cause, full.ask),
+            (
+                Some(AttentionTier::Result),
+                Some(FailureCause::Crashed),
+                Some(AskKind::Trust)
+            )
+        );
     }
 }
