@@ -3,14 +3,42 @@
   "profile": "phone",
   "pace": "normal",
   "captions": true,
-  "hash": "b2460ad948329cb5fc34037cdf5b977dc838e71b1c2ca33c8e28568902cdd814",
+  "steps": [
+    {
+      "id": "open",
+      "caption": "Start a new workspace",
+      "label": "+ New"
+    },
+    {
+      "id": "pick-folder",
+      "caption": "Folders you used before are one tap away",
+      "label": "~/code/termenbox"
+    },
+    {
+      "id": "summary",
+      "caption": "The summary says what will be created",
+      "label": null
+    },
+    {
+      "id": "create",
+      "caption": "Create it",
+      "label": "Create"
+    },
+    {
+      "id": "created",
+      "caption": "Your workspace now runs in ~/code/termenbox",
+      "label": null
+    }
+  ],
+  "seconds": 29,
+  "hash": "c34f53187b84604f87c125983c9318eb1649a6f4086442eda82e457fcf471d54",
   "version": "0.1.57",
-  "run": "41226740814",
-  "renderedAt": "2026-10-31T17:55:10.745Z",
+  "run": "41314144763",
+  "renderedAt": "2026-11-01T14:07:23.463Z",
+  "poster": "recent-folder-phone-poster.png",
   "files": [
     "recent-folder-phone.mp4",
-    "recent-folder-phone.gif",
-    "recent-folder-phone-dialog-open.png",
+    "recent-folder-phone-poster.png",
     "recent-folder-phone-folder-chosen.png"
   ]
 }

@@ -1,0 +1,39 @@
+{
+  "case": "answer-from-the-train",
+  "profile": "phone",
+  "pace": "normal",
+  "captions": true,
+  "steps": [
+    {
+      "id": "away",
+      "caption": "You left your desk; your agent keeps working",
+      "label": null
+    },
+    {
+      "id": "banner",
+      "caption": "When it needs you, a banner names the workspace and offers its choices",
+      "label": null
+    },
+    {
+      "id": "answer",
+      "caption": "Tap your answer; it goes to the tab that asked",
+      "label": "Yes"
+    },
+    {
+      "id": "working",
+      "caption": "The agent takes it and goes back to Working",
+      "label": null
+    }
+  ],
+  "seconds": 30,
+  "hash": "07e5d7d5526090b7853b801b91203e0afe01688a1770f53546be3f20eff0def4",
+  "version": "0.1.57",
+  "run": "41314144763",
+  "renderedAt": "2026-11-01T14:18:08.759Z",
+  "poster": "answer-from-the-train-phone-poster.png",
+  "files": [
+    "answer-from-the-train-phone.mp4",
+    "answer-from-the-train-phone-poster.png",
+    "answer-from-the-train-phone-working.png"
+  ]
+}
