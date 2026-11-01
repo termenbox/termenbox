@@ -266,15 +266,27 @@ impl Needle {
     }
 }
 
-/// The time (ms since the epoch) in the `"timestamp":"…"` of the first whole line of `block`: one `memmem` per block.
-/// A key inside a string is escaped, so only a real key matches.
+/// A first line longer than this is not parsed for its time, so it never ends a scan.
+const MAX_STAMP_LINE: usize = 64 * 1024;
+
+/// A record's own top-level `timestamp`; every other key, nested ones included, is skipped without being built.
+#[derive(serde::Deserialize)]
+struct Stamp<'a> {
+    #[serde(borrow, default)]
+    timestamp: Option<&'a str>,
+}
+
+/// The time (ms since the epoch) of the first whole line of `block`. Anything unreadable (torn, escaped, missing,
+/// oversized) is `None`, which never stops a scan.
 fn first_line_time(block: &[u8]) -> Option<u64> {
-    const KEY: &[u8] = b"\"timestamp\":\"";
     let first = memchr::memchr(b'\n', block)? + 1;
     let rest = &block[first..];
     let line = &rest[..memchr::memchr(b'\n', rest)?];
-    let at = memmem::find(line, KEY)? + KEY.len();
-    parse_iso_ms(&line[at..])
+    if line.len() > MAX_STAMP_LINE {
+        return None;
+    }
+    let stamp: Stamp = serde_json::from_slice(line).ok()?;
+    parse_iso_ms(stamp.timestamp?.as_bytes())
 }
 
 /// `2025-01-31T12:34:56.789Z` (a leading part of `s`) as ms since the epoch, in UTC.
@@ -402,6 +414,7 @@ impl Scanner {
         let mut carry_complete = true;
         let mut end = size;
         let mut first = true;
+        let mut prev_older = false;
 
         // Hands one line to the adapter if it holds the needle.
         // `known` is true when the caller already found the needle in `bytes`, so the fold is skipped.
@@ -435,13 +448,19 @@ impl Scanner {
                 carry_complete = block[len - 1] == b'\n';
                 first = false;
             }
-            // Records are in time order, so when the first whole line of this block is older than the bound, so is
-            // everything before it. The block is still searched for the newer lines after that line.
+            // Records are in time order, so what lies before a line older than the bound is older too. One odd line
+            // (a clock jump, a copied record) must not hide newer ones, so the scan ends only at the second block in
+            // a row whose first whole line is older; the first of them is still searched.
             let older = start > 0
                 && budget
                     .limits()
                     .since_ms
                     .is_some_and(|since| first_line_time(block).is_some_and(|t| t < since));
+            if older && prev_older {
+                budget.note_older();
+                return Ok(End::Range);
+            }
+            prev_older = older;
 
             let mut newlines = memchr::memrchr_iter(b'\n', block);
             let Some(last_nl) = newlines.next() else {
@@ -509,10 +528,6 @@ impl Scanner {
                 }
             } else {
                 carry.extend_from_slice(&block[..hi]);
-            }
-            if older {
-                budget.note_older();
-                return Ok(End::Range);
             }
             end = start;
         }

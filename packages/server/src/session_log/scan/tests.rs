@@ -1017,7 +1017,7 @@ fn a_file_stops_at_the_first_block_older_than_the_bound() {
     assert_eq!((found.len(), end), (1, End::Range));
     assert_eq!(budget.older(), 1);
     assert!(
-        budget.bytes_read() <= 2 * BLOCK as u64,
+        budget.bytes_read() <= 3 * BLOCK as u64,
         "read {} of {size}",
         budget.bytes_read()
     );
@@ -1029,4 +1029,41 @@ fn a_file_stops_at_the_first_block_older_than_the_bound() {
     };
     let (found, end, budget) = scan(&path, "needle", all_new);
     assert_eq!((found.len(), end, budget.older()), (1, End::Done, 0));
+}
+
+#[test]
+fn one_old_looking_line_does_not_end_the_scan() {
+    let dir = TempDir::new();
+    let path = dir.0.join("odd.jsonl");
+    let pad = "x".repeat(1000);
+    let mut data = String::new();
+    // Needle in the oldest records; a block-sized run of records whose first lines look old sits in the middle only
+    // once, so the second-block rule keeps reading to the needle.
+    data.push_str(&format!(
+        "{{\"timestamp\":\"1970-01-01T00:20:00.000Z\",\"m\":\"needle {pad}\"}}\n"
+    ));
+    for i in 0..600u64 {
+        // Every record nests an older `timestamp`; only the top-level one counts.
+        let t = 1200 + i;
+        data.push_str(&format!(
+            "{{\"m\":{{\"timestamp\":\"1970-01-01T00:00:01.000Z\"}},\"timestamp\":\"1970-01-01T{:02}:{:02}:{:02}.000Z\",\"p\":\"{pad}\"}}\n",
+            t / 3600, t / 60 % 60, t % 60
+        ));
+    }
+    let path = dir.file("odd.jsonl", data.as_bytes());
+    let wanted = Limits {
+        since_ms: Some(1_000 * 1000),
+        ..unlimited()
+    };
+    let (found, end, budget) = scan(&path, "needle", wanted);
+    assert_eq!((found.len(), end, budget.older()), (1, End::Done, 0));
+}
+
+#[test]
+fn reading_the_first_line_time_allocates_nothing() {
+    let block = b"tail of a line\n{\"m\":{\"timestamp\":\"1970-01-01T00:00:01.000Z\"},\"timestamp\":\"1970-01-01T00:01:00.000Z\"}\nrest\n";
+    let before = allocs();
+    let t = first_line_time(block);
+    assert_eq!(allocs(), before);
+    assert_eq!(t, Some(60_000));
 }
