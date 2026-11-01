@@ -244,7 +244,7 @@ try {
   a.tmux(
     'new-window', '-d', '-t', `=${idOf(a, 'docs')}:`,
     // node instead of python3: node is guaranteed in the container and on the bare runner.
-    `node -e 'const n=require("net");const c=n.connect(process.env.TERMENBOX_EVENT_SOCKET);c.write(JSON.stringify({session:process.env.TERMENBOX_SESSION,token:process.env.TERMENBOX_EVENT_TOKEN,adapter:"claude",data:{hook_event_name:"Notification",message:"Allow rm?"}})+"\\n");c.end()'`,
+    `node -e 'const n=require("net");const c=n.connect(process.env.TERMENBOX_EVENT_SOCKET);const e=(data)=>JSON.stringify({session:process.env.TERMENBOX_SESSION,token:process.env.TERMENBOX_EVENT_TOKEN,adapter:"claude",data})+"\\n";c.write(e({hook_event_name:"PermissionRequest",tool_name:"Bash",tool_input:{command:"rm x"}})+e({hook_event_name:"Notification",message:"Allow rm?"}));c.end()'`,
   );
   await page.getByRole('status').filter({ hasText: /needs you/i }).first().waitFor({ timeout: 15000 });
   if ((await currentTab()) !== activeBefore) fail(`the banner changed the tab: ${activeBefore} -> ${await currentTab()}`);

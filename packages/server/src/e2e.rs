@@ -1325,12 +1325,13 @@ async fn terminal_bytes_use_their_own_lane_and_status_is_not_held_up_by_output(k
     }
     assert!(raw.contains("lane-42"), "{raw:?}");
 
-    // A flood of output, and in the middle of it a hook says the agent needs the owner.
+    // A flood of output, and in the middle of it a hook says the agent needs the owner (a permission request: a bare
+    // notification opens no ask, decision 0190).
     // `yes x | head` is far cheaper than `head /dev/zero | tr` (no per-byte tr process), so the flood
     // starts flowing even on a loaded CI runner where the shell competes for CPU with parallel tests.
     c.send_term(b"yes x | head -c 4000000; echo\n").await;
     let line = json!({"session": name, "token": f.hub.token(&name), "adapter": "claude",
-        "data": {"hook_event_name": "Notification", "message": "needs a decision"}})
+        "data": {"hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": "rm x"}}})
     .to_string()
         + "\n";
     let (mut bytes, mut chunks) = (0usize, 0usize);
