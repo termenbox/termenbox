@@ -73,4 +73,19 @@ describe('SearchSheet', () => {
     expect(out).toContain('Resume');
     expect(out).not.toContain('>Open<');
   });
+  it('draws a first piece, offers the rest, and the per-conversation expansion once a conversation shows three hits', () => {
+    const many = Array.from({ length: 40 }, (_, i) => hit({ turn: `u${i}`, session: i < 3 ? 's1' : `s${i}` }));
+    const out = html({ search: st({ query: 'x', status: 'done', hits: many }) });
+    expect(out.split('data-testid="search-hit"').length - 1).toBe(30);
+    expect(out).toContain('data-testid="search-more"');
+    expect(out.split('data-testid="search-more-session"').length - 1).toBe(1);
+    const expanded = html({ search: st({ query: 'x', status: 'done', hits: many.slice(0, 3), expanded: ['a/s1'] }) });
+    expect(expanded).not.toContain('search-more-session');
+    expect(expanded).not.toContain('data-testid="search-more"');
+  });
+  it('offers more past the cap when the server gave a cursor, and not while searching', () => {
+    const base = { query: 'x', hits: [hit()], next: { a: 'c' } };
+    expect(html({ search: st({ ...base, status: 'done' }) })).toContain('data-testid="search-more"');
+    expect(html({ search: st({ ...base, status: 'searching', pending: ['a'] }) })).not.toContain('data-testid="search-more"');
+  });
 });

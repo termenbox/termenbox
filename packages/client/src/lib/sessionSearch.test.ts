@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SessionSearch, landingOf, resumeOutcome, cleanQuery, cutText, loadRange, sinceOf, olderText, groupHits, dirLabel, isUnheld, resumeAskText, sessionResumedOutcome, loadGroupMode, saveGroupMode, parts, whenText, MAX_HITS_PER_SERVER, type SearchState } from './sessionSearch';
+import { SessionSearch, landingOf, resumeOutcome, cleanQuery, cutText, loadRange, sinceOf, olderText, groupHits, dirLabel, isUnheld, resumeAskText, sessionResumedOutcome, loadGroupMode, saveGroupMode, parts, whenText, limitHits, sessionKey, PIECE, MAX_HITS_PER_SERVER, type SearchState } from './sessionSearch';
 import type { ClientMessage, SearchHitMessage, ServerMessage } from './protocol';
 
 const NOW = Date.parse('2026-11-01T00:00:00Z');
@@ -292,5 +292,92 @@ describe('a conversation no workspace holds (decision 0167)', () => {
     expect(shell.message).toContain('this agent cannot resume');
     expect(sessionResumedOutcome(unheld, { outcome: 'missing' })).toMatchObject({ go: false, ok: false, message: expect.stringContaining('gone') });
     expect(sessionResumedOutcome(unheld, { outcome: 'resumed' })).toMatchObject({ go: false, ok: false });
+  });
+});
+
+describe('paging and expanding', () => {
+  const first = () => {
+    const r = rig();
+    r.s.run('parser');
+    const id = (r.sent[0].msg as { id: number }).id;
+    r.s.handle('a', hit(id, { session: 's1', turn: 'u1' }));
+    r.s.handle('a', done(id, { cut: 'hits', next: 'cursor1' }));
+    return { ...r, id };
+  };
+  it('keeps the cursor, offers more and says nothing of a cut that paging cures', () => {
+    const { s } = first();
+    expect(s.current.next).toEqual({ a: 'cursor1' });
+    expect(s.current.cuts).toEqual([]);
+    expect(s.hasMore).toBe(true);
+  });
+  it('asks for the next page with the cursor and the window, appends and never repeats a hit', () => {
+    const { s, sent } = first();
+    s.more();
+    const m = sent.at(-1)!.msg as { id: number; after?: string; since?: number; query: string };
+    expect(m).toMatchObject({ type: 'search', query: 'parser', after: 'cursor1' });
+    expect(m.since).toBe(NOW - 30 * 86_400_000);
+    expect(s.current.status).toBe('searching');
+    s.handle('a', hit(m.id, { session: 's1', turn: 'u1' }));
+    s.handle('a', hit(m.id, { session: 's2', turn: 'u2' }));
+    s.handle('a', done(m.id));
+    expect(s.current.hits.map((h) => h.turn)).toEqual(['u1', 'u2']);
+    expect(s.current.next).toEqual({});
+    expect(s.hasMore).toBe(false);
+  });
+  it('stops asking when a cursor does not move', () => {
+    const { s, sent } = first();
+    s.more();
+    const id = (sent.at(-1)!.msg as { id: number }).id;
+    s.handle('a', done(id, { next: 'cursor1' }));
+    expect(s.hasMore).toBe(false);
+  });
+  it('a new query during paging drops the late page', () => {
+    const { s, sent } = first();
+    s.more();
+    const old = (sent.at(-1)!.msg as { id: number }).id;
+    s.run('other');
+    s.handle('a', hit(old, { session: 's9', turn: 'late' }));
+    expect(s.current.hits).toEqual([]);
+    expect(s.current.next).toEqual({});
+  });
+  it('expands one conversation once and leaves the main cursor alone', () => {
+    const { s, sent } = first();
+    const h = s.current.hits[0];
+    s.expand(h);
+    const m = sent.at(-1)!.msg as { id: number; session?: string; after?: string; since?: number };
+    expect(m).toMatchObject({ type: 'search', query: 'parser', session: 's1' });
+    expect(m.after).toBeUndefined();
+    s.handle('a', hit(m.id, { session: 's1', turn: 'u1' }));
+    s.handle('a', hit(m.id, { session: 's1', turn: 'u7' }));
+    s.handle('a', done(m.id, { cut: 'hits' }));
+    expect(s.current.hits).toHaveLength(2);
+    expect(s.current.next).toEqual({ a: 'cursor1' });
+    expect(s.current.expanded).toEqual([sessionKey(h)]);
+    const before = sent.length;
+    s.expand(h);
+    expect(sent).toHaveLength(before);
+  });
+  it('does not page or expand while a search runs', () => {
+    const { s, sent } = rig();
+    s.run('x');
+    s.more();
+    s.expand({ serverId: 'a', session: 's1' });
+    expect(sent).toHaveLength(1);
+  });
+  it('keeps far more than one page of hits in memory', () => {
+    const { s, sent } = rig();
+    s.run('x');
+    const id = (sent[0].msg as { id: number }).id;
+    for (let i = 0; i < 300; i++) s.handle('a', hit(id, { turn: `u${i}` }));
+    expect(s.current.hits).toHaveLength(300);
+  });
+  it('draws the first N hits across groups', () => {
+    const { s, sent } = rig();
+    s.run('x');
+    const id = (sent[0].msg as { id: number }).id;
+    for (let i = 0; i < PIECE + 5; i++) s.handle('a', hit(id, { workspace: i % 2 ? 'w1' : 'w2', turn: `u${i}`, at: `2026-10-${10 + (i % 20)}T00:00:00Z` }));
+    const g = limitHits(groupHits(s.current.hits, 'workspace', () => undefined), PIECE);
+    expect(g.reduce((n, x) => n + x.hits.length, 0)).toBe(PIECE);
+    expect(limitHits(groupHits(s.current.hits, 'none', () => undefined), 0)).toEqual([]);
   });
 });
