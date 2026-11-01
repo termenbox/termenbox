@@ -18,6 +18,8 @@ related: [0135, 0158, 0159, 0160, 0161, 0163, 0164, 0165, 0168]
 - **Fixtures are the contract.** The fixture streams (a long run, an error, an open permission, a plan, a todo reported as a tool, unknown kinds, a 2,000-entry stress, an epoch change, an away stretch, a queue) are shared by the tests, the probe page and the cases. A wired feature must pass the same cases.
 - **Media comes early.** The first slice's template case is built right after the fixtures, so every later slice only adds cases.
 
+- **Amendment 2026-11-01 (owner): film last.** Owner review before wiring is on the probe page (the built `e2e/<slice>.html`, served locally, with the audit's screenshots); a template video is no longer a gate. Cases are declared with their slice and rendered, reviewed and picked for the docs in one final slice of the plan, after the docs-media workflow settles. The one-recorder rule is unchanged.
+
 ## Why
 
 The owner wants the look, the flow and the documentation settled and reviewable before the stream, store and server are touched. Templates on fixtures are cheap to change and test; a video on the shared recorder makes the review concrete without a second pipeline to keep alive, and the live case keeps the documentation true.

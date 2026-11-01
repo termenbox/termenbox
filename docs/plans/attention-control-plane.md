@@ -10,7 +10,7 @@ Termenbox is a web terminal for remote AI coding agents: Rust server `packages/s
 
 **Dogfood-first (decision 0178, read the guardrail).** The owner uses each slice on their own machines before it counts as done. M1 comes first and is thin: the meter plus a conductor with two or three of the owner's own nodes and the existing Needs-you list across them. A step is `[x]` only when its Check passes and `docs/plans/assets/control-plane/dogfood.md` has the owner's dated note for it (procedure `dogfood-a-control-plane-slice`). Agents and CI never deploy to or edit the owner's own `termenbox.service`: they hand over a build, the owner installs. The owner's confirmation is the only thing that can close a "Dogfood" step.
 
-**UI rule.** Every UI step follows `build-an-agent-view-slice-template-first`: fixtures, templates, tests, styling, video and manual, owner review, then wiring. It needs R81 step 0.5 (the probe page and media pipeline in `docs/plans/agent-view-programme.md`); if that is not done, do it first. Design rules are in `docs/plans/assets/ux/DESIGN-PRINCIPLES.md` (44 pt targets, at most 7 controls per row, state never by colour alone, chrome at most 20% of the height).
+**UI rule.** Every UI step follows `build-an-agent-view-slice-template-first`: fixtures, templates, tests, styling, owner review on the probe page, then wiring; video and manual come last (slice 11). It needs R81 step 0.5 (the probe page and media pipeline in `docs/plans/agent-view-programme.md`); if that is not done, do it first. Design rules are in `docs/plans/assets/ux/DESIGN-PRINCIPLES.md` (44 pt targets, at most 7 controls per row, state never by colour alone, chrome at most 20% of the height).
 
 **The dispatcher (decision 0179).** Above the five layers sits a dispatcher: outcome specs, decomposition, decision pre-flight, routing by verified quality and combining, to minimise human seconds, cost and unverified risk together. Telemetry (step 1.4) starts in M1 so the baseline week already holds cost data; the rest is slice 10 and acts only after shadow mode.
 
@@ -90,11 +90,11 @@ Context: Step 2.4 built the state and the accept path; nothing yet mints the sec
 Do: (1) Mint the enrolment secret inside the running server (a request through the `requests_dir` or control channel, never a log line) and print the link and QR with `--conductor-enrol`, same shape as `--print-pairing` plus the secret outside the signed part. (2) Add the wire messages for the owner's device: the node list with pending nodes, `approve_node`, `remove_node`, and the merged stream, with `conductor: true` in `auth_ok` (old clients ignore it) and the mirror in `packages/client/src/lib/protocol.ts`; every operator action carries `actor` and `owner`. (3) On the node, apply a routed `Ack` (`EventHub::ack`) and `Answer` (`answer_tab`, the prompt matched by the obligation's id, the same refusal when stale), once per `idem`, and report `Cleared { by: answer }` instead of `fact`. Test with a conductor and a node in one process: enrol, tap, answer reaches the node and clears there, a stale answer is refused, an old client still connects.
 Done-when: the tests pass and a node enrolled with the printed link appears pending, then live after the tap.
 
-### 2.5 Client: Needs-you across nodes — template, tests, review — [ ] (template stage done: `lib/fleetFixtures.ts` with 3 nodes, 40 cards, a silent node; `lib/fleet.ts`; props-only `FleetNeedsYou.svelte`; tests and the Check pass. Probe page `e2e/fleet.html` and the `fleet-needs-you-template` video case (phone and desktop) render; the recorder gained a `probe` start option, `e2e/video/probe.mjs`. Open: manual, owner review of the video, then wiring to `conductor_state` and the terminal picker through 2.6)
+### 2.5 Client: Needs-you across nodes — template, tests, review — [ ] (template stage done: `lib/fleetFixtures.ts` with 3 nodes, 40 cards, a silent node; `lib/fleet.ts`; props-only `FleetNeedsYou.svelte`; tests and the Check pass. Probe page `e2e/fleet.html` and the `fleet-needs-you-template` video case (phone and desktop, rendered once to prove the case) exist; the recorder gained a `probe` start option, `e2e/video/probe.mjs`. Open: owner review of the probe page (the `fleet-needs-you-template` case stays unrendered until slice 11), then wiring to `conductor_state` and the terminal picker through 2.6)
 Class: implement · Needs: 2.4b, 1.2 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm check && pnpm vitest run src/Home.test.ts src/lib/fleetFixtures.test.ts'`
 Context: Decision 0100 (Home) with 0170. Follow `build-an-agent-view-slice-template-first`: fixtures first (`packages/client/src/lib/fleetFixtures.ts`: 3 nodes, 40 obligations, one silent node), then props-only templates, tests, styling, video and manual, owner review, then wiring.
 Do: Show the merged Needs-you list with a node chip per item, a silent-node notice, and the meter line. Wire it to the conductor stream only after the owner accepts the video. Terminal open on an item goes through the conductor.
-Done-when: the check passes, the video and manual exist, and `docs/plans/assets/agent-view/reviews.md` (or `docs/plans/assets/control-plane/reviews.md`) records the owner's acceptance.
+Done-when: the check passes, the owner has reviewed the probe page, and `docs/plans/assets/agent-view/reviews.md` (or `docs/plans/assets/control-plane/reviews.md`) records the owner's acceptance.
 
 ### 2.6 Open a node's terminal through the conductor — [x] (`conductor_terminal.rs` holds tickets, one device and one node each, 4 per device, 64 KiB per terminal; wire: `terminal_output`, `terminal_closed`, `terminal_input`, `resize_terminal` on the existing link, bytes in base64, and `conductor_open_terminal`, `conductor_close_terminal`, `conductor_terminal_opened`, `conductor_terminal_closed` for the device; the node attaches through `Applier::open_terminal`. A device shows one node terminal per connection. The client picker is part of 2.5. Real-machine use is part of 2.7)
 Class: implement · Needs: 2.4b · Check: `scripts/dev.sh cargo test -p termenbox-server conductor_terminal`
@@ -126,7 +126,7 @@ Done-when: the tests pass, including double answer and resume.
 Class: implement · Needs: 3.1 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm vitest run src/lib/operatorSession.test.ts src/OperatorHandoff.test.ts'`
 Context: Decisions 0171 and 0167. Resume must land on the same card in under one second on the owner's phone and desktop.
 Do: Template (props only) and tests for: attach and resume banner, "continue here", passive read-only state with "take over", the "answered on phone" state. Fixtures first, video and manual, owner review, then wire to `lib/operatorSession.ts`.
-Done-when: tests pass and the owner has accepted the video.
+Done-when: tests pass and the owner has accepted the templates on the probe page.
 
 ### 3.3 Dogfood: phone to desktop and back — [ ]
 Class: review · Needs: 3.2 · Check: `grep -q "^## 3.3" docs/plans/assets/control-plane/dogfood.md`
@@ -152,7 +152,7 @@ Done-when: the tests pass.
 Class: implement · Needs: 4.2, 2.5 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm vitest run src/ClusterCard.test.ts src/lib/window.test.ts && node e2e/agentview.mjs --audit'`
 Context: Decision 0174: the card is a brief (ask, deciding facts, recommendation and confidence, risk line, time-box), evidence one tap away; the window shows the current card, the next two and a count, and prefetches the next evidence. The stream obeys `ui-never-moves-under-the-finger`. Follow the template-first procedure.
 Do: Fixtures (`clusterFixtures.ts`: singleton, 37-member cluster with outliers, high-risk, timed-out), templates `ClusterCard.svelte`, `CardWindow.svelte`, `lib/window.ts`; tests; styling; scenario, video and manual; owner review.
-Done-when: tests and audit pass and the owner has accepted the video.
+Done-when: tests and audit pass and the owner has accepted the templates on the probe page.
 
 ### 4.4 Wire cluster answers — [ ]
 Class: implement · Needs: 4.3 · Check: `scripts/dev.sh cargo test -p termenbox-server cluster_answer`
@@ -178,7 +178,7 @@ Done-when: the tests pass, including that a timeout applies the safe default onc
 Class: implement · Needs: 5.1, 4.3 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm vitest run src/IncidentCard.test.ts'`
 Context: Decision 0175: incidents show what the system did on its own, in the same stream.
 Do: Template and tests, then video, review, wiring. An incident card says what happened, what the system did, what is left to the human, in plain words.
-Done-when: tests pass and the owner has accepted the video.
+Done-when: tests pass and the owner has accepted the templates on the probe page.
 
 ### 5.3 Dogfood M2 — [ ]
 Class: review · Needs: 5.2, 4.5, 3.3 · Check: `grep -q "^## 5.3" docs/plans/assets/control-plane/dogfood.md`
@@ -204,7 +204,7 @@ Done-when: the tests pass.
 Class: implement · Needs: 6.2, 4.3 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm vitest run src/ContractSheet.test.ts'`
 Context: Decision 0172; the owner reviews the confirmation wording (0165 pattern) and the dry run.
 Do: Template `ContractSheet.svelte` (props only) in New Tab / New Workspace: scope summary in plain words, limits, safe default, a dry-run preview from the last 50 asks, save as template. Fixtures, tests, video, review, wiring.
-Done-when: tests pass and the owner has accepted the video.
+Done-when: tests pass and the owner has accepted the templates on the probe page.
 
 ### 6.4 Suggest a contract from history — [ ]
 Class: implement · Needs: 6.3 · Check: `scripts/dev.sh cargo test -p termenbox-server contract_suggest`
@@ -242,7 +242,7 @@ Done-when: the tests pass.
 Class: implement · Needs: 7.2, 4.3 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm vitest run src/DeputyBadge.test.ts'`
 Context: Decision 0174: the card shows the recommended answer with confidence and why; decision 0173: a marked line for answered cases, Revoke within the undo window, "raise autonomy for this class" after an answer.
 Do: Template, tests, video, review, wiring. Marks use a glyph and a word, never colour alone (`agent-view-meaning-never-rests-on-colour-alone`).
-Done-when: tests pass and the owner has accepted the video.
+Done-when: tests pass and the owner has accepted the templates on the probe page.
 
 ### 7.5 Dogfood M4: shadow mode, then the ladder — [ ]
 Class: review · Needs: 7.4, 7.3 · Check: `grep -q "^## 7.5" docs/plans/assets/control-plane/dogfood.md`
@@ -345,3 +345,13 @@ Done-when: the note exists with those figures.
 - Keep this file's status markers current. When a step lands, set `[x]` only with its dogfood note (guardrail `control-plane-steps-are-dogfooded-before-they-are-done`), then update the roadmap step file and run `python3 docs/plans/roadmap/check.py && python3 docs/plans/roadmap/rank.py`.
 - The owner's pains from a dogfood note become plan steps or edits before the next slice is wired.
 - If a threshold in decision 0173 changes, edit the decision first, then the code.
+
+## Slice 11: videos and manuals (last)
+
+Decision 0167 as amended 2026-11-01: every UI step above declares its cases and is reviewed on its probe page; nothing is rendered until the docs-media workflow work has landed.
+
+### 11.1 Render, review and pick the videos for the control-plane cases — [ ]
+Class: review · Needs: 2.5, 3.2, 4.3, 5.2, 6.3, 7.4 (whichever are wired) · Check: `scripts/dev.sh --full sh -c 'cd packages/client && node e2e/video/render.mjs --list'` names every case declared by those steps, and `node scripts/docs-media.mjs check docs/guide/workspaces.md` passes
+Context: Procedures `render-a-feature-video` and `review-and-publish-docs-media`. The `fleet-needs-you-template` case exists already. Template cases are for review only, never picked for the docs.
+Do: For each wired UI step, add or refresh its subsection in `docs/guide/workspaces.md` with a `<!-- media:<id> -->` marker, dispatch `docs-media.yaml` for the live case, and have the owner pick it.
+Done-when: every wired step has a picked live video and its manual subsection, and the docs checks pass.
