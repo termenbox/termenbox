@@ -414,6 +414,18 @@ fn derive_activity(r: &Ring, now: u64) -> Activity {
     Activity::Unknown
 }
 
+fn agent_state_of(status: crate::status::machine::Status) -> AgentState {
+    use crate::status::machine::Status;
+    match status {
+        Status::Working => AgentState::Working,
+        Status::NeedsYou => AgentState::NeedsInput,
+        Status::Finished => AgentState::Done,
+        Status::Failed => AgentState::Error,
+        Status::Idle => AgentState::Idle,
+        Status::Unknown => AgentState::Unknown,
+    }
+}
+
 /// The workspace's Activity from its tabs' machines (decision 0187): the roll-up, the sub-reason of the tab that
 /// decides it, and the background work of all tabs. `None` while no machine has a status, so a workspace the machines
 /// do not follow (ACP, Codex, an agent that sent no hook yet) keeps the legacy derivation.
@@ -1397,6 +1409,14 @@ impl EventHub {
         format!("a{id}")
     }
 
+    /// From the first Claude hook of a tab on, the machine owns its Attention and its tab state.
+    pub fn mark_backed(&self, workspace: &str, tab: &str) {
+        self.machines.mark_backed(workspace, tab);
+        if let Some(status) = &self.tab_status {
+            status.own(workspace, tab);
+        }
+    }
+
     /// Whether the machine owns this tab's Attention: the legacy writers leave it alone.
     fn backed(&self, workspace: &str, tab: Option<&str>) -> bool {
         self.machines.is_backed(workspace, tab.unwrap_or(""))
@@ -1611,6 +1631,11 @@ impl EventHub {
     /// Recomputes every workspace's Activity and announces the ones that changed. Called after each event and
     /// on a timer, so a silent `working` decays to `unknown`.
     pub fn refresh(&self, now: u64) {
+        if let Some(status) = &self.tab_status {
+            for (workspace, tab, view) in self.machines.backed_views(now) {
+                status.set_machine(&workspace, &tab, agent_state_of(view.status), now);
+            }
+        }
         let open: Vec<String> = self
             .attention
             .lock()
@@ -1628,7 +1653,11 @@ impl EventHub {
                 workspace: workspace.clone(),
                 activity: from_machines.map_or_else(|| derive_activity(r, now), |m| m.0),
                 ts: now,
-                task: r.task.clone(),
+                // A machine-backed workspace that is idle has no task in flight.
+                task: r
+                    .task
+                    .clone()
+                    .filter(|_| from_machines.map_or(true, |m| m.0 != Activity::Idle)),
                 agent: agents.get(workspace).cloned(),
                 hint: if open.contains(workspace) {
                     None
@@ -2079,7 +2108,7 @@ async fn deliver(
 ) {
     if w.adapter == "claude" {
         // From the first hook on, the machine owns this tab's Attention.
-        hub.machines().mark_backed(
+        hub.mark_backed(
             workspace,
             hub.tab_status()
                 .and_then(|status| status.tab_of(&w.pane, workspace))
@@ -3080,7 +3109,7 @@ mod tests {
     fn a_backed_tab_raises_and_clears_attention_only_from_its_machine() {
         use crate::status::event::{AskOutcome, Event, Outcome};
         let h = hub();
-        h.machines().mark_backed("s", "t");
+        h.mark_backed("s", "t");
         // The legacy path says needs_input; it raises nothing for a backed tab.
         h.feed(
             "s",
@@ -3179,10 +3208,65 @@ mod tests {
     }
 
     #[test]
+    fn a_backed_tab_state_comes_from_its_machine_and_the_workspace_task_ends_on_idle() {
+        use crate::status::event::{Event, Outcome};
+        let status = Arc::new(TabStatus::default());
+        let h = EventHub::new([1; 32]).with_tab_status(status.clone());
+        h.mark_backed("s", "t");
+        h.feed(
+            "s",
+            Source::Hook,
+            Confidence::High,
+            EventKind::Task {
+                title: "fix it".into(),
+            },
+            500,
+            Some("t"),
+        );
+        h.feed_machine("s", "t", Event::TurnStart { title: None }, 1_000);
+        let tab_state = || {
+            status
+                .snapshot()
+                .iter()
+                .find(|t| t.tab == "t")
+                .map(|t| t.state)
+        };
+        assert_eq!(tab_state(), Some(AgentState::Working));
+        // A legacy writer cannot move it.
+        status.set_screen_state(
+            "s",
+            "t",
+            crate::reducer::Screen {
+                working: false,
+                idle: true,
+                blocked: false,
+            },
+            None,
+            9_000,
+        );
+        status.set_hook_state("s", "t", AgentState::Error, 9_000);
+        assert_eq!(tab_state(), Some(AgentState::Working));
+        h.feed_machine(
+            "s",
+            "t",
+            Event::TurnEnd {
+                outcome: Outcome::Done,
+                bg: 0,
+            },
+            10_000,
+        );
+        assert_eq!(tab_state(), Some(AgentState::Done));
+        assert!(activity(&h, "s", 10_000).unwrap().task.is_none());
+        let id = h.attention_items()[0].id.clone();
+        assert!(h.ack(&id));
+        assert_eq!(tab_state(), Some(AgentState::Idle));
+    }
+
+    #[test]
     fn a_failed_turn_carries_its_cause_and_another_tab_keeps_its_legacy_items() {
         use crate::status::event::{Event, Outcome};
         let h = hub();
-        h.machines().mark_backed("s", "t1");
+        h.mark_backed("s", "t1");
         h.feed_machine("s", "t1", Event::TurnStart { title: None }, 1_000);
         h.feed_machine(
             "s",

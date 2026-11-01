@@ -19,10 +19,38 @@ const GRACE_MS: u64 = 4_000;
 pub struct TabStatus {
     panes: Mutex<HashMap<String, (String, String)>>,
     states: Mutex<HashMap<(String, String), TabAgentState>>,
+    /// Tabs whose state the status machine writes (plan B.6b-3); the legacy setters leave them alone.
+    owned: Mutex<std::collections::HashSet<(String, String)>>,
     rev: AtomicU64,
 }
 
 impl TabStatus {
+    fn is_owned(&self, workspace: &str, tab: &str) -> bool {
+        self.owned
+            .lock()
+            .unwrap()
+            .contains(&(workspace.to_string(), tab.to_string()))
+    }
+
+    /// From now on `set_machine` is the only writer of this tab's state; its prompt id still comes from the hook.
+    pub fn own(&self, workspace: &str, tab: &str) {
+        if !tab.is_empty() {
+            self.owned
+                .lock()
+                .unwrap()
+                .insert((workspace.to_string(), tab.to_string()));
+        }
+    }
+
+    /// The state the tab's machine holds. A prompt is kept only while the state is `needs_input`.
+    pub fn set_machine(&self, workspace: &str, tab: &str, state: AgentState, now: u64) {
+        if tab.is_empty() {
+            return;
+        }
+        let mut states = self.states.lock().unwrap();
+        self.apply_state(&mut states, workspace, tab, state, None, now);
+    }
+
     pub fn rev(&self) -> u64 {
         self.rev.load(Ordering::Relaxed)
     }
@@ -50,7 +78,7 @@ impl TabStatus {
         agent: Option<&str>,
         now: u64,
     ) {
-        if tab.is_empty() {
+        if tab.is_empty() || self.is_owned(workspace, tab) {
             return;
         }
         let mut states = self.states.lock().unwrap();
@@ -72,7 +100,7 @@ impl TabStatus {
 
     /// The state the reducer derived from this tab's hook; a hook is a fact, so it overrides what the scan saw.
     pub fn set_hook_state(&self, workspace: &str, tab: &str, state: AgentState, now: u64) {
-        if tab.is_empty() {
+        if tab.is_empty() || self.is_owned(workspace, tab) {
             return;
         }
         let mut states = self.states.lock().unwrap();
@@ -102,7 +130,7 @@ impl TabStatus {
         agent: Option<&str>,
         now: u64,
     ) {
-        if tab.is_empty() || screen.blocked {
+        if tab.is_empty() || screen.blocked || self.is_owned(workspace, tab) {
             return;
         }
         let state = if screen.working {
@@ -132,7 +160,7 @@ impl TabStatus {
         agent: Option<&str>,
         now: u64,
     ) {
-        if tab.is_empty() {
+        if tab.is_empty() || self.is_owned(workspace, tab) {
             return;
         }
         let mut states = self.states.lock().unwrap();
@@ -211,9 +239,13 @@ impl TabStatus {
             return;
         };
         let ws = workspace.to_string();
+        let owned = self.is_owned(&ws, &tab);
         for kind in kinds {
             match kind {
                 EventKind::State { state } => {
+                    if self.is_owned(&ws, &tab) {
+                        continue;
+                    }
                     let mut states = self.states.lock().unwrap();
                     self.apply_state(&mut states, &ws, &tab, *state, None, now);
                 }
@@ -232,9 +264,11 @@ impl TabStatus {
                         kind: prompt_kind.clone(),
                         choices: choices.clone(),
                     });
-                    entry.state = AgentState::NeedsInput;
-                    entry.ts = now;
-                    entry.waiting_since = Some(entry.waiting_since.unwrap_or(now));
+                    if !owned {
+                        entry.state = AgentState::NeedsInput;
+                        entry.ts = now;
+                        entry.waiting_since = Some(entry.waiting_since.unwrap_or(now));
+                    }
                     self.rev.fetch_add(1, Ordering::Relaxed);
                 }
                 EventKind::Message { .. } => {
@@ -270,6 +304,10 @@ impl TabStatus {
             .lock()
             .unwrap()
             .retain(|_, (w, t)| !(w == workspace && t == tab));
+        self.owned
+            .lock()
+            .unwrap()
+            .remove(&(workspace.to_string(), tab.to_string()));
         if removed {
             self.rev.fetch_add(1, Ordering::Relaxed);
         }

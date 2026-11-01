@@ -67,6 +67,18 @@ impl Machines {
             .map(|m| m.view(now))
     }
 
+    /// The view of every machine-backed session, for the tab states.
+    pub fn backed_views(&self, now: u64) -> Vec<(String, String, View)> {
+        let backed = self.backed.lock().unwrap();
+        self.machines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(k, _)| backed.contains(*k))
+            .map(|((w, t), m)| (w.clone(), t.clone(), m.view(now)))
+            .collect()
+    }
+
     /// The views of every machine in `workspace`, one per tab.
     pub fn views_for(&self, workspace: &str, now: u64) -> Vec<View> {
         self.machines
