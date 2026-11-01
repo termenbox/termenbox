@@ -196,7 +196,7 @@ Context: Decision 0177 keeps R85 but pauses R82 and R84; R85's UI steps (4.1 to 
 Do: R85's `Preds` was already set to `R81` when this plan was written; edit steps 4.x of the programme so the Rules sheet opens from the Home stream and from a card, and the inspector Rules tab is a later item under R84. Keep server steps unchanged. Run the check.
 Done-when: `check.py` passes and `grep -n "^Preds" docs/plans/roadmap/R85.md` shows only R81.
 
-### 6.2 Mission contract model and generator — [ ]
+### 6.2 Mission contract model and generator — [x] (`contract.rs` and `command_match.rs`, the parsed-argument matcher R85 step 4.6 adopts rather than writes again. A delete is never answered by a contract until checkpoints (8.1). Not yet called: the permission path, the incident (5.1) for a breach (`Breach::cause`) and the launch sheet (6.3) use it; the modules carry `allow(dead_code)` until then)
 Class: implement · Needs: 6.1 · Check: `scripts/dev.sh cargo test -p termenbox-server contract`
 Context: Decision 0172; procedure `write-a-mission-contract-template`; guardrails `auto-answered-permissions-are-scoped-visible-and-audited` and `irreversible-classes-never-leave-propose-without-a-checkpoint`. Rules matching is R85's parsed-argument matcher in `acp.rs`/`acp_stream.rs` (reuse, do not duplicate).
 Do: Add `packages/server/src/contract.rs`: a contract (workspaces, paths, commands, tool kinds, network hosts, spend, wall time, files changed, done criteria, safe default, urgency), compiled to rule entries and agent modes; answers tagged `contract:<id>`; a breach raises an incident (5.1). Tests: compound commands never match, the irreversible floor holds, a breach is an incident, a contract never widens an agent's sandbox.
