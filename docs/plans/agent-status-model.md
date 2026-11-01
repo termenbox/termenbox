@@ -318,12 +318,14 @@ Progress: done 2026-11-01, mostly by checking what was already true. `attentionT
 Dogfood point: C.4 done (Claude scope). Run it for a while and note what is wrong before D and F; D.1 to D.3 may start
 in parallel with that.
 
-### D.1 Complete the model test with the edge-case catalogue — [ ]‖
+### D.1 Complete the model test with the edge-case catalogue — [x]‖
 Class: implement · Needs: B.2 · Check: `scripts/dev.sh cargo test -p termenbox-server status::catalogue`
 Context: The catalogue above has 35 cases; B.2 covers the transitions, not each case as a replayed script.
 Do: Add `status/catalogue.rs`: one event script per case, replayed through the machine, asserting status, roll-up,
 Attention and alerts at every step. Cases that need real timing use a fake clock.
 Done-when: Each of the 35 rows has a named test, and a missing row fails the build.
+
+Progress: done 2026-11-01. `status/catalogue.rs`: `case_01_…` to `case_35_…`, one test per row on a `Sim` (machine, clock, effect log; an alert is `RaiseAsk`, `RaiseFinished` or `RaiseFailed`), and `all_35_rows_have_a_test` fails when a row is missing from `CASES`, out of order, or has no function. The machine passed every row unchanged, so no behaviour moved. Rows that need more than the machine test only its part: 23/24 roll up several machines by hand, 25/26/31/32 test what a rebuilt or re-read machine gives (restart, snapshot and device scenarios are D.3/D.5), 33 points at `agentwatch::tests::a_split_tab_is_driven_by_its_first_agent_pane`. Note for D.3: a trust ask closed with `Answered` leaves `turn_open` set (`AskOpen` opens a turn), so a startup trust dialog ends `working`, not `idle`, until a Stop or an observation; row 7 only asserts the ask, so decide in D.3 whether that is wanted.
 
 ### D.2 The scripted fake-Claude harness — [ ]
 Class: implement · Needs: A.2 · Check: `scripts/dev.sh node scripts/fake-claude.test.mjs`

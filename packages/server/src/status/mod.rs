@@ -10,4 +10,6 @@ pub mod feed;
 pub mod machine;
 
 #[cfg(test)]
+mod catalogue;
+#[cfg(test)]
 mod transitions;
