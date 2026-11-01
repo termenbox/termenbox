@@ -102,6 +102,7 @@ jobs:
           node scripts/docs-media.mjs --self-test
           node scripts/docs-course.mjs --self-test
           node scripts/build-site.mjs --self-test && node scripts/build-site.mjs
+          node scripts/docs-media.mjs check --site site-dist docs/course/0*.md
           node scripts/check-course.mjs --self-test
           if [ -d docs/course ]; then node packages/client/e2e/video/render.mjs --list --json > "$RUNNER_TEMP/catalog.json" && node scripts/check-course.mjs --catalog "$RUNNER_TEMP/catalog.json"; fi
           node packages/client/e2e/video/inputs-hash.mjs --self-test

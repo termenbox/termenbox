@@ -7,7 +7,7 @@ A workspace is a folder on your server with an agent working in it. Say your pro
 The folders you have used before sit above the field, one tap away. The first time there are none, so tap **Choose** and walk to your folder. The picker only shows folders inside the home directory of the server's user.
 
 <!-- media:recent-folder-phone -->
-[![Walkthrough: recent folder](../media/recent-folder-phone-poster.png)](../media/recent-folder-phone.mp4)
+[![Walkthrough: recent folder](../media/recent-folder-phone-poster.png)](https://termenbox.dev/course/03-first-workspace/)
 
 Watch, 29 s
 <!-- /media -->

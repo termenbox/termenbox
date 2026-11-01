@@ -171,6 +171,8 @@ Progress (2026-11-01): done (1) `scripts/build-site.mjs` builds `site-dist/` (gi
 
 Pull request #478 merged 2026-11-01 with green CI. Left: (5), and the iPhone check and release (6).
 
+Progress (2026-11-01, later): (5) done. A chapter's poster now links to its player page `https://termenbox.dev/course/<chapter>/` (`docs-media.mjs embed` knows a chapter from its path); `docs-media.mjs check --site <dir>` fails when a marker's video or poster is missing from the site output, and CI runs it after `build-site.mjs`. Self-tests pass on host node. 5.1d will add the GitHub player line above the poster in the same block. Left: (6), the iPhone check through the preview and the release, which needs a person with a phone.
+
 ### 5.1a Take the "rendered walkthrough" label off the videos and docs — [~]
 Class: implement · Needs: 5.1, 5.1c · Check: `git grep -n -i "rendered walkthrough" -- packages scripts docs/course docs/guide README.md`
 Context: owner's word, 2026-11-01: "remove text 'a rendered walkthrough...'". The label is a MUST in guardrail `nothing-is-published-without-a-matching-approval-record` (last rule line: every published video and still carries it) and in the procedures `render-a-feature-video` (step 5) and `review-and-publish-docs-media` (step 2), so those change first or the check and the review keep demanding it.

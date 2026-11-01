@@ -7,7 +7,7 @@ Close the app. Lock the phone. Drive through a tunnel. None of it stops your age
 So you never need a "resume" button. Open the same workspace and carry on.
 
 <!-- media:resume-after-close-phone -->
-[![Walkthrough: resume after close](../media/resume-after-close-phone-poster.png)](../media/resume-after-close-phone.mp4)
+[![Walkthrough: resume after close](../media/resume-after-close-phone-poster.png)](https://termenbox.dev/course/06-come-back-later/)
 
 Watch, 27 s
 <!-- /media -->
