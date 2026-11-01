@@ -1,6 +1,7 @@
 //! The conductor link (decision 0170, `docs/plans/assets/control-plane/conductor.md`): what a node and the
-//! conductor say to each other. Attention metadata only (`conductor-links-carry-attention-metadata-only`): no
-//! terminal bytes, agent text capped and scrubbed. Every answer and acknowledgement names the `actor` and the
+//! conductor say to each other. Attention metadata only (`conductor-links-carry-attention-metadata-only`): terminal
+//! bytes cross only between an explicit `open_terminal` and its close, tagged with the ticket, and agent text is
+//! capped and scrubbed. Every answer and acknowledgement names the `actor` and the
 //! `owner` (`operator-actions-carry-an-actor-id-apart-from-the-owner`); a message without them does not parse.
 //! Unknown variants fall back to `Unknown` so an older peer ignores what it does not know.
 use serde::{Deserialize, Serialize};
@@ -179,6 +180,10 @@ pub enum NodeMessage {
         #[serde(default)]
         queue_dropped: u32,
     },
+    /// Bytes of an open terminal (base64), from the node. Only after an `open_terminal` of the same `ticket`.
+    TerminalOutput { ticket: String, data: String },
+    /// The node ended an open terminal (the tab closed, the open was refused); nothing follows on this ticket.
+    TerminalClosed { ticket: String },
     #[serde(other)]
     Unknown,
 }
@@ -335,6 +340,16 @@ pub enum ConductorMessage {
     CloseTerminal {
         ticket: String,
     },
+    /// Keystrokes (base64) for an open terminal.
+    TerminalInput {
+        ticket: String,
+        data: String,
+    },
+    ResizeTerminal {
+        ticket: String,
+        cols: u16,
+        rows: u16,
+    },
     Disable,
     #[serde(other)]
     Unknown,
@@ -465,6 +480,20 @@ mod tests {
             rows: 24,
         });
         round(ConductorMessage::CloseTerminal { ticket: "t".into() });
+        round(ConductorMessage::TerminalInput {
+            ticket: "t".into(),
+            data: "aGk=".into(),
+        });
+        round(ConductorMessage::ResizeTerminal {
+            ticket: "t".into(),
+            cols: 100,
+            rows: 30,
+        });
+        round(NodeMessage::TerminalOutput {
+            ticket: "t".into(),
+            data: "aGk=".into(),
+        });
+        round(NodeMessage::TerminalClosed { ticket: "t".into() });
         round(ConductorMessage::Disable);
     }
 

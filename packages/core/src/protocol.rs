@@ -225,6 +225,18 @@ pub enum ClientMessage {
         card: String,
         idem: String,
     },
+    /// Owner-only, on a conductor: a terminal on a tab of a node, through the conductor (step 2.6). It replaces the
+    /// connection's current terminal; `input` and `resize` then reach the node's tab until `conductor_close_terminal`,
+    /// an `attach` or the end of the connection. Answered with `conductor_terminal_opened`.
+    ConductorOpenTerminal {
+        node: String,
+        workspace: String,
+        #[serde(default)]
+        tab: String,
+        cols: u16,
+        rows: u16,
+    },
+    ConductorCloseTerminal {},
     /// Owner-only: install the newer release now (decision 0077): the server leaves an `update-now` request for the
     /// root helper and answers `update_requested`. The service restarts when the update is installed.
     UpdateServer {},
@@ -675,6 +687,13 @@ pub enum ServerMessage {
     },
     /// Owner-only, from a conductor (decision 0170): the fleet and the merged Needs-you stream. Replaces the previous
     /// one whole.
+    ConductorTerminalOpened {
+        ticket: String,
+    },
+    /// The node's terminal ended (closed, the node left, the tab ended, or this device fell behind).
+    ConductorTerminalClosed {
+        ticket: String,
+    },
     ConductorState {
         nodes: Vec<crate::conductor::NodeInfo>,
         cards: Vec<crate::conductor::CardInfo>,

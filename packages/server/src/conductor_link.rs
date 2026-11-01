@@ -1,8 +1,8 @@
 //! The node's outbound link to a conductor (decision 0170, `docs/plans/assets/control-plane/conductor.md`).
 //!
 //! One connection the node dials out, so a node behind NAT needs no open port. It carries attention metadata only
-//! (`conductor-links-carry-attention-metadata-only`): this module sends text frames of `NodeMessage` and never
-//! touches a terminal. While the conductor is away the node keeps a bounded queue and counts what it drops. Off
+//! (`conductor-links-carry-attention-metadata-only`): this module sends text frames of `NodeMessage`, and touches a
+//! terminal only for a ticket the conductor opened and until it closes (step 2.6). While the conductor is away the node keeps a bounded queue and counts what it drops. Off
 //! unless a pairing was given (`--conductor <link>`); `--conductor off` stops it and keeps the pin.
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -371,6 +371,66 @@ pub trait Applier: Send + Sync {
     /// Types choice `choice` of the open prompt behind attention item `id`. Fails, and types nothing, when the item
     /// is gone or its prompt changed, as for an answer from a device of this server.
     async fn answer(&self, id: &str, choice: u8) -> Result<()>;
+
+    /// Attaches a terminal to a tab of this node for the conductor (step 2.6). Dropping it detaches; the tab keeps
+    /// running.
+    async fn open_terminal(
+        &self,
+        _workspace: &str,
+        _tab: &str,
+        _cols: u16,
+        _rows: u16,
+    ) -> Result<crate::pty::Attachment> {
+        anyhow::bail!("terminals are not available here")
+    }
+}
+
+/// Open terminals a node serves at once, over all devices.
+const NODE_TERMINALS: usize = 16;
+const TERM_CHUNK: usize = crate::conductor_terminal::CHUNK;
+
+enum TermCmd {
+    Input(Vec<u8>),
+    Resize(u16, u16),
+}
+
+/// Moves one attached terminal's output to the link and applies its keystrokes, until the attachment ends (it then
+/// says so) or the command side is dropped (the link ended or the conductor closed it; nothing more is sent).
+async fn pump(
+    ticket: String,
+    mut att: crate::pty::Attachment,
+    mut cmds: tokio::sync::mpsc::Receiver<TermCmd>,
+    out: tokio::sync::mpsc::Sender<NodeMessage>,
+) {
+    use base64::engine::general_purpose::STANDARD as B64;
+    loop {
+        tokio::select! {
+            chunk = att.rx.recv() => match chunk {
+                Some(bytes) => {
+                    for part in bytes.chunks(TERM_CHUNK) {
+                        let m = NodeMessage::TerminalOutput { ticket: ticket.clone(), data: B64.encode(part) };
+                        if out.send(m).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+                None => {
+                    let _ = out.send(NodeMessage::TerminalClosed { ticket }).await;
+                    return;
+                }
+            },
+            cmd = cmds.recv() => match cmd {
+                Some(TermCmd::Input(bytes)) => {
+                    let _ = att.write(&bytes);
+                }
+                Some(TermCmd::Resize(c, r)) if (1..=1000).contains(&c) && (1..=1000).contains(&r) => {
+                    let _ = att.resize(c, r);
+                }
+                Some(TermCmd::Resize(..)) => {}
+                None => return,
+            },
+        }
+    }
 }
 
 pub struct Node {
@@ -612,8 +672,17 @@ where
     flush(&mut tx, st).await?;
 
     let mut beat = tokio::time::interval(HEARTBEAT);
+    // Terminals the conductor opened on this link; they end with it (dropping the commands ends each pump).
+    let (term_out, mut term_in) = tokio::sync::mpsc::channel::<NodeMessage>(16);
+    let mut terms: HashMap<String, tokio::sync::mpsc::Sender<TermCmd>> = HashMap::new();
     loop {
         tokio::select! {
+            Some(m) = term_in.recv() => {
+                if let NodeMessage::TerminalClosed { ticket } = &m {
+                    terms.remove(ticket);
+                }
+                send_json(&mut tx, &m).await?;
+            }
             got = rx.recv() => {
                 note(node, st, got);
                 flush(&mut tx, st).await?;
@@ -634,7 +703,39 @@ where
                         apply(node, st, m).await;
                         flush(&mut tx, st).await?;
                     }
-                    // Terminal opens arrive with step 2.6.
+                    Ok(ConductorMessage::OpenTerminal { ticket, workspace, tab, cols, rows }) => {
+                        let opened = match (&node.applier, terms.len() < NODE_TERMINALS) {
+                            (Some(applier), true) if !terms.contains_key(&ticket) => {
+                                applier.open_terminal(&workspace, &tab, cols, rows).await
+                            }
+                            _ => Err(anyhow::anyhow!("not available")),
+                        };
+                        match opened {
+                            Ok(att) => {
+                                let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(32);
+                                terms.insert(ticket.clone(), cmd_tx);
+                                tokio::spawn(pump(ticket, att, cmd_rx, term_out.clone()));
+                            }
+                            Err(e) => {
+                                tracing::info!(target: "audit", event = "conductor_terminal_refused", detail = %e);
+                                send_json(&mut tx, &NodeMessage::TerminalClosed { ticket }).await?;
+                            }
+                        }
+                    }
+                    Ok(ConductorMessage::CloseTerminal { ticket }) => {
+                        terms.remove(&ticket);
+                    }
+                    Ok(ConductorMessage::TerminalInput { ticket, data }) => {
+                        use base64::engine::general_purpose::STANDARD as B64;
+                        if let (Some(t), Ok(bytes)) = (terms.get(&ticket), B64.decode(data)) {
+                            let _ = t.send(TermCmd::Input(bytes)).await;
+                        }
+                    }
+                    Ok(ConductorMessage::ResizeTerminal { ticket, cols, rows }) => {
+                        if let Some(t) = terms.get(&ticket) {
+                            let _ = t.send(TermCmd::Resize(cols, rows)).await;
+                        }
+                    }
                     Ok(_) | Err(_) => {}
                 },
                 Some(Ok(Message::Ping(p))) => tx.send(Message::Pong(p)).await?,
@@ -1141,6 +1242,137 @@ mod tests {
         assert!(items.is_empty());
         // Every frame is text that parses as a NodeMessage: no terminal bytes cross the link.
         assert!(frames.iter().all(|f| matches!(f, Message::Text(_))));
+    }
+
+    struct Cat;
+
+    #[async_trait::async_trait]
+    impl Applier for Cat {
+        async fn answer(&self, _: &str, _: u8) -> Result<()> {
+            Ok(())
+        }
+        async fn open_terminal(
+            &self,
+            workspace: &str,
+            _: &str,
+            cols: u16,
+            rows: u16,
+        ) -> Result<crate::pty::Attachment> {
+            anyhow::ensure!(workspace == "w", "no such workspace");
+            crate::pty::Attachment::spawn("cat", &[], cols, rows)
+        }
+    }
+
+    /// Frames from the node until one `TerminalOutput` of `ticket` holds `want`, or a second passes.
+    async fn terminal_text(
+        ws: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        ticket: &str,
+        want: &str,
+    ) -> bool {
+        use base64::engine::general_purpose::STANDARD as B64;
+        let mut seen = String::new();
+        let end = tokio::time::Instant::now() + Duration::from_secs(1);
+        while let Ok(Some(Ok(frame))) = tokio::time::timeout_at(end, ws.next()).await {
+            let Message::Text(t) = frame else { continue };
+            if let Ok(NodeMessage::TerminalOutput { ticket: got, data }) = serde_json::from_str(&t)
+            {
+                if got == ticket {
+                    seen.push_str(&String::from_utf8_lossy(&B64.decode(data).unwrap()));
+                    if seen.contains(want) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn conductor_terminal_node_serves_a_ticket_only_until_it_is_closed() {
+        use base64::engine::general_purpose::STANDARD as B64;
+        let conductor_key = ServerKey::from_seed([9; 32]);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let dir = tmpdir();
+        let pin = Pin::from_link(&signed_link(&conductor_key, port, ""), now_ms() / 1000).unwrap();
+        pin.save(dir.as_path()).unwrap();
+        let node = Node {
+            key: ServerKey::from_seed([5; 32]),
+            name: "vps".into(),
+            version: "t".into(),
+            hub: EventHub::new([7; 32]),
+            applier: Some(Arc::new(Cat)),
+        };
+        tokio::spawn(run(
+            dir,
+            pin,
+            node,
+            Backoff::new(Duration::from_millis(20), Duration::from_millis(50)),
+        ));
+        let (_, mut ws) = fake_conductor(&listener, &conductor_key, 2).await;
+        let send = |m: ConductorMessage| Message::Text(serde_json::to_string(&m).unwrap());
+
+        // A ticket the conductor never opened is not served.
+        ws.send(send(ConductorMessage::TerminalInput {
+            ticket: "ghost".into(),
+            data: B64.encode(b"boo\n"),
+        }))
+        .await
+        .unwrap();
+        // An open of a workspace the node lacks is refused and said so.
+        ws.send(send(ConductorMessage::OpenTerminal {
+            ticket: "bad".into(),
+            workspace: "nope".into(),
+            tab: String::new(),
+            cols: 80,
+            rows: 24,
+        }))
+        .await
+        .unwrap();
+        let refused = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(Ok(Message::Text(t))) = ws.next().await {
+                    if let Ok(NodeMessage::TerminalClosed { ticket }) = serde_json::from_str(&t) {
+                        return ticket;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(refused, "bad");
+
+        ws.send(send(ConductorMessage::OpenTerminal {
+            ticket: "t1".into(),
+            workspace: "w".into(),
+            tab: String::new(),
+            cols: 80,
+            rows: 24,
+        }))
+        .await
+        .unwrap();
+        ws.send(send(ConductorMessage::TerminalInput {
+            ticket: "t1".into(),
+            data: B64.encode(b"hello\n"),
+        }))
+        .await
+        .unwrap();
+        assert!(terminal_text(&mut ws, "t1", "hello").await);
+        assert!(!terminal_text(&mut ws, "ghost", "boo").await);
+
+        ws.send(send(ConductorMessage::CloseTerminal {
+            ticket: "t1".into(),
+        }))
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        ws.send(send(ConductorMessage::TerminalInput {
+            ticket: "t1".into(),
+            data: B64.encode(b"after\n"),
+        }))
+        .await
+        .unwrap();
+        assert!(!terminal_text(&mut ws, "t1", "after").await);
     }
 
     #[tokio::test]

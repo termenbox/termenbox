@@ -96,7 +96,7 @@ Context: Decision 0100 (Home) with 0170. Follow `build-an-agent-view-slice-templ
 Do: Show the merged Needs-you list with a node chip per item, a silent-node notice, and the meter line. Wire it to the conductor stream only after the owner accepts the video. Terminal open on an item goes through the conductor.
 Done-when: the check passes, the video and manual exist, and `docs/plans/assets/agent-view/reviews.md` (or `docs/plans/assets/control-plane/reviews.md`) records the owner's acceptance.
 
-### 2.6 Open a node's terminal through the conductor — [ ]
+### 2.6 Open a node's terminal through the conductor — [x] (`conductor_terminal.rs` holds tickets, one device and one node each, 4 per device, 64 KiB per terminal; wire: `terminal_output`, `terminal_closed`, `terminal_input`, `resize_terminal` on the existing link, bytes in base64, and `conductor_open_terminal`, `conductor_close_terminal`, `conductor_terminal_opened`, `conductor_terminal_closed` for the device; the node attaches through `Applier::open_terminal`. A device shows one node terminal per connection. The client picker is part of 2.5. Real-machine use is part of 2.7)
 Class: implement · Needs: 2.4b · Check: `scripts/dev.sh cargo test -p termenbox-server conductor_terminal`
 Context: Terminal bytes cross the link only on an explicit open (guardrail `conductor-links-carry-attention-metadata-only`).
 Do: Add open and close of a terminal on a node through the conductor, stopping on close; test that bytes flow only between open and close and that a closed device leaves nothing open.

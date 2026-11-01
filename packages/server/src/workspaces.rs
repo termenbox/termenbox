@@ -136,6 +136,26 @@ pub struct WorkspaceManager {
 
 #[async_trait::async_trait]
 impl crate::conductor_link::Applier for WorkspaceManager {
+    /// A terminal for the conductor: the tab, attached as a device of this server would, without taking the focus.
+    async fn open_terminal(
+        &self,
+        workspace: &str,
+        tab: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Attachment> {
+        let tab = (!tab.is_empty()).then_some(tab);
+        if self.registry.has(workspace) {
+            let (_, att) = self
+                .registry
+                .attach(self.backend.as_ref(), workspace, tab, cols, rows)
+                .await?;
+            Ok(att)
+        } else {
+            self.backend.attach(workspace, cols, rows)
+        }
+    }
+
     /// An answer routed from a conductor: the attention item names the prompt, as a tap on this server's own Home does.
     async fn answer(&self, id: &str, choice: u8) -> Result<()> {
         let hub = self
@@ -439,6 +459,10 @@ impl WorkspaceManager {
         static NEXT_CONN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let conn = NEXT_CONN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let res = self.serve_conn(conn, link, identity, auth).await;
+        if let Some(c) = &self.conductor {
+            // Nothing a device opened on a node stays open once the device is gone.
+            c.close_device_terminals(conn);
+        }
         if let Some(p) = &self.push {
             p.set_foreground(conn, None);
         }
@@ -453,6 +477,8 @@ impl WorkspaceManager {
         auth: &crate::auth::AuthState,
     ) -> Result<()> {
         let mut attachment: Option<Attachment> = None;
+        // A node's terminal opened through the conductor; it takes the place of `attachment` while it lasts.
+        let mut remote: Option<(String, tokio::sync::mpsc::Receiver<Vec<u8>>)> = None;
         let (mut cols, mut rows) = (80u16, 24u16);
         let idle = tokio::time::sleep(IDLE_TIMEOUT);
         tokio::pin!(idle);
@@ -527,7 +553,9 @@ impl WorkspaceManager {
                     let text = match msg {
                         Inbound::Json(text) => text,
                         Inbound::Term(bytes) => {
-                            if let Some(att) = attachment.as_mut() {
+                            if let (Some((ticket, _)), Some(c)) = (&remote, &self.conductor) {
+                                c.terminal_input(conn, ticket, &bytes);
+                            } else if let Some(att) = attachment.as_mut() {
                                 if let Err(e) = att.write(&bytes) {
                                     if !send(&link.tx, &ServerMessage::Error { message: e.to_string() }).await { break; }
                                 }
@@ -547,6 +575,21 @@ impl WorkspaceManager {
                     if let (true, ClientMessage::Attach { workspace_id, .. }) = (self.mode.is_host(), &client_msg) {
                         // Who got a shell on the host and as whom; never what they typed.
                         info!(target: "audit", event = "host_session", provider = %identity.provider, account_id = %identity.id, login = %identity.login, run_as = %self.mode.label(), session = %workspace_id);
+                    }
+                    if let Some(result) = self
+                        .remote_terminal(conn, &client_msg, auth, &identity, &mut remote, &mut attachment, (cols, rows), &link.tx)
+                        .await
+                    {
+                        match (req, result) {
+                            (Some(req), result) => {
+                                if !send_ack(&link.tx, req, result.map_err(|e| e.to_string())).await { break; }
+                            }
+                            (None, Err(e)) => {
+                                if !send(&link.tx, &ServerMessage::Error { message: e.to_string() }).await { break; }
+                            }
+                            (None, Ok(())) => {}
+                        }
+                        continue;
                     }
                     let updating = matches!(&client_msg, ClientMessage::UpdateServer {});
                     let result = self.handle(conn, client_msg, auth, &identity, &mut attachment, &mut cols, &mut rows, &mut acp, &mut events, &link.tx).await;
@@ -578,6 +621,24 @@ impl WorkspaceManager {
                             if !send(&link.tx, &ServerMessage::Error { message: "Workspace ended".into() }).await { break; }
                             let workspaces = self.registry.list(self.backend.as_ref()).await.unwrap_or_default();
                             if !send(&link.tx, &ServerMessage::Workspaces { workspaces }).await { break; }
+                        }
+                    }
+                }
+                out = async {
+                    let permit = link.tx.reserve_output().await;
+                    (permit, next_remote_output(&mut remote).await)
+                }, if remote.is_some() => {
+                    let (permit, out) = out;
+                    match out {
+                        Some(bytes) => {
+                            let Some(permit) = permit else { break };
+                            permit.send(bytes);
+                        }
+                        None => {
+                            if let Some((ticket, _)) = remote.take() {
+                                if let Some(c) = &self.conductor { c.close_terminal(conn, &ticket); }
+                                if !send(&link.tx, &ServerMessage::ConductorTerminalClosed { ticket }).await { break; }
+                            }
                         }
                     }
                 }
@@ -910,6 +971,83 @@ impl WorkspaceManager {
         }
     }
 
+    /// The messages that open, close or feed a node's terminal. `None` leaves the message to `handle`.
+    #[allow(clippy::too_many_arguments)]
+    async fn remote_terminal(
+        &self,
+        conn: u64,
+        msg: &ClientMessage,
+        auth: &crate::auth::AuthState,
+        identity: &crate::auth::Identity,
+        remote: &mut Option<(String, tokio::sync::mpsc::Receiver<Vec<u8>>)>,
+        attachment: &mut Option<Attachment>,
+        size: (u16, u16),
+        tx: &LinkTx,
+    ) -> Option<Result<()>> {
+        match msg {
+            ClientMessage::ConductorOpenTerminal {
+                node,
+                workspace,
+                tab,
+                cols,
+                rows,
+            } => Some(
+                async {
+                    let c = self.conductor_for(auth, identity, "terminal")?;
+                    if let Some((old, _)) = remote.take() {
+                        c.close_terminal(conn, &old);
+                    }
+                    *attachment = None;
+                    let (cols, rows) = if *cols == 0 || *rows == 0 { size } else { (*cols, *rows) };
+                    let (ticket, rx) = c
+                        .open_terminal(conn, node, workspace, tab, cols, rows)
+                        .map_err(|e| match e {
+                            crate::conductor_terminal::OpenError::NodeAway => {
+                                anyhow::anyhow!("That machine is not connected")
+                            }
+                            crate::conductor_terminal::OpenError::TooMany => {
+                                anyhow::anyhow!("Too many terminals are open")
+                            }
+                        })?;
+                    info!(target: "audit", event = "conductor_terminal_opened", actor = %identity.login);
+                    *remote = Some((ticket.clone(), rx));
+                    send_r(tx, &ServerMessage::ConductorTerminalOpened { ticket }).await
+                }
+                .await,
+            ),
+            ClientMessage::ConductorCloseTerminal {} => {
+                if let (Some((ticket, _)), Some(c)) = (remote.take(), &self.conductor) {
+                    c.close_terminal(conn, &ticket);
+                    info!(target: "audit", event = "conductor_terminal_closed", actor = %identity.login);
+                }
+                Some(Ok(()))
+            }
+            // A local terminal replaces a node's.
+            ClientMessage::Attach { .. } | ClientMessage::Detach => {
+                if let (Some((ticket, _)), Some(c)) = (remote.take(), &self.conductor) {
+                    c.close_terminal(conn, &ticket);
+                }
+                None
+            }
+            ClientMessage::Input { data } => {
+                let (Some((ticket, _)), Some(c)) = (remote.as_ref(), &self.conductor) else {
+                    return None;
+                };
+                Some(B64.decode(data).map_err(Into::into).map(|b| c.terminal_input(conn, ticket, &b)))
+            }
+            ClientMessage::Resize { cols, rows } => {
+                let (Some((ticket, _)), Some(c)) = (remote.as_ref(), &self.conductor) else {
+                    return None;
+                };
+                if *cols > 0 && *rows > 0 && *cols <= 1000 && *rows <= 1000 {
+                    c.terminal_resize(conn, ticket, *cols, *rows);
+                }
+                Some(Ok(()))
+            }
+            _ => None,
+        }
+    }
+
     async fn handle(
         &self,
         conn: u64,
@@ -996,6 +1134,9 @@ impl WorkspaceManager {
                 .map_err(conductor_refusal)?;
                 info!(target: "audit", event = "conductor_answer_sent", actor = %identity.login);
             }
+            // Answered by `remote_terminal` before this is reached.
+            ClientMessage::ConductorOpenTerminal { .. }
+            | ClientMessage::ConductorCloseTerminal {} => {}
             ClientMessage::ConductorAck { card, idem } => {
                 let c = self.conductor_for(auth, identity, "ack")?;
                 let owner = auth.owner().map(|o| o.login.clone()).unwrap_or_default();
@@ -1852,6 +1993,16 @@ async fn send_r(tx: &LinkTx, msg: &ServerMessage) -> Result<()> {
         Ok(())
     } else {
         Err(anyhow::anyhow!("connection closed"))
+    }
+}
+
+/// Next chunk of a node's terminal; `None` when it ended.
+async fn next_remote_output(
+    remote: &mut Option<(String, tokio::sync::mpsc::Receiver<Vec<u8>>)>,
+) -> Option<Vec<u8>> {
+    match remote {
+        Some((_, rx)) => rx.recv().await,
+        None => std::future::pending().await,
     }
 }
 

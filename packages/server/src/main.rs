@@ -29,6 +29,7 @@ mod claude_hooks;
 mod cloudflare;
 mod conductor;
 mod conductor_link;
+mod conductor_terminal;
 mod connection;
 mod container;
 mod control;

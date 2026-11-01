@@ -2,8 +2,8 @@
 //!
 //! Nodes dial in; this module enrols them by key, merges their attention into one stream, bounds what it holds per
 //! node, marks a silent node and routes an answer back to the node that owns the item. It holds attention metadata
-//! only (`conductor-links-carry-attention-metadata-only`): nothing here touches a terminal, and the agent text of an
-//! item is dropped once the item clears. `Conductor` is plain state driven by messages and a clock, so the transport
+//! only (`conductor-links-carry-attention-metadata-only`): terminals cross only through `conductor_terminal` on an
+//! explicit open, and the agent text of an item is dropped once the item clears. `Conductor` is plain state driven by messages and a clock, so the transport
 //! (`serve`) is thin and the behaviour is tested without sockets.
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
@@ -280,6 +280,8 @@ pub struct Conductor {
     dir: Option<PathBuf>,
     /// Counts changes, so an owner's connection pushes the fleet when something moved.
     changed: tokio::sync::watch::Sender<u64>,
+    /// Terminals opened on nodes by devices; empty unless a device asked (step 2.6).
+    terms: crate::conductor_terminal::Terminals,
 }
 
 impl Conductor {
@@ -304,6 +306,7 @@ impl Conductor {
             }),
             dir,
             changed: tokio::sync::watch::channel(0).0,
+            terms: Default::default(),
         }
     }
 
@@ -466,11 +469,29 @@ impl Conductor {
         if let Some(n) = self.inner.lock().unwrap().nodes.get_mut(node) {
             n.sender = None;
         }
+        self.terms.close_node(node);
         self.bump();
     }
 
     /// Applies one message of an enrolled node. The reply is what goes back to that node (a `resync` on a gap).
     pub fn handle(&self, node: &str, msg: NodeMessage, now: u64) -> Vec<ConductorMessage> {
+        match msg {
+            // Terminal traffic belongs to a ticket, not to the ordered attention stream.
+            NodeMessage::TerminalOutput { ticket, data } => {
+                if !self.terms.output(node, &ticket, &data) {
+                    self.send_to(node, ConductorMessage::CloseTerminal { ticket });
+                }
+                return Vec::new();
+            }
+            NodeMessage::TerminalClosed { ticket } => {
+                self.terms.close(&ticket, Some(node), None);
+                return Vec::new();
+            }
+            msg => self.handle_attention(node, msg, now),
+        }
+    }
+
+    fn handle_attention(&self, node: &str, msg: NodeMessage, now: u64) -> Vec<ConductorMessage> {
         let reply = self.apply_message(node, msg, now);
         self.bump();
         reply
@@ -821,6 +842,112 @@ impl Conductor {
     }
 }
 
+impl Conductor {
+    fn send_to(&self, node: &str, msg: ConductorMessage) -> bool {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .nodes
+            .get(node)
+            .and_then(|n| n.sender.as_ref())
+            .is_some_and(|tx| tx.send(msg).is_ok())
+    }
+
+    /// Opens a terminal on `node` for the device connection `device`. The receiver yields the terminal's output
+    /// and ends when the terminal does (closed, the node left, or the device fell behind).
+    pub fn open_terminal(
+        &self,
+        device: u64,
+        node: &str,
+        workspace: &str,
+        tab: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(String, tokio::sync::mpsc::Receiver<Vec<u8>>), crate::conductor_terminal::OpenError>
+    {
+        use crate::conductor_terminal::OpenError;
+        let live = {
+            let inner = self.inner.lock().unwrap();
+            inner
+                .nodes
+                .get(node)
+                .is_some_and(|n| n.standing == Standing::Enrolled && n.sender.is_some())
+        };
+        if !live {
+            return Err(OpenError::NodeAway);
+        }
+        let (ticket, rx) = self.terms.open(device, node)?;
+        let sent = self.send_to(
+            node,
+            ConductorMessage::OpenTerminal {
+                ticket: ticket.clone(),
+                workspace: cap(workspace, MAX_NAME),
+                tab: cap(tab, MAX_NAME),
+                cols,
+                rows,
+            },
+        );
+        if !sent {
+            self.terms.close(&ticket, None, None);
+            return Err(OpenError::NodeAway);
+        }
+        Ok((ticket, rx))
+    }
+
+    /// Keystrokes from the device that holds `ticket`; ignored for any other device.
+    pub fn terminal_input(&self, device: u64, ticket: &str, bytes: &[u8]) {
+        if let Some(node) = self.terms.node_of(device, ticket) {
+            for chunk in bytes.chunks(crate::conductor_terminal::CHUNK) {
+                self.send_to(
+                    &node,
+                    ConductorMessage::TerminalInput {
+                        ticket: ticket.to_string(),
+                        data: base64::engine::general_purpose::STANDARD.encode(chunk),
+                    },
+                );
+            }
+        }
+    }
+
+    pub fn terminal_resize(&self, device: u64, ticket: &str, cols: u16, rows: u16) {
+        if let Some(node) = self.terms.node_of(device, ticket) {
+            self.send_to(
+                &node,
+                ConductorMessage::ResizeTerminal {
+                    ticket: ticket.to_string(),
+                    cols,
+                    rows,
+                },
+            );
+        }
+    }
+
+    /// The device closes one terminal; the node is told to stop it.
+    pub fn close_terminal(&self, device: u64, ticket: &str) {
+        if let Some(node) = self.terms.node_of(device, ticket) {
+            if self.terms.close(ticket, None, Some(device)) {
+                self.send_to(
+                    &node,
+                    ConductorMessage::CloseTerminal {
+                        ticket: ticket.to_string(),
+                    },
+                );
+            }
+        }
+    }
+
+    /// The device connection ended: nothing it opened stays open.
+    pub fn close_device_terminals(&self, device: u64) {
+        for (ticket, node) in self.terms.close_device(device) {
+            self.send_to(&node, ConductorMessage::CloseTerminal { ticket });
+        }
+    }
+
+    /// Open terminals, for tests and the audit trail.
+    pub fn open_terminals(&self) -> usize {
+        self.terms.count()
+    }
+}
+
 fn clear(n: &mut NodeState, id: &str, by: ClearedBy, now: u64) {
     if let Some(h) = n.items.get_mut(id) {
         if h.cleared.is_none() {
@@ -1104,6 +1231,163 @@ mod tests {
                 .unwrap_err(),
             Refusal::NotEnrolled
         );
+    }
+
+    fn drain(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<ConductorMessage>,
+    ) -> Vec<ConductorMessage> {
+        let mut out = Vec::new();
+        while let Ok(m) = rx.try_recv() {
+            out.push(m);
+        }
+        out
+    }
+
+    fn b64(bytes: &[u8]) -> String {
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    #[test]
+    fn conductor_terminal_bytes_flow_only_between_open_and_close() {
+        let c = conductor();
+        let n = Sim::new(1);
+        let mut node_rx = n.join(&c, T0);
+        let _ = drain(&mut node_rx);
+        let out = |ticket: &str| NodeMessage::TerminalOutput {
+            ticket: ticket.into(),
+            data: b64(b"hi"),
+        };
+
+        // Before an open, output and input for a made-up ticket go nowhere.
+        c.handle(&n.id(), out("nope"), T0);
+        c.terminal_input(1, "nope", b"x");
+        assert!(drain(&mut node_rx).is_empty());
+
+        let (ticket, mut dev_rx) = c.open_terminal(1, &n.id(), "api", "t1", 80, 24).unwrap();
+        assert!(matches!(
+            drain(&mut node_rx).as_slice(),
+            [ConductorMessage::OpenTerminal { ticket: t, cols: 80, rows: 24, .. }] if *t == ticket
+        ));
+        c.handle(&n.id(), out(&ticket), T0);
+        assert_eq!(dev_rx.try_recv().unwrap(), b"hi");
+        c.terminal_input(1, &ticket, b"ls\n");
+        assert_eq!(
+            drain(&mut node_rx),
+            vec![ConductorMessage::TerminalInput {
+                ticket: ticket.clone(),
+                data: b64(b"ls\n")
+            }]
+        );
+
+        c.close_terminal(1, &ticket);
+        assert!(matches!(
+            drain(&mut node_rx).as_slice(),
+            [ConductorMessage::CloseTerminal { ticket: t }] if *t == ticket
+        ));
+        // After the close nothing crosses in either direction.
+        c.handle(&n.id(), out(&ticket), T0);
+        c.terminal_input(1, &ticket, b"x");
+        assert!(dev_rx.try_recv().is_err());
+        assert!(drain(&mut node_rx).is_empty());
+        assert_eq!(c.open_terminals(), 0);
+    }
+
+    #[test]
+    fn conductor_terminal_belongs_to_its_device_and_its_node() {
+        let c = conductor();
+        let (a, b) = (Sim::new(1), Sim::new(2));
+        let mut a_rx = a.join(&c, T0);
+        let mut b_rx = b.join(&c, T0);
+        let (ticket, mut dev_rx) = c.open_terminal(1, &a.id(), "w", "t", 80, 24).unwrap();
+        let _ = (drain(&mut a_rx), drain(&mut b_rx));
+        // Another node cannot write to it; another device cannot type into it or close it.
+        c.handle(
+            &b.id(),
+            NodeMessage::TerminalOutput {
+                ticket: ticket.clone(),
+                data: b64(b"x"),
+            },
+            T0,
+        );
+        assert!(dev_rx.try_recv().is_err());
+        c.terminal_input(2, &ticket, b"x");
+        c.terminal_resize(2, &ticket, 10, 10);
+        c.close_terminal(2, &ticket);
+        assert!(drain(&mut a_rx).is_empty());
+        assert_eq!(c.open_terminals(), 1);
+    }
+
+    #[test]
+    fn conductor_terminal_a_closed_device_leaves_nothing_open() {
+        let c = conductor();
+        let n = Sim::new(1);
+        let mut node_rx = n.join(&c, T0);
+        let (t1, _r1) = c.open_terminal(7, &n.id(), "w", "a", 80, 24).unwrap();
+        let (t2, _r2) = c.open_terminal(7, &n.id(), "w", "b", 80, 24).unwrap();
+        let (_t3, _r3) = c.open_terminal(8, &n.id(), "w", "c", 80, 24).unwrap();
+        let _ = drain(&mut node_rx);
+        c.close_device_terminals(7);
+        let told = drain(&mut node_rx);
+        assert_eq!(told.len(), 2);
+        for t in [t1, t2] {
+            assert!(told.contains(&ConductorMessage::CloseTerminal { ticket: t }));
+        }
+        // The other device keeps its terminal.
+        assert_eq!(c.open_terminals(), 1);
+    }
+
+    #[test]
+    fn conductor_terminal_ends_when_the_node_leaves_or_ends_it() {
+        let c = conductor();
+        let n = Sim::new(1);
+        let _node_rx = n.join(&c, T0);
+        let (ticket, mut rx) = c.open_terminal(1, &n.id(), "w", "t", 80, 24).unwrap();
+        c.handle(&n.id(), NodeMessage::TerminalClosed { ticket }, T0);
+        assert_eq!(c.open_terminals(), 0);
+        assert!(rx.try_recv().is_err());
+        let (_t, mut rx) = c.open_terminal(1, &n.id(), "w", "t", 80, 24).unwrap();
+        c.detach(&n.id());
+        assert_eq!(c.open_terminals(), 0);
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+        ));
+        // A node whose link is down cannot be opened on.
+        assert_eq!(
+            c.open_terminal(1, &n.id(), "w", "t", 80, 24).unwrap_err(),
+            crate::conductor_terminal::OpenError::NodeAway
+        );
+    }
+
+    #[test]
+    fn conductor_terminal_limits_per_device_and_drops_a_device_that_falls_behind() {
+        use crate::conductor_terminal::{OpenError, BUFFER_CHUNKS, PER_DEVICE};
+        let c = conductor();
+        let n = Sim::new(1);
+        let mut node_rx = n.join(&c, T0);
+        let mut held = Vec::new();
+        for _ in 0..PER_DEVICE {
+            held.push(c.open_terminal(1, &n.id(), "w", "t", 80, 24).unwrap());
+        }
+        assert_eq!(
+            c.open_terminal(1, &n.id(), "w", "t", 80, 24).unwrap_err(),
+            OpenError::TooMany
+        );
+        let _ = drain(&mut node_rx);
+        // Nobody reads the first terminal: once its buffer is full it is closed, and the node is told.
+        let ticket = held[0].0.clone();
+        for _ in 0..=BUFFER_CHUNKS {
+            c.handle(
+                &n.id(),
+                NodeMessage::TerminalOutput {
+                    ticket: ticket.clone(),
+                    data: b64(b"x"),
+                },
+                T0,
+            );
+        }
+        assert_eq!(c.open_terminals(), PER_DEVICE - 1);
+        assert!(drain(&mut node_rx).contains(&ConductorMessage::CloseTerminal { ticket }));
     }
 
     #[test]
