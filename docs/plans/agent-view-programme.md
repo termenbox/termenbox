@@ -211,7 +211,7 @@ Done-when: the e2e passes, the live cases render on both profiles, and `node scr
 ### 4.1 Templates: risk line, always-allow confirm, rules panel, suggestion, presets, batch — [ ]
 Class: implement · Needs: 1.5 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm check && node e2e/agentview.mjs --smoke'`
 Context: Decision 0165 and `DecisionPanel.svelte`/`AcpEntryView.svelte` cards. The rule wire shapes (list, add, revoke, preview) are written as fixtures here and become the contract for step 4.6.
-Do: Add `AcpRiskLine.svelte`, `AcpAlwaysAllow.svelte` (scope confirmation with presets and expiry), `AcpRulesPanel.svelte`, `AcpRuleSuggestion.svelte` (with the dry-run preview list), `AcpModeChips.svelte` (agent session modes), the marked "allowed by rule" line with Revoke, and a batch row for the inbox; show them on the probe page from the `open-permission` fixture and a new `rules` fixture.
+Do: Add `AcpRiskLine.svelte`, `AcpAlwaysAllow.svelte` (scope confirmation with presets and expiry), `AcpRulesPanel.svelte`, `AcpRuleSuggestion.svelte` (with the dry-run preview list), `AcpModeChips.svelte` (agent session modes), the marked "allowed by rule" line with Revoke, and a batch row for the inbox; show them on the probe page from the `open-permission` fixture and a new `rules` fixture. The Rules sheet stands alone (decision 0177): it opens from a card in the Home stream ("always allow", "make this a rule") and from a Rules entry on Home, not from the inspector, which R84 may pause; the same component later becomes the inspector's Rules tab (step 3.6, R84).
 Done-when: `pnpm check` is clean and the smoke loads each template.
 
 ### 4.2 Tests for the rules templates — [ ]
@@ -247,7 +247,7 @@ Done-when: tests prove a match auto-answers, no match asks, `git status && rm -r
 ### 4.7 Wire the rules UI, risk summary and suggestions — [ ]
 Class: implement · Needs: 4.6, 3.6 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm vitest run src/AcpRules.test.ts src/AcpEntryView.test.ts'`
 Context: Decision 0165. Hide every control when the server lacks the rule messages.
-Do: Connect the risk line (derived from locations, diffs and kind), always-allow with presets, the Rules tab and sheet, the suggestion with the server preview, mode chips from `info.modes`, the marked line with Revoke and the global off, and the inbox batch row.
+Do: Connect the risk line (derived from locations, diffs and kind), always-allow with presets, the Rules sheet (opened from the Home stream and from a card; the inspector Rules tab is a later item under R84 and is not needed here), the suggestion with the server preview, mode chips from `info.modes`, the marked line with Revoke and the global off, and the inbox batch row.
 Done-when: tests cover create with confirmation, revoke, global off, the suggestion preview, hidden controls on an old server, and the marked line.
 
 ### 4.8 Live scenario for rules — [ ]

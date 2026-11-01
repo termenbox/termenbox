@@ -190,7 +190,7 @@ Done-when: the note exists and says keep, change or revert.
 
 ## Slice 6: rules and mission contracts (R85 rescoped, R91), M3
 
-### 6.1 Re-scope R85 to stand alone — [ ]
+### 6.1 Re-scope R85 to stand alone — [x]
 Class: plan · Needs: none · Check: `python3 docs/plans/roadmap/check.py`
 Context: Decision 0177 keeps R85 but pauses R82 and R84; R85's UI steps (4.1 to 4.8 in `docs/plans/agent-view-programme.md`) assume the inspector's Rules tab. `docs/plans/roadmap/R85.md` has `Preds: R82, R84`.
 Do: R85's `Preds` was already set to `R81` when this plan was written; edit steps 4.x of the programme so the Rules sheet opens from the Home stream and from a card, and the inspector Rules tab is a later item under R84. Keep server steps unchanged. Run the check.
