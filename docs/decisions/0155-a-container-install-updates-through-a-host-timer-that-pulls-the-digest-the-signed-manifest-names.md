@@ -30,4 +30,4 @@ Not chosen: Watchtower or another third-party updater (an unsigned tag moves wha
 
 - Amends decision 0063 (container updates become real and digest-pinned); decisions 0076, 0077, 0131 and 0154 are reused unchanged.
 - Release pipeline: `docker-build.yaml` must publish digests before `release-build.yaml` makes the manifest; the manifest tests and `--verify-release` learn `image`.
-- Plan: U8 in `docs/plans/server-update-flow.md`, split into U8a (manifest and pipeline), U8b (journal file and installer), U8c (helper apply and rollback), U8d (docs and an end-to-end test against a local registry).
+- Plan: U8 in `docs/plans/archive/server-update-flow.md`, split into U8a (manifest and pipeline), U8b (journal file and installer), U8c (helper apply and rollback), U8d (docs and an end-to-end test against a local registry).

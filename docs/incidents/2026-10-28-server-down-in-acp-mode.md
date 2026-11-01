@@ -13,7 +13,7 @@ Unknown. Candidates: a panic outside a tokio task or a poisoned lock; an OOM kil
 - Decision 0142: own JSONL logs, panic hook, run marker.
 - Decision 0143: per-session supervision, restart policy, safe mode, meaningful `/health`.
 - Decision 0144: user-triggered diagnostics bundle, incident prompt, issue template, postmortems.
-- Plan `docs/plans/server-viability-and-logging.md`.
+- Plan `docs/plans/archive/server-viability-and-logging.md`.
 
 ## Open
 When the next unclean exit happens, the run marker and logs should name the cause; add it here.
