@@ -1478,9 +1478,13 @@ impl WorkspaceManager {
                     hub.ack(&attention_id);
                 }
             }
-            ClientMessage::CardSeen { obligation, ms } => {
+            ClientMessage::CardSeen {
+                obligation,
+                ms,
+                device,
+            } => {
                 if let Some(hub) = &self.events {
-                    hub.card_seen(&obligation, u64::from(ms));
+                    hub.card_seen(&obligation, u64::from(ms), device.as_deref());
                 }
             }
             ClientMessage::Answer {

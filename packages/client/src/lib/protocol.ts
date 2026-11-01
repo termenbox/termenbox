@@ -63,7 +63,7 @@ export type ClientMessage =
   | { type: 'foreground'; workspace: string | null; tab?: string | null }
   | { type: 'ack'; attention_id: string }
   | { type: 'dismiss'; attention_id: string }
-  | { type: 'card_seen'; obligation: string; ms: number }
+  | { type: 'card_seen'; obligation: string; ms: number; device?: string }
   /** Decision 0103: asks for the workspace view (cleaned tail, parsed prompt, tier); `hash` is the one already held. */
   | { type: 'workspace_view'; workspace: string; hash?: string }
   /** Taps option `option` (0-based) of prompt `prompt_id`; the server sends the keys its profile lists for it, never more. */

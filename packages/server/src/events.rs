@@ -514,11 +514,11 @@ impl EventHub {
     }
 
     /// A device showed the card of attention item `id` for `ms`. Returns whether it was credited.
-    pub fn card_seen(&self, id: &str, ms: u64) -> bool {
+    pub fn card_seen(&self, id: &str, ms: u64, device: Option<&str>) -> bool {
         let Some(m) = &self.meter else {
             return false;
         };
-        let credited = m.card_seen(id, ms, now_ms());
+        let credited = m.card_seen(id, ms, device, now_ms());
         if credited {
             self.announce_meter();
         }
@@ -3388,7 +3388,7 @@ mod tests {
         tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 1_000);
         tab_hook(&h, "t1", "PermissionRequest", ask(), 2_000);
         let id = h.attention_items()[0].id.clone();
-        assert!(h.card_seen(&id, 3_000));
+        assert!(h.card_seen(&id, 3_000, None));
         tab_hook(&h, "t1", "PostToolUse", ask(), 9_000);
         let days = h.meter_days();
         assert_eq!(days.len(), 1);
@@ -3396,7 +3396,7 @@ mod tests {
         assert_eq!(days[0].by_layer["human"], 1);
         assert_eq!(days[0].human_ms, 3_000);
         assert!(
-            !h.card_seen("a999", 1_000),
+            !h.card_seen("a999", 1_000, None),
             "an unknown card is not credited"
         );
     }
