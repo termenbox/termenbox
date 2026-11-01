@@ -272,13 +272,16 @@ impl WorkspaceManager {
 
     /// Starts the search `id` of connection `conn` off the async threads; hits reach `tx` as they are found. The
     /// query is moved into the task and goes nowhere else: no log line, no error text.
-    fn start_search(&self, conn: u64, id: u64, query: String, tx: &LinkTx) {
+    fn start_search(&self, conn: u64, id: u64, query: String, since: Option<u64>, tx: &LinkTx) {
         let cancel = crate::session_log::scan::Cancel::default();
         self.searches.lock().unwrap().insert(conn, cancel.clone());
         let (logs, sessions, limits) = (
             self.session_logs.clone(),
             self.known_sessions(),
-            self.search_limits,
+            crate::session_log::scan::Limits {
+                since_ms: since,
+                ..self.search_limits
+            },
         );
         let (hits_tx, mut hits_rx) = tokio::sync::mpsc::channel::<ServerMessage>(32);
         let scan_cancel = cancel.clone();
@@ -314,6 +317,7 @@ impl WorkspaceManager {
                 let done = ServerMessage::SearchDone {
                     id,
                     cut: summary.cut.map(str::to_string),
+                    older: summary.older as u32,
                     off: summary
                         .off
                         .into_iter()
@@ -1952,7 +1956,12 @@ impl WorkspaceManager {
                 )
                 .await?;
             }
-            ClientMessage::Search { id, query, cancel } => {
+            ClientMessage::Search {
+                id,
+                query,
+                cancel,
+                since,
+            } => {
                 // Searching reads every conversation on the machine: the owner only.
                 if !Self::is_owner(auth, identity) {
                     return Err(anyhow::anyhow!("Only the owner can search conversations"));
@@ -1966,6 +1975,7 @@ impl WorkspaceManager {
                         &ServerMessage::SearchDone {
                             id,
                             cut: cancel.then(|| "cancelled".to_string()),
+                            older: 0,
                             off: Vec::new(),
                         },
                     )
@@ -1974,7 +1984,7 @@ impl WorkspaceManager {
                 }
                 // Who searched, never for what.
                 info!(target: "audit", event = "session_search", provider = %identity.provider, account_id = %identity.id);
-                self.start_search(conn, id, query, tx);
+                self.start_search(conn, id, query, since, tx);
             }
             ClientMessage::Window {
                 workspace,
@@ -4043,6 +4053,7 @@ mod search_tests {
             id,
             query: query.into(),
             cancel: false,
+            since: None,
         }
     }
 
@@ -4091,6 +4102,7 @@ mod search_tests {
             id: 2,
             query: String::new(),
             cancel: true,
+            since: None,
         };
         send_msg(&rig, "1", cancel, &link).await.unwrap();
         let got = until(&mut end, "search_done").await;

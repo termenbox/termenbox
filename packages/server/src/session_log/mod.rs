@@ -348,6 +348,11 @@ pub trait SessionLog: Send + Sync {
     ) -> Result<Vec<Hit>, LogError> {
         self.search(session, query, run.budget.limits().per_session)
     }
+    /// When the session's file was last written, read without opening it, or none when it cannot be told. Files are
+    /// append-only, so nothing in one is newer. The ledger's recorded time will win over this when there is one.
+    fn last_event(&self, _session: &SessionRef) -> Option<std::time::SystemTime> {
+        None
+    }
     /// `before` entries, the anchor turn and `after` entries.
     fn window(
         &self,

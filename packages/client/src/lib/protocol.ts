@@ -92,7 +92,7 @@ export type ClientMessage =
   /** Forgets the server's whole history. */
   | { type: 'history_delete' }
   /** R78: searches the agents' own conversation files. Hits stream as `search_hit`, then `search_done`. A newer `id`, or `cancel`, stops the previous search. Owner only. */
-  | { type: 'search'; id: number; query: string; cancel?: boolean }
+  | { type: 'search'; id: number; query: string; cancel?: boolean; /** Only records at or after this time (ms since the epoch); absent searches any age. */ since?: number }
   /** The turns around `turn` of the session of a tab (`tab` empty for an ACP workspace); the answer is `session_window`. Owner only. */
   | { type: 'window'; workspace: string; tab?: string; turn: string; before?: number; after?: number };
 
@@ -206,7 +206,9 @@ export interface SearchHitMessage {
 export interface SearchDoneMessage {
   type: 'search_done';
   id: number;
-  cut?: 'hits' | 'bytes' | 'time' | 'cancelled' | string;
+  cut?: 'hits' | 'bytes' | 'time' | 'range' | 'cancelled' | string;
+  /** Conversations the `since` bound skipped or stopped reading. */
+  older?: number;
   off: { agent: string; reason: string }[];
 }
 

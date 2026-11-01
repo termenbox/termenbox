@@ -57,4 +57,13 @@ describe('SearchSheet', () => {
   it('says a server went away', () => {
     expect(html({ search: st({ query: 'x', status: 'done', lost: 1 }) })).toContain('went away');
   });
+  it('offers the time chips, 30 days by default, and Search older when conversations were skipped', () => {
+    const out = html({ search: st({ query: 'x', status: 'done', hits: [hit()], older: 3 }) });
+    for (const id of ['24h', '7d', '30d', 'any']) expect(out).toContain(`data-testid="search-range-${id}"`);
+    expect(out).toMatch(/aria-pressed="true"[^>]*data-testid="search-range-30d"|data-testid="search-range-30d"[^>]*aria-pressed="true"/);
+    expect(out).toContain('3 older conversations not searched.');
+    expect(out).toContain('data-testid="search-older-go"');
+    expect(html({ search: st({ query: 'x', status: 'done', older: 3, range: 'any' }) })).not.toContain('search-older-go');
+    expect(html({ search: st({ query: 'x', status: 'done' }) })).not.toContain('search-older"');
+  });
 });

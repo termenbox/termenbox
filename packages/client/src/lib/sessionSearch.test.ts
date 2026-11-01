@@ -1,12 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { SessionSearch, landingOf, resumeOutcome, cleanQuery, cutText, groupHits, loadGroupMode, saveGroupMode, parts, whenText, MAX_HITS_PER_SERVER, type SearchState } from './sessionSearch';
+import { SessionSearch, landingOf, resumeOutcome, cleanQuery, cutText, loadRange, sinceOf, olderText, groupHits, loadGroupMode, saveGroupMode, parts, whenText, MAX_HITS_PER_SERVER, type SearchState } from './sessionSearch';
 import type { ClientMessage, SearchHitMessage, ServerMessage } from './protocol';
 
-function rig(servers = [{ id: 'a', name: 'Box' }]) {
+const NOW = Date.parse('2026-11-01T00:00:00Z');
+function rig(servers = [{ id: 'a', name: 'Box' }], saved: Record<string, string> = {}) {
   const sent: { to: string; msg: ClientMessage }[] = [];
   const states: SearchState[] = [];
-  const s = new SessionSearch({ servers: () => servers, send: (to, msg) => sent.push({ to, msg }), onchange: (st) => states.push(st) });
-  return { s, sent, states };
+  const store = { getItem: (k: string) => saved[k] ?? null, setItem: (k: string, v: string) => { saved[k] = v; } };
+  const s = new SessionSearch({ servers: () => servers, send: (to, msg) => sent.push({ to, msg }), onchange: (st) => states.push(st), now: () => NOW, store });
+  return { s, sent, states, saved };
 }
 const hit = (id: number, over: Partial<SearchHitMessage> = {}): ServerMessage => ({ type: 'search_hit', id, workspace: 'w1', tab: 't1', agent: 'claude', up: true, turn: 'u1', kind: 'user', snippet: 'fix the parser bug', highlight: [8, 14], at: '2026-10-30T10:00:00Z', ...over });
 const done = (id: number, over: Record<string, unknown> = {}): ServerMessage => ({ type: 'search_done', id, off: [], ...over }) as ServerMessage;
@@ -217,5 +219,43 @@ describe('what a tap does', () => {
   });
   it('does not claim a resume from a server that did not say', () => {
     expect(resumeOutcome({ tab: 't1', agent: 'codex' }, undefined)).toMatchObject({ jump: false, ok: false });
+  });
+});
+
+describe('time window', () => {
+  it('asks for the last 30 days by default and for any age when told', () => {
+    const { s, sent } = rig();
+    s.run('parser');
+    expect(sent[0].msg).toMatchObject({ type: 'search', since: NOW - 30 * 86_400_000 });
+    s.setRange('any');
+    expect('since' in sent[1].msg).toBe(false);
+    expect(s.current.range).toBe('any');
+  });
+  it('re-asks with the new window, remembers it, and ignores the answers of the old one', () => {
+    const { s, sent, saved } = rig();
+    s.run('parser');
+    const first = (sent[0].msg as { id: number }).id;
+    s.setRange('24h');
+    expect(sent.map((x) => x.msg).filter((m) => m.type === 'search' && !m.cancel)).toHaveLength(2);
+    expect(sent[2].msg).toMatchObject({ query: 'parser', since: NOW - 86_400_000 });
+    s.handle('a', hit(first));
+    expect(s.current.hits).toHaveLength(0);
+    expect(loadRange({ getItem: (k) => saved[k] ?? null })).toBe('24h');
+  });
+  it('starts from the remembered window and from 30 days when the store is unusable', () => {
+    expect(rig(undefined, { termenbox_search_range: '7d' }).s.current.range).toBe('7d');
+    expect(rig(undefined, { termenbox_search_range: 'bogus' }).s.current.range).toBe('30d');
+    expect(loadRange({ getItem: () => { throw new Error('blocked'); } })).toBe('30d');
+    expect(sinceOf('any', NOW)).toBeUndefined();
+  });
+  it('sums the older conversations the servers skipped and says nothing else about a range cut', () => {
+    const { s, sent } = rig([{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }]);
+    s.run('parser');
+    const id = (sent[0].msg as { id: number }).id;
+    s.handle('a', done(id, { cut: 'range', older: 2 }));
+    s.handle('b', done(id, { older: 1 }));
+    expect(s.current.older).toBe(3);
+    expect(s.current.cuts).toEqual([]);
+    expect(olderText(1)).toBe('1 older conversation not searched.');
   });
 });

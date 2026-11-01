@@ -49,6 +49,8 @@ pub struct Limits {
     pub per_session: usize,
     pub max_time: Duration,
     pub max_bytes: u64,
+    /// Only records at or after this time (ms since the epoch) are wanted; none means any age.
+    pub since_ms: Option<u64>,
 }
 
 impl Default for Limits {
@@ -58,6 +60,7 @@ impl Default for Limits {
             per_session: 3,
             max_time: Duration::from_secs(2),
             max_bytes: 200 * 1024 * 1024,
+            since_ms: None,
         }
     }
 }
@@ -99,6 +102,7 @@ pub struct Budget {
     hits: usize,
     cancel: Cancel,
     cut: Option<Cut>,
+    older: usize,
 }
 
 impl Budget {
@@ -110,6 +114,7 @@ impl Budget {
             hits: 0,
             cancel,
             cut: None,
+            older: 0,
         }
     }
 
@@ -123,6 +128,15 @@ impl Budget {
 
     pub fn hits(&self) -> usize {
         self.hits
+    }
+
+    /// How many sessions the `since` bound kept from being read in full: skipped whole or stopped part way.
+    pub fn older(&self) -> usize {
+        self.older
+    }
+
+    pub fn note_older(&mut self) {
+        self.older += 1;
     }
 
     /// The first cap that fired, if any.
@@ -252,6 +266,51 @@ impl Needle {
     }
 }
 
+/// The time (ms since the epoch) in the `"timestamp":"…"` of the first whole line of `block`: one `memmem` per block.
+/// A key inside a string is escaped, so only a real key matches.
+fn first_line_time(block: &[u8]) -> Option<u64> {
+    const KEY: &[u8] = b"\"timestamp\":\"";
+    let first = memchr::memchr(b'\n', block)? + 1;
+    let rest = &block[first..];
+    let line = &rest[..memchr::memchr(b'\n', rest)?];
+    let at = memmem::find(line, KEY)? + KEY.len();
+    parse_iso_ms(&line[at..])
+}
+
+/// `2025-01-31T12:34:56.789Z` (a leading part of `s`) as ms since the epoch, in UTC.
+pub fn parse_iso_ms(s: &[u8]) -> Option<u64> {
+    let num = |from: usize, len: usize| -> Option<i64> {
+        let d = s.get(from..from + len)?;
+        d.iter()
+            .all(u8::is_ascii_digit)
+            .then(|| d.iter().fold(0i64, |n, b| n * 10 + i64::from(b - b'0')))
+    };
+    let (y, m, d) = (num(0, 4)?, num(5, 2)?, num(8, 2)?);
+    let (hh, mm, ss) = (num(11, 2)?, num(14, 2)?, num(17, 2)?);
+    if s[4] != b'-' || s[7] != b'-' || s[10] != b'T' || s[13] != b':' || s[16] != b':' {
+        return None;
+    }
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || hh > 23 || mm > 59 || ss > 60 {
+        return None;
+    }
+    let mut ms = 0;
+    if s.get(19) == Some(&b'.') {
+        let mut scale = 100;
+        for b in s[20..].iter().take_while(|b| b.is_ascii_digit()).take(3) {
+            ms += i64::from(b - b'0') * scale;
+            scale /= 10;
+        }
+    }
+    // Days from the civil date (Howard Hinnant's algorithm).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(((days * 24 + hh) * 60 + mm) * 60_000 + ss * 1000 + ms).ok()
+}
+
 fn push_char(out: &mut Vec<u8>, c: char) {
     let mut b = [0u8; 4];
     out.extend_from_slice(c.encode_utf8(&mut b).as_bytes());
@@ -276,6 +335,8 @@ pub enum End {
     Stopped,
     /// A cap fired; the budget says which.
     Cut(Cut),
+    /// The rest of the file is older than `Limits::since_ms`.
+    Range,
 }
 
 /// The buffers a scan reuses, kept across the files of one search.
@@ -374,6 +435,13 @@ impl Scanner {
                 carry_complete = block[len - 1] == b'\n';
                 first = false;
             }
+            // Records are in time order, so when the first whole line of this block is older than the bound, so is
+            // everything before it. The block is still searched for the newer lines after that line.
+            let older = start > 0
+                && budget
+                    .limits()
+                    .since_ms
+                    .is_some_and(|since| first_line_time(block).is_some_and(|t| t < since));
 
             let mut newlines = memchr::memrchr_iter(b'\n', block);
             let Some(last_nl) = newlines.next() else {
@@ -441,6 +509,10 @@ impl Scanner {
                 }
             } else {
                 carry.extend_from_slice(&block[..hi]);
+            }
+            if older {
+                budget.note_older();
+                return Ok(End::Range);
             }
             end = start;
         }

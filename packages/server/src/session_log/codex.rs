@@ -467,6 +467,10 @@ impl SessionLog for CodexLog {
         Ok(hits)
     }
 
+    fn last_event(&self, s: &SessionRef) -> Option<std::time::SystemTime> {
+        std::fs::metadata(self.locate(&s.id)?).ok()?.modified().ok()
+    }
+
     fn window(
         &self,
         s: &SessionRef,

@@ -539,6 +539,9 @@ pub enum ClientMessage {
         query: String,
         #[serde(default)]
         cancel: bool,
+        /// Only records at or after this time (ms since the epoch) are searched; absent means any age.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<u64>,
     },
     /// The turns around `turn` of the session of `workspace`'s tab `tab` (empty for an ACP workspace); the answer is
     /// `session_window`. Owner only.
@@ -962,12 +965,15 @@ pub enum ServerMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         at: Option<String>,
     },
-    /// Ends a `search`. `cut` is why it stopped before it had looked everywhere (`hits`, `bytes`, `time` or
-    /// `cancelled`); `off` lists the agents whose search is off, each with a fixed reason.
+    /// Ends a `search`. `cut` is why it stopped before it had looked everywhere (`hits`, `bytes`, `time`, `range` or
+    /// `cancelled`; `range` only when the `since` bound alone kept it from looking); `older` counts the conversations
+    /// that bound skipped or stopped reading; `off` lists the agents whose search is off, each with a fixed reason.
     SearchDone {
         id: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cut: Option<String>,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        older: u32,
         off: Vec<SearchOff>,
     },
     /// Answers `window`: entries in conversation order, at most 48 KiB of text. `anchor` is the index of the asked turn.

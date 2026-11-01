@@ -90,6 +90,7 @@ fn unlimited() -> Limits {
         per_session: usize::MAX,
         max_time: Duration::from_secs(600),
         max_bytes: u64::MAX,
+        since_ms: None,
     }
 }
 
@@ -957,4 +958,75 @@ fn accents_do_not_matter_on_either_path() {
     }
     // A needle that is not ASCII once folded cannot be in ASCII text.
     assert!(scan_lines(&ascii, "привет").is_empty());
+}
+
+#[test]
+fn iso_times_parse_to_epoch_milliseconds() {
+    assert_eq!(parse_iso_ms(b"1970-01-01T00:00:00.000Z"), Some(0));
+    assert_eq!(parse_iso_ms(b"2000-03-01T00:00:00Z"), Some(951_868_800_000));
+    assert_eq!(
+        parse_iso_ms(b"2024-02-29T12:34:56.789Z\",x"),
+        Some(1_709_210_096_789)
+    );
+    assert_eq!(parse_iso_ms(b"2025-13-01T00:00:00Z"), None);
+    assert_eq!(parse_iso_ms(b"not a time at all.."), None);
+    assert_eq!(parse_iso_ms(b"2025-01-01"), None);
+}
+
+/// `lines` records, each `pad` bytes of text, one a second from `start_s`; the last holds "needle".
+fn timed_file(path: &Path, start_s: u64, lines: u64, pad: usize) {
+    let mut out = std::io::BufWriter::new(File::create(path).unwrap());
+    let pad = "x".repeat(pad);
+    for n in 0..lines {
+        let t = (start_s + n) * 1000;
+        let (s, ms) = (t / 1000, t % 1000);
+        let (days, rem) = (s / 86_400, s % 86_400);
+        // 1970-01-01 plus `days`, which only needs to stay within January 1970 here.
+        let day = 1 + days;
+        let text = if n == lines - 1 { "needle" } else { "plain" };
+        writeln!(
+            out,
+            r#"{{"type":"user","timestamp":"1970-01-{day:02}T{:02}:{:02}:{:02}.{ms:03}Z","message":"{text} {pad}"}}"#,
+            rem / 3600,
+            rem / 60 % 60,
+            rem % 60
+        )
+        .unwrap();
+    }
+    out.flush().unwrap();
+}
+
+#[test]
+fn a_file_stops_at_the_first_block_older_than_the_bound() {
+    let dir = TempDir::new();
+    let path = dir.0.join("timed.jsonl");
+    // 4000 lines of ~1 KB, one a second: about 4 MB, 16 blocks. Needle only in the newest line.
+    timed_file(&path, 0, 4000, 1000);
+    let size = std::fs::metadata(&path).unwrap().len();
+    let all = scan(&path, "needle", unlimited());
+    assert_eq!((all.0.len(), all.1), (1, End::Done));
+    assert_eq!(all.2.bytes_read(), size);
+    assert_eq!(all.2.older(), 0);
+
+    // Everything from second 3900 on is wanted: the needle is found, the older 3.8 MB is not read.
+    let wanted = Limits {
+        since_ms: Some(3900 * 1000),
+        ..unlimited()
+    };
+    let (found, end, budget) = scan(&path, "needle", wanted);
+    assert_eq!((found.len(), end), (1, End::Range));
+    assert_eq!(budget.older(), 1);
+    assert!(
+        budget.bytes_read() <= 2 * BLOCK as u64,
+        "read {} of {size}",
+        budget.bytes_read()
+    );
+
+    // A bound older than the whole file reads all of it and reports nothing skipped.
+    let all_new = Limits {
+        since_ms: Some(0),
+        ..unlimited()
+    };
+    let (found, end, budget) = scan(&path, "needle", all_new);
+    assert_eq!((found.len(), end, budget.older()), (1, End::Done, 0));
 }

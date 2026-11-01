@@ -13,6 +13,8 @@ use crate::session_log::{Hit, LogError, SearchRun, SessionLogs, SessionRef, Wind
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Summary {
     pub cut: Option<&'static str>,
+    /// Sessions the `since` bound kept from being read in full.
+    pub older: usize,
     pub off: Vec<(String, &'static str)>,
 }
 
@@ -24,6 +26,9 @@ pub fn cut_name(cut: Cut) -> &'static str {
         Cut::Cancelled => "cancelled",
     }
 }
+
+/// The cut reason when the time bound is the only thing that kept the search from looking everywhere.
+pub const RANGE: &str = "range";
 
 fn session_ref(s: &KnownSession) -> SessionRef {
     SessionRef {
@@ -67,6 +72,16 @@ pub fn run(
             }
             Err(_) => continue,
         };
+        if let Some(since) = run.budget.limits().since_ms {
+            let last = adapter
+                .last_event(&session_ref(&s))
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64);
+            if last.is_some_and(|t| t < since) {
+                run.budget.note_older();
+                continue;
+            }
+        }
         match adapter.search_in(&session_ref(&s), query, &mut run) {
             Ok(hits) => {
                 for hit in hits {
@@ -89,7 +104,12 @@ pub fn run(
             break;
         }
     }
-    summary.cut = run.budget.cut().map(cut_name);
+    summary.older = run.budget.older();
+    summary.cut = run
+        .budget
+        .cut()
+        .map(cut_name)
+        .or((summary.older > 0).then_some(RANGE));
     summary
 }
 
@@ -270,6 +290,44 @@ mod tests {
         assert!(n > 0);
         assert_eq!(summary.off.len(), 1);
         assert_eq!(summary.off[0].0, "opencode");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_session_last_written_before_the_bound_is_not_opened() {
+        let root = projects();
+        let old = root.join("-home-fixture-project/short.jsonl");
+        let file = std::fs::File::options().write(true).open(&old).unwrap();
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000))
+            .unwrap();
+        let limits = Limits {
+            since_ms: Some(2_000_000 * 1000),
+            ..Limits::default()
+        };
+        let mut n = 0;
+        let summary = run(
+            &logs(&root),
+            vec![known("short", "ws", "t1", true)],
+            "the",
+            limits,
+            Cancel::default(),
+            |_, _| {
+                n += 1;
+                true
+            },
+        );
+        assert_eq!(n, 0);
+        assert_eq!((summary.older, summary.cut), (1, Some("range")));
+        // With no bound the same session is searched.
+        let summary = run(
+            &logs(&root),
+            vec![known("short", "ws", "t1", true)],
+            "the",
+            Limits::default(),
+            Cancel::default(),
+            |_, _| true,
+        );
+        assert_eq!((summary.older, summary.cut), (0, None));
         let _ = std::fs::remove_dir_all(root);
     }
 

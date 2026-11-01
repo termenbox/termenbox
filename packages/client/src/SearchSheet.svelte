@@ -1,15 +1,15 @@
 <script lang="ts">
   import { Sheet } from './lib/ui/sheet';
   import AgentIcon from './AgentIcon.svelte';
-  import { NOTICE, landingOf, cutText, debounced, groupHits, GROUP_MODES, loadGroupMode, saveGroupMode, offText, parts, whenText, type GroupMode, type Hit, type SearchState } from './lib/sessionSearch';
+  import { NOTICE, landingOf, cutText, debounced, groupHits, GROUP_MODES, RANGES, olderText, loadGroupMode, saveGroupMode, offText, parts, whenText, type GroupMode, type RangeId, type Hit, type SearchState } from './lib/sessionSearch';
 
   /**
    * Find text in the agents' own conversations (R78, decision 0156). The sheet shows what `search` holds and tells its owner
    * what was typed; it never keeps the query once it closes. A tap on a hit is handed to `onpick`.
    */
-  let { open = $bindable(false), wide = false, search, now = Date.now(), nameOf = () => undefined, onquery, onstop, onpick, onresume, onclose }: {
+  let { open = $bindable(false), wide = false, search, now = Date.now(), nameOf = () => undefined, onquery, onrange = () => {}, onstop, onpick, onresume, onclose }: {
     open?: boolean; wide?: boolean; search: SearchState; now?: number; nameOf?: (serverId: string, workspace: string) => string | undefined;
-    onquery: (text: string) => void; onstop: () => void; onpick: (hit: Hit) => void; onresume: (hit: Hit) => void; onclose?: () => void;
+    onquery: (text: string) => void; onrange?: (range: RangeId) => void; onstop: () => void; onpick: (hit: Hit) => void; onresume: (hit: Hit) => void; onclose?: () => void;
   } = $props();
 
   let text = $state('');
@@ -58,6 +58,13 @@
       </div>
     {/if}
 
+    <div role="group" aria-label="Search conversations from the last" data-testid="search-range" class="flex w-full gap-1 rounded-control bg-raised p-1">
+      {#each RANGES as r (r.id)}
+        <button type="button" aria-pressed={search.range === r.id} data-testid="search-range-{r.id}" onclick={() => onrange(r.id)}
+          class="h-11 min-w-0 flex-1 truncate rounded-control bg-transparent px-2 text-sm font-semibold text-soft aria-pressed:bg-accent aria-pressed:text-on-accent">{r.label}</button>
+      {/each}
+    </div>
+
     <div role="group" aria-label="Group matches by" data-testid="search-grouping" class="flex w-full gap-1 rounded-control bg-raised p-1">
       {#each GROUP_MODES as m (m.mode)}
         <button type="button" aria-pressed={mode === m.mode} data-testid="search-group-{m.mode}" onclick={() => pickMode(m.mode)}
@@ -66,6 +73,12 @@
     </div>
 
     {#each search.cuts as c (c)}<p class="rounded-control bg-raised px-3 py-2 text-sm text-soft" data-testid="search-cut">{c}</p>{/each}
+    {#if search.older > 0 && search.range !== 'any'}
+      <p class="flex items-center gap-2 rounded-control bg-raised px-3 py-2 text-sm text-soft" data-testid="search-older">
+        <span class="min-w-0 flex-1">{olderText(search.older)}</span>
+        <button type="button" data-testid="search-older-go" onclick={() => onrange('any')} class="h-11 shrink-0 rounded-control bg-transparent px-2 text-sm font-semibold text-accent-text">Search older</button>
+      </p>
+    {/if}
     {#each search.off as o (o.agent + o.reason)}<p class="rounded-control bg-raised px-3 py-2 text-sm text-soft" data-testid="search-off">{offText(o)}</p>{/each}
     {#if search.lost}<p class="rounded-control bg-raised px-3 py-2 text-sm text-soft" data-testid="search-lost">{search.lost === 1 ? 'A server' : `${search.lost} servers`} went away before it finished, so its matches may be missing.</p>{/if}
 

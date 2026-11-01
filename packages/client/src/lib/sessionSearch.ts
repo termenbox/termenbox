@@ -41,14 +41,42 @@ export interface SearchState {
   off: { agent: string; reason: string }[];
   /** Servers that went away before they finished. */
   lost: number;
+  /** Conversations the time window kept from being searched, summed over the servers. */
+  older: number;
+  /** The time window this search used. */
+  range: RangeId;
 }
-export const IDLE: SearchState = { query: '', status: 'idle', hits: [], pending: [], cuts: [], off: [], lost: 0 };
+export const IDLE: SearchState = { query: '', status: 'idle', hits: [], pending: [], cuts: [], off: [], lost: 0, older: 0, range: '30d' };
+
+export type RangeId = '24h' | '7d' | '30d' | 'any';
+export const RANGES: { id: RangeId; label: string; ms: number | null }[] = [
+  { id: '24h', label: '24 h', ms: 86_400_000 }, { id: '7d', label: '7 d', ms: 7 * 86_400_000 },
+  { id: '30d', label: '30 d', ms: 30 * 86_400_000 }, { id: 'any', label: 'Any', ms: null },
+];
+/** The `since` a search of `range` sends, or undefined for any age. */
+export const sinceOf = (range: RangeId, now: number): number | undefined => { const ms = RANGES.find((r) => r.id === range)?.ms; return ms == null ? undefined : now - ms; };
+const RANGE_KEY = 'termenbox_search_range';
+/** The window this viewer chose last; 30 days when nothing usable is stored. */
+export function loadRange(store: Pick<Storage, 'getItem'> | undefined = groupStore()): RangeId {
+  try {
+    const v = store?.getItem(RANGE_KEY);
+    return RANGES.some((r) => r.id === v) ? (v as RangeId) : '30d';
+  } catch { return '30d'; }
+}
+export function saveRange(range: RangeId, store: Pick<Storage, 'setItem'> | undefined = groupStore()) {
+  try { store?.setItem(RANGE_KEY, range); } catch { /* Private mode: the choice lasts until the sheet closes. */ }
+}
+export function olderText(n: number): string { return `${n} older ${n === 1 ? 'conversation' : 'conversations'} not searched.`; }
 
 export interface SearchDeps {
   /** The servers to ask: the connected ones. */
   servers: () => { id: string; name: string }[];
   send: (serverId: string, message: ClientMessage) => void;
   onchange: (state: SearchState) => void;
+  /** The clock, for the window's start. */
+  now?: () => number;
+  /** Where the window is remembered; defaults to the browser's local storage. */
+  store?: Pick<Storage, 'getItem' | 'setItem'>;
 }
 
 /** Control characters out, the server's cap on length applied, outer space trimmed. */
@@ -73,7 +101,7 @@ function time(at: string | undefined): number | undefined {
 
 /** The sentence for a stop reason; `cancelled` is the user's own doing and says nothing. */
 export function cutText(cut: string): string | null {
-  if (cut === 'cancelled') return null;
+  if (cut === 'cancelled' || cut === 'range') return null;
   if (cut === 'hits') return 'Search was cut: it stopped at the first matches. Narrow the words to see others.';
   if (cut === 'time' || cut === 'bytes') return 'Search was cut: it stopped early to stay fast, so some older conversations were not searched.';
   return 'Search was cut before it looked everywhere.';
@@ -86,11 +114,21 @@ export class SessionSearch {
   private id = 0;
   private state: SearchState = IDLE;
   private names = new Map<string, string>();
-  constructor(private deps: SearchDeps) {}
+  private range: RangeId;
+  constructor(private deps: SearchDeps) { this.range = loadRange(deps.store); this.state = { ...IDLE, range: this.range }; }
 
   get current(): SearchState { return this.state; }
 
-  private set(s: SearchState) { this.state = s; this.deps.onchange(s); }
+  private set(s: SearchState) { this.state = { ...s, range: this.range }; this.deps.onchange(this.state); }
+
+  /** Changes the time window, remembers it, and asks again if a query is showing. */
+  setRange(range: RangeId) {
+    if (range === this.range) return;
+    const query = this.state.query;
+    this.range = range;
+    saveRange(range, this.deps.store);
+    if (query) this.run(query); else this.set(this.state);
+  }
 
   /** Stops what is running (the servers are told) and starts a search for `text`, or goes idle when it is empty. */
   run(text: string) {
@@ -101,7 +139,8 @@ export class SessionSearch {
     this.id++;
     this.names = new Map(servers.map((s) => [s.id, s.name]));
     this.set({ ...IDLE, query, status: servers.length ? 'searching' : 'done', pending: servers.map((s) => s.id) });
-    for (const s of servers) this.deps.send(s.id, { type: 'search', id: this.id, query });
+    const since = sinceOf(this.range, (this.deps.now ?? Date.now)());
+    for (const s of servers) this.deps.send(s.id, { type: 'search', id: this.id, query, ...(since === undefined ? {} : { since }) });
   }
 
   /** Tells the servers that still work to stop. The hits so far stay. */
@@ -145,7 +184,8 @@ export class SessionSearch {
     this.finish(serverId, (s) => {
       const cut = m.cut ? cutText(m.cut) : null;
       const off = (Array.isArray(m.off) ? m.off : []).filter((o) => !s.off.some((x) => x.agent === o.agent && x.reason === o.reason));
-      return { ...s, cuts: cut && !s.cuts.includes(cut) ? [...s.cuts, cut] : s.cuts, off: [...s.off, ...off] };
+      const older = s.older + (Number.isFinite(m.older) && m.older! > 0 ? Math.trunc(m.older!) : 0);
+      return { ...s, older, cuts: cut && !s.cuts.includes(cut) ? [...s.cuts, cut] : s.cuts, off: [...s.off, ...off] };
     });
   }
 
