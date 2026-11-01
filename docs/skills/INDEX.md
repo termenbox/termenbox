@@ -15,3 +15,5 @@ review-and-publish-docs-media,"Review rendered documentation videos, send some b
 write-a-course-chapter,"Write one course chapter from a recorded case, with its story, trouble box and generated steps","docs, onboarding, video, procedural",active
 run-a-cold-read-test,"Run a cold-read test of a course part on a real phone and record what the newcomer stumbled on","docs, onboarding, mobile, ux, procedural",active
 regenerate-the-user-course,"Re-run the course interview and regenerate the user course when an answer changes","docs, onboarding, video, ux, procedural",active
+add-a-message-role-to-the-agent-view,"Add a message role to the Agent view","client, acp, ux, procedural",active
+build-an-agent-view-slice-template-first,"Build an Agent view slice template-first","client, acp, ux, ci, docs, procedural",active

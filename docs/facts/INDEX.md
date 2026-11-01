@@ -68,3 +68,4 @@
 | 0068 | GitHub Markdown does not play a repository MP4 inline, and a chapter-length GIF is several megabytes | docs, video, github | active |
 
 <!-- bootstrap-generated: true -->
+| 0069 | Anthropic's terms allow a subscription login in the unmodified Claude Code binary, but point Agent SDK products at API keys | agents, acp, legal | active |
