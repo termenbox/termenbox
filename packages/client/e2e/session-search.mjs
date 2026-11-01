@@ -1,6 +1,6 @@
 // Cross-session search against the REAL server binary and real tmux (roadmap R78, decision 0156). A private HOME holds
 // fixture Claude Code and Codex session files; one workspace is open (a real tmux window), others are dormant records.
-// The Search sheet finds a phrase in both agents' files, scrubbed; a forced cap (50 hits, 3 per session) shows the cut line;
+// The Search sheet finds a phrase in both agents' files, scrubbed; paging past the 50 hit cap, sessions no record holds (closed, started by hand, replaced), the grouping modes and the time chips are covered;
 // a tap on an open hit switches to its tab; a tap on a dormant hit asks first and then resumes; and the query appears in
 // no server log line. An ACP workspace (the fixture agent) lands on the turn and marks the match.
 // What this proves is the page in this engine on a desktop window. It does not prove a phone or a real Safari.
@@ -9,7 +9,7 @@
 //   TERMENBOX_BIN   server binary (default ../../target/release/termenbox-server)
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, extname, resolve } from 'node:path';
 import { randomBytes, generateKeyPairSync, sign, createPrivateKey, createPublicKey } from 'node:crypto';
@@ -63,12 +63,12 @@ const claudeProjects = join(userHome, '.claude', 'projects');
 const uuid = (n) => `c1a0de00-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const iso = (s) => `2026-10-31T10:${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}.000Z`;
 /** A Claude Code file with `n` user turns that all hold the phrase, the shape measured in step 1. */
-function writeClaude(dir, id, n, secret = false) {
+function writeClaude(dir, id, n, secret = false, phrase = PHRASE) {
   const lines = [];
   let parent = null;
   for (let i = 0; i < n; i++) {
     const u = `u${i}`, a = `a${i}`;
-    const text = `${PHRASE} number ${i}${secret && i === 0 ? ` with key ${SECRET}` : ''}`;
+    const text = `${phrase} number ${i}${secret && i === 0 ? ` with key ${SECRET}` : ''}`;
     lines.push({ parentUuid: parent, type: 'user', uuid: u, timestamp: iso(i * 2 + 1), message: { role: 'user', content: text }, isSidechain: false, userType: 'external', cwd: dir, sessionId: id, version: '2.1.308' });
     lines.push({ parentUuid: u, type: 'assistant', uuid: a, timestamp: iso(i * 2 + 2), message: { role: 'assistant', content: [{ type: 'text', text: `Noted, number ${i}.` }] }, isSidechain: false, cwd: dir, sessionId: id, version: '2.1.308' });
     parent = a;
@@ -76,15 +76,16 @@ function writeClaude(dir, id, n, secret = false) {
   const enc = dir.replace(/[^A-Za-z0-9]/g, '-');
   mkdirSync(join(claudeProjects, enc), { recursive: true });
   writeFileSync(join(claudeProjects, enc, `${id}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+  return join(claudeProjects, enc, `${id}.jsonl`);
 }
 /** A Codex rollout file, the shape measured in step 1. */
-function writeCodex(dir, id) {
+function writeCodex(dir, id, phrase = PHRASE, tail = 'for the codex side') {
   const turn = `${id.slice(0, -2)}a1`;
   const rec = (ordinal, type, payload) => ({ timestamp: iso(ordinal), ordinal, type, payload });
   const lines = [
     rec(0, 'session_meta', { session_id: id, id, timestamp: iso(0), cwd: dir, originator: 'codex_exec', cli_version: '0.166.0', source: 'exec', model_provider: 'openai' }),
     rec(1, 'event_msg', { type: 'task_started', turn_id: turn, root_turn_id: turn }),
-    rec(2, 'response_item', { type: 'message', id: 'm1', role: 'user', content: [{ type: 'input_text', text: `Plan the ${PHRASE} for the codex side` }], internal_chat_message_metadata_passthrough: { turn_id: turn } }),
+    rec(2, 'response_item', { type: 'message', id: 'm1', role: 'user', content: [{ type: 'input_text', text: `Plan the ${phrase} ${tail}` }], internal_chat_message_metadata_passthrough: { turn_id: turn } }),
     rec(3, 'response_item', { type: 'message', id: 'm2', role: 'assistant', content: [{ type: 'output_text', text: 'Planned.' }], internal_chat_message_metadata_passthrough: { turn_id: turn } }),
   ];
   const d = join(userHome, '.codex', 'sessions', '2026', '10', '31');
@@ -109,6 +110,17 @@ writeFileSync(join(home, 'config', 'acp-agents.toml'), `max_sessions = 3\n[agent
 // Enough dormant sessions of three hits each to pass the server's cap of 50 hits (3 per session): 18 x 3 = 54.
 const FILLERS = Array.from({ length: 18 }, (_, i) => ({ dir: dirOf(`filler-${i}`), id: uuid(100 + i) }));
 for (const f of FILLERS) writeClaude(f.dir, f.id, 3);
+
+// Sessions the registry knows nothing about (decision 0167): the search walks the agents' session roots.
+const closedDir = dirOf('closed-app'), outsideDir = dirOf('outside-app'), replacedDir = dirOf('replaced-app'), ancientDir = dirOf('ancient-app');
+const CLOSED_ID = uuid(200), OUTSIDE_ID = 'c0de0000-0000-7000-8000-000000000201', OLD_ID = uuid(210), NEW_ID = uuid(211), ANCIENT_ID = uuid(220);
+writeClaude(closedDir, CLOSED_ID, 1, false, 'quokka closed');      // its tab and workspace were closed: no record points at it
+writeCodex(outsideDir, OUTSIDE_ID, 'quokka outside', 'started by hand'); // never opened in termenbox
+writeClaude(replacedDir, OLD_ID, 1, false, 'quokka replaced old');  // the agent restarted in the tab: the record names NEW_ID
+writeClaude(replacedDir, NEW_ID, 1, false, 'quokka replaced new');
+const ancientFile = writeClaude(ancientDir, ANCIENT_ID, 1, false, 'quokka ancient');
+const longAgo = new Date(Date.now() - 40 * 86_400_000);
+utimesSync(ancientFile, longAgo, longAgo);                          // older than the default 30 day window
 
 const httpPort = await freeTcpPort();
 const claim = randomBytes(32).toString('base64url');
@@ -208,6 +220,7 @@ try {
   const extra = [
     dormant('ws-down-claude', 'down-claude', downClaude, 'claude', DOWN_CLAUDE_ID),
     dormant('ws-down-codex', 'down-codex', downCodex, 'codex', DOWN_CODEX_ID),
+    dormant('ws-replaced', 'replaced-app', replacedDir, 'claude', NEW_ID),
     ...FILLERS.map((f, i) => dormant(`ws-filler-${i}`, `filler-${i}`, f.dir, 'claude', f.id)),
   ];
   extra.forEach((w, i) => { w.order = i + 1; });
@@ -242,12 +255,58 @@ try {
   if (secretRows.includes(SECRET) || secretRows.includes('sk-FAKE')) throw new Error(`a secret reached the sheet: ${secretRows}`);
   console.log('ok  snippets are scrubbed');
 
-  // 3. The cap: the phrase is in 21 sessions, more than 50 hits at 3 per session, so the search is cut and says so.
+  // 3. Paging past the cap: the phrase is in 21 sessions, 57 hits at 3 per session. The first page stops near 50, and
+  // scrolling (Show more) pulls the rest, each hit once.
   await search(PHRASE);
-  await see(sheet.locator('[data-testid="search-cut"]'), 'the search was cut line');
-  const count = await hits.count();
-  if (count > 50 || count < 40) throw new Error(`the capped search shows ${count} hits, expected 40-50`);
-  console.log(`ok  the capped search shows ${count} hits and the cut line: "${await sheet.locator('[data-testid="search-cut"]').first().innerText()}"`);
+  await see(hits, 'the first page of hits');
+  await waitFor(async () => (await status.innerText()).length > 0 && (await hits.count()) >= 30, 'the first page');
+  for (let i = 0; i < 20; i++) {
+    const more = sheet.locator('[data-testid="search-more"]');
+    if (!(await more.count())) break;
+    const before = await hits.count();
+    await more.first().click().catch(() => {});
+    await waitFor(async () => (await hits.count()) > before || !(await more.count()), 'another page of hits', 10000).catch(() => {});
+  }
+  const rows = await hits.evaluateAll((els) => els.map((e) => e.textContent));
+  if (rows.length !== 57) throw new Error(`paging shows ${rows.length} hits, expected all 57`);
+  console.log('ok  paging past the 50 hit cap shows all 57 hits');
+
+  // 3b. Sessions the registry does not hold are found: closed tab, started outside termenbox, agent restarted in the tab.
+  const resumeOnly = async (q, n) => {
+    await search(q);
+    await waitFor(async () => (await hits.count()) >= n, `${n} hit(s) for "${q}"`);
+    const badges = await sheet.locator('[data-testid="search-badge"]').allInnerTexts();
+    if (badges.length !== n || badges.some((b) => b !== 'Resume')) throw new Error(`"${q}": badges ${JSON.stringify(badges)}`);
+  };
+  await resumeOnly('quokka closed', 1);
+  await resumeOnly('quokka outside', 1);
+  await resumeOnly('quokka replaced', 2);
+  console.log('ok  a closed tab, a session started outside termenbox and a replaced session are all found, badged Resume');
+
+  // 3c. Grouping: one section per agent, per workspace or directory, and none (no headers).
+  await search('quokka');
+  await waitFor(async () => (await hits.count()) >= 4, 'the quokka hits');
+  const sections = async (mode) => { await sheet.locator(`[data-testid="search-group-${mode}"]`).click(); await sheet.locator(`[data-testid="search-group"][data-mode="${mode}"]`).first().waitFor({ state: 'attached' }); return sheet.locator('[data-testid="search-group"]').count(); };
+  const byAgent = await sections('agent'), byNone = await sections('none');
+  const headers = await sheet.locator('[data-testid="search-group"] h4').count();
+  const byWorkspace = await sections('workspace');
+  if (byAgent !== 2) throw new Error(`grouped by agent: ${byAgent} sections, expected claude and codex`);
+  if (byNone !== 1 || headers !== 0) throw new Error(`the flat list has ${headers} headers and ${byNone} sections`);
+  if (byWorkspace < 3) throw new Error(`grouped by workspace or directory: ${byWorkspace} sections`);
+  console.log(`ok  grouping switches: agent ${byAgent}, none ${byNone}, workspace ${byWorkspace} sections`);
+
+  // 3d. The time window: the 40 day old file is skipped unopened, counted, and found by "Search older".
+  await search('quokka ancient');
+  await see(sheet.locator('[data-testid="search-older"]'), 'the older conversations line');
+  if ((await hits.count()) !== 0) throw new Error('a file older than the window was searched');
+  console.log(`ok  the 30 d window skips it: "${(await sheet.locator('[data-testid="search-older"]').innerText()).replace(/\s+/g, ' ')}"`);
+  await sheet.locator('[data-testid="search-older-go"]').click();
+  await waitFor(async () => (await hits.count()) === 1, 'the old conversation after Search older');
+  await sheet.locator('[data-testid="search-range-24h"]').click();
+  await page.waitForTimeout(500);
+  if ((await hits.count()) !== 0) throw new Error('the 24 h chip still shows the old conversation');
+  await sheet.locator('[data-testid="search-range-30d"]').click();
+  console.log('ok  Search older finds it; the chips narrow the window again');
 
   // 4. A tap on an open hit switches to its tab and closes the sheet.
   await search('with key');
@@ -304,7 +363,8 @@ try {
 
   // 6. The privacy check: neither the phrases nor the secret appear in any server log line, at trace level.
   const log = readFileSync(logFile, 'utf8');
-  for (const needle of [PHRASE, 'codex side', 'with key', SECRET, 'zebrafish']) {
+  const ids = [OPEN_ID, DOWN_CLAUDE_ID, DOWN_CODEX_ID, CLOSED_ID, OUTSIDE_ID, OLD_ID, NEW_ID, ANCIENT_ID, ...FILLERS.map((f) => f.id)];
+  for (const needle of [PHRASE, 'codex side', 'with key', SECRET, 'zebrafish', 'quokka', ...ids, join(claudeProjects, 'x').slice(0, -2), join(userHome, '.codex')]) {
     if (log.toLowerCase().includes(needle.toLowerCase())) throw new Error(`the server log holds "${needle}"`);
   }
   console.log(`ok  the server log (${log.split('\n').length} lines at trace level) holds no query and no secret`);
