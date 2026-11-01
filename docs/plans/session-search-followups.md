@@ -1,0 +1,92 @@
+# Session search follow-ups
+
+Follows `cross-session-search.md` (R78, landed in #448, shipped in `v0.1.57-beta.20`). Decisions: 0156 (what is searched, amended by step 7), 0157 (the SessionLog port). Fact 0065. Guardrails `session-search-is-bounded-scrubbed-and-never-logs-the-query`, `resource-constraints`, `security-secrets-handling`.
+
+## Cold start
+
+Termenbox is a web terminal for remote AI coding agents: Rust server `packages/server`, shared wire types `packages/core/src/protocol.rs` (mirrored by hand in `packages/client/src/lib/protocol.ts`), Svelte 5 client `packages/client/src`. Read `CLAUDE.md` first. Work only in a pool worktree (`sh scripts/pool.sh acquire <type>/<slug>`), one squashed PR per step off `develop`, commit subjects `type(scope): summary` with `Why:`/`What:` body. No compiler on some machines: prefix commands with `scripts/dev.sh`; without the `docker` group loaded, `sg docker -c "COMPOSE_PROJECT_NAME=termenbox-sergei scripts/dev.sh ..."` (see `server-update-flow.md`). Constraints: 512 MB RAM, 1 vCPU, secrets and the query never logged.
+
+What search does today (verified at `a31db0d`):
+- **Scan** (`packages/server/src/session_log/scan.rs`): each file is read backwards, newest lines first, with `pread` into reusable buffers; a line is folded (case, accents) into a scratch buffer and searched with `memchr::memmem`; only a matching line is parsed. `Scanner::new()` runs in `SearchRun::new` (`session_log/mod.rs`), so the buffers are allocated again for every search. Limits (`Limits::default`): 50 hits, 3 per session, 2 s, 200 MB.
+- **Known sessions** (`registry.rs` `known_sessions`): one `agent_session` per tab. `set_agent_session` overwrites it when the agent restarts in the tab; `close_tab` and `close_workspace` delete the record, so a closed or replaced conversation has no pointer any more.
+- **Client** (`lib/sessionSearch.ts`, `SearchSheet.svelte`): hits are grouped by workspace only; the client keeps at most 100 hits per server; a cut says "narrow the words" and there is no way to ask for more.
+
+Goals: (a) switchable grouping, (b) fast, allocation-free scanning that does not read what a time bound rules out, (c) conversations of closed tabs and workspaces are found, (d) more results on demand.
+
+Defaults assumed until the owner says otherwise (each is a choice, not a fact):
+- "Lazy load" means more hits as the list is scrolled, past the 50 cap, plus rendering in pieces.
+- A hit in a closed session offers Resume in a new tab in the recorded directory, never started by the search.
+- The ledger keeps 500 sessions or 90 days, whichever is fewer, and has a "forget closed sessions" action.
+- Map/reduce across threads is out of scope: the target is 1 vCPU, so it adds a merge and no throughput. Revisit only with a measurement.
+
+### 1 Grouping modes — [ ]
+Class: implement · Needs: none · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test'`
+Context: `groupHits` in `lib/sessionSearch.ts` groups by workspace; `Group.agent` comes from the first hit. Per-viewer conveniences may use `localStorage` wrapped in try/catch (see the Artifact rules; the page renders without it).
+Do: Add a segmented control **Agent / Workspace / None** to `SearchSheet.svelte`. `groupHits(hits, mode, nameOf)`: `agent` groups by `hit.agent`, `workspace` is today's behaviour, `none` is one flat list newest first. With no header a row shows its workspace and tab. Remember the choice per viewer.
+Done-when: component tests cover the three modes, the order inside each, and the remembered choice; phone width shows the control without overflow.
+
+### 2 Baseline: measure the scan — [ ]
+Class: explore · Needs: none · Check: the benchmark in `session_log/scan.rs` (plan R78 step 3) prints MB/s and peak RSS
+Context: Every later performance step is a guess without numbers. The existing benchmark generates 200 MB; use `perf` or a flamegraph in the container.
+Do: Record MB/s hot and cold-cache, peak RSS growth, allocations per search (counting allocator) and the share of time in fold, `memmem`, `pread` and JSON parse, for an ASCII-only and a non-ASCII corpus. Save the figures in `session_log/README.md` next to the fixtures' notes.
+Done-when: the README lists the figures and the machine they were taken on; steps 3 to 5 each name the figure they expect to move.
+
+### 3 Pool the scan buffers — [ ]
+Class: implement · Needs: 2 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log::scan`
+Context: A search allocates the 256 KiB block and the line, carry and fold buffers each time, and the sheet starts one about every 250 ms while typing. Allocations of 128 KiB and up are `mmap`ed by glibc, so each pays page faults and is returned at once.
+Do: Keep a small pool of `Scanner`s (at most 2, so the idle footprint stays bounded) taken per search and returned on drop, with buffers cleared and capped on return. Cancel and early return must return the scanner too.
+Done-when: a test running 100 searches shows one set of block-sized allocations in the counting allocator, not 100; RSS after the run does not grow with the count.
+
+### 4 Search blocks, not lines — [ ]
+Class: implement · Needs: 2, 3 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log::scan`
+Context: Today every line is copied through the fold buffer before `memmem`. `aho-corasick` with `ascii_case_insensitive(true)` runs a SIMD (Teddy) search for one pattern with no copy. Accent-insensitive matching must stay: "cafe" matches "café", so a raw ASCII search is only valid where the needle has no letter that has accented forms, or on a block that is entirely ASCII.
+Do: Per block: if it is ASCII (SIMD `is_ascii`), search the whole block with the case-insensitive automaton, and find the enclosing line of a hit with `memrchr`/`memchr` for `\n`; never split the block into lines. A block with non-ASCII bytes takes today's fold path. Write down the accent rule in the module header and test it with a needle and text that differ only in accents.
+Done-when: the contract suite and the existing scan tests pass unchanged; the benchmark's hot-cache MB/s on the ASCII corpus rises and the figure is in the README; the zero-allocation-per-non-matching-line test still passes.
+
+### 5 Reject candidates before parsing — [ ]
+Class: implement · Needs: 4 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log::claude session_log::codex`
+Context: `memmem` also hits inside tool input and output, which the adapters then parse in full and discard (tool text never leaves the server).
+Do: In each adapter, test the record type or role with a `memmem` on its marker before any JSON parse and drop tool records there. Parse the rest into borrowed structs (`#[serde(borrow)] &str`) over the line buffer with one reused scratch `String` for unescaping.
+Done-when: a fixture with a large tool output holding the needle costs no parse (counting allocator) and yields no hit; the contract suites for both adapters pass.
+
+### 6 Time window and time bounds — [ ]
+Class: implement · Needs: 4 · Check: `scripts/dev.sh cargo test --workspace`
+Context: Session files are append-only, so a file last written before a cutoff holds nothing after it; its `mtime` is free. Inside a long file, records are in time order, so the timestamp of the first complete line of a block (one `memmem` per block, not per line) tells where to stop reading backwards. `mtime` can lie after `cp`, `rsync` or a restore; the ledger (step 8) holds a recorded last-event time that wins when present. Codex puts the date in the rollout file name and in its records; the time-of-last-event function belongs in the `SessionLog` port.
+Do: Add `since` (milliseconds) to `search` in both protocol files. Skip a file whose last-event time is before `since` without opening it; stop a file at the first block older than `since`. Add the cut reason `range` and a count of sessions skipped, shown as "N older conversations not searched. Search older". Default window 30 days; chips *24 h / 7 d / 30 d / Any* in the sheet. The time and byte caps stay as the safety net.
+Done-when: a server test shows a file older than `since` is never opened (read counter is zero) and the skipped count is reported; a long-file test stops mid-file; the sheet test covers the chips and the "Search older" action; the query is still absent from the log.
+
+### 7 Decision: a ledger of closed sessions — [ ]
+Class: decide · Needs: none · Check: `lint` over `docs/` passes
+Context: 0156 says the corpus is open tabs and dormant tabs holding an `agent_session`. This step widens it and must say what is stored, for how long and how it is cleared. Run the `clarify` or `roadmap` skill with the owner; do not decide alone.
+Do: Write the decision amending 0156: a ledger of (agent, session id, directory, workspace name and tab title when last seen, last event time), kept after a tab or workspace closes and after the agent restarts in a tab; bounded by count and age; entries dropped when the agent's file is gone; the owner can clear it; ids never logged; stored in the registry's state directory with the same atomic writes. Update fact 0065 and `docs/skills/add-a-session-log-adapter.md` where they describe the corpus.
+Done-when: the decision is `accepted` by the owner, the guardrail `session-search-is-bounded-scrubbed-and-never-logs-the-query` still holds unchanged, and the index lists it.
+
+### 8 Session ledger on the server — [ ]
+Class: implement · Needs: 6, 7 · Check: `scripts/dev.sh cargo test -p termenbox-server registry`
+Context: `set_agent_session`, `close_tab`, `close_workspace` and `known_sessions` in `packages/server/src/registry.rs`; ACP session ids live in the ACP manager (`known_sessions` says it adds them).
+Do: Append to the ledger in `set_agent_session` and for ACP session ids. `close_tab` and `close_workspace` leave ledger entries alone. `known_sessions()` merges live tabs and the ledger and returns a state of `open`, `dormant` or `closed`; `distinct` still keeps one entry per conversation, preferring the more live state. The wire `up` flag stays for old clients and gains a `state` beside it. Prune on count, age and a missing file. A clear action for the owner.
+Done-when: tests show a closed tab, a closed workspace and a session replaced in the same tab are all found by a search; a session whose file is gone is dropped; a directory outside every recorded one is still never read; no log line holds an id.
+
+### 9 Landing for a closed hit — [ ]
+Class: implement · Needs: 1, 8 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test'`
+Context: `landingOf` and `resumeOutcome` in `lib/sessionSearch.ts`; Resume reuses 0152's command table (`claude --resume <id>`, `codex resume <id>`, `opencode --session <id>`) on the server. A closed hit has no workspace to switch to or reopen.
+Do: Badge **Closed**; its group is keyed by the recorded workspace name. A tap shows the same confirmation as Resume, then the server opens a new tab in the recorded directory with the resume command and the reply says `resumed` or `shell`. If the directory is gone, say so and offer nothing. Nothing in the client types into an agent.
+Done-when: component tests cover the closed landing, the confirmation, the shell fallback message and the missing directory; a server test opens a tab in the recorded directory.
+
+### 10 More results: per-session and continuation — [ ]
+Class: implement · Needs: 6, 8 · Check: `scripts/dev.sh cargo test --workspace`
+Context: The cap of 3 per session and 50 overall stays the default so a reply fits 48 KiB. Decision 0157's cursor carries the file fingerprint; the server keeps no search state.
+Do: `search` takes an optional `session` (show all matches of that one conversation, cap lifted to a fixed larger number) and an optional `after` cursor (last session and byte offset, fingerprinted) that makes the scan resume where the cap stopped. A changed fingerprint says so and restarts that file. Replies stay within 48 KiB.
+Done-when: a test pages through a fixture with more than 50 matches and sees each hit exactly once; a test with a file appended between pages does not repeat or skip a hit; the log-capture test passes.
+
+### 11 Lazy load in the sheet — [ ]
+Class: implement · Needs: 10, 1 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test'`
+Context: The client keeps at most 100 hits per server (`MAX_HITS_PER_SERVER`); `IntersectionObserver` is available on iOS Safari 16.4.
+Do: Render the list in pieces with an `IntersectionObserver` sentinel, and request the next page with the cursor when it is reached and the server reported a cut. Each group shows "N more in this conversation" which runs the per-session search. Bound memory: evict far-off pages' DOM, keep the hits. Cancel on close or a new query, as now. Works in all three grouping modes.
+Done-when: tests cover scroll-to-more, the end of results, a new query during paging, the per-session expansion and the memory bound after many pages.
+
+### 12 End-to-end and privacy check — [ ]
+Class: review · Needs: 9, 11 · Check: `sg docker -c "COMPOSE_PROJECT_NAME=termenbox-sergei scripts/dev.sh --full sh -c 'cd packages/client && node e2e/session-search.mjs'"`
+Context: `packages/client/e2e/session-search.mjs` already covers open, dormant and capped searches against the real server and tmux. Phone checks must name their platform (guardrail `a-phone-check-names-its-platform`).
+Do: Extend it with a closed tab, an agent restarted in the same tab, a grouping switch, the time chips with a skipped count, and paging past 50. Assert the query and any session id appear in no server log line. Run the `conform` skill over the diff, then move the follow-ups out of this plan per the roadmap's landing procedure.
+Done-when: the Chromium e2e job passes with the new scenarios, `conform` reports no violation, and the plan is archived.
