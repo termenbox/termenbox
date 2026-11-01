@@ -406,6 +406,12 @@ pub enum ClientMessage {
     Dismiss {
         attention_id: String,
     },
+    /// How long this device showed the card of an attention item in the foreground, for the attention meter
+    /// (decision 0169). A number only; never what the card said. Older servers ignore it.
+    CardSeen {
+        obligation: String,
+        ms: u32,
+    },
     /// Asks for the workspace view (decision 0103): the cleaned screen tail, the parsed prompt and the tier in use.
     /// `hash` is the one the client already holds; the server then answers `unchanged`.
     #[serde(rename = "workspace_view")]
@@ -515,6 +521,31 @@ impl ClientMessage {
                 | ClientMessage::Foreground { .. }
         )
     }
+}
+
+/// One UTC day of the attention meter (decision 0169): counts and milliseconds, never text.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct AttentionDay {
+    /// Days since the Unix epoch, UTC.
+    pub day: u32,
+    /// Obligations raised that day.
+    #[serde(default)]
+    pub raised: u32,
+    /// Obligations resolved that day by the layer that resolved them: `human`, `rule`, later `contract`, `deputy`.
+    #[serde(default)]
+    pub by_layer: std::collections::BTreeMap<String, u32>,
+    /// Human-resolved obligations by the answering device class (`phone`, `desktop`, `other`); never a name.
+    #[serde(default)]
+    pub by_device: std::collections::BTreeMap<String, u32>,
+    /// Card foreground time the human spent, in ms.
+    #[serde(default)]
+    pub human_ms: u64,
+    /// Sum over human-resolved obligations of the time from raised to resolved, in ms.
+    #[serde(default)]
+    pub latency_ms: u64,
+    /// Time tabs spent working, in ms, summed over tabs.
+    #[serde(default)]
+    pub agent_ms: u64,
 }
 
 /// Server → Client (WebSocket)
@@ -729,6 +760,11 @@ pub enum ServerMessage {
     /// The open attention items, and again whenever one is raised or cleared.
     Attention {
         items: Vec<crate::events::Attention>,
+    },
+    /// The attention meter (decision 0169): one entry per UTC day, oldest first, the last 30 days at most. Sent
+    /// after connect and after a `card_seen`. Numbers only; no agent text.
+    AttentionStats {
+        days: Vec<AttentionDay>,
     },
     /// Legacy message of the parked termenbox-agent.
     AgentEvent {
@@ -1603,6 +1639,38 @@ mod tests {
         })
         .unwrap();
         assert_eq!(v["type"], "dismiss");
+        let v = serde_json::to_value(ClientMessage::CardSeen {
+            obligation: "a1".into(),
+            ms: 4200,
+        })
+        .unwrap();
+        assert_eq!(
+            (
+                v["type"].as_str(),
+                v["obligation"].as_str(),
+                v["ms"].as_u64()
+            ),
+            (Some("card_seen"), Some("a1"), Some(4200))
+        );
+        let m: ClientMessage = serde_json::from_value(v).unwrap();
+        assert!(matches!(m, ClientMessage::CardSeen { ms: 4200, .. }));
+        assert!(!m.is_control());
+        let day = AttentionDay {
+            day: 20_000,
+            raised: 3,
+            human_ms: 9_000,
+            ..Default::default()
+        };
+        let v = serde_json::to_value(ServerMessage::AttentionStats {
+            days: vec![day.clone()],
+        })
+        .unwrap();
+        assert_eq!(v["type"], "attention_stats");
+        let back: ServerMessage = serde_json::from_value(v).unwrap();
+        assert_eq!(back, ServerMessage::AttentionStats { days: vec![day] });
+        // A day from a newer server with fields this client lacks still reads.
+        let d: AttentionDay = serde_json::from_str(r#"{"day":1,"raised":2,"later":true}"#).unwrap();
+        assert_eq!((d.day, d.raised, d.human_ms), (1, 2, 0));
         let v = serde_json::to_value(ServerMessage::WorkspaceAttached {
             workspace_id: "x".into(),
             tab: None,

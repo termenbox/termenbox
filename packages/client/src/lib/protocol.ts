@@ -56,6 +56,7 @@ export type ClientMessage =
   | { type: 'foreground'; workspace: string | null; tab?: string | null }
   | { type: 'ack'; attention_id: string }
   | { type: 'dismiss'; attention_id: string }
+  | { type: 'card_seen'; obligation: string; ms: number }
   /** Decision 0103: asks for the workspace view (cleaned tail, parsed prompt, tier); `hash` is the one already held. */
   | { type: 'workspace_view'; workspace: string; hash?: string }
   /** Taps option `option` (0-based) of prompt `prompt_id`; the server sends the keys its profile lists for it, never more. */
@@ -141,6 +142,7 @@ export type ServerMessage =
   | { type: 'agent_events'; events: AgentEvent[] }
   | { type: 'activity'; workspaces: WorkspaceActivity[] }
   | { type: 'attention'; items: Attention[] }
+  | { type: 'attention_stats'; days: AttentionDay[] }
   | SessionViewMessage
   | AcpViewMessage
   | { type: 'push_info'; configured: boolean; public_key: string; devices: number; subscribed: boolean; settings?: boolean }
@@ -395,6 +397,17 @@ export interface WorkspaceActivity {
 }
 
 /** A durable, server-owned item that asks for the owner. */
+/** Decision 0169: one UTC day of the attention meter. Numbers only; fields a newer server adds are ignored. */
+export interface AttentionDay {
+  day: number;
+  raised: number;
+  by_layer: Record<string, number>;
+  by_device: Record<string, number>;
+  human_ms: number;
+  latency_ms: number;
+  agent_ms: number;
+}
+
 export interface Attention {
   id: string;
   workspace: string;

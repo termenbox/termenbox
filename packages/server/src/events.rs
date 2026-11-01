@@ -429,6 +429,8 @@ fn derive_hint(r: &Ring, now: u64) -> Option<AttentionKind> {
 pub enum StatusChange {
     Activity(WorkspaceActivity),
     Attention(Vec<Attention>),
+    /// The attention meter changed (decision 0169).
+    Meter(Vec<termenbox_core::protocol::AttentionDay>),
 }
 
 /// A workspace id as events know it: a plain name, or `manager:name` when several managers run.
@@ -470,6 +472,8 @@ pub struct EventHub {
     usage: Arc<crate::transcript::UsageTracker>,
     /// Per-tab state (decision 0149); absent in tests that do not need it.
     tab_status: Option<Arc<TabStatus>>,
+    /// The attention meter (decision 0169); absent in tests that do not need it.
+    meter: Option<Arc<crate::attention_meter::AttentionMeter>>,
 }
 
 impl EventHub {
@@ -488,6 +492,56 @@ impl EventHub {
             history: None,
             usage: Arc::default(),
             tab_status: None,
+            meter: None,
+        }
+    }
+
+    /// Measures the owner's attention (decision 0169).
+    pub fn with_meter(mut self, meter: Arc<crate::attention_meter::AttentionMeter>) -> Self {
+        self.meter = Some(meter);
+        self
+    }
+
+    /// The meter's buckets, oldest first, for a client that is new.
+    pub fn meter_days(&self) -> Vec<termenbox_core::protocol::AttentionDay> {
+        self.meter
+            .as_ref()
+            .map(|m| m.stats(now_ms()))
+            .unwrap_or_default()
+    }
+
+    /// A device showed the card of attention item `id` for `ms`. Returns whether it was credited.
+    pub fn card_seen(&self, id: &str, ms: u64) -> bool {
+        let Some(m) = &self.meter else {
+            return false;
+        };
+        let credited = m.card_seen(id, ms, now_ms());
+        if credited {
+            self.announce_meter();
+        }
+        credited
+    }
+
+    fn announce_meter(&self) {
+        if self.meter.is_some() {
+            let _ = self.status_tx.send(StatusChange::Meter(self.meter_days()));
+        }
+    }
+
+    /// These items left the list: the ones in `answered` were resolved by `layer`, the rest just went away.
+    fn meter_removed(&self, gone: &[Attention], layer: Option<crate::attention_meter::Layer>) {
+        let Some(m) = &self.meter else {
+            return;
+        };
+        let now = now_ms();
+        for a in gone {
+            match layer {
+                Some(l) => m.resolved(&a.id, l, None, now),
+                None => m.forget(&a.id),
+            }
+        }
+        if layer.is_some() && !gone.is_empty() {
+            self.announce_meter();
         }
     }
 
@@ -821,6 +875,14 @@ impl EventHub {
         confidence: Confidence,
         now: u64,
     ) {
+        if let Some(m) = &self.meter {
+            m.tab_working(
+                workspace,
+                tab.unwrap_or(""),
+                state == AgentState::Working,
+                now_ms(),
+            );
+        }
         if state != AgentState::NeedsInput {
             self.clear_where(workspace, |a| {
                 a.kind == AttentionKind::NeedsInput && a.tab.as_deref() == tab
@@ -1148,6 +1210,11 @@ impl EventHub {
             .and_then(|r| r.task.clone());
         let mut list = self.attention.lock().unwrap();
         // One open item per tab and kind: a newer one replaces the older.
+        let replaced: Vec<Attention> = list
+            .iter()
+            .filter(|a| a.workspace == workspace && a.kind == kind && a.tab.as_deref() == tab)
+            .cloned()
+            .collect();
         list.retain(|a| !(a.workspace == workspace && a.kind == kind && a.tab.as_deref() == tab));
         let id = self
             .next_attention
@@ -1162,11 +1229,16 @@ impl EventHub {
             task,
             prompt: None,
         });
+        let mut dropped = replaced;
         while list.len() > MAX_ATTENTION {
-            list.remove(0);
+            dropped.push(list.remove(0));
         }
         let snapshot = list.clone();
         drop(list);
+        if let Some(m) = &self.meter {
+            self.meter_removed(&dropped, None);
+            m.raised(&format!("a{id}"), now_ms());
+        }
         // Workspace, kind and source only (audit-logging-no-secrets).
         tracing::info!(target: "audit", event = "attention_raised", session = %workspace, kind = ?kind, source = ?source);
         let _ = self.status_tx.send(StatusChange::Attention(snapshot));
@@ -1177,7 +1249,11 @@ impl EventHub {
         if let Some(status) = &self.tab_status {
             status.forget_tab(workspace, tab);
         }
-        self.clear_where(workspace, |a| a.tab.as_deref() == Some(tab));
+        // The tab was closed: its items went away, nobody resolved them.
+        self.clear_where_as(workspace, |a| a.tab.as_deref() == Some(tab), None);
+        if let Some(m) = &self.meter {
+            m.close_where(now_ms(), |w, t| w == workspace && t == tab);
+        }
         let after = {
             let mut reducers = self.reducers.lock().unwrap();
             if reducers
@@ -1200,13 +1276,30 @@ impl EventHub {
         }
     }
 
+    /// The agent moved on: the items were resolved, by the owner (an answer, in the terminal or from a card).
     fn clear_where(&self, workspace: &str, pred: impl Fn(&Attention) -> bool) {
+        self.clear_where_as(workspace, pred, Some(crate::attention_meter::Layer::Human));
+    }
+
+    /// `layer` is who resolved the removed items for the meter; `None` when they just went away.
+    fn clear_where_as(
+        &self,
+        workspace: &str,
+        pred: impl Fn(&Attention) -> bool,
+        layer: Option<crate::attention_meter::Layer>,
+    ) {
         let mut list = self.attention.lock().unwrap();
         let before = list.len();
+        let gone: Vec<Attention> = list
+            .iter()
+            .filter(|a| a.workspace == workspace && pred(a))
+            .cloned()
+            .collect();
         list.retain(|a| !(a.workspace == workspace && pred(a)));
         if list.len() != before {
             let snapshot = list.clone();
             drop(list);
+            self.meter_removed(&gone, layer);
             tracing::info!(target: "audit", event = "attention_cleared", session = %workspace, by = "fact");
             let _ = self.status_tx.send(StatusChange::Attention(snapshot));
         }
@@ -1225,6 +1318,10 @@ impl EventHub {
         let gone = list.remove(pos);
         let snapshot = list.clone();
         drop(list);
+        self.meter_removed(
+            std::slice::from_ref(&gone),
+            Some(crate::attention_meter::Layer::Human),
+        );
         // Looking at a finished or failed tab ends the result it showed (decision 0095: a result is not a state).
         if let (Some(tab), Some(status)) = (&gone.tab, &self.tab_status) {
             status.clear_result(&gone.workspace, tab);
@@ -1318,12 +1415,23 @@ impl EventHub {
             .lock()
             .unwrap()
             .retain(|(w, _), _| !w.starts_with(prefix) || live.contains(w));
+        if let Some(m) = &self.meter {
+            m.close_where(now_ms(), |w, _| {
+                w.starts_with(prefix) && !live.iter().any(|l| l == w)
+            });
+        }
         let mut list = self.attention.lock().unwrap();
         let before = list.len();
+        let gone: Vec<Attention> = list
+            .iter()
+            .filter(|a| a.workspace.starts_with(prefix) && !live.contains(&a.workspace))
+            .cloned()
+            .collect();
         list.retain(|a| !a.workspace.starts_with(prefix) || live.contains(&a.workspace));
         if list.len() != before {
             let snapshot = list.clone();
             drop(list);
+            self.meter_removed(&gone, None);
             let _ = self.status_tx.send(StatusChange::Attention(snapshot));
         }
     }
@@ -3222,6 +3330,38 @@ mod tests {
         assert_eq!(tab_state(&status, "t1"), AgentState::NeedsInput);
         tab_hook(&h, "t1", "PostToolUse", ask(), 9_000);
         assert_eq!(tab_state(&status, "t1"), AgentState::Working);
+    }
+
+    #[test]
+    fn attention_meter_counts_a_question_its_answer_and_working_time() {
+        let (h, _status) = tab_hub();
+        let h = h.with_meter(Arc::new(crate::attention_meter::AttentionMeter::in_memory()));
+        tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 1_000);
+        tab_hook(&h, "t1", "PermissionRequest", ask(), 2_000);
+        let id = h.attention_items()[0].id.clone();
+        assert!(h.card_seen(&id, 3_000));
+        tab_hook(&h, "t1", "PostToolUse", ask(), 9_000);
+        let days = h.meter_days();
+        assert_eq!(days.len(), 1);
+        assert_eq!(days[0].raised, 1);
+        assert_eq!(days[0].by_layer["human"], 1);
+        assert_eq!(days[0].human_ms, 3_000);
+        assert!(
+            !h.card_seen("a999", 1_000),
+            "an unknown card is not credited"
+        );
+    }
+
+    #[test]
+    fn attention_meter_does_not_count_a_closed_tab_as_an_answer() {
+        let (h, _status) = tab_hub();
+        let h = h.with_meter(Arc::new(crate::attention_meter::AttentionMeter::in_memory()));
+        tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 1_000);
+        tab_hook(&h, "t1", "PermissionRequest", ask(), 2_000);
+        h.forget_tab("s", "t1");
+        let days = h.meter_days();
+        assert_eq!(days[0].raised, 1);
+        assert!(days[0].by_layer.is_empty());
     }
 
     #[test]

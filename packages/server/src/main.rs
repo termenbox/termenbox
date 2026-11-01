@@ -19,6 +19,7 @@ mod acp_stream;
 mod adapters;
 mod agent_hooks;
 mod agentwatch;
+mod attention_meter;
 mod auth;
 mod backend;
 mod bundle;
@@ -830,6 +831,26 @@ async fn main() -> anyhow::Result<()> {
     hub = hub.with_tab_status(Arc::new(tabstatus::TabStatus::default()));
     if let Some(history) = &history {
         hub = hub.with_history(history.clone());
+    }
+    // The attention meter is optional too: without it the Home line is empty, nothing else changes.
+    match attention_meter::AttentionMeter::open(&args.config_dir, events::now_ms()) {
+        Ok(meter) => {
+            let meter = Arc::new(meter);
+            hub = hub.with_meter(meter.clone());
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    let meter = meter.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        if let Err(e) = meter.flush() {
+                            tracing::warn!("attention meter not saved: {e:#}");
+                        }
+                    })
+                    .await;
+                }
+            });
+        }
+        Err(e) => tracing::warn!("attention meter disabled: {e:#}"),
     }
     let socket = events::socket_path(&args.config_dir);
     // Which workspace an event belongs to is checked against the panes; the runner arrives with the backends below.

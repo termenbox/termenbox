@@ -704,6 +704,9 @@ impl WorkspaceManager {
             ServerMessage::Attention {
                 items: hub.attention_items(),
             },
+            ServerMessage::AttentionStats {
+                days: hub.meter_days(),
+            },
         ]
     }
 
@@ -1077,6 +1080,11 @@ impl WorkspaceManager {
             ClientMessage::Ack { attention_id } | ClientMessage::Dismiss { attention_id } => {
                 if let Some(hub) = &self.events {
                     hub.ack(&attention_id);
+                }
+            }
+            ClientMessage::CardSeen { obligation, ms } => {
+                if let Some(hub) = &self.events {
+                    hub.card_seen(&obligation, u64::from(ms));
                 }
             }
             ClientMessage::Answer {
@@ -1816,6 +1824,7 @@ fn status_message(c: crate::events::StatusChange) -> ServerMessage {
             workspaces: vec![a],
         },
         crate::events::StatusChange::Attention(items) => ServerMessage::Attention { items },
+        crate::events::StatusChange::Meter(days) => ServerMessage::AttentionStats { days },
     }
 }
 

@@ -108,6 +108,11 @@
   ],
   "bulk_or_other": [
     {
+      "type": "card_seen",
+      "obligation": "a1",
+      "ms": 4200
+    },
+    {
       "type": "list_dir",
       "path": "/home/me",
       "prefix": "co",
