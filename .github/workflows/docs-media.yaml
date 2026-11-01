@@ -102,6 +102,7 @@ jobs:
           PROFILES: ${{ steps.pick.outputs.profiles }}
           PACE: ${{ inputs.pace }}
           CAPTION: ${{ inputs.caption }}
+          VIDEO_DEBUG: '1' # a rejected render is kept as *.flicker.mp4, uploaded below when the job fails
         run: |
           flags="--pace $PACE --skip-unsupported"; [ "$CAPTION" = off ] && flags="$flags --no-caption"
           for c in $CASES; do
@@ -114,6 +115,14 @@ jobs:
             done
           done
           ls -l "$GITHUB_WORKSPACE/media"
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: docs-media-failed-${{ github.run_id }}
+          path: media
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Build the review page
         run: node scripts/docs-media-review-page.mjs media

@@ -293,7 +293,7 @@ Object.assign(cases, {
       while (server.of('attach').length === attaches && Date.now() < back) await page.waitForTimeout(100);
       expectThat(server.of('attach').length > attaches && server.of('attach').at(-1).workspace_id === 's3', 'the app did not re-attach to the shell workspace');
       await screenHas(page, 'attached to s3');
-      server.output('build finished\\r\\n$ '); // the real server redraws the screen on attach; the scripted one only says it attached
+      server.output('build finished\r\n$ '); // the real server redraws the screen on attach; the scripted one only says it attached
       await screenHas(page, 'build finished');
       expectThat(await page.locator('.state-connected').first().isVisible().catch(() => false) || h.phone, 'the server is not shown as connected again');
       await h.still('poster');
