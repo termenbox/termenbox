@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 
 use crate::events::sanitize_block;
-use scan::{Budget, Cancel, Limits, Scanner};
+use scan::{Budget, Cancel, Limits, PooledScanner};
 
 pub mod claude;
 pub mod codex;
@@ -278,14 +278,14 @@ pub const MAX_SIDE: usize = 200;
 
 /// What a search carries from one session to the next: the reusable scan buffers and the caps shared by all of them.
 pub struct SearchRun {
-    pub scanner: Scanner,
+    pub scanner: PooledScanner,
     pub budget: Budget,
 }
 
 impl SearchRun {
     pub fn new(limits: Limits, cancel: Cancel) -> Self {
         SearchRun {
-            scanner: Scanner::new(),
+            scanner: PooledScanner::take(),
             budget: Budget::new(limits, cancel),
         }
     }

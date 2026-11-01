@@ -31,7 +31,7 @@ Figures below are the second run (the first agreed within 20%, except cold ASCII
 - **Memory**: RSS did not move across any run (8.2 MB before and after); the scan's heap peak is 258 KiB, the 256 KiB
   block plus small buffers.
 - **A fresh search allocates 8 to 13 times** (`Scanner::new()` and the first lines), including the 256 KiB block that
-  glibc `mmap`s and returns at once. That is what step 3 pools; a warm scanner allocates nothing per non-matching line
+  glibc `mmap`s and returns at once. That is what step 3 pools (done: `ScannerPool`, 0 allocations for the 2nd to 100th search); a warm scanner allocates nothing per non-matching line
   (the existing `a_non_matching_line_costs_no_allocation` test).
 - **Parse** is about 2 µs for a ~340-byte line, so 10 000 candidates cost 20 ms: parse only matters when the needle
   is common or matches tool output (step 5).

@@ -252,6 +252,16 @@ impl Scanner {
         }
     }
 
+    /// Empties the working buffers and drops the ones a huge line grew, so an idle scanner stays small.
+    fn tidy(&mut self) {
+        for v in [&mut self.carry, &mut self.line, &mut self.fold] {
+            v.clear();
+            if v.capacity() > IDLE_CAP {
+                *v = Vec::new();
+            }
+        }
+    }
+
     /// Calls `on_candidate` for each line of `file` that holds `needle`, newest line first. Reads the file as it was
     /// `size` bytes long, so a file that grows during the scan is not chased.
     pub fn scan_file(
@@ -363,6 +373,80 @@ impl Scanner {
             }
         }
         Ok(End::Done)
+    }
+}
+
+/// Most scanners kept idle: two searches overlap at most briefly, and each holds a 256 KiB block.
+const POOL_MAX: usize = 2;
+/// Largest a line, carry or fold buffer may be when a scanner goes back to the pool.
+const IDLE_CAP: usize = 64 * 1024;
+
+/// Scanners waiting for the next search. A keystroke starts a search about every 250 ms, and the 256 KiB block is
+/// above glibc's `mmap` threshold, so allocating it per search pays page faults each time.
+pub struct ScannerPool {
+    idle: Mutex<Vec<Scanner>>,
+}
+
+static POOL: ScannerPool = ScannerPool::new();
+
+impl ScannerPool {
+    pub const fn new() -> Self {
+        ScannerPool {
+            idle: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// An idle scanner, or a new one when none is. It returns here when dropped, whichever way the search ended.
+    pub fn take(&'static self) -> PooledScanner {
+        let idle = self.idle.lock().unwrap_or_else(|e| e.into_inner()).pop();
+        PooledScanner {
+            scanner: Some(idle.unwrap_or_default()),
+            pool: self,
+        }
+    }
+
+    #[cfg(test)]
+    fn idle(&self) -> usize {
+        self.idle.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+}
+
+/// A `Scanner` on loan from the pool.
+pub struct PooledScanner {
+    scanner: Option<Scanner>,
+    pool: &'static ScannerPool,
+}
+
+impl PooledScanner {
+    /// One from the process-wide pool.
+    pub fn take() -> Self {
+        POOL.take()
+    }
+}
+
+impl std::ops::Deref for PooledScanner {
+    type Target = Scanner;
+    fn deref(&self) -> &Scanner {
+        self.scanner.as_ref().expect("held until drop")
+    }
+}
+
+impl std::ops::DerefMut for PooledScanner {
+    fn deref_mut(&mut self) -> &mut Scanner {
+        self.scanner.as_mut().expect("held until drop")
+    }
+}
+
+impl Drop for PooledScanner {
+    fn drop(&mut self) {
+        let Some(mut scanner) = self.scanner.take() else {
+            return;
+        };
+        scanner.tidy();
+        let mut idle = self.pool.idle.lock().unwrap_or_else(|e| e.into_inner());
+        if idle.len() < POOL_MAX {
+            idle.push(scanner);
+        }
     }
 }
 

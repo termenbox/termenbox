@@ -781,3 +781,82 @@ fn measure_the_scan_baseline() {
         std::fs::remove_file(&path).unwrap();
     }
 }
+
+#[test]
+fn a_hundred_searches_allocate_one_set_of_blocks() {
+    let dir = TempDir::new();
+    let path = dir.0.join("bulk.jsonl");
+    write_bulk(&path, 1024 * 1024, &[]);
+    let needle = Needle::new("zebra quartz").unwrap();
+    let file = File::open(&path).unwrap();
+    let size = file.metadata().unwrap().len();
+    // A pool of its own, so searches in other tests do not hand this one a warm scanner.
+    let pool: &'static ScannerPool = Box::leak(Box::new(ScannerPool::new()));
+    let cancel = Cancel::default();
+    let search = || {
+        let mut scanner = pool.take();
+        let mut budget = Budget::new(unlimited(), cancel.clone());
+        scanner
+            .scan_file(&file, size, &needle, &mut budget, |_| {
+                ControlFlow::Continue(())
+            })
+            .unwrap();
+    };
+    let (a0, h0) = (allocs(), reset_peak());
+    search();
+    let first = allocs() - a0;
+    let a1 = allocs();
+    for _ in 0..99 {
+        search();
+    }
+    // The first search made the block and the working buffers; the other 99 reuse them (the pool lock and the
+    // scanner's buffers are the only things touched, none of which allocate).
+    assert_eq!(allocs() - a1, 0, "99 more searches, first made {first}");
+    assert!(peak_above(h0) < 2 * BLOCK as i64, "one block, not many");
+    // Process RSS is not asserted: tests share the process. No allocation means no growth to measure.
+    assert_eq!(pool.idle(), 1);
+}
+
+#[test]
+fn the_pool_keeps_two_idle_scanners_and_trims_big_buffers() {
+    let pool: &'static ScannerPool = Box::leak(Box::new(ScannerPool::new()));
+    let (a, b, c) = (pool.take(), pool.take(), pool.take());
+    drop((a, b, c));
+    assert_eq!(pool.idle(), POOL_MAX);
+    let mut s = pool.take();
+    s.line.resize(IDLE_CAP * 4, 0);
+    drop(s);
+    let s = pool.take();
+    assert!(s.line.capacity() <= IDLE_CAP && s.line.is_empty());
+    assert_eq!(s.buf.len(), BLOCK);
+}
+
+#[test]
+fn a_cancelled_or_early_search_returns_its_scanner() {
+    let dir = TempDir::new();
+    let path = dir.0.join("bulk.jsonl");
+    write_bulk(&path, 1024 * 1024, &[]);
+    let file = File::open(&path).unwrap();
+    let size = file.metadata().unwrap().len();
+    let needle = Needle::new("zebra quartz").unwrap();
+    let pool: &'static ScannerPool = Box::leak(Box::new(ScannerPool::new()));
+    let cancel = Cancel::default();
+    cancel.cancel();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut scanner = pool.take();
+        let mut budget = Budget::new(unlimited(), cancel.clone());
+        let end = scanner
+            .scan_file(
+                &file,
+                size,
+                &needle,
+                &mut budget,
+                |_| ControlFlow::Break(()),
+            )
+            .unwrap();
+        assert!(matches!(end, End::Cut(_)));
+        panic!("unwinds with the scanner held");
+    }));
+    assert!(result.is_err());
+    assert_eq!(pool.idle(), 1);
+}

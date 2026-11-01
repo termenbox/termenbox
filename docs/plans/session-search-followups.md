@@ -32,11 +32,12 @@ Do: Record MB/s hot and cold-cache, peak RSS growth, allocations per search (cou
 Done-when: the README lists the figures and the machine they were taken on; steps 3 to 5 each name the figure they expect to move.
 Result: `session_log/README.md`. Fold is the cost (75 to 97% of the hot scan); `pread` is 4 GB/s; ASCII 601 MB/s hot, mixed 206, Cyrillic 36; cold is disk-bound (30 to 150 MB/s). Step 4 helps only blocks that are entirely ASCII, and a mixed corpus has non-ASCII in most blocks, so it gains little on real histories unless the fold is also reworked (see the note in step 4).
 
-### 3 Pool the scan buffers — [ ]
+### 3 Pool the scan buffers — [x]
 Class: implement · Needs: 2 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log::scan`
 Context: A search allocates the 256 KiB block and the line, carry and fold buffers each time, and the sheet starts one about every 250 ms while typing. Allocations of 128 KiB and up are `mmap`ed by glibc, so each pays page faults and is returned at once.
 Do: Keep a small pool of `Scanner`s (at most 2, so the idle footprint stays bounded) taken per search and returned on drop, with buffers cleared and capped on return. Cancel and early return must return the scanner too.
 Done-when: a test running 100 searches shows one set of block-sized allocations in the counting allocator, not 100; RSS after the run does not grow with the count.
+Result: `ScannerPool` / `PooledScanner` in `scan.rs`; `SearchRun` takes its scanner from the process pool (max 2 idle, buffers over 64 KiB dropped on return, returned on drop so cancel and unwind are covered). The 100-search test sees 0 allocations after the first and a heap peak under two blocks; RSS is not asserted (tests share the process), no allocation leaves nothing to grow.
 
 ### 4 Search blocks, not lines — [ ]
 Class: implement · Needs: 2, 3 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log::scan`
