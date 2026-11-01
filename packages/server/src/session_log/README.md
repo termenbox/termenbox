@@ -1,6 +1,6 @@
 # Session log scan: baseline figures
 
-Taken for step 2 of `docs/plans/session-search-followups.md`, at the commit that adds the measurement. Reproduce with:
+Taken for step 2 of `docs/plans/archive/session-search-followups.md`, at the commit that adds the measurement. Reproduce with:
 
 ```
 scripts/dev.sh cargo test --release -p termenbox-server --bin termenbox-server measure_the_scan_baseline -- --ignored --nocapture
