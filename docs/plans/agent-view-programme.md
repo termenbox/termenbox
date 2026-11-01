@@ -2,7 +2,7 @@
 
 > **Paused 2026-11-01 (decision 0177).** R82, R83, R84 and R86 wait for the control plane (`docs/plans/attention-control-plane.md`, resumes after its step 6.5). R81 and R85 continue; R85 now depends on R81 only and its Rules UI opens from the Home stream (plan step 6.1).
 
-Decisions: 0162 (default view, credential-aware for Claude; draft), 0163 (levels, orientation, stepping), 0164 (strip, inspector, chrome budget), 0165 (permission rules), 0166 (message roles on the type scale), 0167 (template-first build order), 0168 (away digest, stuck signal, queued prompt). Fact 0069 (Anthropic terms), fact 0040 (what each agent sends). Guardrails `auto-answered-permissions-are-scoped-visible-and-audited`, `agent-view-meaning-never-rests-on-colour-alone`, `ui-features-ship-templates-tests-and-media-before-wiring`. Procedures `build-an-agent-view-slice-template-first`, `add-a-message-role-to-the-agent-view`. Roadmap steps R81 (foundation), R82 (reading), R83 (orientation), R84 (inspector, composer), R85 (rules), R86 (default flip). Related, not changed: 0137 (amended by 0162), R75 (ACP window host in tabs), R74 (stable ids; owner gates), R73 (UX harness; scenarios move to it when it lands), R78 and `docs/plans/cross-session-search.md` (scroll-to-turn reuses the turn anchors built here).
+Decisions: 0162 (default view, credential-aware for Claude; draft), 0163 (levels, orientation, stepping), 0164 (strip, inspector, chrome budget), 0180 (permission rules), 0181 (message roles on the type scale), 0167 (template-first build order), 0168 (away digest, stuck signal, queued prompt). Fact 0071 (Anthropic terms), fact 0040 (what each agent sends). Guardrails `auto-answered-permissions-are-scoped-visible-and-audited`, `agent-view-meaning-never-rests-on-colour-alone`, `ui-features-ship-templates-tests-and-media-before-wiring`. Procedures `build-an-agent-view-slice-template-first`, `add-a-message-role-to-the-agent-view`. Roadmap steps R81 (foundation), R82 (reading), R83 (orientation), R84 (inspector, composer), R85 (rules), R86 (default flip). Related, not changed: 0137 (amended by 0162), R75 (ACP window host in tabs), R74 (stable ids; owner gates), R73 (UX harness; scenarios move to it when it lands), R78 and `docs/plans/cross-session-search.md` (scroll-to-turn reuses the turn anchors built here).
 
 ## Cold start
 
@@ -28,7 +28,7 @@ Done-when: the file exists, names each `Entry` kind in `acpStream.ts`, states th
 
 ### 0.2 Measure: what each agent sends, and which credential Claude's adapter uses — [ ]‖
 Class: explore · Needs: none · Check: `test -f docs/plans/assets/agent-view/agents.md`
-Context: Fact 0040 shows agents report tool kinds and plans unevenly (todos as `other` tool calls on kilo, `plan` rare) and fact 0069 the terms. Decisions 0163 (unknown kinds stay visible) and 0162 (`mixed` credential) need the facts. Use a throwaway `HOME` and `scripts/acp-probe.mjs`; never the owner's sessions.
+Context: Fact 0040 shows agents report tool kinds and plans unevenly (todos as `other` tool calls on kilo, `plan` rare) and fact 0071 the terms. Decisions 0163 (unknown kinds stay visible) and 0162 (`mixed` credential) need the facts. Use a throwaway `HOME` and `scripts/acp-probe.mjs`; never the owner's sessions.
 Do: Write `docs/plans/assets/agent-view/agents.md`: per built-in agent (claude, opencode, codex, kilo and the others in fact 0040) the tool kinds it sends for read, search, edit, run, todo, and whether `plan` and `usage` arrive. Measure, with a scratch `HOME`, which credential `claude-agent-acp` uses when `ANTHROPIC_API_KEY` is set together with a login file; if a live login is not available, read the adapter source and say "unmeasured" in the file. Extend fact 0040 with anything new.
 Done-when: the file lists kinds, `plan` and `usage` per agent and states the credential precedence as measured or unmeasured.
 
@@ -40,7 +40,7 @@ Done-when: the test passes and every named stream above exists.
 
 ### 0.4 Pure libraries: turns, levels, kinds, navigation — [ ]
 Class: implement · Needs: 0.3, 0.2 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm vitest run src/lib/acpTurns.test.ts src/lib/acpLevels.test.ts src/lib/acpKinds.test.ts src/lib/acpNav.test.ts'`
-Context: Decisions 0163 and 0166. Entry ids restart each epoch (see `Place` in `lib/acpStore.ts`), so anchors carry the epoch.
+Context: Decisions 0163 and 0181. Entry ids restart each epoch (see `Place` in `lib/acpStore.ts`), so anchors carry the epoch.
 Do: Add `lib/acpTurns.ts` (turns with anchor `{epoch, entry}`, status, counts by kind, files touched, final answer, landmarks), `lib/acpKinds.ts` (classify a tool entry through the agent's profile from step 0.2; unknown or `other` is never "read-only"), `lib/acpLevels.ts` (`rows(entries, turns, level, peeked, hit)`: Full, Compact folds, Focus, Outline; an open permission, error or stopped state is never hidden) and `lib/acpNav.ts` (`next(turns, from, kind, dir)`, the keyboard map ignoring the composer). Test each with the step 0.3 fixtures, including `unknown-kinds`, `open-permission` at Outline and `epoch-change`; time `rows()` on `stress` (target under 20 ms).
 Done-when: the four test files pass, and they include "open permission visible at Outline", "unknown kind never folded as read-only" and the `stress` timing.
 
@@ -64,7 +64,7 @@ Done-when: all pass on the unstyled templates, and a strip with an eighth contro
 
 ### 1.3 Styling: roles, tokens, type scale — [ ]
 Class: implement · Needs: 1.2 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && pnpm vitest run src/lib/acpRoles.test.ts && node e2e/agentview.mjs --audit'`
-Context: Decision 0166 and procedure `add-a-message-role-to-the-agent-view`. Skins are `packages/client/src/skins.css`; sizes only from DR5.
+Context: Decision 0181 and procedure `add-a-message-role-to-the-agent-view`. Skins are `packages/client/src/skins.css`; sizes only from DR5.
 Do: Add `lib/acpRoles.ts` (role table: token, glyph, weight, size step, screen-reader word) and the role tokens in every skin; apply them in the templates and in `AcpEntryView.svelte`'s render path used by the probe; add the bounded text-size control scaling the whole scale; motion per DR14. Test contrast of every role in every skin (4.5:1), glyph and word present, and that only DR5 sizes occur.
 Done-when: `acpRoles.test.ts` passes for all skins, the audit passes with styling on, and `grep -n STATUS_COLOR packages/client/src/AcpEntryView.svelte` prints nothing.
 
@@ -120,7 +120,7 @@ Done-when: all pass on the unstyled templates.
 
 ### 2.3 Styling for the orientation templates — [ ]
 Class: implement · Needs: 2.2 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && pnpm vitest run src/lib/acpRoles.test.ts && node e2e/agentview.mjs --audit'`
-Context: Decision 0166: the digest and rule roles are in the role table.
+Context: Decision 0181: the digest and rule roles are in the role table.
 Do: Add the digest, stuck and highlight roles and style the templates; the jump highlight is 150 to 250 ms and absent under reduced motion.
 Done-when: roles tests and the audit pass in every skin.
 
@@ -168,7 +168,7 @@ Done-when: all pass on the unstyled templates.
 
 ### 3.3 Styling for the inspector and composer templates — [ ]
 Class: implement · Needs: 3.2 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && node e2e/agentview.mjs --audit'`
-Context: Decision 0166.
+Context: Decision 0181.
 Do: Style with roles and tokens; check the main column measure and the chrome budget with the composer and chip showing.
 Done-when: the audit passes in every skin on both viewports.
 
@@ -210,7 +210,7 @@ Done-when: the e2e passes, the live cases render on both profiles, and `node scr
 
 ### 4.1 Templates: risk line, always-allow confirm, rules panel, suggestion, presets, batch — [ ]
 Class: implement · Needs: 1.5 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm check && node e2e/agentview.mjs --smoke'`
-Context: Decision 0165 and `DecisionPanel.svelte`/`AcpEntryView.svelte` cards. The rule wire shapes (list, add, revoke, preview) are written as fixtures here and become the contract for step 4.6.
+Context: Decision 0180 and `DecisionPanel.svelte`/`AcpEntryView.svelte` cards. The rule wire shapes (list, add, revoke, preview) are written as fixtures here and become the contract for step 4.6.
 Do: Add `AcpRiskLine.svelte`, `AcpAlwaysAllow.svelte` (scope confirmation with presets and expiry), `AcpRulesPanel.svelte`, `AcpRuleSuggestion.svelte` (with the dry-run preview list), `AcpModeChips.svelte` (agent session modes), the marked "allowed by rule" line with Revoke, and a batch row for the inbox; show them on the probe page from the `open-permission` fixture and a new `rules` fixture. The Rules sheet stands alone (decision 0177): it opens from a card in the Home stream ("always allow", "make this a rule") and from a Rules entry on Home, not from the inspector, which R84 may pause; the same component later becomes the inspector's Rules tab (step 3.6, R84).
 Done-when: `pnpm check` is clean and the smoke loads each template.
 
@@ -222,7 +222,7 @@ Done-when: all pass on the unstyled templates.
 
 ### 4.3 Styling for the rules templates — [ ]
 Class: implement · Needs: 4.2 · Check: `scripts/dev.sh --full sh -c 'cd packages/client && node e2e/agentview.mjs --audit'`
-Context: Decision 0166: the rule line and risk warning roles.
+Context: Decision 0181: the rule line and risk warning roles.
 Do: Style with roles and tokens; the warning mark carries a glyph and a word.
 Done-when: the audit passes in every skin.
 
@@ -240,13 +240,13 @@ Done-when: `reviews.md` has an "accepted" line for slice 4 with a date.
 
 ### 4.6 Server: rule store, argument matcher, audit and wire — [ ]
 Class: implement · Needs: 4.5 · Check: `scripts/dev.sh cargo test -p termenbox-server acp_rules`
-Context: Decision 0165 and the guardrail. Permission requests are handled in `packages/server/src/acp.rs` and `acp_stream.rs`; state files live under `packages/server/src/registry/`; audit rules in `audit-logging-no-secrets`.
+Context: Decision 0180 and the guardrail. Permission requests are handled in `packages/server/src/acp.rs` and `acp_stream.rs`; state files live under `packages/server/src/registry/`; audit rules in `audit-logging-no-secrets`.
 Do: Add an `acp_rules` module: rule type, an atomic JSON store, a global off switch, and a matcher on parsed arguments that sends any compound or indirect command (`&&`, `||`, `;`, pipe, redirect, substitution, `eval`, unparsable) to the user. In the permission path a match answers with the agent's allow option and marks the entry "answered by rule"; no match, a store error or a destructive kind without an exact rule asks the user. Write an audit entry (kind, rule id, outcome). Add wire messages to list, add, revoke and preview (matches among the last 50 asks), mirrored in `protocol.ts`, plus the optional "by rule" field.
 Done-when: tests prove a match auto-answers, no match asks, `git status && rm -rf x` never matches a `git status` rule, delete and outside-workspace never auto-allow from a broad rule, a store error asks, preview counts without creating, and the audit line holds no output or secret.
 
 ### 4.7 Wire the rules UI, risk summary and suggestions — [ ]
 Class: implement · Needs: 4.6, 3.6 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm vitest run src/AcpRules.test.ts src/AcpEntryView.test.ts'`
-Context: Decision 0165. Hide every control when the server lacks the rule messages.
+Context: Decision 0180. Hide every control when the server lacks the rule messages.
 Do: Connect the risk line (derived from locations, diffs and kind), always-allow with presets, the Rules sheet (opened from the Home stream and from a card; the inspector Rules tab is a later item under R84 and is not needed here), the suggestion with the server preview, mode chips from `info.modes`, the marked line with Revoke and the global off, and the inbox batch row.
 Done-when: tests cover create with confirmation, revoke, global off, the suggestion preview, hidden controls on an old server, and the marked line.
 
@@ -258,7 +258,7 @@ Done-when: the e2e passes, the live cases render on both profiles, and `node scr
 
 ### 5.1 Server: credential detection — [ ]‖
 Class: implement · Needs: 0.2 · Check: `scripts/dev.sh cargo test -p termenbox-server acp_credential`
-Context: Decision 0162. The hello carries `acp_agents: Vec<String>` (`packages/core/src/protocol.rs`, mirrored in `packages/client/src/lib/protocol.ts`); old clients must keep working. Fact 0069.
+Context: Decision 0162. The hello carries `acp_agents: Vec<String>` (`packages/core/src/protocol.rs`, mirrored in `packages/client/src/lib/protocol.ts`); old clients must keep working. Fact 0071.
 Do: Detect `api`, `cloud`, `subscription`, `mixed` or `none` per agent from environment variable names and from the existence, never the content, of the login file, using the precedence found in step 0.2; send it as an optional parallel field in the hello. Never read, log or send a credential value.
 Done-when: tests cover each of the five results with a scratch `HOME` and environment, and a test greps the log output of a detection run for the key value and finds nothing.
 
@@ -276,7 +276,7 @@ Done-when: tests cover the live hello with and without the credential field, and
 
 ### 5.4 Flip the default — [!]
 Class: implement · Needs: 5.3, 2.8, 4.8 · Check: `scripts/dev.sh sh -c 'cargo test --workspace && pnpm -r test'`
-Context: Blocked until (a) R74's stable-ids item has landed, so adding the `acp` manager does not rename `tmux:` ids (`docs/plans/roadmap/R74.md`), and (b) the owner has recorded the terms decision (fact 0069) and agrees to set decision 0162 `active`. Do not start before both are true.
+Context: Blocked until (a) R74's stable-ids item has landed, so adding the `acp` manager does not rename `tmux:` ids (`docs/plans/roadmap/R74.md`), and (b) the owner has recorded the terms decision (fact 0071) and agrees to set decision 0162 `active`. Do not start before both are true.
 Do: Turn `TERMENBOX_ACP` on by default in `packages/server` and its docs, keep `off` as the kill switch, confirm existing sessions keep their ids and views, refresh the Agent view subsection of `docs/guide/workspaces.md`, set decision 0162 `status: active`, and update decision 0137's note to point at 0162.
 Done-when: a fresh server with an adapter installed offers Agent view by default (except Claude on a subscription, mixed or no credential), an upgraded server's existing workspaces keep their ids, `TERMENBOX_ACP=off` restores the old behaviour, and `node scripts/docs-media.mjs check docs/guide/workspaces.md` passes.
 

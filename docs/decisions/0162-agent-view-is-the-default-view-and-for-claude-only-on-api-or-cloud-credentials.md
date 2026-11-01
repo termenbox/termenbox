@@ -7,14 +7,14 @@ track: product
 accepted-by: Sergey Strebulaev <s@vivantel.dev>
 tags: [agents, acp, client, legal]
 amends: [0137]
-related: [0149, 0111, 0163, 0164, 0165]
+related: [0149, 0111, 0163, 0164, 0180]
 expires: draft until R74 (stable ids) lands and the owner records the terms decision; the default flip (R86) is blocked on both
 ---
 
 ## Decision
 
 - **Agent view (ACP) becomes the main way an agent runs.** When an adapter for an agent is installed and ACP is enabled, a new agent tab opens in Agent view. Terminal stays one tap away per tab and is always the view of a `shell` tab. This amends 0137, where Terminal is the default and ACP is off by default.
-- **Claude is credential-aware.** The Claude adapter (`claude-agent-acp`) is built on the Agent SDK. Agent view is the default for Claude only when the server sees API-key or cloud-provider credentials (`ANTHROPIC_API_KEY`, Bedrock, Vertex or Foundry settings). With a Claude subscription login, or when nothing is detected, Terminal stays the default for Claude because it runs the unmodified Claude Code binary, which Anthropic's terms allow with a subscription (fact 0069). The user can still choose Agent view by hand; the New Tab sheet says in one line why Terminal is the default.
+- **Claude is credential-aware.** The Claude adapter (`claude-agent-acp`) is built on the Agent SDK. Agent view is the default for Claude only when the server sees API-key or cloud-provider credentials (`ANTHROPIC_API_KEY`, Bedrock, Vertex or Foundry settings). With a Claude subscription login, or when nothing is detected, Terminal stays the default for Claude because it runs the unmodified Claude Code binary, which Anthropic's terms allow with a subscription (fact 0071). The user can still choose Agent view by hand; the New Tab sheet says in one line why Terminal is the default.
 - **Detection reads names, never secrets.** The server reports one value per agent (`api`, `cloud`, `subscription`, `mixed`, `none`) from environment variable names and file existence. It never reads, stores, logs or sends a credential value (`security-secrets-handling`). `mixed` is an API key or cloud setting present together with a subscription login: which one the adapter uses is measured first (plan step 0.2), and until it is known `mixed` is treated like `subscription`, so Terminal stays the default.
 - **The switch is the last step.** All Agent view work ships with ACP still off by default. The flip (`TERMENBOX_ACP` on by default) waits for R74 (an added `acp` manager must not rename existing `tmux:` ids) and for the owner's recorded terms decision. Until both, this decision stays `draft`.
 - **No fallback is removed.** Hooks and screen-scan tiers (T1 to T3) stay, so an adapter fault never leaves an agent unreachable.

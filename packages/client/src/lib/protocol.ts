@@ -89,7 +89,11 @@ export type ClientMessage =
   /** U11: replace the push escalation settings. */
   | { type: 'push_settings_set'; settings: PushSettings }
   /** Forgets the server's whole history. */
-  | { type: 'history_delete' };
+  | { type: 'history_delete' }
+  /** R78: searches the agents' own conversation files. Hits stream as `search_hit`, then `search_done`. A newer `id`, or `cancel`, stops the previous search. Owner only. */
+  | { type: 'search'; id: number; query: string; cancel?: boolean }
+  /** The turns around `turn` of the session of a tab (`tab` empty for an ACP workspace); the answer is `session_window`. Owner only. */
+  | { type: 'window'; workspace: string; tab?: string; turn: string; before?: number; after?: number };
 
 /** U11: push escalation settings (seconds, not minutes). */
 export interface PushSettings {
@@ -139,7 +143,8 @@ export type ServerMessage =
   | { type: 'dir_listing'; path: string; parent?: string | null; entries: DirEntry[]; truncated?: boolean; home: string }
   /** `list_dir` was refused or failed; `reason` is a short sentence to show. */
   | { type: 'dir_error'; reason: string }
-  | { type: 'workspace_attached'; workspace_id: string; tab?: string | null }
+  /** `resumed`: set when this attach reopened a dormant workspace (decision 0152): per tab that held an agent conversation, whether its resume command was started or the tab is a shell again (`reason` says why). */
+  | { type: 'workspace_attached'; workspace_id: string; tab?: string | null; resumed?: TabResumed[] }
   | { type: 'output'; data: string }
   /** Never on the wire as JSON: terminal bytes from the `term` lane, as `Connection` hands them to listeners. */
   | { type: 'term'; bytes: Uint8Array }
@@ -164,6 +169,9 @@ export type ServerMessage =
   | HealthHistoryMessage
   | HistoryMessage
   | { type: 'history_deleted'; removed: number }
+  | SearchHitMessage
+  | SearchDoneMessage
+  | SessionWindowMessage
   | { type: 'error'; message: string }
   | { type: 'pong' }
   /** The answer to a control message that carried a `req` (step 3.3). */
@@ -174,6 +182,48 @@ export type ServerMessage =
   | { type: 'previous_exit'; at_ms: number; streak: number; crashed: boolean }
   /** One part (from 0, in order) of the answer to `diagnostics_bundle`: the direct transport carries 64 KiB a message. */
   | { type: 'diagnostics_bundle'; part: number; parts: number; text: string };
+
+/** What reopening a dormant workspace did to one tab. */
+export interface TabResumed { tab: string; outcome: 'resumed' | 'shell' | string; reason?: string }
+
+/** One match of a search. `up` false: the workspace is dormant and the hit offers Resume. `snippet` is scrubbed; `highlight` is [start, end) in characters of `snippet`. */
+export interface SearchHitMessage {
+  type: 'search_hit';
+  id: number;
+  workspace: string;
+  tab: string;
+  agent: string;
+  up: boolean;
+  turn: string;
+  kind: SessionEntryKind;
+  snippet: string;
+  highlight: [number, number];
+  at?: string;
+}
+
+/** Ends a search. `cut`: why it stopped before it had looked everywhere. `off`: agents whose search is off, with a fixed reason. */
+export interface SearchDoneMessage {
+  type: 'search_done';
+  id: number;
+  cut?: 'hits' | 'bytes' | 'time' | 'cancelled' | string;
+  off: { agent: string; reason: string }[];
+}
+
+export type SessionEntryKind = 'user' | 'message' | 'thought' | 'tool' | 'plan' | 'notice' | string;
+
+/** One turn read from an agent's own file. A `tool` entry holds the tool's name only. */
+export interface WindowEntry { turn: string; kind: SessionEntryKind; text: string; truncated?: boolean }
+
+/** Answers `window`: `anchor` indexes the asked turn in `entries`; a changed `fingerprint` means the file was rewritten and earlier hits may not hold. */
+export interface SessionWindowMessage {
+  type: 'session_window';
+  workspace: string;
+  tab: string;
+  turn: string;
+  anchor: number;
+  entries: WindowEntry[];
+  fingerprint: string;
+}
 
 /** One health sample in whole percents. A metric the server could not read is absent, never 0 (the first CPU sample is always absent). */
 export interface HealthPoint { ts: number; cpu_percent?: number; ram_percent?: number; disk_percent?: number; event_log_bytes?: number }

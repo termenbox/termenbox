@@ -3,8 +3,8 @@ id: agent-view-meaning-never-rests-on-colour-alone
 title: Agent view roles use only the existing type scale and skin tokens, carry a glyph and a word, and pass the design-rule audit
 status: active
 date: 2026-11-01
-governed-by: 0166
-grounded-in: [0166, 0164, 0069, 0110]
+governed-by: 0181
+grounded-in: [0181, 0164, 0069, 0110]
 derivation-note: The Agent view tells message types apart by colour and size at a glance, on phones in sunlight and for colour-blind users; the project already has measurable rules (DR1 to DR15), so the view must obey them, not restate them.
 tags: [client, accessibility, ux]
 ---

@@ -10,7 +10,7 @@ tags: [control-plane, agents, security, automation, procedural]
 
 Use when a kind of work repeats (a template or a recurring job) and its asks should stop reaching a person (decision 0172).
 
-1. **List what the work touches**: workspaces, path globs, commands, tool kinds, network hosts. Start from the dry run of the last 50 asks of this kind (0165), not from guesses.
+1. **List what the work touches**: workspaces, path globs, commands, tool kinds, network hosts. Start from the dry run of the last 50 asks of this kind (0180), not from guesses.
 2. **Write the scope narrowly**: one workspace, relative paths, parsed-argument command patterns (no compound forms), a host list instead of "network".
 3. **Set limits**: spend, wall time, number of files changed, and the done criteria a machine can check (tests pass, diff within bounds).
 4. **Choose the safe default** on timeout: park, deny or a named safe branch (0175), and the urgency class.

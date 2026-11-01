@@ -1,12 +1,12 @@
 ---
-id: 0165-permission-rules-are-owner-set-answered-on-the-server-and-never-hidden
+id: 0180-permission-rules-are-owner-set-answered-on-the-server-and-never-hidden
 title: Permission rules are set by the owner, answered on the server, scoped and revocable, and never hidden
 status: active
 date: 2026-11-01
 track: product
 accepted-by: Sergey Strebulaev <s@vivantel.dev>
 tags: [agents, acp, security, server, automation]
-related: [0104, 0111, 0143, 0164, 0166, 0167]
+related: [0104, 0111, 0143, 0164, 0181, 0167]
 ---
 
 ## Decision

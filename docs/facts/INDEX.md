@@ -53,7 +53,6 @@
 | 0051 | The server needs no external call to accept a connection after claim | transport, auth, network, deployment | active |
 | 0052 | CPace over ristretto255 fits the pairing code on both ends with no WASM; the phone half of the spike is still open | pake, security, client, server, onboarding, spike | draft |
 | 0053 | A server inside a NAT'd VM (WSL2 NAT mode, VirtualBox NAT, Docker Desktop) is reachable from other devices only through port forwarding or a bridged network | network, deployment, wsl, lan, topology | active |
-| 0054 | Release versions compare by SemVer precedence, build metadata is ignored, and a prerelease sorts below its release | release, updater, semver | active |
 | 0055 | A waiting question is pushed again on a ladder until it is answered anywhere, and a push opens its decision card | notifications, agents | active |
 | 0056 | The UX harness builds on existing Playwright pieces, and CI emulates a phone, it does not verify one | client, mobile, ux, ci | active |
 | 0057 | ACP's own extension rules and what the pinned schema crate covers, checked for the extension registry | agents, protocol, client | active |
@@ -63,10 +62,12 @@
 | 0062 | The server logs to a file through a writer thread and builds a scrubbed diagnostics bundle on request | server, observability, performance, privacy | active |
 | 0063 | A browser cannot pick a folder on the server, and a native modal dialog hides overlays that are not inside it | client, mobile, ux, browser-support | active |
 | 0064 | The updater records what it knows in update-state.json and the server only reads it | server, updater, observability | active |
+| 0065 | Agent TUIs can be scrolled to an earlier turn only by their own keys; none has an external jump | agents, terminal, client | active |
 | 0066 | The repo has two video recorders and no docs media, and workflow artifacts expire | docs, ci, video, site | active |
 | 0067 | A dispatch-only workflow cannot be run until its file is on the default branch, and issue and comment workflows run the default branch's copy with a write token | ci, github, security | active |
 | 0068 | GitHub Markdown does not play a repository MP4 inline, and a chapter-length GIF is several megabytes | docs, video, github | active |
+| 0069 | The Electron community template pins an end-of-life Electron 26, and the wrappers use Electron 45 | desktop, platform, security | active |
 
 <!-- bootstrap-generated: true -->
-| 0069 | Anthropic's terms allow a subscription login in the unmodified Claude Code binary, but point Agent SDK products at API keys | agents, acp, legal | active |
 | 0070 | One person has about 28,800 seconds of attention a day, which is 1.2 seconds per agent-hour at 1,000 agents and 0.12 at 10,000 | product, control-plane, agents | active |
+| 0071 | Anthropic's terms allow a subscription login in the unmodified Claude Code binary, but point Agent SDK products at API keys | agents, acp, legal | active |

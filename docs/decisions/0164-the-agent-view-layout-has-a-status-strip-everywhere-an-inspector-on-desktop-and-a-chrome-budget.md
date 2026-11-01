@@ -6,13 +6,13 @@ date: 2026-11-01
 track: product
 accepted-by: Sergey Strebulaev <s@vivantel.dev>
 tags: [client, acp, ux, mobile, desktop]
-related: [0101, 0104, 0163, 0165, 0166, 0168]
+related: [0101, 0104, 0163, 0180, 0181, 0168]
 ---
 
 ## Decision
 
 - **A status strip on every device**, sticky at the top of the view. One row of at most seven controls (DR4): the agent state word and glyph; the current tool or command with elapsed time; plan progress when the agent sends a plan (nothing, not an empty bar, when it does not); context use and cost when the agent sends usage (`usage` in the stream); the turn counter "7/12" with previous/next (0163); Stop. Tapping the turn counter opens the minimap. On a narrow phone the row wraps to two lines at most and the tool line is the one that truncates.
-- **Desktop uses width.** At wide breakpoints a right **inspector** with tabs: **Outline** (turns), **Plan** (hidden when no plan arrives), **Changes** (every diff of the session, grouped by file), **Rules** (0165). The main column stays about 80 characters wide. The pane's open state is kept per device.
+- **Desktop uses width.** At wide breakpoints a right **inspector** with tabs: **Outline** (turns), **Plan** (hidden when no plan arrives), **Changes** (every diff of the session, grouped by file), **Rules** (0180). The main column stays about 80 characters wide. The pane's open state is kept per device.
 - **Phone uses sheets.** The same four panels open as bottom sheets from the strip. The composer docks above the keyboard with quick replies and the queued-prompt chip (0168). No floating overlay sits over the content.
 - **Chrome budget.** With the keyboard closed, everything that is not the stream (tab bar, header, strip, composer) is at most 20% of the screen height (DR12); with the keyboard open the stream gets at least 50% of the area above it. The assessment fails a change that exceeds it. The strip collapses to one line while the user scrolls the stream and returns on scroll up.
 - **Rule set.** The strip and inspector follow DR1 to DR4, DR7 and DR13: 44 pt targets, labelled controls, one primary action per state (Stop while running, the answer while a question is open), primary actions in the lower two thirds.

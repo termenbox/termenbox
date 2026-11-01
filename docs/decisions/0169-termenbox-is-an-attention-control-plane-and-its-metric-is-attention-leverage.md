@@ -7,7 +7,7 @@ track: product
 accepted-by: Sergey Strebulaev <s@vivantel.dev>
 tags: [product, control-plane, agents, fleet, mobile]
 amends: [0051]
-related: [0095, 0100, 0122, 0165, 0168, 0170, 0172, 0173, 0174, 0176]
+related: [0095, 0100, 0122, 0180, 0168, 0170, 0172, 0173, 0174, 0176]
 ---
 
 ## Decision

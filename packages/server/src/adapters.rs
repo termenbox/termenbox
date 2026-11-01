@@ -382,6 +382,25 @@ pub fn agent_name(command: &str) -> Option<&'static str> {
         .find(|n| c == *n || c.starts_with(&format!("{n}-")))
 }
 
+/// The command line that resumes one conversation of `agent` (decision 0152). This is the only place that knows the
+/// flags; an agent without a resume command, or an id that is not a plain token, gives `None` and the tab stays a shell.
+pub fn resume_command(agent: &str, session: &str) -> Option<String> {
+    let plain = !session.is_empty()
+        && session.len() <= 128
+        && session
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if !plain {
+        return None;
+    }
+    match agent {
+        "claude" => Some(format!("claude --resume {session}")),
+        "codex" => Some(format!("codex resume {session}")),
+        "opencode" => Some(format!("opencode --session {session}")),
+        _ => None,
+    }
+}
+
 /// Coding agents the scan recognises by the pane's foreground command.
 pub const AGENTS: [&str; 11] = [
     "claude",
@@ -479,7 +498,7 @@ pub fn parse_prompt(screen: &str) -> Option<PromptInfo> {
 
 #[cfg(test)]
 mod tests {
-    use super::agent_name;
+    use super::{agent_name, resume_command};
 
     #[test]
     fn well_known_agents_are_found() {
@@ -873,5 +892,25 @@ mod tests {
         assert!(detect_prompt(&fixture("shell-yn.txt")).is_some());
         assert!(detect_prompt("hello\nworld").is_none());
         assert!(detect_prompt("").is_none());
+    }
+
+    #[test]
+    fn a_resume_command_exists_for_three_agents_and_only_for_a_plain_id() {
+        assert_eq!(
+            resume_command("claude", "6f1c-aa_01").as_deref(),
+            Some("claude --resume 6f1c-aa_01")
+        );
+        assert_eq!(
+            resume_command("codex", "019a").as_deref(),
+            Some("codex resume 019a")
+        );
+        assert_eq!(
+            resume_command("opencode", "ses_9").as_deref(),
+            Some("opencode --session ses_9")
+        );
+        assert_eq!(resume_command("gemini", "x"), None);
+        for bad in ["", "a b", "a;b", "$(x)", "-x y", &"a".repeat(129), "é"] {
+            assert_eq!(resume_command("claude", bad), None, "{bad:?}");
+        }
     }
 }

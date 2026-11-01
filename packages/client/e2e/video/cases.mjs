@@ -186,6 +186,7 @@ Object.assign(cases, {
   'install': {
     title: 'Install Termenbox on your server',
     group: 'start',
+    profiles: ['desktop'], // the screens the course shows; the workflow renders only these (the others are not asserted)
     page: 'docs/course/01-install.md',
     server: 'replay',
     replay: true,
@@ -295,7 +296,7 @@ Object.assign(cases, {
       await screenHas(page, 'attached to s3');
       server.output('build finished\\r\\n$ '); // the real server redraws the screen on attach; the scripted one only says it attached
       await screenHas(page, 'build finished');
-      expectThat(await page.getByText('Connected').first().isVisible().catch(() => false) || h.phone, 'the server is not shown as connected again');
+      expectThat(await page.locator('.state-connected').first().isVisible().catch(() => false) || h.phone, 'the server is not shown as connected again');
       await h.still('poster');
       await h.result();
     },
@@ -309,6 +310,7 @@ Object.assign(cases, {
   'talk-to-agent': {
     title: 'Talk to your agent',
     group: 'start',
+    profiles: ['phone'], // the screens the course shows; the workflow renders only these (the others are not asserted)
     page: 'docs/course/04-talk-to-your-agent.md',
     server: 'scripted',
     inputs: ['packages/client/src/App.svelte', 'packages/client/src/Terminal.svelte', 'packages/client/src/KeyRow.svelte', 'packages/client/e2e/app-lib.mjs', 'packages/client/e2e/video/**'],
@@ -366,6 +368,7 @@ Object.assign(cases, {
   'answer-from-the-train': {
     title: 'Answer your agent from anywhere',
     group: 'start',
+    profiles: ['phone'], // the screens the course shows; the workflow renders only these (the others are not asserted)
     page: 'docs/course/05-answer-from-the-train.md',
     server: 'scripted',
     inputs: ['packages/client/src/App.svelte', 'packages/client/src/lib/decision.ts', 'packages/client/src/lib/notify.ts', 'packages/client/e2e/app-lib.mjs', 'packages/client/e2e/video/**'],

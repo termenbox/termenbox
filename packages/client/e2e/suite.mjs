@@ -9,10 +9,10 @@ const suites = {
   // Chromium by nature: `run` (resource gates, WebRTC), `touch` (CDP touch events), `wizard` (Chromium's fake camera flags).
   // `appshell` runs everywhere but skips its held-touch and edge-swipe steps (CDP) outside Chromium.
   server: ['run', 'touch', 'cards', 'decision', 'activity', 'windows', 'two-servers', 'appshell', 'desktop', 'newworkspace-real', 'app', 'pane', 'acp', 'acp-views',
-    'hookoffer', 'add-server', 'pair', 'assisted', 'failures', 'wizard', 'search', 'push-link', 'banner-resize'],
+    'hookoffer', 'add-server', 'pair', 'assisted', 'failures', 'wizard', 'search', 'session-search', 'push-link', 'banner-resize'],
   // The built client against scripted servers, no binary: the browser matrix runs these per engine (R36).
-  desktop: ['desktop', 'newworkspace', 'xterm-dispose'],
-  phone: ['appshell', 'cards', 'reorder', 'windows', 'app', 'decision', 'activity', 'failures', 'newworkspace', 'banner-resize'],
+  desktop: ['desktop', 'newworkspace', 'xterm-dispose', 'acp-history'],
+  phone: ['appshell', 'cards', 'reorder', 'windows', 'app', 'decision', 'activity', 'failures', 'newworkspace', 'banner-resize', 'acp-history'],
   // The phone scripts that need the real server binary (TERMENBOX_BIN) and tmux: WebKit as a phone in CI (R36). A tap is a click there (tap() in browser.mjs).
   'phone-real': ['pane', 'search', 'two-servers', 'hookoffer', 'pair', 'add-server', 'acp'],
   // The built client against the real server binary and real tmux (R36): attach, switch, reconnect, keys, selection, mouse reporting, resize.

@@ -1,0 +1,38 @@
+{
+  "case": "type-path",
+  "profile": "desktop",
+  "pace": "normal",
+  "captions": true,
+  "steps": [
+    {
+      "id": "open",
+      "caption": "Start a new workspace",
+      "label": "+ New"
+    },
+    {
+      "id": "browse",
+      "caption": "Know the path? Type it in the folder picker",
+      "label": "Choose"
+    },
+    {
+      "id": "select",
+      "caption": "Select this folder",
+      "label": "Select this folder"
+    },
+    {
+      "id": "create",
+      "caption": "Create it",
+      "label": "Create"
+    }
+  ],
+  "seconds": 43,
+  "hash": "4f2d53209fb1a5c78e73afc8ccaad778413ae59c03e6ce702e8117c8542c151c",
+  "version": "0.1.57",
+  "run": "41314144763",
+  "renderedAt": "2026-11-01T14:12:34.939Z",
+  "poster": "type-path-desktop-poster.png",
+  "files": [
+    "type-path-desktop.mp4",
+    "type-path-desktop-poster.png"
+  ]
+}

@@ -1,5 +1,5 @@
 ---
-id: 0166-agent-view-messages-have-typed-roles-on-the-existing-type-scale
+id: 0181-agent-view-messages-have-typed-roles-on-the-existing-type-scale
 title: Every Agent view message has a typed role (colour token, glyph, weight, size step) on the existing type scale
 status: active
 date: 2026-11-01
@@ -11,7 +11,7 @@ related: [0069, 0110, 0163, 0164]
 
 ## Decision
 
-- **A fixed set of roles:** your prompt, agent answer, thinking, tool by kind (read, edit, run, search, other), result, error, permission, plan, notice, plus the digest and the rule line (0165, 0168). Each role has a colour token from the active skin (`skins.css`; skins change tokens only, DR11), a glyph, a weight, a size step and a screen-reader word.
+- **A fixed set of roles:** your prompt, agent answer, thinking, tool by kind (read, edit, run, search, other), result, error, permission, plan, notice, plus the digest and the rule line (0180, 0168). Each role has a colour token from the active skin (`skins.css`; skins change tokens only, DR11), a glyph, a weight, a size step and a screen-reader word.
 - **Sizes come from the existing scale** (DR5: 12, 13, 15, 17, 22, and 13 mono). Prompts and answers use 15 (17 in Focus and Outline, where there is less to read), tools and results use 13 mono, labels 12, group lines 13. Inputs stay 16. No new sizes.
 - **One text-size control** scales the whole scale up or down in bounded steps per device. There is no per-role colour or size editing.
 - **Meaning never rests on colour alone** (DR9) and text and glyphs pass 4.5:1 in every skin (DR8); both are checked in CI over the role tokens.

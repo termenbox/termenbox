@@ -132,6 +132,12 @@ pub struct WorkspaceManager {
     /// connection sends its client the new list (a device that did not ask must not keep showing the old names). The
     /// connection that asked has its own reply and skips the ping.
     list_changed: tokio::sync::broadcast::Sender<u64>,
+    /// The agents' session-file readers and the caps a search runs under (decision 0157).
+    session_logs: Arc<crate::session_log::SessionLogs>,
+    search_limits: crate::session_log::scan::Limits,
+    /// The running search of each connection, by connection number: a new one or a closed connection stops it.
+    searches:
+        Arc<std::sync::Mutex<std::collections::HashMap<u64, crate::session_log::scan::Cancel>>>,
 }
 
 #[async_trait::async_trait]
@@ -146,7 +152,7 @@ impl crate::conductor_link::Applier for WorkspaceManager {
     ) -> Result<Attachment> {
         let tab = (!tab.is_empty()).then_some(tab);
         if self.registry.has(workspace) {
-            let (_, att) = self
+            let (_, att, _) = self
                 .registry
                 .attach(self.backend.as_ref(), workspace, tab, cols, rows)
                 .await?;
@@ -224,7 +230,104 @@ impl WorkspaceManager {
             health: None,
             previous_exit: None,
             list_changed: tokio::sync::broadcast::channel(16).0,
+            session_logs: Arc::default(),
+            search_limits: crate::session_log::scan::Limits::default(),
+            searches: Arc::default(),
         }
+    }
+
+    /// Lets the owner search the agents' own conversation files (decision 0156); without it no agent is searchable.
+    pub fn with_session_logs(mut self, logs: Arc<crate::session_log::SessionLogs>) -> Self {
+        self.session_logs = logs;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_search_limits(mut self, limits: crate::session_log::scan::Limits) -> Self {
+        self.search_limits = limits;
+        self
+    }
+
+    /// Every conversation the server has a record of: tab sessions from the registry, ACP sessions from the backend.
+    fn known_sessions(&self) -> Vec<crate::registry::KnownSession> {
+        let mut all = self.registry.known_sessions();
+        all.extend(self.backend.acp_sessions());
+        all
+    }
+
+    /// Stops the search of connection `conn`, if one runs.
+    fn stop_search(&self, conn: u64) {
+        if let Some(cancel) = self.searches.lock().unwrap().remove(&conn) {
+            cancel.cancel();
+        }
+    }
+
+    fn is_owner(auth: &crate::auth::AuthState, identity: &crate::auth::Identity) -> bool {
+        auth.owner()
+            .is_some_and(|o| o.provider == identity.provider && o.id == identity.id)
+    }
+
+    /// Starts the search `id` of connection `conn` off the async threads; hits reach `tx` as they are found. The
+    /// query is moved into the task and goes nowhere else: no log line, no error text.
+    fn start_search(&self, conn: u64, id: u64, query: String, tx: &LinkTx) {
+        let cancel = crate::session_log::scan::Cancel::default();
+        self.searches.lock().unwrap().insert(conn, cancel.clone());
+        let (logs, sessions, limits) = (
+            self.session_logs.clone(),
+            self.known_sessions(),
+            self.search_limits,
+        );
+        let (hits_tx, mut hits_rx) = tokio::sync::mpsc::channel::<ServerMessage>(32);
+        let scan_cancel = cancel.clone();
+        let scan = tokio::task::spawn_blocking(move || {
+            crate::session_search::run(&logs, sessions, &query, limits, scan_cancel, |s, h| {
+                let msg = ServerMessage::SearchHit {
+                    id,
+                    workspace: s.workspace.clone(),
+                    tab: s.tab.clone(),
+                    agent: s.agent.clone(),
+                    up: s.up,
+                    turn: h.turn,
+                    kind: kind_name(h.kind).into(),
+                    snippet: h.snippet,
+                    highlight: (h.highlight.0 as u32, h.highlight.1 as u32),
+                    at: h.at,
+                };
+                hits_tx.blocking_send(msg).is_ok()
+            })
+        });
+        let (tx, searches) = (tx.clone(), self.searches.clone());
+        tokio::spawn(async move {
+            let mut open = true;
+            while let Some(msg) = hits_rx.recv().await {
+                if open && !send(&tx, &msg).await {
+                    // The connection is gone: stop scanning, and drain so the scan thread never blocks.
+                    open = false;
+                    cancel.cancel();
+                }
+            }
+            let summary = scan.await.unwrap_or_default();
+            if open {
+                let done = ServerMessage::SearchDone {
+                    id,
+                    cut: summary.cut.map(str::to_string),
+                    off: summary
+                        .off
+                        .into_iter()
+                        .map(|(agent, reason)| termenbox_core::protocol::SearchOff {
+                            agent,
+                            reason: reason.to_string(),
+                        })
+                        .collect(),
+                };
+                let _ = send(&tx, &done).await;
+            }
+            // Only this search's entry: a newer one already replaced it.
+            let mut g = searches.lock().unwrap();
+            if g.get(&conn).is_some_and(|c| c.same(&cancel)) {
+                g.remove(&conn);
+            }
+        });
     }
 
     /// The transcript timeline for a workspace whose hooks named one (tier 1). The path is the hook's, so it is
@@ -463,6 +566,7 @@ impl WorkspaceManager {
             // Nothing a device opened on a node stays open once the device is gone.
             c.close_device_terminals(conn);
         }
+        self.stop_search(conn);
         if let Some(p) = &self.push {
             p.set_foreground(conn, None);
         }
@@ -1825,6 +1929,89 @@ impl WorkspaceManager {
                 )
                 .await?;
             }
+            ClientMessage::Search { id, query, cancel } => {
+                // Searching reads every conversation on the machine: the owner only.
+                if !Self::is_owner(auth, identity) {
+                    return Err(anyhow::anyhow!("Only the owner can search conversations"));
+                }
+                self.stop_search(conn);
+                let query: String = query.chars().filter(|c| !c.is_control()).collect();
+                if cancel || query.trim().is_empty() || query.len() > SEARCH_QUERY_BYTES {
+                    // A cancel, or nothing to look for: the client still gets its end of the search.
+                    send_r(
+                        tx,
+                        &ServerMessage::SearchDone {
+                            id,
+                            cut: cancel.then(|| "cancelled".to_string()),
+                            off: Vec::new(),
+                        },
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                // Who searched, never for what.
+                info!(target: "audit", event = "session_search", provider = %identity.provider, account_id = %identity.id);
+                self.start_search(conn, id, query, tx);
+            }
+            ClientMessage::Window {
+                workspace,
+                tab,
+                turn,
+                before,
+                after,
+            } => {
+                if !Self::is_owner(auth, identity) {
+                    return Err(anyhow::anyhow!("Only the owner can read conversations"));
+                }
+                let (logs, sessions) = (self.session_logs.clone(), self.known_sessions());
+                let (w2, t2) = (workspace.clone(), tab.clone());
+                let turn2 = turn.clone();
+                let window = tokio::task::spawn_blocking(move || {
+                    crate::session_search::window(
+                        &logs,
+                        &sessions,
+                        &w2,
+                        &t2,
+                        &turn2,
+                        before as usize,
+                        after as usize,
+                    )
+                })
+                .await?
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                let anchor = window
+                    .entries
+                    .iter()
+                    .position(|e| e.turn == turn)
+                    .unwrap_or(0) as u32;
+                let fingerprint = crate::session_log::Cursor {
+                    fingerprint: window.fingerprint,
+                    pos: 0,
+                }
+                .to_token();
+                let entries = window
+                    .entries
+                    .into_iter()
+                    .map(|e| termenbox_core::protocol::WindowEntry {
+                        turn: e.turn,
+                        kind: kind_name(e.kind).into(),
+                        text: e.text,
+                        truncated: e.truncated,
+                    })
+                    .collect();
+                send_r(
+                    tx,
+                    &ServerMessage::SessionWindow {
+                        workspace,
+                        tab,
+                        turn,
+                        anchor,
+                        entries,
+                        fingerprint,
+                    },
+                )
+                .await?;
+            }
             ClientMessage::HealthHistory => {
                 let Some(health) = &self.health else {
                     return Err(anyhow::anyhow!("Health is not available"));
@@ -1869,7 +2056,7 @@ impl WorkspaceManager {
                 let before = self.registry.record(&workspace_id).and_then(|r| r.focus);
                 self.bump_focus(&workspace_id);
                 if self.registry.has(&workspace_id) {
-                    let (attached, att) = self
+                    let (attached, att, resumed) = self
                         .registry
                         .attach(
                             self.backend.as_ref(),
@@ -1886,6 +2073,7 @@ impl WorkspaceManager {
                         &ServerMessage::WorkspaceAttached {
                             workspace_id: workspace_id.clone(),
                             tab: Some(attached.clone()),
+                            resumed,
                         },
                     )
                     .await?;
@@ -1914,6 +2102,7 @@ impl WorkspaceManager {
                         &ServerMessage::WorkspaceAttached {
                             workspace_id,
                             tab: None,
+                            resumed: vec![],
                         },
                     )
                     .await?;
@@ -1949,6 +2138,21 @@ fn tab_path(root: &str, relative: &str) -> String {
         return root.to_string();
     }
     format!("{}/{}", root.trim_end_matches('/'), relative)
+}
+
+/// The longest search text the server takes, in bytes.
+const SEARCH_QUERY_BYTES: usize = 512;
+
+fn kind_name(kind: crate::session_log::Kind) -> &'static str {
+    use crate::session_log::Kind;
+    match kind {
+        Kind::User => "user",
+        Kind::Message => "message",
+        Kind::Thought => "thought",
+        Kind::Tool => "tool",
+        Kind::Plan => "plan",
+        Kind::Notice => "notice",
+    }
 }
 
 async fn send(tx: &LinkTx, msg: &ServerMessage) -> bool {
@@ -3681,5 +3885,300 @@ mod follow_tests {
             f.registry.record(&f.id).unwrap().focus.as_deref(),
             Some(f.first.as_str())
         );
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+    use crate::auth::{AuthState, Identity};
+    use crate::registry::{KnownSession, Registry};
+    use crate::session_log::claude::ClaudeLog;
+    use crate::session_log::scan::Limits;
+    use crate::session_log::SessionLogs;
+    use crate::session_search::fixtures::{projects, DIR};
+    use std::sync::Mutex;
+
+    /// A backend whose only content is the ACP sessions it reports.
+    struct Sessions(Vec<KnownSession>);
+    #[async_trait::async_trait]
+    impl WorkspaceBackend for Sessions {
+        fn name(&self) -> &str {
+            "fake"
+        }
+        async fn list(&self) -> Result<Vec<termenbox_core::protocol::WorkspaceInfo>> {
+            Ok(Vec::new())
+        }
+        async fn create(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn attach(&self, _: &str, _: u16, _: u16) -> Result<Attachment> {
+            Err(anyhow::anyhow!("no"))
+        }
+        fn acp_sessions(&self) -> Vec<KnownSession> {
+            self.0.clone()
+        }
+    }
+
+    fn known(id: &str, workspace: &str, up: bool) -> KnownSession {
+        KnownSession {
+            agent: "claude".into(),
+            session_id: id.into(),
+            dir: std::path::PathBuf::from(DIR),
+            workspace: workspace.into(),
+            tab: String::new(),
+            up,
+        }
+    }
+
+    fn identity(id: &str) -> Identity {
+        Identity {
+            provider: "github".into(),
+            id: id.into(),
+            login: format!("login-{id}"),
+            issued_at: None,
+        }
+    }
+
+    struct Rig {
+        manager: WorkspaceManager,
+        auth: AuthState,
+        root: std::path::PathBuf,
+    }
+
+    fn rig(limits: Limits) -> Rig {
+        let root = projects();
+        let auth = AuthState::new(root.join("auth"), Default::default(), "srv".into()).unwrap();
+        let claim = auth.claim_token().unwrap().unwrap();
+        auth.authorize(&identity("1"), Some(&claim)).unwrap();
+        let mut logs = SessionLogs::default();
+        logs.register(Arc::new(ClaudeLog::new(root.clone())));
+        let manager = WorkspaceManager::new(
+            Arc::new(Sessions(vec![
+                known("short", "ws-up", true),
+                known("rewind", "ws-down", false),
+            ])),
+            RunMode::Container,
+            Arc::new(Registry::memory()),
+        )
+        .with_session_logs(Arc::new(logs))
+        .with_search_limits(limits);
+        Rig {
+            manager,
+            auth,
+            root,
+        }
+    }
+
+    async fn send_msg(
+        rig: &Rig,
+        who: &str,
+        msg: ClientMessage,
+        link: &crate::link::Link,
+    ) -> Result<()> {
+        rig.manager
+            .handle(
+                1,
+                msg,
+                &rig.auth,
+                &identity(who),
+                &mut None,
+                &mut 80,
+                &mut 24,
+                &mut None,
+                &mut None,
+                &link.tx,
+            )
+            .await
+    }
+
+    /// Everything the connection is sent until `want` arrives (or the wait ends).
+    async fn until(end: &mut crate::link::LinkEnd, want: &str) -> Vec<serde_json::Value> {
+        let mut got = Vec::new();
+        let read = async {
+            while let Some(m) = end.from_workspace.recv().await {
+                let v: serde_json::Value = serde_json::from_str(&m).unwrap();
+                let done = v["type"] == want;
+                got.push(v);
+                if done {
+                    break;
+                }
+            }
+        };
+        let _ = tokio::time::timeout(Duration::from_secs(5), read).await;
+        got
+    }
+
+    fn search(id: u64, query: &str) -> ClientMessage {
+        ClientMessage::Search {
+            id,
+            query: query.into(),
+            cancel: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_owner_gets_scrubbed_hits_then_a_done() {
+        let rig = rig(Limits::default());
+        let (link, mut end) = crate::link::pair(None, None);
+        send_msg(&rig, "1", search(7, "by size"), &link)
+            .await
+            .unwrap();
+        let got = until(&mut end, "search_done").await;
+        let hits: Vec<_> = got.iter().filter(|m| m["type"] == "search_hit").collect();
+        assert!(!hits.is_empty(), "{got:?}");
+        assert!(hits.iter().all(|h| h["id"] == 7));
+        assert!(hits
+            .iter()
+            .any(|h| h["workspace"] == "ws-up" && h["up"] == true));
+        assert!(hits
+            .iter()
+            .all(|h| h["snippet"].as_str().unwrap().contains("by size")));
+        let done = got.last().unwrap();
+        assert_eq!(done["type"], "search_done");
+        assert!(done.get("cut").is_none(), "{done}");
+        let _ = std::fs::remove_dir_all(&rig.root);
+    }
+
+    #[tokio::test]
+    async fn the_hit_cap_arrives_as_cut() {
+        let rig = rig(Limits {
+            max_hits: 1,
+            ..Limits::default()
+        });
+        let (link, mut end) = crate::link::pair(None, None);
+        send_msg(&rig, "1", search(1, "the"), &link).await.unwrap();
+        let got = until(&mut end, "search_done").await;
+        assert_eq!(got.iter().filter(|m| m["type"] == "search_hit").count(), 1);
+        assert_eq!(got.last().unwrap()["cut"], "hits");
+        let _ = std::fs::remove_dir_all(&rig.root);
+    }
+
+    #[tokio::test]
+    async fn a_cancel_ends_the_search_and_anyone_but_the_owner_is_refused() {
+        let rig = rig(Limits::default());
+        let (link, mut end) = crate::link::pair(None, None);
+        let cancel = ClientMessage::Search {
+            id: 2,
+            query: String::new(),
+            cancel: true,
+        };
+        send_msg(&rig, "1", cancel, &link).await.unwrap();
+        let got = until(&mut end, "search_done").await;
+        assert_eq!(got.last().unwrap()["cut"], "cancelled");
+        assert!(send_msg(&rig, "2", search(3, "by size"), &link)
+            .await
+            .is_err());
+        let window = ClientMessage::Window {
+            workspace: "ws-up".into(),
+            tab: String::new(),
+            turn: "x".into(),
+            before: 1,
+            after: 1,
+        };
+        assert!(send_msg(&rig, "2", window, &link).await.is_err());
+        let _ = std::fs::remove_dir_all(&rig.root);
+    }
+
+    #[tokio::test]
+    async fn a_window_comes_back_around_the_hit_and_an_unknown_tab_is_refused() {
+        let rig = rig(Limits::default());
+        let (link, mut end) = crate::link::pair(None, None);
+        send_msg(&rig, "1", search(1, "by size"), &link)
+            .await
+            .unwrap();
+        let got = until(&mut end, "search_done").await;
+        let turn = got.iter().find(|m| m["type"] == "search_hit").unwrap()["turn"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let ask = |tab: &str| ClientMessage::Window {
+            workspace: "ws-up".into(),
+            tab: tab.into(),
+            turn: turn.clone(),
+            before: 3,
+            after: 3,
+        };
+        send_msg(&rig, "1", ask(""), &link).await.unwrap();
+        let w = until(&mut end, "session_window").await.pop().unwrap();
+        let entries = w["entries"].as_array().unwrap();
+        assert_eq!(
+            entries[w["anchor"].as_u64().unwrap() as usize]["turn"],
+            turn.as_str()
+        );
+        assert!(!w["fingerprint"].as_str().unwrap().is_empty());
+        assert!(serde_json::to_string(&w).unwrap().len() <= 48 * 1024 + 2048);
+        assert!(send_msg(&rig, "1", ask("nope"), &link).await.is_err());
+        let _ = std::fs::remove_dir_all(&rig.root);
+    }
+
+    #[derive(Clone, Default)]
+    struct Buf(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Buf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Buf {
+        type Writer = Buf;
+        fn make_writer(&'a self) -> Buf {
+            self.clone()
+        }
+    }
+
+    /// Guardrail `session-search-is-bounded-scrubbed-and-never-logs-the-query`: with every level on, a search and a
+    /// window leave no query and no snippet in the log, and a refused one leaves none in its error.
+    #[tokio::test]
+    async fn no_log_line_or_error_holds_the_query_or_a_snippet() {
+        let buf = Buf::default();
+        let sub = tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+        let _guard = tracing::subscriber::set_default(sub);
+        tracing::info!("capture-works");
+        let rig = rig(Limits::default());
+        let (link, mut end) = crate::link::pair(None, None);
+        // The scan runs on the same thread here so the capture sees it.
+        let sessions = vec![
+            known("short", "ws-up", true),
+            known("rewind", "ws-down", false),
+        ];
+        let mut logs = SessionLogs::default();
+        logs.register(Arc::new(ClaudeLog::new(rig.root.clone())));
+        let summary = crate::session_search::run(
+            &logs,
+            sessions,
+            "by size",
+            Limits::default(),
+            crate::session_log::scan::Cancel::default(),
+            |_, _| true,
+        );
+        assert_eq!(summary.cut, None);
+        send_msg(&rig, "1", search(1, "by size"), &link)
+            .await
+            .unwrap();
+        let got = until(&mut end, "search_done").await;
+        let snippet = got.iter().find(|m| m["type"] == "search_hit").unwrap()["snippet"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let refused = send_msg(&rig, "2", search(2, "by size"), &link)
+            .await
+            .unwrap_err();
+        assert!(!refused.to_string().contains("by size"));
+        let logged = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        // The capture works: a line only this test writes is in it.
+        assert!(logged.contains("capture-works"), "{logged}");
+        assert!(
+            !logged.contains("by size") && !logged.contains(&snippet),
+            "{logged}"
+        );
+        let _ = std::fs::remove_dir_all(&rig.root);
     }
 }

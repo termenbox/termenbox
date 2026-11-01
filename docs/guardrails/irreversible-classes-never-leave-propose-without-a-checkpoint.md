@@ -4,7 +4,7 @@ title: A decision class that is irreversible never rises above propose unless a 
 status: active
 date: 2026-11-01
 governed-by: [0173, 0176]
-grounded-in: [0173, 0176, 0165]
+grounded-in: [0173, 0176, 0180]
 derivation-note: Measured confidence says how often the deputy was right, not what a wrong answer costs; for actions that cannot be undone the cost decides.
 tags: [security, deputy, agents, control-plane]
 ---

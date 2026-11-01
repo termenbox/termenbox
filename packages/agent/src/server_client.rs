@@ -140,7 +140,9 @@ impl ServerClient {
             | ServerMessage::UpdateState { .. }
             | ServerMessage::Candidates { .. }
             | ServerMessage::DirListing { .. }
-            | ServerMessage::DirError { .. } => {}
+            | ServerMessage::DirError { .. }
+            | ServerMessage::ConductorTerminalOpened { .. }
+            | ServerMessage::ConductorTerminalClosed { .. } => {}
             ServerMessage::Workspaces { workspaces } => {
                 info!("Received {} workspaces", workspaces.len());
                 for workspace in workspaces {
@@ -182,6 +184,9 @@ impl ServerClient {
             | ServerMessage::AcpView(_)
             | ServerMessage::History { .. }
             | ServerMessage::HistoryDeleted { .. }
+            | ServerMessage::SearchHit { .. }
+            | ServerMessage::SearchDone { .. }
+            | ServerMessage::SessionWindow { .. }
             | ServerMessage::ServerHealth { .. }
             | ServerMessage::HealthHistory { .. }
             | ServerMessage::PreviousExit { .. }

@@ -6,7 +6,7 @@ date: 2026-11-01
 track: process
 accepted-by: Sergey Strebulaev <s@vivantel.dev>
 tags: [client, ux, ci, process, docs]
-related: [0135, 0158, 0159, 0160, 0161, 0163, 0164, 0165, 0168]
+related: [0135, 0158, 0159, 0160, 0161, 0163, 0164, 0180, 0168]
 ---
 
 ## Decision

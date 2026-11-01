@@ -3,8 +3,8 @@ id: auto-answered-permissions-are-scoped-visible-and-audited
 title: A permission answered by a rule is scoped, matched on parsed arguments, visible in the log, audited, and never destructive by default
 status: active
 date: 2026-11-01
-governed-by: [0165, 0172, 0173]
-grounded-in: [0165, 0143, security-secrets-handling, audit-logging-no-secrets]
+governed-by: [0180, 0172, 0173]
+grounded-in: [0180, 0143, security-secrets-handling, audit-logging-no-secrets]
 derivation-note: A rule answers on the owner's behalf with no human present, so its reach, its matching, its trace and its off switch must be fixed in advance.
 tags: [security, agents, acp, server]
 ---

@@ -6,7 +6,7 @@ date: 2026-11-01
 track: product
 accepted-by: Sergey Strebulaev <s@vivantel.dev>
 tags: [client, acp, ux, navigation]
-related: [0111, 0137, 0149, 0156, 0162, 0164, 0166, 0168]
+related: [0111, 0137, 0149, 0156, 0162, 0164, 0181, 0168]
 ---
 
 ## Decision

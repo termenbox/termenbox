@@ -4,7 +4,7 @@ title: The deputy treats agent text as untrusted data and chooses only among the
 status: active
 date: 2026-11-01
 governed-by: 0173
-grounded-in: [0173, 0165, 0095, security-secrets-handling]
+grounded-in: [0173, 0180, 0095, security-secrets-handling]
 derivation-note: Agent output reaches the deputy and can carry instructions aimed at it, so its output channel must be too narrow to act on them.
 tags: [security, deputy, agents, control-plane]
 ---

@@ -1,0 +1,43 @@
+{
+  "case": "other-agent",
+  "profile": "phone",
+  "pace": "normal",
+  "captions": true,
+  "steps": [
+    {
+      "id": "open",
+      "caption": "Start a new workspace",
+      "label": "+ New"
+    },
+    {
+      "id": "more",
+      "caption": "Three agents are one tap; the rest are under More",
+      "label": "More"
+    },
+    {
+      "id": "narrow",
+      "caption": "Type a few letters to narrow the list",
+      "label": null
+    },
+    {
+      "id": "chosen",
+      "caption": "Gemini is now the chosen agent",
+      "label": null
+    },
+    {
+      "id": "create",
+      "caption": "Create it",
+      "label": "Create"
+    }
+  ],
+  "seconds": 39,
+  "hash": "73501543321d3db7d512bd1239c6494e1a4dbb9d04a6f5aa284d6fd9b481d343",
+  "version": "0.1.57",
+  "run": "41314144763",
+  "renderedAt": "2026-11-01T14:08:47.020Z",
+  "poster": "other-agent-phone-poster.png",
+  "files": [
+    "other-agent-phone.mp4",
+    "other-agent-phone-poster.png"
+  ]
+}
