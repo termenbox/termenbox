@@ -26,6 +26,8 @@ Termenbox is a web terminal for remote AI coding agents: Rust server `packages/s
 
 **Blocked on the owner, in order.** (1) the 1.3 note after 7 days of readings; (2) choose the conductor and one or two nodes and enrol them for 2.7 (`--conductor-enrol`, one tap); (3) the 2.7 note. Nothing else may be marked done before its dogfood note.
 
+**First, in the next session.** (1) Read `~/.config/termenbox/attention_meter.json` and report it (`by_device` should show `phone` and `desktop` once beta.25 runs on both devices; day 20758 is a partial, restart-skewed day, so do not quote its seconds per agent-hour). (2) Do step 1.1c below as a small PR, watch it, merge on green, and release the next beta only if the owner says so. Nothing else is unblocked.
+
 **Next for an agent, when the owner has written the note.** 1.3 closed, then 4.1 (the cluster study from the real meter data), 4.2, 8.4. After 2.7: 2.8, 3.1, 5.1. Unblocked now: nothing whose `Needs` are all `[x]`; 8.1 and 6.2 are the last of those. If asked to do something meanwhile: price table (`prices.json` beside the meter file, step 1.4) and the sampling of dwell against a stopwatch to check 1.1b.
 
 **Open issues from dogfood.** Dwell likely under-counts reading time before a question appears (look at the meter data after a week before changing it). A turn running at a restart counts from its next state change. Cost stays 0 without `prices.json`.
@@ -69,6 +71,12 @@ Class: implement · Needs: 1.2 · Check: `scripts/dev.sh sh -c 'cd packages/clie
 Context: The owner's first beta reading was 0 s per agent-hour with 3 human answers (`latency_ms` 410 s): they answer in the tab, not on Home. Decision 0169 measures the human's seconds, so the tab counts.
 Do: `lib/askDwell.ts` reports `card_seen` for the question of the open tab while the page is visible, as Home does for its card; the server credits it the same way.
 Done-when: the test passes and `human_ms` is above 0 after the owner answers in a tab.
+
+### 1.1c Keep the working time of a running turn across a restart — [ ]
+Class: implement · Needs: 1.1 · Check: `scripts/dev.sh cargo test -p termenbox-server --bin termenbox-server attention_meter`
+Context: Found in dogfood: after a server restart the meter lost the time of every turn that was running (agent time grew 1.7 min while the owner's time grew 81 s, so the reading jumped from 11.8 to 30.9 s per agent-hour). A span is only written when a tab stops working, and a restart drops the open ones. A restart is a normal event here (every beta update), so it must not skew the baseline.
+Do: In `attention_meter.rs`, make `flush()` (every 60 s) also bank the open spans: add each span's time up to now to its day and restart the span at now, so a restart or crash loses at most one flush interval. Test: a span open across two flushes is counted once, in full, and a restart after a flush keeps the banked time; a tab that stops working after a flush adds only the time since it. Also count a tab found working at startup from its next event (already so; say so in a comment).
+Done-when: the tests pass and, after the owner restarts the server during a turn, `agent_ms` in `~/.config/termenbox/attention_meter.json` grows by about the turn's length minus at most a minute.
 
 ### 1.4 Task telemetry: tokens, cost, model, verifier result, decision points (R99) — [ ] (code and Check done, awaits the 1.3 dogfood note; open: ACP reports no model so its turns count under `unknown`, agent-reported ACP costs are not yet folded into the day cost, and the verifier outcome has no producer until 10.1)
 Class: implement · Needs: 1.1 · Check: `scripts/dev.sh cargo test -p termenbox-server task_telemetry`
