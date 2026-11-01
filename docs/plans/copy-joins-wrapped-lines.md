@@ -22,19 +22,21 @@ Context: Option under test: ask tmux for the true joined lines (`capture-pane -J
 Do: in a scratch tmux session on a narrow pane, produce three cases: (a) a plain shell printing one 300-character line, (b) a line longer than the pane typed at a prompt, (c) Claude Code (or a script imitating its hard-wrapped, indented output) printing a long paragraph and a long URL. For each, run `tmux capture-pane -p` and `tmux capture-pane -J -p` and compare with the text printed. Also note whether `-J` keeps trailing spaces and how it maps to the client's buffer rows (the client holds scrollback separate from tmux history). Add a section `Spike result` to this plan with one line per case (joined / not joined) and a recommendation.
 Done-when: this file has a line starting `Spike result` per case and a recommendation, and no source file changed.
 
-Spike result (tmux 3.2a, 40-column pane; nothing built):
+Spike result (the pinned static tmux 3.8, DECISION-0119, 40-column pane; the system tmux 3.2a gave the same joins; nothing built):
 - Spike result (a) shell prints one 100-character line: `-p` gives 3 rows, `-J` gives 1 joined line. Joined.
 - Spike result (b) line typed at a prompt longer than the pane: `-p` gives 4 rows, `-J` gives 1 line. Joined.
 - Spike result (c) program that hard-wraps and indents its own output (the rows end in real newlines, as Claude Code writes them) and a long URL: the hard-wrapped rows stay separate in both modes (they are real line ends to tmux), the long URL row is joined by `-J`. Not joined for program wraps; joined for tmux wraps.
-- Spike result (d) `-J` pads each joined line with trailing spaces to the pane width (`ab` comes back as `ab` plus spaces), so the client must trim them. Rows carry no column map: mapping a selection (client scrollback rows) onto `-J` lines needs row offsets the client lacks, since the client buffer and tmux history are separate.
+- Spike result (d) `-J` keeps only the spaces that were really typed (`ab   ` stays, a joined line is not padded) on 3.8; 3.2a padded every line to the pane width. Rows carry no column map: mapping a selection (client scrollback rows) onto `-J` lines needs row offsets the client lacks, since the client buffer and tmux history are separate.
 
 Recommendation: do not use `capture-pane -J`. It needs a new wire message and a row-to-line mapping, and it still cannot rejoin the Claude Code case, which is the reported one. Use a client heuristic in the `links.ts` style (a row joins the next when it is marked wrapped, or fills to within a few columns of the edge and the next row has the same indent), applied in one function for all copy paths.
 
-### 1.3 Decide the join rule — [ ]
+### 1.3 Decide the join rule — [x]
 Class: plan · Needs: 1.2 · Check: `git diff --stat origin/develop -- docs/decisions | tail -1`
 Context: Candidates: server `capture-pane -J` (new protocol message and round trip), a client heuristic joining a row to the next when it is marked wrapped or fills to within a few columns of the edge and the next row has the same indent (the `links.ts` rule), or a combination. A new wire message changes `packages/core/src/protocol.rs` and its hand-written mirror `packages/client/src/lib/protocol.ts`.
 Do: pick one from the spike result and put the choice and its reason in this plan under `Decision`. If the choice is hard to reverse, surprising or a real tradeoff, write `docs/decisions/NNNN-slug.md` (next number after the highest in `docs/decisions/`, format of its neighbours) and its row in `docs/decisions/INDEX.md`; otherwise keep it inline here.
 Done-when: this file has a `Decision` section naming the rule, and the decision file exists if one was warranted.
+
+Decision: a client heuristic, no server change, no decision file. A row joins the next when xterm marks the next row `isWrapped`, or when the row stops within `EDGE` (4) columns of the right edge and the next row has the same indent and continues (the `links.ts` `marked`/`alike` rule, without its one-word and open-URL limits, since prose also wraps). The joined text drops the continuation's indent and the cut row's trailing blanks; a row that stops short of the edge, a blank row, or a change of indent stays a real line end. Reason: `-J` cannot rejoin the reported Claude Code case (spike c) and needs a protocol message plus a row-to-line map; the heuristic covers both tmux wraps (marked or full-width rows) and program wraps, in one client function. Known tradeoff: a real line end on a full-width row with the next row at the same indent is joined; it is rare and the same call `linkAt` already makes. Reversible, so inline here only.
 
 ### 2.1 Implement the rule once — [ ]
 Class: implement · Needs: 1.3 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm exec vitest run src/lib/terminal && pnpm run check'`
