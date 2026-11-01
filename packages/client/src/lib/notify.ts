@@ -2,8 +2,10 @@
 // banner may offer. Pure functions; nothing here chooses the active workspace.
 import { isStale, type AgentMap, type WorkspaceAgent } from './agents';
 import { needsYou } from './tabs';
+import type { AttentionTier } from './protocol';
 import type { ChimeKind } from './chimes';
 import type { PlayResult } from './bell';
+import { alerts, tierOf } from './status';
 
 export interface Waiting { key: string; name: string; since: number; agent: WorkspaceAgent }
 
@@ -82,7 +84,8 @@ export function createNotifier(
   onOpen: (key: string) => void,
 ) {
   const told = new Set<string>();
-  return function update(waiting: Waiting[], hidden: boolean, pushOn: boolean) {
+  return function update(all: Waiting[], hidden: boolean, pushOn: boolean) {
+    const waiting = all.filter(w => !w.agent.attention || alerts(w.agent.attention));
     const keys = new Set(waiting.map(w => w.key));
     for (const k of told) if (!keys.has(k)) told.delete(k); // a workspace that needed you again later is news again
     if (!hidden || pushOn || permission() !== 'granted') return;
@@ -102,6 +105,11 @@ export const VIBRATE_PATTERN = [200, 100, 200];
 /** How long a sound that could not play (audio locked) waits for a tap before it is dropped. */
 export const PENDING_MS = 120_000;
 
+/** One alert that fired, for the e2e invariant helper (the page keeps the last ones in `alertRecord`). */
+export interface AlertRecord { key: string; tier: AttentionTier; kind: ChimeKind; at: number }
+export const alertRecord: AlertRecord[] = [];
+export const recordAlert = (e: AlertRecord) => { alertRecord.push(e); if (alertRecord.length > 100) alertRecord.shift(); };
+
 /** What the sound says: a question or failure asks, a finished reply is done. */
 export const alertKind = (a: WorkspaceAgent): ChimeKind => a.attention?.kind === 'finished_unseen' ? 'done' : 'ask';
 
@@ -117,22 +125,27 @@ export function createAlerter(
   vibrate: (pattern: number[]) => boolean,
   now: () => number = Date.now,
   log: (line: string) => void = () => {},
+  record: (entry: AlertRecord) => void = () => {},
 ) {
   const told = new Set<string>();
   let lastCheck = now();
   let current = new Set<string>();
   let pending: { at: number; kind: ChimeKind } | null = null;
 
-  function update(waiting: Waiting[], opts: { sound: boolean; vibrate: boolean }) {
+  function update(all: Waiting[], opts: { sound: boolean; vibrate: boolean }) {
     const at = now();
-    current = new Set(waiting.map(w => w.key));
+    // Only `needs_you` and `result` alert (decision 0191); an `info` item is silent. The edge is the tier: a workspace
+    // that goes from a result to a question is news again.
+    const waiting = all.filter(w => !w.agent.attention || alerts(w.agent.attention));
+    const keyOf = (w: Waiting) => w.agent.attention ? `${w.key}|${tierOf(w.agent.attention)}` : w.key;
+    current = new Set(waiting.map(keyOf));
     for (const k of told) if (!current.has(k)) told.delete(k);
     const ages: number[] = [];
     let fresh = 0;
     let kind: ChimeKind = 'done';
     for (const w of waiting) {
-      if (told.has(w.key)) continue;
-      told.add(w.key);
+      if (told.has(keyOf(w))) continue;
+      told.add(keyOf(w));
       // `since` is on the server's clock; clockOffset is server minus this device.
       const offset = w.agent.clockOffset;
       const since = w.since - (offset ?? 0);
@@ -141,6 +154,7 @@ export function createAlerter(
       if (age <= FRESH_MS || (offset !== undefined && since > lastCheck)) {
         fresh++;
         if (alertKind(w.agent) === 'ask') kind = 'ask';
+        record({ key: w.key, tier: w.agent.attention ? tierOf(w.agent.attention) : 'needs_you', kind: alertKind(w.agent), at });
       }
     }
     const looked = at - lastCheck;

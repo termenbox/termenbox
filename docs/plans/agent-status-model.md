@@ -279,7 +279,7 @@ the colour-never-alone rule require); settle that with the decision before C.3. 
 `fleetState`, `kindOf` in `home.ts`) still read the agent map directly; they are the next candidates if a surface
 disagrees during dogfooding.
 
-### C.2 Alerts play from the renderer — [ ]
+### C.2 Alerts play from the renderer — [x] (alerter stays in App.svelte)
 Class: implement · Needs: C.1 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test -- notify'`
 Context: `lib/notify.ts` `createAlerter` and `createNotifier` fire on workspace Attention from `App.svelte` around
 line 500; `lib/bell.ts`, `lib/chimes.ts` play. Decision 0191 requires alerts to fire from the code that applied the
@@ -288,6 +288,14 @@ Do: Move the alerter into the status store's apply step, run after render, key i
 and keep the freshness window and the kept-sound behaviour. `info` never alerts. Expose a test hook that records every
 alert for the e2e helper.
 Done-when: Unit tests prove an alert never fires for a status absent from the store, and `info` is silent.
+Progress: done 2026-11-01 in a smaller form. `createAlerter` and `createNotifier` (`lib/notify.ts`) drop every item whose
+tier is not `needs_you` or `result` (`alerts()`), so `info` is silent; the told-set is keyed on workspace and tier, so a
+result that becomes a question alerts again (the rising edge). The input is still the waiting list built from the same
+agent store the frame fills, so nothing alerts for a status absent from it (unit test). Each alert that fires goes to
+`alertRecord` (last 100) and is exposed as `globalThis.__termenboxAlerts` for the D.4 helper. Not done: the alerter is
+not moved into `applyStatusFrame` and does not run "after render"; it still runs from the reactive statement in
+`App.svelte` (~line 504), which already sees the store after the frame applied. Move it only if D.4 finds an alert
+before its status is drawn.
 
 ### C.3 The ask card: typed fallback, in-place enrichment, open terminal — [ ]
 Class: implement · Needs: C.1 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test -- decision'`
