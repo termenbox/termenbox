@@ -19,7 +19,7 @@ Defaults assumed until the owner says otherwise (each is a choice, not a fact):
 - The ledger keeps 500 sessions or 90 days, whichever is fewer, and has a "forget closed sessions" action.
 - Map/reduce across threads is out of scope: the target is 1 vCPU, so it adds a merge and no throughput. Revisit only with a measurement.
 
-### 1 Grouping modes — [ ]
+### 1 Grouping modes — [x]
 Class: implement · Needs: none · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test'`
 Context: `groupHits` in `lib/sessionSearch.ts` groups by workspace; `Group.agent` comes from the first hit. Per-viewer conveniences may use `localStorage` wrapped in try/catch (see the Artifact rules; the page renders without it).
 Do: Add a segmented control **Agent / Workspace / None** to `SearchSheet.svelte`. `groupHits(hits, mode, nameOf)`: `agent` groups by `hit.agent`, `workspace` is today's behaviour, `none` is one flat list newest first. With no header a row shows its workspace and tab. Remember the choice per viewer.

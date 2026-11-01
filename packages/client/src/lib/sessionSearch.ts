@@ -1,6 +1,6 @@
 // Cross-session search (R78, decision 0156): one query, asked of every connected server, answered as a stream of hits
 // read from the agents' own conversation files. This module keeps the state of one search: it numbers the search, drops
-// answers of an older one, groups hits by workspace and says why a search stopped early. The query goes to the servers
+// answers of an older one, groups hits (by agent, workspace or not at all) and says why a search stopped early. The query goes to the servers
 // and nowhere else: it is not written to storage, the breadcrumbs or any log. Texts from a server are shown as text only.
 import type { ClientMessage, SearchDoneMessage, SearchHitMessage, ServerMessage, TabResumed } from './protocol';
 
@@ -155,19 +155,40 @@ export class SessionSearch {
   }
 }
 
-/** Hits by workspace, the workspace with the newest hit first, the newest hit first inside it. `nameOf` gives the workspace's current name. */
-export function groupHits(hits: Hit[], nameOf: (serverId: string, workspace: string) => string | undefined): Group[] {
+export type GroupMode = 'agent' | 'workspace' | 'none';
+export const GROUP_MODES: { mode: GroupMode; label: string }[] = [{ mode: 'agent', label: 'Agent' }, { mode: 'workspace', label: 'Workspace' }, { mode: 'none', label: 'None' }];
+const GROUP_KEY = 'termenbox_search_grouping';
+const groupStore = (): Storage | undefined => {
+  try { return typeof localStorage === 'undefined' ? undefined : localStorage; } catch { return undefined; }
+};
+/** The grouping this viewer chose last; workspace when nothing usable is stored. */
+export function loadGroupMode(store: Pick<Storage, 'getItem'> | undefined = groupStore()): GroupMode {
+  try {
+    const v = store?.getItem(GROUP_KEY);
+    return GROUP_MODES.some((m) => m.mode === v) ? (v as GroupMode) : 'workspace';
+  } catch { return 'workspace'; }
+}
+export function saveGroupMode(mode: GroupMode, store: Pick<Storage, 'setItem'> | undefined = groupStore()) {
+  try { store?.setItem(GROUP_KEY, mode); } catch { /* Private mode: the choice lasts until the sheet closes. */ }
+}
+
+/**
+ * Hits grouped by `mode`, the group with the newest hit first, the newest hit first inside it. `workspace` groups by
+ * workspace (`nameOf` gives its current name), `agent` by agent per server, `none` is one flat list with no header.
+ */
+export function groupHits(hits: Hit[], mode: GroupMode, nameOf: (serverId: string, workspace: string) => string | undefined): Group[] {
   const by = new Map<string, Group>();
   for (const h of hits) {
-    const key = `${h.serverId}/${h.workspace}`;
+    const key = mode === 'workspace' ? `${h.serverId}/${h.workspace}` : mode === 'agent' ? `${h.serverId}/agent:${h.agent}` : 'all';
     let g = by.get(key);
     if (!g) {
-      g = { key, serverId: h.serverId, serverName: h.serverName, workspace: h.workspace, name: nameOf(h.serverId, h.workspace) ?? h.workspace, agent: h.agent, up: h.up, hits: [] };
+      const name = mode === 'workspace' ? nameOf(h.serverId, h.workspace) ?? h.workspace : mode === 'agent' ? h.agent : '';
+      g = { key, serverId: h.serverId, serverName: h.serverName, workspace: mode === 'workspace' ? h.workspace : '', name, agent: h.agent, up: h.up, hits: [] };
       by.set(key, g);
     }
     g.hits.push(h);
   }
-  const newest = (g: Group) => Math.max(...g.hits.map((h) => h.at ?? 0));
+  const newest = (g: Group) => g.hits.reduce((m, h) => Math.max(m, h.at ?? 0), 0);
   for (const g of by.values()) g.hits.sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
   return [...by.values()].sort((a, b) => newest(b) - newest(a));
 }

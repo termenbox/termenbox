@@ -31,6 +31,14 @@ describe('SearchSheet', () => {
     expect(out).toContain('Resume');
     expect(out).toContain('Open');
   });
+  it('offers the three groupings, workspace by default, and names the workspace on rows when there is no workspace header', () => {
+    const out = html({ search: st({ query: 'x', status: 'done', hits: [hit()] }) });
+    expect(out).toContain('data-testid="search-group-agent"');
+    expect(out).toContain('data-testid="search-group-workspace"');
+    expect(out).toContain('data-testid="search-group-none"');
+    expect(out).toMatch(/data-testid="search-group-workspace"[^>]*aria-pressed="true"|aria-pressed="true"[^>]*data-testid="search-group-workspace"/);
+    expect(out).not.toContain('data-testid="search-where"');
+  });
   it('says a search was cut, and why an agent is off', () => {
     const out = html({ search: st({ query: 'x', status: 'done', hits: [hit()], cuts: [cutText('time')!], off: [{ agent: 'codex', reason: 'unknown file version' }] }) });
     expect(out).toContain('Search was cut');

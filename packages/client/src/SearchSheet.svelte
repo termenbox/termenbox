@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Sheet } from './lib/ui/sheet';
   import AgentIcon from './AgentIcon.svelte';
-  import { NOTICE, landingOf, cutText, debounced, groupHits, offText, parts, whenText, type Hit, type SearchState } from './lib/sessionSearch';
+  import { NOTICE, landingOf, cutText, debounced, groupHits, GROUP_MODES, loadGroupMode, saveGroupMode, offText, parts, whenText, type GroupMode, type Hit, type SearchState } from './lib/sessionSearch';
 
   /**
    * Find text in the agents' own conversations (R78, decision 0156). The sheet shows what `search` holds and tells its owner
@@ -17,7 +17,10 @@
   let resuming = $state<Hit | null>(null);
   const tap = (h: Hit) => { if (landingOf(h) === 'resume') resuming = h; else onpick(h); };
   const typed = debounced((t) => onquery(t));
-  const groups = $derived(groupHits(search.hits, nameOf));
+  let mode = $state<GroupMode>(loadGroupMode());
+  const pickMode = (m: GroupMode) => { mode = m; saveGroupMode(m); };
+  const groups = $derived(groupHits(search.hits, mode, nameOf));
+  const where = (h: Hit) => nameOf(h.serverId, h.workspace) ?? h.workspace;
   const cuts = $derived(search.cuts);
   const searching = $derived(search.status === 'searching');
   const empty = $derived(search.status === 'done' && search.hits.length === 0 && search.query !== '');
@@ -55,24 +58,34 @@
       </div>
     {/if}
 
+    <div role="group" aria-label="Group matches by" data-testid="search-grouping" class="flex w-full gap-1 rounded-control bg-raised p-1">
+      {#each GROUP_MODES as m (m.mode)}
+        <button type="button" aria-pressed={mode === m.mode} data-testid="search-group-{m.mode}" onclick={() => pickMode(m.mode)}
+          class="h-11 min-w-0 flex-1 truncate rounded-control bg-transparent px-2 text-sm font-semibold text-soft aria-pressed:bg-accent aria-pressed:text-on-accent">{m.label}</button>
+      {/each}
+    </div>
+
     {#each search.cuts as c (c)}<p class="rounded-control bg-raised px-3 py-2 text-sm text-soft" data-testid="search-cut">{c}</p>{/each}
     {#each search.off as o (o.agent + o.reason)}<p class="rounded-control bg-raised px-3 py-2 text-sm text-soft" data-testid="search-off">{offText(o)}</p>{/each}
     {#if search.lost}<p class="rounded-control bg-raised px-3 py-2 text-sm text-soft" data-testid="search-lost">{search.lost === 1 ? 'A server' : `${search.lost} servers`} went away before it finished, so its matches may be missing.</p>{/if}
 
     {#each groups as g (g.key)}
-      <section aria-label={g.name} data-testid="search-group" data-workspace={g.workspace} class="flex flex-col">
+      <section aria-label={g.name} data-testid="search-group" data-workspace={g.workspace} data-mode={mode} class="flex flex-col">
+        {#if mode !== 'none'}
         <h4 class="flex h-11 items-center gap-2 text-sm font-semibold text-fg">
           <AgentIcon agent={g.agent} size={20} />
           <span class="min-w-0 flex-1 truncate">{g.name}</span>
           <span class="shrink-0 text-xs font-normal text-muted">{g.serverName}</span>
         </h4>
-        {#each g.hits as h (h.turn + h.tab)}
+        {/if}
+        {#each g.hits as h (h.serverId + h.workspace + h.turn + h.tab)}
           {@const p = parts(h)}
           <button type="button" data-testid="search-hit" data-turn={h.turn} onclick={() => tap(h)}
             class="flex min-h-11 w-full flex-col gap-1 rounded-control bg-transparent px-2 py-2 text-left">
             <span class="flex items-center gap-2 text-xs text-muted">
               <span class={h.up ? 'text-accent-text' : 'text-warn'} data-testid="search-badge">{h.up ? 'Open' : 'Resume'}</span>
-              {#if h.tab}<span class="truncate">{h.tab}</span>{/if}
+              {#if mode !== 'workspace'}<span class="truncate" data-testid="search-where">{where(h)}{h.tab ? ` · ${h.tab}` : ''}</span>
+              {:else if h.tab}<span class="truncate">{h.tab}</span>{/if}
               <span class="ml-auto shrink-0">{whenText(h.at, now)}</span>
             </span>
             <span class="text-sm break-words text-fg">{p.before}<mark class="rounded-sm bg-accent/30 text-fg" data-hit>{p.match}</mark>{p.after}</span>

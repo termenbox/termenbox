@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SessionSearch, landingOf, resumeOutcome, cleanQuery, cutText, groupHits, parts, whenText, MAX_HITS_PER_SERVER, type SearchState } from './sessionSearch';
+import { SessionSearch, landingOf, resumeOutcome, cleanQuery, cutText, groupHits, loadGroupMode, saveGroupMode, parts, whenText, MAX_HITS_PER_SERVER, type SearchState } from './sessionSearch';
 import type { ClientMessage, SearchHitMessage, ServerMessage } from './protocol';
 
 function rig(servers = [{ id: 'a', name: 'Box' }]) {
@@ -141,9 +141,36 @@ describe('grouping', () => {
     s.handle('a', hit(id, { workspace: 'old', turn: '1', at: '2026-10-01T00:00:00Z' }));
     s.handle('a', hit(id, { workspace: 'new', turn: '2', at: '2026-10-29T00:00:00Z' }));
     s.handle('a', hit(id, { workspace: 'new', turn: '3', at: '2026-10-30T00:00:00Z' }));
-    const g = groupHits(s.current.hits, (_sid, w) => (w === 'new' ? 'Fresh' : undefined));
+    const g = groupHits(s.current.hits, 'workspace', (_sid, w) => (w === 'new' ? 'Fresh' : undefined));
     expect(g.map((x) => x.name)).toEqual(['Fresh', 'old']);
     expect(g[0].hits.map((h) => h.turn)).toEqual(['3', '2']);
+  });
+  it('groups by agent, or not at all, newest first', () => {
+    const { s, sent } = rig();
+    s.run('x');
+    const id = (sent[0].msg as { id: number }).id;
+    s.handle('a', hit(id, { workspace: 'w1', agent: 'claude', turn: '1', at: '2026-10-01T00:00:00Z' }));
+    s.handle('a', hit(id, { workspace: 'w2', agent: 'codex', turn: '2', at: '2026-10-29T00:00:00Z' }));
+    s.handle('a', hit(id, { workspace: 'w2', agent: 'claude', turn: '3', at: '2026-10-30T00:00:00Z' }));
+    const by = groupHits(s.current.hits, 'agent', () => undefined);
+    expect(by.map((x) => x.name)).toEqual(['claude', 'codex']);
+    expect(by[0].hits.map((h) => h.turn)).toEqual(['3', '1']);
+    const flat = groupHits(s.current.hits, 'none', () => undefined);
+    expect(flat).toHaveLength(1);
+    expect(flat[0].hits.map((h) => h.turn)).toEqual(['3', '2', '1']);
+  });
+  it('remembers the grouping per viewer and survives missing or broken storage', () => {
+    const m = new Map<string, string>();
+    const store = { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v) };
+    expect(loadGroupMode(store)).toBe('workspace');
+    saveGroupMode('agent', store);
+    expect(loadGroupMode(store)).toBe('agent');
+    m.set([...m.keys()][0], 'bogus');
+    expect(loadGroupMode(store)).toBe('workspace');
+    const broken = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } };
+    expect(loadGroupMode(broken)).toBe('workspace');
+    expect(() => saveGroupMode('none', broken)).not.toThrow();
+    expect(loadGroupMode(undefined)).toBe('workspace');
   });
   it('formats a time as the clock today and the day otherwise', () => {
     const now = Date.parse('2026-10-31T12:00:00Z');
