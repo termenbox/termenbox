@@ -306,13 +306,14 @@ Do: Show the typed fallback per kind until content arrives, fill the card in pla
 Done-when: A unit test renders each kind with and without content and shows no empty card.
 Progress: done 2026-11-01. `Decision` gained `ask` and `content`; `ASK_FALLBACK` (`lib/decision.ts`) has one line per kind (an unknown or absent kind says "Needs your answer"), shown until the ask's text arrives. The card's identity (`DecisionPanel`) ignores the question, so the text fills in place and nothing alerts again (the alerter keys on tier). The card's button now reads "Open terminal" and every surface (Home, inbox) already passes it. One-tap options still come only from the hook-confirmed prompt (`bannerChoices`), unchanged; the ask's own `options` do not reach the client yet (the `Attention` wire type has only `prompt`, see B.6b-2), so they wait for the answer-contract change. `SessionView` and `AcpEntryView` build their cards with `content`. Client suite 1179 tests green, `svelte-check` 0 errors.
 
-### C.4 Viewed by a human only — [ ]
+### C.4 Viewed by a human only — [x]
 Class: implement · Needs: C.1 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test -- agents'`
 Context: `lib/agents.ts` ack rules (foreground, visible page, not `needs_you`, the tab visible); server
 `EventHub::ack` clears non-`needs_you` items and `TabStatus::clear_result`.
 Do: Send `ack` only on a human view (foreground, visible page, tab visible), for `result` and `info` items; never on
 a timer or a background tab; make the idle transition follow it. Tests cover the hidden page and the two-device case.
 Done-when: A unit test shows no ack from a hidden page or a timer, and an ack on one device clears all.
+Progress: done 2026-11-01, mostly by checking what was already true. `attentionToAck` already required a foreground workspace, a visible page and the raising tab; it is now keyed on the tier (`tierOf`), so a `needs_you` item is never acknowledged whatever its kind and a `result` or `info` one is. It takes no clock, and `App.svelte` calls it only from a reactive statement over the store, the active tab and page visibility, so no timer can ack (tests call it repeatedly on a hidden page). One device's ack clears all because the server removes the item and broadcasts the frame; the client test shows the next frame leaves nothing to ack, and the server test `ack_clears_finished_unseen_but_not_needs_input` covers the clear. Not changed: the server `ack` still excludes by kind (`NeedsInput`), which equals the `needs_you` tier for every item raised today; revisit when an `info` item exists (the machine drops `RaiseInfo` until then, see B.6b-2).
 
 Dogfood point: C.4 done (Claude scope). Run it for a while and note what is wrong before D and F; D.1 to D.3 may start
 in parallel with that.

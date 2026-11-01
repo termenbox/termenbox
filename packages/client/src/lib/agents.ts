@@ -2,7 +2,7 @@
 // snapshot and event stream. No UI here (cards are v8). Text in events is untrusted: render it as text only.
 import { get, writable } from 'svelte/store';
 import type { Activity, AgentEvent, SubReason, AgentState, Attention, ClientMessage, ServerMessage, WorkspaceAgentState, Task } from './protocol';
-import { settled } from './status';
+import { settled, tierOf } from './status';
 
 export interface WorkspaceAgent {
   state: AgentState;
@@ -52,11 +52,13 @@ export function isStale(a: WorkspaceAgent, nowMs: number, skewMs = 0): boolean {
   return !a.serverStatus && a.state === 'working' && (a.stale || nowMs + skewMs - a.ts > STALE_AFTER_MS);
 }
 
-/** Items to acknowledge: finished or failed ones of a workspace that is shown in the foreground of a visible page. A
- *  `needs_input` is never acknowledged by looking; only the prompt going away clears it. */
+/** Items to acknowledge (decision 0193: a human viewing it): `result` and `info` items of a workspace that is shown in
+ *  the foreground of a visible page, in the tab that raised them. A `needs_you` item is never acknowledged by looking;
+ *  only the ask going away clears it. Pure on purpose: no clock goes in, so no timer can acknowledge anything, and the
+ *  caller re-evaluates only when the page, the active tab or the store changes. */
 export function attentionToAck(a: WorkspaceAgent | undefined, foreground: boolean, pageVisible: boolean, done: Set<string>, visibleTab?: string | null): string[] {
   const it = a?.attention;
-  if (!foreground || !pageVisible || !it || it.kind === 'needs_input' || done.has(it.id)) return [];
+  if (!foreground || !pageVisible || !it || it.kind === 'needs_input' || tierOf(it) === 'needs_you' || done.has(it.id)) return [];
   // A finished or failed item belongs to the tab that raised it; looking at another tab is not seeing it.
   if (it.tab && it.tab !== visibleTab) return [];
   return [it.id];

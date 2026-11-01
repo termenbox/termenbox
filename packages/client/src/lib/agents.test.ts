@@ -155,6 +155,21 @@ describe('server status (activity and attention)', () => {
     expect(attentionToAck(m.s, true, true, new Set(), 't2')).toEqual(['a1']);
   });
 
+  it('acknowledges a result or info item, and never a needs_you tier whatever its kind', () => {
+    const m = applyAttention(base(), [{ ...att('finished_unseen'), tier: 'info' }]);
+    expect(attentionToAck(m.s, true, true, new Set())).toEqual(['a1']);
+    const q = applyAttention(base(), [{ ...att('finished_unseen'), tier: 'needs_you' }]);
+    expect(attentionToAck(q.s, true, true, new Set())).toEqual([]);
+  });
+
+  it('does not acknowledge from a hidden page however many times it is asked, and the other device’s ack ends it', () => {
+    let m = applyAttention(base(), [att('finished_unseen')]);
+    for (let i = 0; i < 5; i++) expect(attentionToAck(m.s, true, false, new Set())).toEqual([]);
+    // Another device viewed it: the next frame no longer holds the item, so there is nothing left to acknowledge here.
+    m = applyAttention(m, []);
+    expect(attentionToAck(m.s, true, true, new Set())).toEqual([]);
+  });
+
   it('never acknowledges a question by looking at it', () => {
     const m = applyAttention(base(), [att('needs_input')]);
     expect(attentionToAck(m.s, true, true, new Set())).toEqual([]);
