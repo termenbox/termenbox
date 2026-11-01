@@ -32,7 +32,6 @@
   import { announce, waitingList, createAttention, createNotifier, createAlerter } from './lib/notify';
   import { attentionToAck } from './lib/agents';
   import { AskDwell, type AskTarget } from './lib/askDwell';
-  import { deviceClass } from './lib/deviceClass';
   import { cacheRemaining, expiringSoon } from './lib/cache';
   import { settings, applyTheme, type Skin } from './lib/settings';
   import type { ServerListItem } from './lib/protocol';
@@ -520,7 +519,7 @@
     }
   }
   // The time spent looking at a question in the tab that asked it counts as the owner's attention, as a card on Home does.
-  const askDwell = new AskDwell((serverId, obligation, ms) => hub.send(serverId, { type: 'card_seen', obligation, ms, device: deviceClass() }));
+  const askDwell = new AskDwell((serverId, obligation, ms) => hub.send(serverId, { type: 'card_seen', obligation, ms }));
   $: askTarget = ((): AskTarget | null => {
     if (!activeKey || away || !pageVisible) return null;
     const it = $allAgents[activeKey]?.attention;
@@ -1320,7 +1319,7 @@
       {#if serversPage || servers.length === 0}
         <ServerList {servers} states={$hubServers} counts={workspaceCounts} onpause={(id) => { hub.pause(id); }} onresume={(id) => hub.resume(id)} onretry={(id) => hub.retry(id)} onadd={() => { addPrefill = null; addStart = 'install'; showAddServer = true; }} onscan={() => { addPrefill = null; addStart = 'scan'; showAddServer = true; }} onremove={removeServer} onshare={shareServer} onrename={renameServer} onupdate={(id) => hub.updateServer(id)} oncheck={(id) => hub.checkUpdate(id)} onpostpone={(id) => hub.postponeUpdate(id)} onskip={(id) => hub.skipUpdate(id)} bind:updatesFor />
       {:else if $destination === 'home'}
-        <Home workspaces={$allWorkspaces} agents={$allAgents} servers={$hubServers} tabStates={$allTabStates} days={mergeDays($hubServers.map((s) => s.attentionStats))} oncardseen={(serverId, obligation, ms) => hub.send(serverId, { type: 'card_seen', obligation, ms, device: deviceClass() })} onfleetopen={openFleetCard} {now} {lastKey} {focusKey} offer={hookOffer} onhook={homeHook} onopen={openWaiting} onservers={leaveServer} onnew={newWorkspace}
+        <Home workspaces={$allWorkspaces} agents={$allAgents} servers={$hubServers} tabStates={$allTabStates} days={mergeDays($hubServers.map((s) => s.attentionStats))} oncardseen={(serverId, obligation, ms) => hub.send(serverId, { type: 'card_seen', obligation, ms })} onfleetopen={openFleetCard} {now} {lastKey} {focusKey} offer={hookOffer} onhook={homeHook} onopen={openWaiting} onservers={leaveServer} onnew={newWorkspace}
           onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })}
           onreply={(key, text) => sendWorkspace({ type: 'reply', workspace: key, text })} />
       {:else if $destination === 'activity'}

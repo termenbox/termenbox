@@ -7,6 +7,7 @@ import type { Target } from './transport';
 import { storedBundle, type PathFailure } from './paths';
 import { BundleRejected, decodeBundle, verifyBundle } from './bundle';
 import { orderVersion, orderWorkspaces } from './order';
+import { deviceClass } from './deviceClass';
 import { applyWindowList, forgetWindows, type WindowMap } from './windows';
 
 export type HubConnection = Pick<Connection, 'start' | 'close' | 'subscribe' | 'send'> & Partial<Pick<Connection, 'kind' | 'pathLabel' | 'rtt' | 'drops' | 'retry' | 'retryNow'>>;
@@ -304,6 +305,7 @@ export class ServerHub {
         e.backends = msg.backends ?? []; e.tabs = !!msg.tabs; e.acpAgents = msg.acp_agents ?? [];
         e.controlMode = !!msg.control_mode; e.tmuxVersion = msg.tmux_version ?? ''; e.prefix = msg.prefix ?? '';
         this.publish(); this.opts.onSaved?.(e.server);
+        connection.send({ type: 'device_class', class: deviceClass() });
         connection.send({ type: 'list_workspaces' });
         if (msg.conductor) connection.send({ type: 'conductor_list' });
         connection.send({ type: 'agent_sync', after: syncRequest(e.agents) });

@@ -22,7 +22,7 @@ Termenbox is a web terminal for remote AI coding agents: Rust server `packages/s
 
 ## Resume here (updated 2026-11-01)
 
-**State.** Merged to `develop` and released as beta `v0.1.57-beta.23` (beta.24 adds the device class): the meter (1.1, 1.1b, 1.2, 1.4), the conductor (2.2 to 2.6), mission contracts (6.2), checkpoints (8.1). The owner runs the beta on their own machine; the 7-day baseline for 1.3 started 2026-11-01 (a partial first day: 10.5 s per agent-hour, 167 agent-minutes, 31 human answers). The meter file is `~/.config/termenbox/attention_meter.json`.
+**State.** Merged to `develop` and released as beta `v0.1.57-beta.23` (beta.24 attributed the device by the card that was shown, which was wrong when two devices showed it; beta.25 attributes it to the connection that answers): the meter (1.1, 1.1b, 1.2, 1.4), the conductor (2.2 to 2.6), mission contracts (6.2), checkpoints (8.1). The owner runs the beta on their own machine; the 7-day baseline for 1.3 started 2026-11-01 (a partial first day; restarts lose a running turn's time, so day one reads high). The meter file is `~/.config/termenbox/attention_meter.json`.
 
 **Blocked on the owner, in order.** (1) the 1.3 note after 7 days of readings; (2) choose the conductor and one or two nodes and enrol them for 2.7 (`--conductor-enrol`, one tap); (3) the 2.7 note. Nothing else may be marked done before its dogfood note.
 
@@ -52,7 +52,7 @@ Done-when: the file names each of those modules with line references and a secti
 
 ## Slice 1: the meter (R87)
 
-### 1.1 Server meter: layers, dwell and answer latency — [ ] (code and Check done, awaits the 1.3 dogfood note; the answering device class arrives on `card_seen` from `lib/deviceClass.ts`, and a card shown after the answer moves it from `other`)
+### 1.1 Server meter: layers, dwell and answer latency — [ ] (code and Check done, awaits the 1.3 dogfood note; the answering device is the class (`device_class` message, `lib/deviceClass.ts`) of the connection that sent the answer, reply or keys; a question cleared with no such connection is `other`)
 Class: implement · Needs: 0.2 · Check: `scripts/dev.sh cargo test -p termenbox-server attention_meter`
 Context: Decision 0169: attention leverage is human seconds per agent-hour. Data stays on the server, metadata only, bounded (`resource-constraints`, decision 0105 for the pattern). No prompt or agent text is stored.
 Do: Add `packages/server/src/attention_meter.rs`: for every obligation record `raised_at`, `resolved_at`, the layer that resolved it (`human`, `rule`, later `contract`, `deputy`), the answering device (never a name), and for a human the dwell (card foreground time reported by the client) and answer latency. Keep a ring of the last 30 days as daily buckets in the server's state directory, atomically written. Compute `human_seconds` and `agent_hours` (sum of working time per tab from the reducer) per day and a 7-day figure. Add `ClientMessage::CardSeen { obligation, ms }` and `ServerMessage::AttentionStats { days }` in `packages/core/src/protocol.rs`, mirrored in `packages/client/src/lib/protocol.ts` with a round-trip test. Test: bucket rollover, bounded size, a rule-resolved obligation adds zero human seconds, no text stored.

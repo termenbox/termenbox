@@ -19,6 +19,8 @@ use crate::tabstatus::TabStatus;
 
 pub const RING: usize = 50;
 pub const MAX_SESSIONS: usize = 20;
+/// How long an answer counts as the cause of a question clearing.
+const ANSWERER_MS: u64 = 10 * 60 * 1000;
 pub const SUMMARY_CHARS: usize = 120;
 pub const PLAN_ITEM_CHARS: usize = 200;
 pub const PLAN_ITEMS: usize = 20;
@@ -474,6 +476,8 @@ pub struct EventHub {
     tab_status: Option<Arc<TabStatus>>,
     /// The attention meter (decision 0169); absent in tests that do not need it.
     meter: Option<Arc<crate::attention_meter::AttentionMeter>>,
+    /// Who last answered a tab's open question: the class of the connection that sent the answer, reply or keys.
+    answerers: Arc<Mutex<HashMap<(String, String), (&'static str, u64)>>>,
     /// Where a tab's agent session id is kept (decision 0152); absent in tests that do not need it.
     registry: Option<Arc<crate::registry::Registry>>,
 }
@@ -495,6 +499,7 @@ impl EventHub {
             usage: Arc::default(),
             tab_status: None,
             meter: None,
+            answerers: Arc::default(),
             registry: None,
         }
     }
@@ -514,11 +519,11 @@ impl EventHub {
     }
 
     /// A device showed the card of attention item `id` for `ms`. Returns whether it was credited.
-    pub fn card_seen(&self, id: &str, ms: u64, device: Option<&str>) -> bool {
+    pub fn card_seen(&self, id: &str, ms: u64) -> bool {
         let Some(m) = &self.meter else {
             return false;
         };
-        let credited = m.card_seen(id, ms, device, now_ms());
+        let credited = m.card_seen(id, ms, now_ms());
         if credited {
             self.announce_meter();
         }
@@ -538,6 +543,44 @@ impl EventHub {
         }
     }
 
+    /// A connection of `class` answered, replied or typed to `tab` of `workspace` (an empty tab means any). It is kept
+    /// only while that tab has a question open, and used when the question clears.
+    pub fn note_answerer(&self, workspace: &str, tab: Option<&str>, class: &'static str) {
+        if self.meter.is_none() {
+            return;
+        }
+        let tab = tab.unwrap_or("");
+        let open = self.attention.lock().unwrap().iter().any(|a| {
+            a.kind == AttentionKind::NeedsInput
+                && a.workspace == workspace
+                && (tab.is_empty() || a.tab.as_deref().unwrap_or("") == tab)
+        });
+        if !open {
+            return;
+        }
+        let mut map = self.answerers.lock().unwrap();
+        if map.len() >= 256 {
+            map.retain(|_, (_, at)| now_ms().saturating_sub(*at) < ANSWERER_MS);
+        }
+        if map.len() < 256 {
+            map.insert((workspace.to_string(), tab.to_string()), (class, now_ms()));
+        }
+    }
+
+    /// The class that answered `a`, if a connection did within the last minutes; used once.
+    fn answerer_of(&self, a: &Attention) -> Option<&'static str> {
+        let mut map = self.answerers.lock().unwrap();
+        let tab = a.tab.clone().unwrap_or_default();
+        let key = [
+            (a.workspace.clone(), tab),
+            (a.workspace.clone(), String::new()),
+        ]
+        .into_iter()
+        .find(|k| map.contains_key(k))?;
+        let (class, at) = map.remove(&key)?;
+        (now_ms().saturating_sub(at) < ANSWERER_MS).then_some(class)
+    }
+
     /// These items left the list: the ones in `answered` were resolved by `layer`, the rest just went away.
     fn meter_removed(&self, gone: &[Attention], layer: Option<crate::attention_meter::Layer>) {
         let Some(m) = &self.meter else {
@@ -546,7 +589,12 @@ impl EventHub {
         let now = now_ms();
         for a in gone {
             match layer {
-                Some(l) => m.resolved(&a.id, l, None, now),
+                Some(l) => {
+                    let device = (l == crate::attention_meter::Layer::Human)
+                        .then(|| self.answerer_of(a))
+                        .flatten();
+                    m.resolved(&a.id, l, device, now)
+                }
                 None => m.forget(&a.id),
             }
         }
@@ -3388,7 +3436,7 @@ mod tests {
         tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 1_000);
         tab_hook(&h, "t1", "PermissionRequest", ask(), 2_000);
         let id = h.attention_items()[0].id.clone();
-        assert!(h.card_seen(&id, 3_000, None));
+        assert!(h.card_seen(&id, 3_000));
         tab_hook(&h, "t1", "PostToolUse", ask(), 9_000);
         let days = h.meter_days();
         assert_eq!(days.len(), 1);
@@ -3396,7 +3444,7 @@ mod tests {
         assert_eq!(days[0].by_layer["human"], 1);
         assert_eq!(days[0].human_ms, 3_000);
         assert!(
-            !h.card_seen("a999", 1_000, None),
+            !h.card_seen("a999", 1_000),
             "an unknown card is not credited"
         );
     }
@@ -3419,6 +3467,26 @@ mod tests {
         assert_eq!(meters(&mut rx), 1, "end of work");
         h.announce_working_time();
         assert_eq!(meters(&mut rx), 0, "nothing is working");
+    }
+
+    #[test]
+    fn attention_meter_credits_the_answer_to_the_class_of_the_connection_that_gave_it() {
+        let (h, _status) = tab_hub();
+        let h = h.with_meter(Arc::new(crate::attention_meter::AttentionMeter::in_memory()));
+        // A keystroke before any question is open is not an answer.
+        h.note_answerer("s", Some("t1"), "desktop");
+        tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 1_000);
+        tab_hook(&h, "t1", "PermissionRequest", ask(), 2_000);
+        h.note_answerer("s", Some("t1"), "desktop");
+        h.note_answerer("s", Some("t1"), "phone");
+        tab_hook(&h, "t1", "PostToolUse", ask(), 9_000);
+        // A second question, answered with no connection noted, is `other`.
+        tab_hook(&h, "t1", "PermissionRequest", ask(), 10_000);
+        tab_hook(&h, "t1", "PostToolUse", ask(), 19_000);
+        let d = &h.meter_days()[0];
+        assert_eq!(d.by_device.get("phone"), Some(&1));
+        assert_eq!(d.by_device.get("desktop"), None);
+        assert_eq!(d.by_device.get("other"), Some(&1));
     }
 
     #[test]

@@ -138,6 +138,8 @@ pub struct WorkspaceManager {
     /// The running search of each connection, by connection number: a new one or a closed connection stops it.
     searches:
         Arc<std::sync::Mutex<std::collections::HashMap<u64, crate::session_log::scan::Cancel>>>,
+    /// The class each connection declared (`device_class`), for the attention meter.
+    device_classes: Arc<std::sync::Mutex<std::collections::HashMap<u64, &'static str>>>,
 }
 
 #[async_trait::async_trait]
@@ -233,6 +235,7 @@ impl WorkspaceManager {
             session_logs: Arc::default(),
             search_limits: crate::session_log::scan::Limits::default(),
             searches: Arc::default(),
+            device_classes: Arc::default(),
         }
     }
 
@@ -567,6 +570,7 @@ impl WorkspaceManager {
             c.close_device_terminals(conn);
         }
         self.stop_search(conn);
+        self.device_classes.lock().unwrap().remove(&conn);
         if let Some(p) = &self.push {
             p.set_foreground(conn, None);
         }
@@ -1152,6 +1156,14 @@ impl WorkspaceManager {
         }
     }
 
+    /// This connection answered, replied or typed for `tab` of `workspace`: the meter credits the question to its class.
+    fn note_answerer(&self, conn: u64, workspace: &str, tab: Option<&str>) {
+        let class = self.device_classes.lock().unwrap().get(&conn).copied();
+        if let (Some(class), Some(hub)) = (class, &self.events) {
+            hub.note_answerer(workspace, tab, class);
+        }
+    }
+
     async fn handle(
         &self,
         conn: u64,
@@ -1478,13 +1490,16 @@ impl WorkspaceManager {
                     hub.ack(&attention_id);
                 }
             }
-            ClientMessage::CardSeen {
-                obligation,
-                ms,
-                device,
-            } => {
+            ClientMessage::DeviceClass { class } => {
+                let class = crate::attention_meter::device_class(Some(&class));
+                let mut map = self.device_classes.lock().unwrap();
+                if map.len() < 1024 {
+                    map.insert(conn, class);
+                }
+            }
+            ClientMessage::CardSeen { obligation, ms } => {
                 if let Some(hub) = &self.events {
-                    hub.card_seen(&obligation, u64::from(ms), device.as_deref());
+                    hub.card_seen(&obligation, u64::from(ms));
                 }
             }
             ClientMessage::Answer {
@@ -1494,6 +1509,7 @@ impl WorkspaceManager {
                 seq,
                 choice,
             } => {
+                self.note_answerer(conn, &workspace, tab.as_deref());
                 let hub = self
                     .events
                     .as_ref()
@@ -1519,6 +1535,7 @@ impl WorkspaceManager {
                 info!(target: "audit", event = "answer_sent", provider = %identity.provider, account_id = %identity.id, session = %workspace, choice);
             }
             ClientMessage::Reply { workspace, text } => {
+                self.note_answerer(conn, &workspace, None);
                 // One line, no control characters: it is typed, then Enter.
                 let line: String = text.chars().filter(|c| !c.is_control()).take(500).collect();
                 if line.trim().is_empty() {
@@ -1777,6 +1794,7 @@ impl WorkspaceManager {
                 prompt_id,
                 option,
             } => {
+                self.note_answerer(conn, &workspace, None);
                 let agent = self
                     .events
                     .as_ref()
@@ -1893,6 +1911,7 @@ impl WorkspaceManager {
                 prompt_id,
                 option_id,
             } => {
+                self.note_answerer(conn, &workspace, None);
                 self.backend
                     .acp_answer(&workspace, &prompt_id, &option_id)
                     .await?;
@@ -2117,6 +2136,12 @@ impl WorkspaceManager {
             }
             ClientMessage::Input { data } => {
                 if let Some(att) = attachment.as_mut() {
+                    // Keys typed into the tab a question waits on answer it; credit the typing connection's class.
+                    if let Some((workspace, tab)) =
+                        self.push.as_ref().and_then(|p| p.foreground_of(conn))
+                    {
+                        self.note_answerer(conn, &workspace, tab.as_deref());
+                    }
                     att.write(&B64.decode(data)?)?;
                 }
             }
