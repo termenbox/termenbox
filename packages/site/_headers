@@ -9,3 +9,5 @@
   Cache-Control: public, max-age=3600
 /copy.js
   Cache-Control: public, max-age=3600
+/media/*
+  Cache-Control: public, max-age=3600
