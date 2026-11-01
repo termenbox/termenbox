@@ -311,6 +311,14 @@ fn is_setup(text: &str) -> bool {
     t.starts_with('<') && t.ends_with('>')
 }
 
+/// Whether a line can show any text to a search, judged from its bytes alone, before any JSON is parsed. Only a
+/// message or a reasoning summary has text to show; a tool call and its output are dropped here instead of parsed and
+/// discarded. The markers are quoted JSON values, which text inside a string never matches (its quotes are escaped).
+fn may_hold_text(line: &[u8]) -> bool {
+    let has = |m: &[u8]| memchr::memmem::find(line, m).is_some();
+    has(br#""message""#) || has(br#""reasoning""#)
+}
+
 /// What a record shows. Tool input and output are not read here at all.
 fn parts(v: &Value) -> Vec<Part> {
     match v.get("type").and_then(Value::as_str).unwrap_or("") {
@@ -420,6 +428,9 @@ impl SessionLog for CodexLog {
         scanner
             .scan_file(&file, fp.size, &needle, budget, |c| {
                 // The scan matched bytes; what counts is the scrubbed text of a conversation record.
+                if !may_hold_text(c.bytes) {
+                    return ControlFlow::Continue(());
+                }
                 let Ok(v) = serde_json::from_slice::<Value>(c.bytes) else {
                     return ControlFlow::Continue(()); // torn
                 };

@@ -262,3 +262,53 @@ fn shared_caps_count_hits_across_sessions_and_stop_at_the_budget() {
         .is_empty());
     std::fs::remove_dir_all(root).ok();
 }
+
+#[test]
+fn a_needle_in_a_big_tool_output_costs_no_parse() {
+    use super::scan::tests::allocs;
+    use std::io::Write;
+    let root = tmp();
+    let dir = sessions(&root);
+    let log = CodexLog::new(root.clone());
+    let rollout = |id: &str| dir.join(format!("rollout-2026-10-31T10-00-00-{id}.jsonl"));
+    for (id, filler) in [
+        ("withneedle", "zebra quartz "),
+        ("without", "filler words "),
+    ] {
+        std::fs::copy(rollout("short"), rollout(id)).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(rollout(id))
+            .unwrap();
+        let out = filler.repeat(40_000);
+        writeln!(f, r#"{{"timestamp":"2026-10-31T10:00:20.000Z","ordinal":90,"type":"response_item","payload":{{"type":"function_call_output","call_id":"c1","output":"{out}"}}}}"#).unwrap();
+    }
+    let count = |id: &str| {
+        let s = session(id);
+        log.search(&s, "zebra quartz", 5).unwrap();
+        let before = allocs();
+        let hits = log.search(&s, "zebra quartz", 5).unwrap();
+        (allocs() - before, hits)
+    };
+    let (with, hits) = count("withneedle");
+    let (without, _) = count("without");
+    assert!(hits.is_empty(), "tool output is never a hit");
+    assert_eq!(with, without, "the tool output was parsed");
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn only_a_message_or_reasoning_line_is_worth_parsing() {
+    assert!(may_hold_text(
+        br#"{"type":"response_item","payload":{"type":"message","role":"user","content":[]}}"#
+    ));
+    assert!(may_hold_text(
+        br#"{"type":"response_item","payload":{"type":"reasoning","summary":[]}}"#
+    ));
+    assert!(!may_hold_text(
+        br#"{"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{}"}}"#
+    ));
+    assert!(!may_hold_text(
+        br#"{"type":"response_item","payload":{"type":"function_call_output","output":"{\"type\":\"message\"}"}}"#
+    ));
+}

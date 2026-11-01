@@ -666,4 +666,4 @@ pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static)
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

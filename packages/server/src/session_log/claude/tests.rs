@@ -340,3 +340,63 @@ fn a_long_directory_name_is_found_by_its_head() {
     );
     std::fs::remove_dir_all(root).ok();
 }
+
+#[test]
+fn a_needle_in_a_big_tool_result_costs_no_parse() {
+    use super::scan::tests::allocs;
+    use std::io::Write;
+    let root = tmp();
+    let dir = projects(&root);
+    let log = ClaudeLog::new(root.clone());
+    // Two copies of a session that differ in one tool result: the needle is in one and not in the other.
+    for (id, filler) in [
+        ("withneedle", "zebra quartz "),
+        ("without", "filler words "),
+    ] {
+        std::fs::copy(dir.join("short.jsonl"), dir.join(format!("{id}.jsonl"))).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.join(format!("{id}.jsonl")))
+            .unwrap();
+        let out = filler.repeat(40_000);
+        writeln!(f, r#"{{"parentUuid":"a5","type":"user","uuid":"u99","timestamp":"2026-10-31T10:00:10Z","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_9","content":"{out}"}}]}},"toolUseResult":{{"stdout":"{out}"}}}}"#).unwrap();
+    }
+    let count = |id: &str| {
+        let s = session(id);
+        log.search(&s, "zebra quartz", 5).unwrap(); // the first run warms what a run reuses
+        let before = allocs();
+        let hits = log.search(&s, "zebra quartz", 5).unwrap();
+        (allocs() - before, hits)
+    };
+    let (with, hits) = count("withneedle");
+    let (without, _) = count("without");
+    assert!(hits.is_empty(), "tool output is never a hit");
+    assert_eq!(with, without, "the tool result was parsed");
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn only_a_line_with_text_in_it_is_worth_parsing() {
+    assert!(may_hold_text(
+        br#"{"type":"user","message":{"role":"user","content":"hello"}}"#
+    ));
+    assert!(may_hold_text(
+        br#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#
+    ));
+    assert!(may_hold_text(
+        br#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hm"}]}}"#
+    ));
+    assert!(may_hold_text(
+        br#"{"type":"user","message":{"content":[{"type":"tool_result","content":"x"},{"type":"text","text":"and a note"}]}}"#
+    ));
+    assert!(!may_hold_text(
+        br#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":"out"}]}}"#
+    ));
+    assert!(!may_hold_text(
+        br#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}"#
+    ));
+    // Tool output that quotes the markers carries them escaped, so they do not count.
+    assert!(!may_hold_text(
+        br#"{"type":"user","message":{"content":[{"type":"tool_result","content":"{\"type\":\"text\",\"text\":\"x\"}"}]}}"#
+    ));
+}

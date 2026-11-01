@@ -47,11 +47,12 @@ Do: Per block: if it is ASCII (SIMD `is_ascii`), search the whole block with the
 Done-when: the contract suite and the existing scan tests pass unchanged; the benchmark's hot-cache MB/s on the ASCII corpus rises and the figure is in the README; the zero-allocation-per-non-matching-line test still passes.
 Result: `BlockPlan` in `scan.rs`; ASCII hot 601 -> 3081 MB/s, mixed and Cyrillic unchanged (README, "After step 4"). Differential and accent tests added. Folding only the non-ASCII lines of a mixed block was not done: it is the next lever if real histories are mixed.
 
-### 5 Reject candidates before parsing — [ ]
+### 5 Reject candidates before parsing — [x]
 Class: implement · Needs: 4 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log::claude session_log::codex`
 Context: `memmem` also hits inside tool input and output, which the adapters then parse in full and discard (tool text never leaves the server).
 Do: In each adapter, test the record type or role with a `memmem` on its marker before any JSON parse and drop tool records there. Parse the rest into borrowed structs (`#[serde(borrow)] &str`) over the line buffer with one reused scratch `String` for unescaping.
 Done-when: a fixture with a large tool output holding the needle costs no parse (counting allocator) and yields no hit; the contract suites for both adapters pass.
+Result: `may_hold_text` in both adapters drops tool-only lines on quoted-marker `memmem` checks (escaped text in a string never matches, an unexpected layout falls through to the parse). Tests compare allocations with and without the needle in a 500 KB tool output: equal (and a mutation check made it fail). Not done: borrowed `serde(borrow)` structs with a scratch `String`. `parts()` is shared with `window`/`page`, so a second parser would drift from the contract suites, serde cannot unescape into a caller's buffer, and after the reject only real message lines parse (~2 us each, step 2).
 
 ### 6 Time window and time bounds — [ ]
 Class: implement · Needs: 4 · Check: `scripts/dev.sh cargo test --workspace`

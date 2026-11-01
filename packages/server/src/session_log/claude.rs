@@ -369,6 +369,19 @@ fn notice() -> Part {
     }
 }
 
+/// Whether a line can show any text to a search, judged from its bytes alone, before any JSON is parsed. A tool's
+/// output or input never reaches a hit, so a line that is only that is dropped here instead of parsed and discarded.
+/// It errs towards parsing: a marker is a quoted JSON name, which text inside a string never matches (its quotes are
+/// escaped), and an unexpected layout falls through to the parse.
+fn may_hold_text(line: &[u8]) -> bool {
+    let has = |m: &[u8]| memchr::memmem::find(line, m).is_some();
+    if has(br#""tool_result""#) {
+        // A user turn that answers a tool; it shows text only when it also carries a text block.
+        return has(br#""text""#);
+    }
+    has(br#""text""#) || has(br#""thinking""#) || has(br#""content":""#) || has(br#""content": ""#)
+}
+
 /// What a record shows. Tool input and output are not read here at all.
 fn parts(v: &Value) -> Vec<Part> {
     let ty = v.get("type").and_then(Value::as_str).unwrap_or("");
@@ -485,6 +498,9 @@ impl SessionLog for ClaudeLog {
         scanner
             .scan_file(&file, fp.size, &needle, budget, |c| {
                 // The scan matched bytes; what counts is the scrubbed text of a record on the active branch.
+                if !may_hold_text(c.bytes) {
+                    return ControlFlow::Continue(());
+                }
                 let Ok(v) = serde_json::from_slice::<Value>(c.bytes) else {
                     return ControlFlow::Continue(()); // torn
                 };
