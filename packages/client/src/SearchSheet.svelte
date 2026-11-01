@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Sheet } from './lib/ui/sheet';
   import AgentIcon from './AgentIcon.svelte';
-  import { NOTICE, landingOf, isUnheld, dirLabel, resumeAskText, cutText, debounced, groupHits, GROUP_MODES, PIECE, PER_SESSION, sessionKey, limitHits, RANGES, olderText, loadGroupMode, saveGroupMode, offText, parts, whenText, type GroupMode, type RangeId, type Hit, type SearchState } from './lib/sessionSearch';
+  import { NOTICE, landingOf, isUnheld, dirLabel, resumeAskText, cutText, debounced, groupHits, GROUP_MODES, PIECE, PER_SESSION, sessionKey, limitHits, hitKey, resetsPieces, RANGES, olderText, loadGroupMode, saveGroupMode, offText, parts, whenText, type GroupMode, type RangeId, type Hit, type SearchState } from './lib/sessionSearch';
 
   /**
    * Find text in the agents' own conversations (R78, decision 0156). The sheet shows what `search` holds and tells its owner
@@ -21,7 +21,13 @@
   const pickMode = (m: GroupMode) => { mode = m; saveGroupMode(m); };
   // The list is drawn in pieces: the end of what is drawn is watched, and reaching it draws more, then asks the server for the next page.
   let shown = $state(PIECE);
-  $effect(() => { search.query; search.range; shown = PIECE; });
+  // Plain variable: a hit arriving gives `search` a new object, and that alone must not start the list over.
+  let drawnFor: { query: string; range: RangeId } | undefined;
+  $effect(() => {
+    const now = { query: search.query, range: search.range };
+    if (resetsPieces(drawnFor, now)) shown = PIECE;
+    drawnFor = now;
+  });
   const groups = $derived(limitHits(groupHits(search.hits, mode, nameOf), shown));
   const canMore = $derived(search.status === 'done' && Object.keys(search.next).length > 0);
   const hasRest = $derived(shown < search.hits.length);
@@ -108,7 +114,7 @@
           <span class="shrink-0 text-xs font-normal text-muted">{g.serverName}</span>
         </h4>
         {/if}
-        {#each g.hits as h, i (h.serverId + h.workspace + h.session + h.turn + h.tab)}
+        {#each g.hits as h, i (hitKey(h))}
           {@const p = parts(h)}
           <button type="button" data-testid="search-hit" data-turn={h.turn} onclick={() => tap(h)}
             class="flex min-h-11 w-full flex-col gap-1 rounded-control bg-transparent px-2 py-2 text-left [content-visibility:auto] [contain-intrinsic-size:auto_4.5rem]">

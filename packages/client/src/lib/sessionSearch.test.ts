@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SessionSearch, landingOf, resumeOutcome, cleanQuery, cutText, loadRange, sinceOf, olderText, groupHits, dirLabel, isUnheld, resumeAskText, sessionResumedOutcome, loadGroupMode, saveGroupMode, parts, whenText, limitHits, sessionKey, PIECE, MAX_HITS_PER_SERVER, type SearchState } from './sessionSearch';
+import { SessionSearch, landingOf, resumeOutcome, cleanQuery, cutText, loadRange, sinceOf, olderText, groupHits, dirLabel, isUnheld, resumeAskText, sessionResumedOutcome, loadGroupMode, saveGroupMode, parts, whenText, limitHits, sessionKey, hitKey, resetsPieces, PIECE, MAX_HITS_PER_SERVER, type SearchState } from './sessionSearch';
 import type { ClientMessage, SearchHitMessage, ServerMessage } from './protocol';
 
 const NOW = Date.parse('2026-11-01T00:00:00Z');
@@ -379,5 +379,122 @@ describe('paging and expanding', () => {
     const g = limitHits(groupHits(s.current.hits, 'workspace', () => undefined), PIECE);
     expect(g.reduce((n, x) => n + x.hits.length, 0)).toBe(PIECE);
     expect(limitHits(groupHits(s.current.hits, 'none', () => undefined), 0)).toEqual([]);
+  });
+});
+
+describe('paging under Stop, caps and lost servers', () => {
+  const first = (servers = [{ id: 'a', name: 'Box' }]) => {
+    const r = rig(servers);
+    r.s.run('parser');
+    const id = (r.sent[0].msg as { id: number }).id;
+    r.s.handle('a', hit(id, { session: 's1', turn: 'u1' }));
+    r.s.handle('a', done(id, { cut: 'hits', next: 'cursor1', older: 4 }));
+    return { ...r, id };
+  };
+  it('keeps the cursor through a Stop during a page, so the page can be asked again', () => {
+    const { s, sent } = first();
+    s.more();
+    const page = (sent.at(-1)!.msg as { id: number }).id;
+    s.stop();
+    s.handle('a', hit(page, { session: 's2', turn: 'late' }));
+    s.handle('a', done(page));
+    expect(s.current.hits.map((h) => h.turn)).toEqual(['u1']);
+    expect(s.current.next).toEqual({ a: 'cursor1' });
+    expect(s.hasMore).toBe(true);
+  });
+  it('takes the expanded mark back on Stop during an expansion, and on a lost server', () => {
+    const { s, sent } = first();
+    const h = s.current.hits[0];
+    s.expand(h);
+    expect(s.current.expanded).toEqual([sessionKey(h)]);
+    s.stop();
+    expect(s.current.expanded).toEqual([]);
+    s.expand(h);
+    expect(sent.at(-1)!.msg).toMatchObject({ session: 's1' });
+    s.lost('a');
+    expect(s.current.expanded).toEqual([]);
+    expect(s.current.lost).toBe(1);
+  });
+  it('a Stop on a page does not unmark an expansion that finished earlier', () => {
+    const { s, sent } = first();
+    const h = s.current.hits[0];
+    s.expand(h);
+    const id = (sent.at(-1)!.msg as { id: number }).id;
+    s.handle('a', done(id));
+    s.more();
+    s.stop();
+    expect(s.current.expanded).toEqual([sessionKey(h)]);
+  });
+  it('counts the older conversations once, from the first page', () => {
+    const { s, sent } = first();
+    expect(s.current.older).toBe(4);
+    s.more();
+    const id = (sent.at(-1)!.msg as { id: number }).id;
+    s.handle('a', done(id, { older: 4, next: 'cursor2' }));
+    expect(s.current.older).toBe(4);
+  });
+  it('drops the cursor of a server that sits at the cap, and says the search was cut', () => {
+    const { s, sent } = rig();
+    s.run('x');
+    const id = (sent[0].msg as { id: number }).id;
+    for (let i = 0; i < MAX_HITS_PER_SERVER + 5; i++) s.handle('a', hit(id, { turn: `u${i}` }));
+    s.handle('a', done(id, { cut: 'hits', next: 'c' }));
+    expect(s.current.next).toEqual({});
+    expect(s.hasMore).toBe(false);
+    expect(s.current.cuts).toEqual([cutText('hits')]);
+  });
+  it('says nothing of a time or bytes cut while a cursor offers the rest', () => {
+    for (const cut of ['time', 'bytes']) {
+      const { s, sent } = rig();
+      s.run('x');
+      const id = (sent[0].msg as { id: number }).id;
+      s.handle('a', done(id, { cut, next: 'c' }));
+      expect(s.current.cuts).toEqual([]);
+      expect(s.hasMore).toBe(true);
+    }
+  });
+  it('never pages or expands from a server that went away', () => {
+    const servers = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }];
+    const { s, sent } = rig(servers);
+    s.run('p');
+    const id = (sent[0].msg as { id: number }).id;
+    s.handle('a', hit(id, { session: 's1' }));
+    s.handle('b', hit(id, { session: 's2', turn: 'u2' }));
+    s.handle('a', done(id, { cut: 'hits', next: 'ca' }));
+    s.handle('b', done(id, { cut: 'hits', next: 'cb' }));
+    servers.pop();
+    const before = sent.length;
+    s.expand(s.current.hits.find((h) => h.serverId === 'b')!);
+    expect(sent).toHaveLength(before);
+    s.more();
+    expect(sent.slice(before).map((x) => x.to)).toEqual(['a']);
+    expect(s.current.pending).toEqual(['a']);
+    expect(s.current.next).toEqual({ a: 'ca' });
+  });
+  it('asks every page for the window of the first, even when the clock moves on', () => {
+    let now = NOW;
+    const sent: { to: string; msg: ClientMessage }[] = [];
+    const s = new SessionSearch({ servers: () => [{ id: 'a', name: 'Box' }], send: (to, msg) => sent.push({ to, msg }), onchange: () => {}, now: () => now, store: { getItem: () => null, setItem: () => {} } });
+    s.run('p');
+    const id = (sent[0].msg as { id: number }).id;
+    s.handle('a', done(id, { cut: 'hits', next: 'c1' }));
+    now += 3_600_000;
+    s.more();
+    expect((sent.at(-1)!.msg as { since?: number }).since).toBe((sent[0].msg as { since?: number }).since);
+  });
+  it('a hit keeps one key, joined with a separator no field holds', () => {
+    const k = hitKey({ serverId: 'a', workspace: 'w', tab: 't', session: 's', turn: 'u' });
+    expect(k).toBe('a\u0000w\u0000t\u0000s\u0000u');
+    expect(hitKey({ serverId: 'a', workspace: 'wt', tab: '', session: 's', turn: 'u' })).not.toBe(hitKey({ serverId: 'a', workspace: 'w', tab: 't', session: 's', turn: 'u' }));
+  });
+});
+
+describe('when the drawn list starts over', () => {
+  it('only for a different query or window, never for a hit that arrives', () => {
+    const a = { query: 'p', range: '30d' as const };
+    expect(resetsPieces(undefined, a)).toBe(true);
+    expect(resetsPieces(a, { ...a })).toBe(false);
+    expect(resetsPieces(a, { ...a, query: 'q' })).toBe(true);
+    expect(resetsPieces(a, { ...a, range: 'any' })).toBe(true);
   });
 });

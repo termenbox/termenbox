@@ -65,6 +65,10 @@ export interface SearchState {
 export const IDLE: SearchState = { query: '', status: 'idle', hits: [], pending: [], cuts: [], off: [], lost: 0, older: 0, range: '30d', next: {}, expanded: [] };
 /** The key of the conversation a hit belongs to; empty when an older server did not name it. */
 export const sessionKey = (h: Pick<Hit, 'serverId' | 'session'>): string => (h.session ? `${h.serverId}/${h.session}` : '');
+/** What makes a hit the same hit: a page or an expansion can repeat one, and a keyed list needs it to be unique. */
+export const hitKey = (h: Pick<Hit, 'serverId' | 'workspace' | 'tab' | 'session' | 'turn'>): string => [h.serverId, h.workspace, h.tab, h.session, h.turn].join('\u0000');
+/** The list is drawn in pieces; only a different query or window starts it over, never a hit or a page arriving. */
+export const resetsPieces = (prev: { query: string; range: RangeId } | undefined, now: { query: string; range: RangeId }): boolean => !prev || prev.query !== now.query || prev.range !== now.range;
 
 export type RangeId = '24h' | '7d' | '30d' | 'any';
 export const RANGES: { id: RangeId; label: string; ms: number | null }[] = [
@@ -138,6 +142,10 @@ export class SessionSearch {
   private sent: Record<string, string> = {};
   /** What the request in flight asks: the next page, or the rest of one conversation. */
   private kind: 'first' | 'page' | 'session' = 'first';
+  /** The `since` the first page used: every later page asks the same window, even if the clock moved on. */
+  private sinceSent: number | undefined;
+  /** The conversation being expanded, so Stop or a lost server can take its mark back. */
+  private expanding = '';
   constructor(private deps: SearchDeps) { this.range = loadRange(deps.store); this.state = { ...IDLE, range: this.range }; }
 
   get current(): SearchState { return this.state; }
@@ -164,13 +172,14 @@ export class SessionSearch {
     this.seen = new Set();
     this.sent = {};
     this.kind = 'first';
+    this.expanding = '';
+    this.sinceSent = sinceOf(this.range, (this.deps.now ?? Date.now)());
     this.set({ ...IDLE, query, status: servers.length ? 'searching' : 'done', pending: servers.map((s) => s.id) });
     for (const s of servers) this.deps.send(s.id, { type: 'search', id: this.id, query, ...this.since() });
   }
 
   private since(): { since?: number } {
-    const since = sinceOf(this.range, (this.deps.now ?? Date.now)());
-    return since === undefined ? {} : { since };
+    return this.sinceSent === undefined ? {} : { since: this.sinceSent };
   }
 
   /** True when a server stopped at a cap with more to read and nothing is running. */
@@ -179,13 +188,16 @@ export class SessionSearch {
   /** Asks every server that has more for its next page; the hits are added to the list. */
   more() {
     if (!this.hasMore) return;
-    const ids = Object.keys(this.state.next);
+    // A server that went away since cannot be asked, and is never waited for.
+    const up = new Set(this.deps.servers().map((s) => s.id));
+    const next = Object.fromEntries(Object.entries(this.state.next).filter(([sid]) => up.has(sid)));
+    const ids = Object.keys(next);
+    if (!ids.length) return this.set({ ...this.state, next });
     this.id++;
     this.kind = 'page';
-    const next = this.state.next;
     this.sent = { ...next };
-    // The cut that brought us here no longer holds once the next page is on its way.
-    this.set({ ...this.state, status: 'searching', pending: ids, next: {}, cuts: this.state.cuts.filter((c) => c !== cutText('hits')) });
+    // The cursors stay until a server answers: a Stop before that leaves them to ask again.
+    this.set({ ...this.state, status: 'searching', pending: ids, next, cuts: this.state.cuts.filter((c) => c !== cutText('hits')) });
     for (const sid of ids) this.deps.send(sid, { type: 'search', id: this.id, query: this.state.query, after: next[sid], ...this.since() });
   }
 
@@ -193,8 +205,10 @@ export class SessionSearch {
   expand(hit: Pick<Hit, 'serverId' | 'session'>) {
     const key = sessionKey(hit);
     if (!key || this.state.status !== 'done' || !this.state.query || this.state.expanded.includes(key)) return;
+    if (!this.deps.servers().some((s) => s.id === hit.serverId)) return;
     this.id++;
     this.kind = 'session';
+    this.expanding = key;
     this.set({ ...this.state, status: 'searching', pending: [hit.serverId], expanded: [...this.state.expanded, key] });
     this.deps.send(hit.serverId, { type: 'search', id: this.id, query: this.state.query, session: hit.session });
   }
@@ -203,7 +217,7 @@ export class SessionSearch {
   stop() {
     if (this.state.status !== 'searching') return;
     for (const sid of this.state.pending) this.deps.send(sid, { type: 'search', id: this.id, query: '', cancel: true });
-    this.set({ ...this.state, status: 'done', pending: [] });
+    this.set({ ...this.state, status: 'done', pending: [], expanded: this.unmark(this.state.expanded) });
   }
 
   /** Closing the sheet: stop, and forget the query and every hit. */
@@ -213,10 +227,21 @@ export class SessionSearch {
     this.set(IDLE);
   }
 
+  /** An expansion that did not finish is not an expanded conversation: it can be asked for again. */
+  private unmark(expanded: string[]): string[] {
+    const key = this.expanding;
+    this.expanding = '';
+    return key ? expanded.filter((k) => k !== key) : expanded;
+  }
+
   /** A server that dropped its connection will not finish. */
   lost(serverId: string) {
     if (!this.state.pending.includes(serverId)) return;
-    this.finish(serverId, (s) => ({ ...s, lost: s.lost + 1 }));
+    this.finish(serverId, (s) => {
+      const next = { ...s.next };
+      delete next[serverId];
+      return { ...s, lost: s.lost + 1, next, expanded: this.kind === 'session' ? this.unmark(s.expanded) : s.expanded };
+    });
   }
 
   handle(serverId: string, msg: ServerMessage) {
@@ -228,28 +253,33 @@ export class SessionSearch {
     if (m.id !== this.id || this.state.status !== 'searching' || !this.state.pending.includes(serverId)) return;
     if (this.state.hits.filter((h) => h.serverId === serverId).length >= MAX_HITS_PER_SERVER) return;
     const snippet = typeof m.snippet === 'string' ? m.snippet : '';
-    const dupe = [serverId, m.workspace, m.tab ?? '', m.session ?? '', m.turn].join('\u0000');
-    // A page or an expansion can repeat a hit the list already has.
-    if (this.seen.has(dupe)) return;
-    this.seen.add(dupe);
     const hit: Hit = {
       serverId, serverName: this.names.get(serverId) ?? 'Server', workspace: m.workspace, tab: m.tab ?? '', agent: m.agent, up: !!m.up,
       turn: m.turn, kind: m.kind, snippet, dir: typeof m.dir === 'string' ? m.dir : '', session: typeof m.session === 'string' ? m.session : '', highlight: clamp(m.highlight, snippet.length), at: time(m.at),
     };
+    // A page or an expansion can repeat a hit the list already has.
+    const dupe = hitKey(hit);
+    if (this.seen.has(dupe)) return;
+    this.seen.add(dupe);
     this.set({ ...this.state, hits: [...this.state.hits, hit] });
   }
 
   private done(serverId: string, m: SearchDoneMessage) {
     if (m.id !== this.id || !this.state.pending.includes(serverId)) return;
+    if (this.kind === 'session') this.expanding = '';
     this.finish(serverId, (s) => {
+      // At the cap the list takes no more from this server, so a cursor would only ask for hits that are dropped.
+      const capped = s.hits.filter((h) => h.serverId === serverId).length >= MAX_HITS_PER_SERVER;
+      const more = typeof m.next === 'string' && !!m.next && m.next !== this.sent[serverId] && !capped;
       // More to read: the cut is not the end, the list offers the next page. Expanding one conversation says nothing of the rest.
-      const cut = m.cut && !(m.cut === 'hits' && m.next) && this.kind !== 'session' ? cutText(m.cut) : null;
+      const cut = m.cut && !(more && ['hits', 'time', 'bytes'].includes(m.cut)) && this.kind !== 'session' ? cutText(m.cut) : null;
       const next = { ...s.next };
       // Expanding a conversation leaves the main search's cursor alone. A cursor that did not move would ask for the same page for ever.
       if (this.kind !== 'session') {
-        if (typeof m.next === 'string' && m.next && m.next !== this.sent[serverId]) next[serverId] = m.next; else delete next[serverId];
+        if (more) next[serverId] = m.next!; else delete next[serverId];
       }
-      const older = s.older + (Number.isFinite(m.older) && m.older! > 0 ? Math.trunc(m.older!) : 0);
+      // Every page repeats the count of what the window left out: only the first page's is new.
+      const older = s.older + (this.kind === 'first' && Number.isFinite(m.older) && m.older! > 0 ? Math.trunc(m.older!) : 0);
       const off = (Array.isArray(m.off) ? m.off : []).filter((o) => !s.off.some((x) => x.agent === o.agent && x.reason === o.reason));
       return { ...s, older, next, cuts: cut && !s.cuts.includes(cut) ? [...s.cuts, cut] : s.cuts, off: [...s.off, ...off] };
     });

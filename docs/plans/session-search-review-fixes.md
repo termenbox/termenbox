@@ -8,7 +8,7 @@ Read `CLAUDE.md` and the archived plan's "Cold start". Work only in a pool workt
 
 Owner decisions still open (defaults assumed): fix steps 1 to 4 before merge, later steps may follow; a per-file error skips that file only and never switches an agent off (step 3).
 
-### 1 Client paging state — [ ]
+### 1 Client paging state — [x]
 Class: implement · Needs: none · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test'`
 Files: `lib/sessionSearch.ts`, `SearchSheet.svelte`, `sessionSearch.test.ts`.
 Do:
