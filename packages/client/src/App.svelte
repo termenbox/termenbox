@@ -31,6 +31,7 @@
   import { installAudioUnlock, onAudioRunning, playChime } from './lib/bell';
   import { announce, waitingList, createAttention, createNotifier, createAlerter } from './lib/notify';
   import { attentionToAck } from './lib/agents';
+  import { AskDwell, type AskTarget } from './lib/askDwell';
   import { cacheRemaining, expiringSoon } from './lib/cache';
   import { settings, applyTheme, type Skin } from './lib/settings';
   import type { ServerListItem } from './lib/protocol';
@@ -517,6 +518,16 @@
       sendAttention(activeKey, { type: 'ack', attention_id: id });
     }
   }
+  // The time spent looking at a question in the tab that asked it counts as the owner's attention, as a card on Home does.
+  const askDwell = new AskDwell((serverId, obligation, ms) => hub.send(serverId, { type: 'card_seen', obligation, ms }));
+  $: askTarget = ((): AskTarget | null => {
+    if (!activeKey || away || !pageVisible) return null;
+    const it = $allAgents[activeKey]?.attention;
+    if (!it || it.kind !== 'needs_input' || (it.tab && it.tab !== activeTabId)) return null;
+    const s = hub.findWorkspace(activeKey);
+    return s ? { serverId: s.serverId, id: it.id } : null;
+  })();
+  $: askDwell.watch(askTarget, Date.now());
   // Idle Claude Code workspaces with a warm prompt cache, for Activity (an estimate from the last answer, decision 0083).
   $: warmCaches = $allWorkspaces.flatMap(s => { const a = $allAgents[s.key]; const r = a?.agent === 'claude' ? cacheRemaining(a, now, $settings.cacheTtlMs) : null; return r !== null && r > 0 ? [{ key: s.key, name: s.name, server: s.serverName, remainingMs: r }] : []; }).sort((a, b) => a.remainingMs - b.remainingMs);
   $: expiring = new Set($allWorkspaces.filter(s => expiringSoon(cacheRemaining($allAgents[s.key], now, $settings.cacheTtlMs))).map(s => s.key));
