@@ -97,6 +97,8 @@ export interface SearchDeps {
   onchange: (state: SearchState) => void;
   /** The clock, for the window's start. */
   now?: () => number;
+  /** Runs `fn` once before the next paint. Hits arriving in between are drawn together; defaults to `requestAnimationFrame`, or at once where there is none. */
+  frame?: (fn: () => void) => void;
   /** Where the window is remembered; defaults to the browser's local storage. */
   store?: Pick<Storage, 'getItem' | 'setItem'>;
 }
@@ -146,9 +148,28 @@ export class SessionSearch {
   private sinceSent: number | undefined;
   /** The conversation being expanded, so Stop or a lost server can take its mark back. */
   private expanding = '';
+  /** Hits kept per server, so the cap needs no scan of the list. */
+  private counts: Record<string, number> = {};
+  /** Hits that arrived since the last frame: `onchange` and the copy of the list are paid once for all of them. */
+  private queued: Hit[] = [];
+  private framed = false;
   constructor(private deps: SearchDeps) { this.range = loadRange(deps.store); this.state = { ...IDLE, range: this.range }; }
 
   get current(): SearchState { return this.state; }
+
+  /** Moves the queued hits into the state and tells the owner once. */
+  private flush() {
+    if (!this.queued.length) return;
+    const hits = this.state.hits.concat(this.queued);
+    this.queued = [];
+    this.set({ ...this.state, hits });
+  }
+  private schedule() {
+    if (this.framed) return;
+    this.framed = true;
+    const frame = this.deps.frame ?? (typeof requestAnimationFrame === 'function' ? (fn: () => void) => { requestAnimationFrame(fn); } : (fn: () => void) => fn());
+    frame(() => { this.framed = false; this.flush(); });
+  }
 
   private set(s: SearchState) { this.state = { ...s, range: this.range }; this.deps.onchange(this.state); }
 
@@ -164,6 +185,7 @@ export class SessionSearch {
   /** Stops what is running (the servers are told) and starts a search for `text`, or goes idle when it is empty. */
   run(text: string) {
     this.stop();
+    this.counts = {};
     const query = cleanQuery(text);
     if (!query) return this.set(IDLE);
     const servers = this.deps.servers();
@@ -187,6 +209,7 @@ export class SessionSearch {
 
   /** Asks every server that has more for its next page; the hits are added to the list. */
   more() {
+    this.flush();
     if (!this.hasMore) return;
     // A server that went away since cannot be asked, and is never waited for.
     const up = new Set(this.deps.servers().map((s) => s.id));
@@ -203,6 +226,7 @@ export class SessionSearch {
 
   /** Asks one server for every match of the conversation `hit` belongs to. */
   expand(hit: Pick<Hit, 'serverId' | 'session'> & { agent?: string }) {
+    this.flush();
     const key = sessionKey(hit);
     if (!key || this.state.status !== 'done' || !this.state.query || this.state.expanded.includes(key)) return;
     if (!this.deps.servers().some((s) => s.id === hit.serverId)) return;
@@ -215,6 +239,7 @@ export class SessionSearch {
 
   /** Tells the servers that still work to stop. The hits so far stay. */
   stop() {
+    this.flush();
     if (this.state.status !== 'searching') return;
     for (const sid of this.state.pending) this.deps.send(sid, { type: 'search', id: this.id, query: '', cancel: true });
     this.set({ ...this.state, status: 'done', pending: [], expanded: this.unmark(this.state.expanded) });
@@ -236,6 +261,7 @@ export class SessionSearch {
 
   /** A server that dropped its connection will not finish. */
   lost(serverId: string) {
+    this.flush();
     if (!this.state.pending.includes(serverId)) return;
     this.finish(serverId, (s) => {
       const next = { ...s.next };
@@ -246,12 +272,12 @@ export class SessionSearch {
 
   handle(serverId: string, msg: ServerMessage) {
     if (msg.type === 'search_hit') this.hit(serverId, msg);
-    else if (msg.type === 'search_done') this.done(serverId, msg);
+    else if (msg.type === 'search_done') { this.flush(); this.done(serverId, msg); }
   }
 
   private hit(serverId: string, m: SearchHitMessage) {
     if (m.id !== this.id || this.state.status !== 'searching' || !this.state.pending.includes(serverId)) return;
-    if (this.state.hits.filter((h) => h.serverId === serverId).length >= MAX_HITS_PER_SERVER) return;
+    if ((this.counts[serverId] ?? 0) >= MAX_HITS_PER_SERVER) return;
     const snippet = typeof m.snippet === 'string' ? m.snippet : '';
     const hit: Hit = {
       serverId, serverName: this.names.get(serverId) ?? 'Server', workspace: m.workspace, tab: m.tab ?? '', agent: m.agent, up: !!m.up,
@@ -261,7 +287,9 @@ export class SessionSearch {
     const dupe = hitKey(hit);
     if (this.seen.has(dupe)) return;
     this.seen.add(dupe);
-    this.set({ ...this.state, hits: [...this.state.hits, hit] });
+    this.counts[serverId] = (this.counts[serverId] ?? 0) + 1;
+    this.queued.push(hit);
+    this.schedule();
   }
 
   private done(serverId: string, m: SearchDoneMessage) {
@@ -269,7 +297,7 @@ export class SessionSearch {
     if (this.kind === 'session') this.expanding = '';
     this.finish(serverId, (s) => {
       // At the cap the list takes no more from this server, so a cursor would only ask for hits that are dropped.
-      const capped = s.hits.filter((h) => h.serverId === serverId).length >= MAX_HITS_PER_SERVER;
+      const capped = (this.counts[serverId] ?? 0) >= MAX_HITS_PER_SERVER;
       const more = typeof m.next === 'string' && !!m.next && m.next !== this.sent[serverId] && !capped;
       // More to read: the cut is not the end, the list offers the next page. Expanding one conversation says nothing of the rest.
       const cut = m.cut && !(more && ['hits', 'time', 'bytes'].includes(m.cut)) && this.kind !== 'session' ? cutText(m.cut) : null;
@@ -289,6 +317,18 @@ export class SessionSearch {
     const next = edit({ ...this.state, pending: this.state.pending.filter((p) => p !== serverId) });
     this.set({ ...next, status: next.pending.length ? 'searching' : 'done' });
   }
+}
+
+/** Per conversation of a group: how many hits it shows and where its last one sits, in one pass. */
+export function sessionSpans(hits: Pick<Hit, 'serverId' | 'session'>[]): Map<string, { count: number; last: number }> {
+  const out = new Map<string, { count: number; last: number }>();
+  hits.forEach((h, i) => {
+    const k = sessionKey(h);
+    if (!k) return;
+    const e = out.get(k);
+    if (e) { e.count++; e.last = i; } else out.set(k, { count: 1, last: i });
+  });
+  return out;
 }
 
 /** The last two segments of a directory, for a heading; the full path goes in a tooltip. */

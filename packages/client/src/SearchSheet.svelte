@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Sheet } from './lib/ui/sheet';
   import AgentIcon from './AgentIcon.svelte';
-  import { NOTICE, landingOf, isUnheld, dirLabel, resumeAskText, cutText, debounced, groupHits, GROUP_MODES, PIECE, PER_SESSION, sessionKey, limitHits, hitKey, resetsPieces, RANGES, olderText, loadGroupMode, saveGroupMode, offText, parts, whenText, type GroupMode, type RangeId, type Hit, type SearchState } from './lib/sessionSearch';
+  import { NOTICE, landingOf, isUnheld, dirLabel, resumeAskText, cutText, debounced, groupHits, GROUP_MODES, PIECE, PER_SESSION, sessionKey, limitHits, sessionSpans, hitKey, resetsPieces, RANGES, olderText, loadGroupMode, saveGroupMode, offText, parts, whenText, type GroupMode, type RangeId, type Hit, type SearchState } from './lib/sessionSearch';
 
   /**
    * Find text in the agents' own conversations (R78, decision 0156). The sheet shows what `search` holds and tells its owner
@@ -43,8 +43,9 @@
     return () => io.disconnect();
   });
   function more() { if (hasRest) shown += PIECE; else if (canMore) onmore(); }
-  const lastOfSession = (hits: Hit[], h: Hit) => { for (let j = hits.length - 1; j >= 0; j--) if (hits[j].session === h.session && hits[j].serverId === h.serverId) return j; return -1; };
-  const mayHoldMore = (h: Hit, g: { hits: Hit[] }) => { const k = sessionKey(h); return !!k && !search.expanded.includes(k) && g.hits.filter((x) => x.session === h.session && x.serverId === h.serverId).length >= PER_SESSION; };
+  // One pass per group instead of a scan per row.
+  const spans = $derived(new Map(groups.map((g) => [g.key, sessionSpans(g.hits)])));
+  const offersMore = (g: { key: string }, h: Hit, i: number) => { const k = sessionKey(h); const e = k ? spans.get(g.key)?.get(k) : undefined; return !!e && e.last === i && e.count >= PER_SESSION && !search.expanded.includes(k); };
   const where = (h: Hit) => isUnheld(h) ? dirLabel(h.dir) : nameOf(h.serverId, h.workspace) ?? h.workspace;
   const cuts = $derived(search.cuts);
   const searching = $derived(search.status === 'searching');
@@ -108,7 +109,7 @@
     {#if search.lost}<p class="rounded-control bg-raised px-3 py-2 text-sm text-soft" data-testid="search-lost">{search.lost === 1 ? 'A server' : `${search.lost} servers`} went away before it finished, so its matches may be missing.</p>{/if}
 
     {#each groups as g (g.key)}
-      <section aria-label={g.name} title={g.title} data-testid="search-group" data-workspace={g.workspace} data-mode={mode} class="flex flex-col">
+      <section aria-label={g.name || 'Matches'} title={g.title} data-testid="search-group" data-workspace={g.workspace} data-mode={mode} class="flex flex-col">
         {#if mode !== 'none'}
         <h4 class="flex h-11 items-center gap-2 text-sm font-semibold text-fg">
           <AgentIcon agent={g.agent} size={20} />
@@ -122,13 +123,13 @@
             class="flex min-h-11 w-full flex-col gap-1 rounded-control bg-transparent px-2 py-2 text-left [content-visibility:auto] [contain-intrinsic-size:auto_4.5rem]">
             <span class="flex items-center gap-2 text-xs text-muted">
               <span class={h.up ? 'text-accent-text' : 'text-warn'} data-testid="search-badge">{h.up ? 'Open' : 'Resume'}</span>
-              {#if mode !== 'workspace'}<span class="truncate" data-testid="search-where">{where(h)}{h.tab ? ` · ${h.tab}` : ''}</span>
+              {#if mode !== 'workspace'}<span class="truncate" data-testid="search-where" title={h.dir || undefined}>{where(h)}{h.tab ? ` · ${h.tab}` : ''}</span>
               {:else if h.tab}<span class="truncate">{h.tab}</span>{/if}
               <span class="ml-auto shrink-0">{whenText(h.at, now)}</span>
             </span>
             <span class="text-sm break-words text-fg">{p.before}<mark class="rounded-sm bg-accent/30 text-fg" data-hit>{p.match}</mark>{p.after}</span>
           </button>
-          {#if mayHoldMore(h, g) && lastOfSession(g.hits, h) === i}
+          {#if offersMore(g, h, i)}
             <button type="button" data-testid="search-more-session" onclick={() => onexpand(h)} disabled={searching}
               class="h-11 w-full rounded-control bg-transparent px-2 text-left text-sm font-semibold text-accent-text disabled:opacity-50">More in this conversation</button>
           {/if}

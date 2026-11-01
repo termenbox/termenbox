@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render } from 'svelte/server';
 import SearchSheet from './SearchSheet.svelte';
 import { IDLE, NOTICE, cutText, type Hit, type SearchState } from './lib/sessionSearch';
@@ -87,5 +87,14 @@ describe('SearchSheet', () => {
     const base = { query: 'x', hits: [hit()], next: { a: 'c' } };
     expect(html({ search: st({ ...base, status: 'done' }) })).toContain('data-testid="search-more"');
     expect(html({ search: st({ ...base, status: 'searching', pending: ['a'] }) })).not.toContain('data-testid="search-more"');
+  });
+  it('labels the flat list and gives a row its full directory as a tooltip', () => {
+    const store = { getItem: () => 'none', setItem: () => {} };
+    vi.stubGlobal('localStorage', store);
+    try {
+      const out = html({ search: st({ query: 'x', status: 'done', hits: [hit({ workspace: '', dir: '/home/me/code/api' })] }) });
+      expect(out).toContain('aria-label="Matches"');
+      expect(out).toMatch(/data-testid="search-where" title="\/home\/me\/code\/api"/);
+    } finally { vi.unstubAllGlobals(); }
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SessionSearch, landingOf, resumeOutcome, cleanQuery, cutText, loadRange, sinceOf, olderText, groupHits, dirLabel, isUnheld, resumeAskText, sessionResumedOutcome, loadGroupMode, saveGroupMode, parts, whenText, limitHits, sessionKey, hitKey, resetsPieces, PIECE, MAX_HITS_PER_SERVER, type SearchState } from './sessionSearch';
+import { SessionSearch, landingOf, resumeOutcome, cleanQuery, cutText, loadRange, sinceOf, olderText, groupHits, dirLabel, isUnheld, resumeAskText, sessionResumedOutcome, loadGroupMode, saveGroupMode, parts, whenText, limitHits, sessionKey, sessionSpans, hitKey, resetsPieces, PIECE, MAX_HITS_PER_SERVER, type SearchState } from './sessionSearch';
 import type { ClientMessage, SearchHitMessage, ServerMessage } from './protocol';
 
 const NOW = Date.parse('2026-11-01T00:00:00Z');
@@ -496,5 +496,43 @@ describe('when the drawn list starts over', () => {
     expect(resetsPieces(a, { ...a })).toBe(false);
     expect(resetsPieces(a, { ...a, query: 'q' })).toBe(true);
     expect(resetsPieces(a, { ...a, range: 'any' })).toBe(true);
+  });
+});
+
+describe('a page of 1000 hits', () => {
+  const framed = () => {
+    const sent: { to: string; msg: ClientMessage }[] = [];
+    const states: SearchState[] = [];
+    let frames: (() => void)[] = [];
+    const s = new SessionSearch({ servers: () => [{ id: 'a', name: 'Box' }], send: (to, msg) => sent.push({ to, msg }), onchange: (st) => states.push(st), now: () => NOW, frame: (fn) => frames.push(fn), store: { getItem: () => null, setItem: () => {} } });
+    const paint = () => { const f = frames; frames = []; f.forEach((fn) => fn()); };
+    return { s, sent, states, paint };
+  };
+  it('tells the owner once per frame, not once per hit', () => {
+    const { s, sent, states, paint } = framed();
+    s.run('p');
+    const id = (sent[0].msg as { id: number }).id;
+    const before = states.length;
+    for (let i = 0; i < 1000; i++) s.handle('a', hit(id, { turn: `u${i}`, session: `s${i}` }));
+    expect(states.length).toBe(before);
+    paint();
+    expect(states.length).toBe(before + 1);
+    expect(s.current.hits).toHaveLength(1000);
+  });
+  it('keeps the cap with a counter, and shows queued hits before a done or a Stop', () => {
+    const { s, sent, states, paint } = framed();
+    s.run('p');
+    const id = (sent[0].msg as { id: number }).id;
+    for (let i = 0; i < MAX_HITS_PER_SERVER + 5; i++) s.handle('a', hit(id, { turn: `u${i}`, session: `s${i}` }));
+    s.handle('a', done(id, { cut: 'hits', next: 'c1' }));
+    expect(s.current.hits).toHaveLength(MAX_HITS_PER_SERVER);
+    expect(s.current.status).toBe('done');
+    expect(s.current.next).toEqual({});
+    paint();
+    expect(states.at(-1)!.hits).toHaveLength(MAX_HITS_PER_SERVER);
+  });
+  it('counts a conversation in one pass', () => {
+    const hs = [{ serverId: 'a', session: 's1' }, { serverId: 'a', session: 's2' }, { serverId: 'a', session: 's1' }, { serverId: 'a', session: '' }];
+    expect(sessionSpans(hs)).toEqual(new Map([['a/s1', { count: 2, last: 2 }], ['a/s2', { count: 1, last: 1 }]]));
   });
 });

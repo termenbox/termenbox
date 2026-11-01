@@ -58,12 +58,13 @@ Class: implement · Needs: 2 · Check: `scripts/dev.sh env ... cargo test -p ter
 Do: `WorkspaceManager::resume_session` checks then creates (`workspaces.rs:199-246`); two clients resuming the same conversation can create two workspaces. Serialise per (agent, session). `d.is_dir()` (`:214`) blocks the async thread: use the async or blocking-pool form.
 Done-when: a test with two concurrent resumes of one session yields one workspace and one `resumed`, one `switched`.
 
-### 7 Sheet performance and labels — [ ]
+### 7 Sheet performance and labels — [x]
 Class: implement · Needs: 1 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test'`
 Do:
 - Per hit, `sessionSearch.ts:229` scans the whole list to count a server's hits and `:239` copies the array; each change regroups and sorts everything (`SearchSheet.svelte:25`) and `lastOfSession`/`mayHoldMore` are quadratic per row. At 1000 hits that is about 50 full regroups per page on a phone. Keep a per-server counter and batch `onchange` per animation frame; measure before and after on 1000 hits.
 - Agent and None modes: the section `aria-label` is empty in None mode and a hit's full directory has no tooltip. Add `title={h.dir}` on `search-where` (`:117`) and a label for the flat list.
 - The archived plan says "evict far-off pages' DOM" but only `content-visibility:auto` is done (up to 1000 rows). Either evict (windowing) with a measurement, or reword the Done-when to what is true.
+Result: `SessionSearch` keeps a per-server counter and queues hits, telling the owner once per frame (`deps.frame`, default `requestAnimationFrame`; a 1000-hit test shows one change per frame); `sessionSpans` replaces the per-row scans; None mode's section is labelled "Matches" and `search-where` has the directory as `title`; windowing was not added, so the archived plan's wording now says the DOM of far pages is not evicted.
 Done-when: a 1000-hit test shows the regroup count per page bounded; labels covered by tests; the memory claim matches the code.
 
 ### 8 Smaller server hardening — [ ]
