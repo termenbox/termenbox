@@ -896,6 +896,72 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[derive(Clone, Default)]
+    struct LogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for LogBuf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuf {
+        type Writer = LogBuf;
+        fn make_writer(&'a self) -> LogBuf {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn a_failed_listing_or_open_logs_no_id_and_no_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let buf = LogBuf::default();
+        let sub = tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+        let _guard = tracing::subscriber::set_default(sub);
+
+        let root = projects();
+        write_quokka(&root, "secret-session-id", 0, 1, false);
+        let file = root
+            .join("-home-fixture-project")
+            .join("secret-session-id.jsonl");
+        let adapter_logs = logs(&root);
+        let (listing, _) =
+            adapter_logs.list(None, &mut Budget::new(Limits::default(), Cancel::default()));
+        let listed = listing.files[0].clone();
+        // An unreadable file, a file swapped for a link, and a file that vanished.
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let adapter = adapter_logs.get("claude").unwrap();
+        let mut run = SearchRun::single(10);
+        let _ = adapter.search_file(&listed, "quokka", &mut run);
+        std::fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink("/nonexistent-target", &file).unwrap();
+        let _ = adapter.search_file(&listed, "quokka", &mut run);
+        std::fs::remove_file(&file).unwrap();
+        let _ = adapter.search_file(&listed, "quokka", &mut run);
+        // A whole root that cannot be listed, and a lookup by id that finds nothing.
+        let gone = projects();
+        let _ = std::fs::remove_dir_all(&gone);
+        let _ = logs(&gone).list(None, &mut Budget::new(Limits::default(), Cancel::default()));
+        let _ = locate(&adapter_logs, "claude", "secret-session-id");
+
+        let logged = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        for needle in [
+            "secret-session-id",
+            "fixture-project",
+            "quokka",
+            "nonexistent-target",
+        ] {
+            assert!(!logged.contains(needle), "{needle} in log: {logged}");
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn paging_past_the_cap_sees_each_hit_exactly_once() {
         let root = projects();

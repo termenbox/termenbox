@@ -67,7 +67,7 @@ Do:
 Result: `SessionSearch` keeps a per-server counter and queues hits, telling the owner once per frame (`deps.frame`, default `requestAnimationFrame`; a 1000-hit test shows one change per frame); `sessionSpans` replaces the per-row scans; None mode's section is labelled "Matches" and `search-where` has the directory as `title`; windowing was not added, so the archived plan's wording now says the DOM of far pages is not evicted.
 Done-when: a 1000-hit test shows the regroup count per page bounded; labels covered by tests; the memory claim matches the code.
 
-### 8 Smaller server hardening — [ ]
+### 8 Smaller server hardening — [x]
 Class: implement · Needs: 3 · Check: `scripts/dev.sh env ... cargo test -p termenbox-server`
 Do: the gap between `readdir` and `open` lets a regular file swapped for a link be followed (covered by `O_NOFOLLOW` in step 3; add a test). Add a test that no log line holds an id or a path when listing fails.
 Done-when: tests pass and nothing new is logged.
