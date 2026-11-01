@@ -103,7 +103,7 @@ jobs:
           PACE: ${{ inputs.pace }}
           CAPTION: ${{ inputs.caption }}
         run: |
-          flags="--pace $PACE"; [ "$CAPTION" = off ] && flags="$flags --no-caption"
+          flags="--pace $PACE --skip-unsupported"; [ "$CAPTION" = off ] && flags="$flags --no-caption"
           for c in $CASES; do
             for p in $PROFILES; do
               # shellcheck disable=SC2086

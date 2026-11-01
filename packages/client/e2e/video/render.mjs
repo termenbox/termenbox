@@ -18,7 +18,7 @@ import { join, resolve } from 'node:path';
 
 const arg = (name) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : undefined; };
 if (process.argv.includes('--list')) {
-  const rows = Object.entries(cases).map(([id, c]) => ({ id, title: c.title, group: c.group, page: c.page, inputs: c.inputs, real: !!c.real, steps: c.steps }));
+  const rows = Object.entries(cases).map(([id, c]) => ({ id, title: c.title, group: c.group, page: c.page, inputs: c.inputs, real: !!c.real, profiles: c.profiles ?? ['phone', 'desktop'], steps: c.steps }));
   console.log(process.argv.includes('--json') ? JSON.stringify(rows, null, 2) : rows.map((c) => c.id).join('\n'));
   process.exit(0);
 }
@@ -27,6 +27,7 @@ const profile = arg('profile') ?? 'phone';
 const pace = arg('pace') ?? 'normal';
 const captions = !process.argv.includes('--no-caption');
 const out = resolve(arg('out') ?? 'videos');
+if (process.argv.includes('--skip-unsupported') && cases[caseName] && !(cases[caseName].profiles ?? ['phone', 'desktop']).includes(profile)) { console.log(`skip ${caseName} (${profile}): the case is not shown on this screen`); process.exit(0); }
 if (!cases[caseName]) { console.error(`--case must be one of:\n${Object.keys(cases).join('\n')}`); process.exit(2); }
 try { paceFactor(pace); } catch (e) { console.error(e.message); process.exit(2); }
 if (!['phone', 'desktop'].includes(profile)) { console.error('--profile must be phone or desktop'); process.exit(2); }
