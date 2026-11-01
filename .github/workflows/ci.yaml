@@ -149,14 +149,14 @@ jobs:
           pnpm --filter termenbox-native run build:bridge
           pnpm --filter termenbox-native run typecheck:bridge
 
-      # The Electron sub-project installs its own dependencies (it is outside the pnpm workspace), and only the
+      # The Electron sub-project installs its own dependencies (it is outside the pnpm workspace, so its own package-lock.json pins the tree), and only the
       # main process is compiled here, so the Electron binary itself is not downloaded.
       - name: Build the Electron main process and check its security rules
         working-directory: packages/native/electron
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
         run: |
-          npm install --no-audit --no-fund
+          npm ci --no-audit --no-fund
           npm test
 
   rust-lint:

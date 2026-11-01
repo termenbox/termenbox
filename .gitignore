@@ -60,8 +60,9 @@ packages/native/electron/assets/appIcon.png
 packages/native/electron/assets/appIcon.ico
 packages/native/electron/assets/splash.png
 
-# npm lockfiles: this repo uses pnpm (pnpm-lock.yaml)
+# npm lockfiles: this repo uses pnpm (pnpm-lock.yaml); the Electron wrapper sits outside the workspace and pins its own
 package-lock.json
+!packages/native/electron/package-lock.json
 
 # Scratch output and local worktrees
 test-results/
