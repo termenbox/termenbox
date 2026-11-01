@@ -136,7 +136,7 @@ describe('cancel', () => {
 });
 
 describe('grouping', () => {
-  it('groups by workspace, newest group first, newest hit first', () => {
+  it('groups by workspace in the order hits arrived, a hit at the end of its group', () => {
     const { s, sent } = rig();
     s.run('x');
     const id = (sent[0].msg as { id: number }).id;
@@ -144,10 +144,24 @@ describe('grouping', () => {
     s.handle('a', hit(id, { workspace: 'new', turn: '2', at: '2026-10-29T00:00:00Z' }));
     s.handle('a', hit(id, { workspace: 'new', turn: '3', at: '2026-10-30T00:00:00Z' }));
     const g = groupHits(s.current.hits, 'workspace', (_sid, w) => (w === 'new' ? 'Fresh' : undefined));
-    expect(g.map((x) => x.name)).toEqual(['Fresh', 'old']);
-    expect(g[0].hits.map((h) => h.turn)).toEqual(['3', '2']);
+    expect(g.map((x) => x.name)).toEqual(['old', 'Fresh']);
+    expect(g[1].hits.map((h) => h.turn)).toEqual(['2', '3']);
   });
-  it('groups by agent, or not at all, newest first', () => {
+  it('never moves a row because another hit arrived, even a newer one (decision 0082)', () => {
+    const { s, sent } = rig();
+    s.run('x');
+    const id = (sent[0].msg as { id: number }).id;
+    const order = () => groupHits(s.current.hits, 'workspace', () => undefined).flatMap((g) => g.hits.map((h) => `${g.key}:${h.turn}`));
+    let seen: string[] = [];
+    [['w1', '1', '2026-10-01'], ['w2', '2', '2026-10-05'], ['w1', '3', '2026-10-29'], ['w3', '4', '2026-10-30'], ['w2', '5', '2026-10-31']].forEach(([workspace, turn, at]) => {
+      s.handle('a', hit(id, { workspace, turn, at: `${at}T00:00:00Z` }));
+      const now = order();
+      // Every row that was there keeps its place relative to the others.
+      expect(now.filter((r) => seen.includes(r))).toEqual(seen);
+      seen = now;
+    });
+  });
+  it('groups by agent, or not at all, in arrival order', () => {
     const { s, sent } = rig();
     s.run('x');
     const id = (sent[0].msg as { id: number }).id;
@@ -156,10 +170,10 @@ describe('grouping', () => {
     s.handle('a', hit(id, { workspace: 'w2', agent: 'claude', turn: '3', at: '2026-10-30T00:00:00Z' }));
     const by = groupHits(s.current.hits, 'agent', () => undefined);
     expect(by.map((x) => x.name)).toEqual(['claude', 'codex']);
-    expect(by[0].hits.map((h) => h.turn)).toEqual(['3', '1']);
+    expect(by[0].hits.map((h) => h.turn)).toEqual(['1', '3']);
     const flat = groupHits(s.current.hits, 'none', () => undefined);
     expect(flat).toHaveLength(1);
-    expect(flat[0].hits.map((h) => h.turn)).toEqual(['3', '2', '1']);
+    expect(flat[0].hits.map((h) => h.turn)).toEqual(['1', '2', '3']);
   });
   it('remembers the grouping per viewer and survives missing or broken storage', () => {
     const m = new Map<string, string>();
