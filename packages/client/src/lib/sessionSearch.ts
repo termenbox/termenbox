@@ -202,7 +202,7 @@ export class SessionSearch {
   }
 
   /** Asks one server for every match of the conversation `hit` belongs to. */
-  expand(hit: Pick<Hit, 'serverId' | 'session'>) {
+  expand(hit: Pick<Hit, 'serverId' | 'session'> & { agent?: string }) {
     const key = sessionKey(hit);
     if (!key || this.state.status !== 'done' || !this.state.query || this.state.expanded.includes(key)) return;
     if (!this.deps.servers().some((s) => s.id === hit.serverId)) return;
@@ -210,7 +210,7 @@ export class SessionSearch {
     this.kind = 'session';
     this.expanding = key;
     this.set({ ...this.state, status: 'searching', pending: [hit.serverId], expanded: [...this.state.expanded, key] });
-    this.deps.send(hit.serverId, { type: 'search', id: this.id, query: this.state.query, session: hit.session });
+    this.deps.send(hit.serverId, { type: 'search', id: this.id, query: this.state.query, session: hit.session, agent: hit.agent });
   }
 
   /** Tells the servers that still work to stop. The hits so far stay. */

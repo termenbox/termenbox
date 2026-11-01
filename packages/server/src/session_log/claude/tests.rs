@@ -416,3 +416,35 @@ fn a_file_named_like_a_flag_is_never_listed() {
     assert!(listing.files.iter().all(|f| !f.id.starts_with('-')));
     std::fs::remove_dir_all(root).ok();
 }
+
+#[test]
+fn listing_and_searching_many_files_allocate_no_block_per_file() {
+    use super::scan::tests::big_allocs;
+    let root = tmp();
+    let dir = projects(&root);
+    for n in 0..30 {
+        std::fs::copy(dir.join("short.jsonl"), dir.join(format!("copy{n}.jsonl"))).unwrap();
+    }
+    let log = ClaudeLog::new(root.clone());
+    let pass = |log: &ClaudeLog| {
+        let mut walk = scan::Budget::new(scan::Limits::default(), scan::Cancel::default());
+        let listing = log.list(None, &mut walk);
+        let mut run = SearchRun::new(scan::Limits::default(), scan::Cancel::default());
+        for f in &listing.files {
+            log.search_file(f, "the", &mut run).unwrap();
+        }
+        listing.files.len()
+    };
+    assert!(pass(&log) >= 30); // warms the scanner pool
+                               // A fresh log has no cached heads, so every file's head is read again.
+    let log = ClaudeLog::new(root.clone());
+    let before = big_allocs();
+    assert!(pass(&log) >= 30);
+    // The scanner's block and the head scratch come from the pool: no allocation per file.
+    assert!(
+        big_allocs() - before <= 2,
+        "{} block-sized allocations for 30 files",
+        big_allocs() - before
+    );
+    std::fs::remove_dir_all(root).ok();
+}

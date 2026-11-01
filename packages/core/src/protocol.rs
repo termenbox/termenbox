@@ -546,6 +546,10 @@ pub enum ClientMessage {
         /// age: the rest of a conversation a page showed three hits of.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session: Option<String>,
+        /// The agent of `session` (its `search_hit.agent`): two agents may use one id, and only this one is searched.
+        /// Absent searches every agent that has the id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
         /// The `next` of an earlier `search_done` of the same query: continue after it. The server keeps no search
         /// state, so the cursor holds the position and the file's identity.
         #[serde(default, skip_serializing_if = "Option::is_none")]

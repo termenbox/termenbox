@@ -396,6 +396,12 @@ impl Scanner {
         self.stopped
     }
 
+    /// The scanner's block, free between scans, for a caller that reads a file's head (a listing or an open) and
+    /// would otherwise allocate a block of its own for each file.
+    pub fn scratch(&mut self) -> &mut [u8] {
+        &mut self.buf
+    }
+
     /// Empties the working buffers and drops the ones a huge line grew, so an idle scanner stays small.
     fn tidy(&mut self) {
         for v in [&mut self.carry, &mut self.line, &mut self.fold] {
@@ -474,7 +480,9 @@ impl Scanner {
 
         while end > 0 {
             // The carry is the tail of a line that starts before `end`: the file up to its last byte is still to read.
-            last.set(end + carry.len() as u64);
+            // The line the carry belongs to is whole up to its newline, which is the byte at `end + carry.len()`: a
+            // cut here resumes just after it. The first block has no carry and ends the file, which may lack one.
+            last.set((end + carry.len() as u64 + 1).min(size));
             if let Err(why) = budget.check() {
                 return Ok(End::Cut(why));
             }

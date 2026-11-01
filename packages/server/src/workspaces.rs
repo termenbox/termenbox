@@ -2056,6 +2056,7 @@ impl WorkspaceManager {
                 cancel,
                 since,
                 session,
+                agent,
                 after,
             } => {
                 // Searching reads every conversation on the machine: the owner only.
@@ -2082,7 +2083,11 @@ impl WorkspaceManager {
                 }
                 // Who searched, never for what.
                 info!(target: "audit", event = "session_search", provider = %identity.provider, account_id = %identity.id);
-                let page = crate::session_search::Page { session, after };
+                let page = crate::session_search::Page {
+                    session,
+                    agent,
+                    after,
+                };
                 self.start_search(conn, id, query, since, page, tx);
             }
             ClientMessage::ResumeSession { agent, session } => {
@@ -4173,6 +4178,7 @@ mod search_tests {
             cancel: false,
             since: None,
             session: None,
+            agent: None,
             after: None,
         }
     }
@@ -4224,6 +4230,7 @@ mod search_tests {
             cancel: true,
             since: None,
             session: None,
+            agent: None,
             after: None,
         };
         send_msg(&rig, "1", cancel, &link).await.unwrap();

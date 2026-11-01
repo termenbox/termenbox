@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::scan::{Needle, BLOCK, MAX_LINE};
+use super::scan::{PooledScanner, BLOCK, MAX_LINE};
 use super::*;
 
 pub const AGENT: &str = "claude";
@@ -116,7 +116,7 @@ impl ClaudeLog {
         path: PathBuf,
         file: File,
         fp: Fingerprint,
-        needle: Needle,
+        needle: &scan::Needle,
         query: &str,
         run: &mut SearchRun,
     ) -> Result<Vec<Hit>, LogError> {
@@ -138,7 +138,7 @@ impl ClaudeLog {
         let mut chain: Option<Arc<Chain>> = None;
         let mut failed: Option<LogError> = None;
         scanner
-            .scan_file(&file, size, &needle, budget, |c| {
+            .scan_file(&file, size, needle, budget, |c| {
                 // The scan matched bytes; what counts is the scrubbed text of a record on the active branch.
                 if !may_hold_text(c.bytes) {
                     return ControlFlow::Continue(());
@@ -197,7 +197,11 @@ impl ClaudeLog {
     }
 
     /// A listed file, opened without following a link. Its head is read again only if it changed since the walk.
-    fn open_listed(&self, path: &Path) -> Result<(File, Fingerprint), LogError> {
+    fn open_listed(
+        &self,
+        path: &Path,
+        scratch: &mut [u8],
+    ) -> Result<(File, Fingerprint), LogError> {
         let file = open_regular(path).map_err(|e| match e.kind() {
             io::ErrorKind::NotFound => LogError::Missing,
             _ => LogError::Unreadable,
@@ -205,12 +209,16 @@ impl ClaudeLog {
         let meta = file.metadata().map_err(|_| LogError::Unreadable)?;
         let fp = Fingerprint::of_meta(&meta);
         if self.heads.get(path, &fp).is_none() {
-            check_head(&file, fp.size)?;
+            check_head(&file, fp.size, scratch)?;
         }
         Ok((file, fp))
     }
 
-    fn open(&self, s: &SessionRef) -> Result<(PathBuf, File, Fingerprint), LogError> {
+    fn open(
+        &self,
+        s: &SessionRef,
+        scratch: &mut [u8],
+    ) -> Result<(PathBuf, File, Fingerprint), LogError> {
         let path = self.path(s).ok_or(LogError::Missing)?;
         let file = File::open(&path).map_err(|e| match e.kind() {
             io::ErrorKind::NotFound => LogError::Missing,
@@ -220,7 +228,7 @@ impl ClaudeLog {
         })?;
         let meta = file.metadata().map_err(|_| LogError::Unreadable)?;
         let fp = Fingerprint::of_meta(&meta);
-        check_head(&file, fp.size)?;
+        check_head(&file, fp.size, scratch)?;
         Ok((path, file, fp))
     }
 
@@ -246,20 +254,23 @@ impl ClaudeLog {
     }
 }
 
+/// The read buffer of an index build: well under glibc's mmap threshold, so one per file is not a map and an unmap.
+const BUILD_READ: usize = 32 * 1024;
+
 /// The most of a file's head read to find where the session ran.
 const CWD_HEAD: usize = 64 * 1024;
 
 /// The directory the session ran in: the first record that names a `cwd`, within the head of the file. The folder
 /// name is lossy (every non-alphanumeric is a "-"), so the path comes from the records.
-fn head_cwd(file: &File, size: u64) -> Option<PathBuf> {
+fn head_cwd(file: &File, size: u64, scratch: &mut [u8]) -> Option<PathBuf> {
     #[derive(Deserialize)]
     struct Rec<'a> {
         #[serde(borrow)]
         cwd: Option<Cow<'a, str>>,
     }
-    let len = (size as usize).min(CWD_HEAD);
-    let mut buf = vec![0u8; len];
-    file.read_exact_at(&mut buf, 0).ok()?;
+    let len = (size as usize).min(CWD_HEAD).min(scratch.len());
+    let buf = &mut scratch[..len];
+    file.read_exact_at(buf, 0).ok()?;
     let mut lines: Vec<&[u8]> = buf.split(|b| *b == b'\n').collect();
     if size as usize > len || buf.last() != Some(&b'\n') {
         lines.pop(); // not a whole line
@@ -272,13 +283,13 @@ fn head_cwd(file: &File, size: u64) -> Option<PathBuf> {
 }
 
 /// Whether the head of the file looks like a Claude session this code understands.
-fn check_head(file: &File, size: u64) -> Result<(), LogError> {
-    let len = (size as usize).min(BLOCK);
+fn check_head(file: &File, size: u64, scratch: &mut [u8]) -> Result<(), LogError> {
+    let len = (size as usize).min(BLOCK).min(scratch.len());
     if len == 0 {
         return Ok(());
     }
-    let mut buf = vec![0u8; len];
-    file.read_exact_at(&mut buf, 0)
+    let buf = &mut scratch[..len];
+    file.read_exact_at(buf, 0)
         .map_err(|_| LogError::Unreadable)?;
     let mut pieces: Vec<&[u8]> = buf.split(|b| *b == b'\n').collect();
     pieces.pop(); // after the last newline: empty, or a line not finished
@@ -393,7 +404,7 @@ impl Chain {
             len: usize,
         }
         // Only what the file held when the fingerprint was taken: a record being appended is not chased.
-        let mut r = BufReader::with_capacity(BLOCK, AtRead { file, pos: 0 }.take(fp.size));
+        let mut r = BufReader::with_capacity(BUILD_READ, AtRead { file, pos: 0 }.take(fp.size));
         let mut line = Vec::new();
         let mut at = 0u64;
         let mut recs: Vec<Rec> = Vec::new();
@@ -603,11 +614,11 @@ impl SessionLog for ClaudeLog {
         query: &str,
         run: &mut SearchRun,
     ) -> Result<Vec<Hit>, LogError> {
-        let Some(needle) = Needle::new(query) else {
+        let Some(needle) = run.needle(query) else {
             return Ok(Vec::new());
         };
-        let (path, file, fp) = self.open(s)?;
-        self.search_opened(path, file, fp, needle, query, run)
+        let (path, file, fp) = self.open(s, run.scanner.scratch())?;
+        self.search_opened(path, file, fp, &needle, query, run)
     }
 
     fn search_file(
@@ -616,11 +627,11 @@ impl SessionLog for ClaudeLog {
         query: &str,
         run: &mut SearchRun,
     ) -> Result<Vec<Hit>, LogError> {
-        let Some(needle) = Needle::new(query) else {
+        let Some(needle) = run.needle(query) else {
             return Ok(Vec::new());
         };
-        let (file, fp) = self.open_listed(&f.path)?;
-        self.search_opened(f.path.clone(), file, fp, needle, query, run)
+        let (file, fp) = self.open_listed(&f.path, run.scanner.scratch())?;
+        self.search_opened(f.path.clone(), file, fp, &needle, query, run)
     }
 
     fn list(&self, since: Option<std::time::SystemTime>, budget: &mut Budget) -> Listing {
@@ -652,9 +663,9 @@ impl SessionLog for ClaudeLog {
             budget,
             &self.heads,
             cost,
-            |file, len| {
-                check_head(file, len).ok()?;
-                head_cwd(file, len)
+            |file, len, buf| {
+                check_head(file, len, buf).ok()?;
+                head_cwd(file, len, buf)
             },
         )
     }
@@ -664,6 +675,7 @@ impl SessionLog for ClaudeLog {
             return None;
         }
         let name = format!("{id}.jsonl");
+        let mut scanner = PooledScanner::take();
         for folder in real_entries(&self.root, true) {
             if cancel.is_cancelled() {
                 return None;
@@ -672,10 +684,10 @@ impl SessionLog for ClaudeLog {
             if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
                 continue;
             }
-            let Ok((file, fp)) = self.open_listed(&path) else {
+            let Ok((file, fp)) = self.open_listed(&path, scanner.scratch()) else {
                 continue;
             };
-            let Some(dir) = head_cwd(&file, fp.size) else {
+            let Some(dir) = head_cwd(&file, fp.size, scanner.scratch()) else {
                 continue;
             };
             return Some(SessionFile {
@@ -700,7 +712,8 @@ impl SessionLog for ClaudeLog {
         before: usize,
         after: usize,
     ) -> Result<Window, LogError> {
-        let (path, file, fp) = self.open(s)?;
+        let mut scanner = PooledScanner::take();
+        let (path, file, fp) = self.open(s, scanner.scratch())?;
         let chain = self.chain(&file, &path, fp)?;
         let at = chain.node_of(anchor).ok_or(LogError::NoAnchor)?;
         let own = entries_of(&file, &chain.nodes[at])?;
@@ -747,7 +760,8 @@ impl SessionLog for ClaudeLog {
         direction: Direction,
         count: usize,
     ) -> Result<Page, LogError> {
-        let (path, file, fp) = self.open(s)?;
+        let mut scanner = PooledScanner::take();
+        let (path, file, fp) = self.open(s, scanner.scratch())?;
         if let Some(c) = cursor {
             if !c.fingerprint.still_holds(&fp) {
                 return Err(LogError::StaleCursor);

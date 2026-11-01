@@ -44,7 +44,7 @@ Class: review · Needs: 1, 2, 3 · Check: `sg docker -c "COMPOSE_PROJECT_NAME=te
 Do: replace the forgiving "Show more" retry loop in `e2e/session-search.mjs` with a strict one (the list never shrinks, `older` stays constant across pages); add a scenario for a file named with a leading `-`. Run `conform` over the new diff.
 Done-when: the e2e passes with the strict assertions and `conform` reports no violation.
 
-### 5 Scan allocations and cursor details — [ ]
+### 5 Scan allocations and cursor details — [x]
 Class: implement · Needs: 3 · Check: `scripts/dev.sh env ... cargo test -p termenbox-server session_log::scan`
 Do:
 - `Needle::new` builds an Aho-Corasick per file (`claude.rs:543`, `codex.rs:415`) and `check_head` allocates a 256 KiB `vec!` per file (`claude.rs:217`, `codex.rs:169`), above glibc's mmap threshold, which step 3 of the archived plan removed. Build the needle once per `SearchRun`; reuse the scanner's buffer for heads. Extend the counting-allocator test to cover listing.

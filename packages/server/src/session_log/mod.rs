@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 
 use crate::events::sanitize_block;
-use scan::{Budget, Cancel, Cut, Limits, PooledScanner};
+use scan::{Budget, Cancel, Cut, Limits, Needle, PooledScanner};
 
 pub mod claude;
 pub mod codex;
@@ -155,9 +155,11 @@ pub(crate) fn walk_heads(
     budget: &mut Budget,
     cache: &HeadCache,
     head_cost: u64,
-    head: impl Fn(&std::fs::File, u64) -> Option<PathBuf>,
+    mut head: impl FnMut(&std::fs::File, u64, &mut [u8]) -> Option<PathBuf>,
 ) -> Listing {
     let mut out = Listing::default();
+    // One block for every head of the walk.
+    let mut scanner = PooledScanner::take();
     cands.sort_by(|a, b| b.mtime.cmp(&a.mtime).then_with(|| a.id.cmp(&b.id)));
     let mut rest = cands.into_iter();
     while let Some(c) = rest.next() {
@@ -187,7 +189,7 @@ pub(crate) fn walk_heads(
                 let Ok(meta) = file.metadata() else {
                     continue;
                 };
-                let dir = head(&file, meta.len());
+                let dir = head(&file, meta.len(), scanner.scratch());
                 cache.put(&c.path, Fingerprint::of_meta(&meta), dir.clone());
                 dir
             }
@@ -451,6 +453,8 @@ pub struct SearchRun {
     pub stopped: Option<u64>,
     /// Output of `search_in`: the file as it was read, to tie a continuation to it.
     pub seen: Option<Fingerprint>,
+    /// The folded query, built on the first file and shared by the rest.
+    needle: Option<(String, Option<Arc<Needle>>)>,
 }
 
 impl SearchRun {
@@ -462,7 +466,16 @@ impl SearchRun {
             restarted: false,
             stopped: None,
             seen: None,
+            needle: None,
         }
+    }
+
+    /// The needle of `query`, built once for the whole run; none when nothing is left to look for.
+    pub fn needle(&mut self, query: &str) -> Option<Arc<Needle>> {
+        if !self.needle.as_ref().is_some_and(|(q, _)| q == query) {
+            self.needle = Some((query.to_string(), Needle::new(query).map(Arc::new)));
+        }
+        self.needle.as_ref().and_then(|(_, n)| n.clone())
     }
 
     /// How many bytes of the file to read, from its start: all of it, or up to where a continuation left off. Records

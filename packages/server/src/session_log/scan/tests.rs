@@ -11,7 +11,11 @@ thread_local! {
     static ALLOCS: Cell<u64> = const { Cell::new(0) };
     static LIVE: Cell<i64> = const { Cell::new(0) };
     static PEAK: Cell<i64> = const { Cell::new(0) };
+    static BIG: Cell<u64> = const { Cell::new(0) };
 }
+
+/// An allocation this big is a block, not a working buffer (glibc serves it with its own mmap).
+const BIG_ALLOC: usize = 64 * 1024;
 
 struct Counting;
 
@@ -22,6 +26,9 @@ fn note(delta: i64, allocation: bool) {
     });
     if allocation {
         let _ = ALLOCS.try_with(|n| n.set(n.get() + 1));
+        if delta >= BIG_ALLOC as i64 {
+            let _ = BIG.try_with(|n| n.set(n.get() + 1));
+        }
     }
 }
 
@@ -49,6 +56,11 @@ static COUNTING: Counting = Counting;
 
 pub(crate) fn allocs() -> u64 {
     ALLOCS.with(Cell::get)
+}
+
+/// How many allocations of a block's size the thread has made.
+pub(crate) fn big_allocs() -> u64 {
+    BIG.with(Cell::get)
 }
 
 /// Starts measuring the heap peak from what is held now.
@@ -1066,4 +1078,47 @@ fn reading_the_first_line_time_allocates_nothing() {
     let t = first_line_time(block);
     assert_eq!(allocs(), before);
     assert_eq!(t, Some(60_000));
+}
+
+#[test]
+fn a_cut_between_blocks_resumes_after_a_newline_and_loses_no_line() {
+    let dir = TempDir::new();
+    let data = generated(9, 6 * BLOCK, 3000, 3);
+    let path = dir.file("a.jsonl", &data);
+    let file = File::open(&path).unwrap();
+    let size = file.metadata().unwrap().len();
+    let needle = Needle::new("needle").unwrap();
+    let mut scanner = Scanner::new();
+    let mut budget = Budget::new(
+        Limits {
+            max_bytes: 2 * BLOCK as u64,
+            ..unlimited()
+        },
+        Cancel::default(),
+    );
+    let mut first: Found = Vec::new();
+    let end = scanner
+        .scan_file(&file, size, &needle, &mut budget, |c| {
+            first.push((c.offset, c.bytes.to_vec(), c.complete));
+            ControlFlow::Continue(())
+        })
+        .unwrap();
+    assert_eq!(end, End::Cut(Cut::Bytes));
+    let at = scanner.stopped_at().expect("a cut says where");
+    assert_eq!(data[at as usize - 1], b'\n', "just after a newline");
+    let mut budget = Budget::new(unlimited(), Cancel::default());
+    let mut rest: Found = Vec::new();
+    scanner
+        .scan_file(&file, at, &needle, &mut budget, |c| {
+            rest.push((c.offset, c.bytes.to_vec(), c.complete));
+            ControlFlow::Continue(())
+        })
+        .unwrap();
+    assert!(
+        rest.iter().all(|r| r.2),
+        "every line of the resumed scan is whole"
+    );
+    let mut both: Found = first;
+    both.extend(rest);
+    assert_eq!(both, naive(&data, "needle"), "no line twice, none lost");
 }

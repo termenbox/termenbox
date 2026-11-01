@@ -39,6 +39,8 @@ pub const SESSION_CAP: usize = 200;
 pub struct Page {
     /// Only this conversation, with all its matches up to `SESSION_CAP`.
     pub session: Option<String>,
+    /// The agent of `session`; none searches every agent that has the id.
+    pub agent: Option<String>,
     /// A cursor from an earlier `Summary::next`: continue after it.
     pub after: Option<String>,
 }
@@ -187,7 +189,8 @@ pub fn run_page(
     // file is searched; what it reads is charged to the search. One conversation is found by name, not by a walk.
     let (mut listing, off) = match &page.session {
         Some(id) => {
-            let files = logs.find(id, &cancel);
+            let mut files = logs.find(id, &cancel);
+            files.retain(|f| page.agent.as_ref().is_none_or(|a| *a == f.agent));
             (
                 Listing {
                     files,
@@ -917,6 +920,7 @@ mod tests {
                 paged_limits(),
                 &Page {
                     session: None,
+                    agent: None,
                     after,
                 },
                 &mut got,
@@ -960,6 +964,7 @@ mod tests {
                 paged_limits(),
                 &Page {
                     session: None,
+                    agent: None,
                     after: Some(n),
                 },
                 &mut got,
@@ -993,6 +998,7 @@ mod tests {
             paged_limits(),
             &Page {
                 session: None,
+                agent: None,
                 after: s.next,
             },
             &mut got,
@@ -1013,6 +1019,7 @@ mod tests {
             Limits::default(),
             &Page {
                 session: Some("paged-b".into()),
+                agent: None,
                 after: None,
             },
             &mut got,
@@ -1020,6 +1027,29 @@ mod tests {
         assert_eq!(got.len(), 30);
         assert!(got.iter().all(|(id, _)| id == "paged-b"));
         assert_eq!(s.next, None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn one_conversation_page_keeps_only_the_agent_it_names() {
+        let root = projects();
+        write_quokka(&root, "paged-b", 0, 30, false);
+        let ask = |agent: &str| {
+            let mut got = Vec::new();
+            page(
+                &root,
+                Limits::default(),
+                &Page {
+                    session: Some("paged-b".into()),
+                    agent: Some(agent.into()),
+                    after: None,
+                },
+                &mut got,
+            );
+            got.len()
+        };
+        assert_eq!(ask("claude"), 30);
+        assert_eq!(ask("codex"), 0, "another agent's id is not this one");
         let _ = std::fs::remove_dir_all(root);
     }
 }

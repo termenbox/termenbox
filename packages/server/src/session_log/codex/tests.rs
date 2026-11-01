@@ -312,3 +312,12 @@ fn only_a_message_or_reasoning_line_is_worth_parsing() {
         br#"{"type":"response_item","payload":{"type":"function_call_output","output":"{\"type\":\"message\"}"}}"#
     ));
 }
+
+#[test]
+fn the_remembered_locations_stay_bounded() {
+    let log = CodexLog::new(PathBuf::from("/nonexistent"));
+    for n in 0..FOUND_CAP * 3 {
+        log.remember(&format!("id{n}"), Path::new("/x"));
+        assert!(log.found.lock().unwrap().len() <= FOUND_CAP);
+    }
+}
