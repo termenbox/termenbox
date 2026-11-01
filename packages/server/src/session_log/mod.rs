@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 
 use crate::events::sanitize_block;
-use scan::{Budget, Cancel, Limits, Scanner};
+use scan::{Budget, Cancel, Cut, Limits, Needle, PooledScanner};
 
 pub mod claude;
 pub mod codex;
@@ -52,6 +52,168 @@ impl fmt::Debug for SessionRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "SessionRef({})", self.agent)
     }
+}
+
+/// A session file found by walking an adapter's root (decision 0182): the agent, its own session id, the directory the
+/// file says it ran in, and when it was last written.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SessionFile {
+    pub agent: String,
+    pub id: String,
+    pub dir: PathBuf,
+    /// Where the walk found it: the file is opened here, never at a path rebuilt from `dir`.
+    pub path: PathBuf,
+    pub mtime: std::time::SystemTime,
+}
+
+impl fmt::Debug for SessionFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SessionFile({})", self.agent) // the id and the directory are not logged
+    }
+}
+
+/// What walking a root found: the files to search, newest first, and how many the `since` bound ruled out unopened.
+#[derive(Debug, Default)]
+pub struct Listing {
+    pub files: Vec<SessionFile>,
+    pub older: usize,
+    /// Why the walk stopped before it had opened every file in range (`Time` or `Bytes`), and the mtime of the oldest
+    /// file it did list: nothing older than that was looked at, so it is not searched on this page either.
+    pub cut: Option<Cut>,
+    pub floor: Option<std::time::SystemTime>,
+}
+
+/// The entries of `dir` that are real directories or real files, as the walk of a root sees them. A symlink is neither
+/// (`DirEntry::file_type` does not follow it), so nothing a link points at, inside the root or out of it, is read.
+pub(crate) fn real_entries(dir: &Path, want_dir: bool) -> Vec<std::fs::DirEntry> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            e.file_type()
+                .is_ok_and(|t| if want_dir { t.is_dir() } else { t.is_file() })
+        })
+        .collect()
+}
+
+/// Opens a session file without following a link at the last component, and only if it is a regular file.
+pub(crate) fn open_regular(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+    }
+    Ok(file)
+}
+
+/// What a head told about a file, kept while the file does not change so a walk reads each head once.
+/// `Some(dir)` is a session that ran in `dir`; none is a file to leave out.
+#[derive(Default)]
+pub(crate) struct HeadCache(
+    Mutex<std::collections::HashMap<PathBuf, (Fingerprint, Option<PathBuf>)>>,
+);
+
+const HEAD_CACHE: usize = 4096;
+
+impl HeadCache {
+    pub(crate) fn get(&self, path: &Path, fp: &Fingerprint) -> Option<Option<PathBuf>> {
+        let map = self.0.lock().unwrap();
+        map.get(path)
+            .filter(|(f, _)| f == fp)
+            .map(|(_, d)| d.clone())
+    }
+
+    pub(crate) fn put(&self, path: &Path, fp: Fingerprint, dir: Option<PathBuf>) {
+        let mut map = self.0.lock().unwrap();
+        if map.len() >= HEAD_CACHE {
+            map.clear();
+        }
+        map.insert(path.to_path_buf(), (fp, dir));
+    }
+}
+
+/// A session file seen in a walk, before its head is read.
+pub(crate) struct Cand {
+    pub id: String,
+    pub path: PathBuf,
+    pub fp: Fingerprint,
+    pub mtime: std::time::SystemTime,
+}
+
+/// Opens the heads of `cands` newest first, within `budget`: the walk of an adapter's root, once its files are named.
+/// A head already read (and the file unchanged since) costs a `stat`, not a read. The first file is always read, so a
+/// cap never leaves a walk empty; after that the walk stops when `budget` is cut or cancelled, and the files it did
+/// not reach are counted in `older`, with `floor` set to the newest of them.
+pub(crate) fn walk_heads(
+    agent: &str,
+    mut cands: Vec<Cand>,
+    since: Option<std::time::SystemTime>,
+    budget: &mut Budget,
+    cache: &HeadCache,
+    head_cost: u64,
+    mut head: impl FnMut(&std::fs::File, u64, &mut [u8]) -> Option<PathBuf>,
+) -> Listing {
+    let mut out = Listing::default();
+    // One block for every head of the walk.
+    let mut scanner = PooledScanner::take();
+    cands.sort_by(|a, b| b.mtime.cmp(&a.mtime).then_with(|| a.id.cmp(&b.id)));
+    let mut rest = cands.into_iter();
+    while let Some(c) = rest.next() {
+        if since.is_some_and(|s| c.mtime < s) {
+            out.older += 1;
+            continue;
+        }
+        let dir = match cache.get(&c.path, &c.fp) {
+            Some(d) => d,
+            None => {
+                let cost = c.fp.size.min(head_cost);
+                let first = out.files.is_empty();
+                let stop = budget.cancelled()
+                    || (!first && (budget.check().is_err() || budget.charge(cost).is_err()));
+                if stop {
+                    out.cut = budget.check().err().or(Some(Cut::Time));
+                    out.floor = Some(c.mtime);
+                    out.older += 1 + rest.len();
+                    break;
+                }
+                if first {
+                    budget.add_bytes(cost);
+                }
+                let Ok(file) = open_regular(&c.path) else {
+                    continue;
+                };
+                let Ok(meta) = file.metadata() else {
+                    continue;
+                };
+                let dir = head(&file, meta.len(), scanner.scratch());
+                cache.put(&c.path, Fingerprint::of_meta(&meta), dir.clone());
+                dir
+            }
+        };
+        if let Some(dir) = dir {
+            out.files.push(SessionFile {
+                agent: agent.into(),
+                id: c.id,
+                dir,
+                path: c.path,
+                mtime: c.mtime,
+            });
+        }
+    }
+    out
+}
+
+/// A session id the adapters accept in a path: a plain name that cannot read as a flag.
+pub(crate) fn plain_id(id: &str) -> bool {
+    !id.is_empty()
+        && !id.starts_with('-')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -253,6 +415,8 @@ pub struct Page {
 pub enum LogError {
     /// This agent's search is off (unreadable file, truncated head, unknown version). Other agents are unaffected.
     Disabled(&'static str),
+    /// This one file could not be read (no descriptor, no permission, cut short while read). The agent stays on.
+    Unreadable,
     Missing,
     StaleCursor,
     NoAnchor,
@@ -262,6 +426,7 @@ impl fmt::Display for LogError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LogError::Disabled(why) => write!(f, "session search is off for this agent: {why}"),
+            LogError::Unreadable => f.write_str("the session file could not be read"),
             LogError::Missing => f.write_str("no file for this session"),
             LogError::StaleCursor => f.write_str("the session file changed"),
             LogError::NoAnchor => f.write_str("the anchor turn is not in the session"),
@@ -278,15 +443,52 @@ pub const MAX_SIDE: usize = 200;
 
 /// What a search carries from one session to the next: the reusable scan buffers and the caps shared by all of them.
 pub struct SearchRun {
-    pub scanner: Scanner,
+    pub scanner: PooledScanner,
     pub budget: Budget,
+    /// Input to the next `search_in`: continue the file where a page stopped. A file that was rewritten since starts
+    /// over, and `restarted` says so.
+    pub resume: Option<Cursor>,
+    pub restarted: bool,
+    /// Output of `search_in`: where it stopped before the start of the file, or none when it read to the start.
+    pub stopped: Option<u64>,
+    /// Output of `search_in`: the file as it was read, to tie a continuation to it.
+    pub seen: Option<Fingerprint>,
+    /// The folded query, built on the first file and shared by the rest.
+    needle: Option<(String, Option<Arc<Needle>>)>,
 }
 
 impl SearchRun {
     pub fn new(limits: Limits, cancel: Cancel) -> Self {
         SearchRun {
-            scanner: Scanner::new(),
+            scanner: PooledScanner::take(),
             budget: Budget::new(limits, cancel),
+            resume: None,
+            restarted: false,
+            stopped: None,
+            seen: None,
+            needle: None,
+        }
+    }
+
+    /// The needle of `query`, built once for the whole run; none when nothing is left to look for.
+    pub fn needle(&mut self, query: &str) -> Option<Arc<Needle>> {
+        if !self.needle.as_ref().is_some_and(|(q, _)| q == query) {
+            self.needle = Some((query.to_string(), Needle::new(query).map(Arc::new)));
+        }
+        self.needle.as_ref().and_then(|(_, n)| n.clone())
+    }
+
+    /// How many bytes of the file to read, from its start: all of it, or up to where a continuation left off. Records
+    /// the file as it is, to tie the next continuation to it.
+    pub fn start(&mut self, fp: Fingerprint) -> u64 {
+        self.seen = Some(fp);
+        match self.resume.take() {
+            Some(c) if c.fingerprint.still_holds(&fp) => c.pos.min(fp.size),
+            Some(_) => {
+                self.restarted = true;
+                fp.size
+            }
+            None => fp.size,
         }
     }
 
@@ -347,6 +549,39 @@ pub trait SessionLog: Send + Sync {
         run: &mut SearchRun,
     ) -> Result<Vec<Hit>, LogError> {
         self.search(session, query, run.budget.limits().per_session)
+    }
+    /// Every session file in the adapter's root, newest first, without following a symlink and without opening a file
+    /// last written before `since`, which is counted in `older`. A file of a format the adapter does not recognise is
+    /// left out. The default lists nothing.
+    /// The walk charges the heads it reads to `budget`, checks it between files and stops when it fires, newest first.
+    fn list(&self, _since: Option<std::time::SystemTime>, _budget: &mut Budget) -> Listing {
+        Listing::default()
+    }
+    /// The file of the session `id`, found by name without walking every head; none when this agent has none.
+    fn find(&self, _id: &str, _cancel: &Cancel) -> Option<SessionFile> {
+        None
+    }
+    /// `search_in` for a listed file: opened where the walk found it.
+    fn search_file(
+        &self,
+        file: &SessionFile,
+        query: &str,
+        run: &mut SearchRun,
+    ) -> Result<Vec<Hit>, LogError> {
+        self.search_in(
+            &SessionRef {
+                agent: file.agent.clone(),
+                id: file.id.clone(),
+                dir: file.dir.clone(),
+            },
+            query,
+            run,
+        )
+    }
+    /// When the session's file was last written, read without opening it, or none when it cannot be told. Files are
+    /// append-only, so nothing in one is newer. The ledger's recorded time will win over this when there is one.
+    fn last_event(&self, _session: &SessionRef) -> Option<std::time::SystemTime> {
+        None
     }
     /// `before` entries, the anchor turn and `after` entries.
     fn window(
@@ -419,6 +654,47 @@ impl SessionLogs {
             self.note(&session.agent, e);
         }
         result
+    }
+
+    /// The files of every agent that is on, merged newest first, and the agents that are off with their reasons. The
+    /// walk is bounded by `budget` (see `SessionLog::list`); when one agent's walk is cut, files older than its oldest
+    /// listed one are left out of the merge, so a cursor never passes a file that was not listed.
+    pub fn list(
+        &self,
+        since: Option<std::time::SystemTime>,
+        budget: &mut Budget,
+    ) -> (Listing, Vec<(String, &'static str)>) {
+        let mut all = Listing::default();
+        let mut off = Vec::new();
+        for agent in self.adapters.keys() {
+            match self.get(agent) {
+                Ok(a) => {
+                    let l = a.list(since, budget);
+                    all.older += l.older;
+                    all.files.extend(l.files);
+                    all.cut = all.cut.or(l.cut);
+                    all.floor = all.floor.max(l.floor);
+                }
+                Err(LogError::Disabled(why)) => off.push((agent.clone(), why)),
+                Err(_) => {}
+            }
+        }
+        if let Some(floor) = all.floor {
+            let before = all.files.len();
+            all.files.retain(|f| f.mtime >= floor);
+            all.older += before - all.files.len();
+        }
+        all.files.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+        (all, off)
+    }
+
+    /// The files named `id` among the agents that are on.
+    pub fn find(&self, id: &str, cancel: &Cancel) -> Vec<SessionFile> {
+        self.adapters
+            .keys()
+            .filter_map(|agent| self.get(agent).ok())
+            .filter_map(|a| a.find(id, cancel))
+            .collect()
     }
 
     /// Each registered agent with the reason its search is off, if it is.

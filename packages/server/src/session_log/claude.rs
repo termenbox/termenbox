@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::scan::{Needle, BLOCK, MAX_LINE};
+use super::scan::{PooledScanner, BLOCK, MAX_LINE};
 use super::*;
 
 pub const AGENT: &str = "claude";
@@ -55,6 +55,7 @@ pub struct ClaudeLog {
     /// The `projects` directory.
     root: PathBuf,
     chains: Mutex<Vec<(PathBuf, Arc<Chain>)>>,
+    heads: HeadCache,
 }
 
 impl ClaudeLog {
@@ -62,6 +63,7 @@ impl ClaudeLog {
         ClaudeLog {
             root,
             chains: Mutex::new(Vec::new()),
+            heads: HeadCache::default(),
         }
     }
 
@@ -108,19 +110,125 @@ impl ClaudeLog {
         Some(found.unwrap_or(direct))
     }
 
-    fn open(&self, s: &SessionRef) -> Result<(PathBuf, File, Fingerprint), LogError> {
+    /// The search of an opened file, under the caps `run` shares with the other files.
+    fn search_opened(
+        &self,
+        path: PathBuf,
+        file: File,
+        fp: Fingerprint,
+        needle: &scan::Needle,
+        query: &str,
+        run: &mut SearchRun,
+    ) -> Result<Vec<Hit>, LogError> {
+        let size = run.start(fp);
+        let SearchRun {
+            scanner,
+            budget,
+            stopped,
+            ..
+        } = run;
+        let limit = budget
+            .limits()
+            .per_session
+            .min(budget.limits().max_hits.saturating_sub(budget.hits()));
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut hits: Vec<Hit> = Vec::new();
+        let mut chain: Option<Arc<Chain>> = None;
+        let mut failed: Option<LogError> = None;
+        scanner
+            .scan_file(&file, size, needle, budget, |c| {
+                // The scan matched bytes; what counts is the scrubbed text of a record on the active branch.
+                if !may_hold_text(c.bytes) {
+                    return ControlFlow::Continue(());
+                }
+                let Ok(v) = serde_json::from_slice::<Value>(c.bytes) else {
+                    return ControlFlow::Continue(()); // torn
+                };
+                let Some(uuid) = v.get("uuid").and_then(Value::as_str) else {
+                    return ControlFlow::Continue(());
+                };
+                if chain.is_none() {
+                    match self.chain(&file, &path, fp) {
+                        Ok(c) => chain = Some(c),
+                        Err(e) => {
+                            failed = Some(e);
+                            return ControlFlow::Break(());
+                        }
+                    }
+                }
+                if !chain.as_ref().is_some_and(|c| c.index.contains_key(uuid)) {
+                    return ControlFlow::Continue(());
+                }
+                for (n, p) in parts(&v).into_iter().enumerate() {
+                    if matches!(p.kind, Kind::Tool | Kind::Notice) {
+                        continue;
+                    }
+                    let Some((snippet, highlight)) = snippet(&p.text, query) else {
+                        continue;
+                    };
+                    hits.push(Hit {
+                        turn: turn_id(uuid, n),
+                        kind: p.kind,
+                        snippet,
+                        highlight,
+                        at: v
+                            .get("timestamp")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    });
+                }
+                // The cap is checked between records, so a record's hits are never split across two pages.
+                if hits.len() >= limit {
+                    return ControlFlow::Break(());
+                }
+                ControlFlow::Continue(())
+            })
+            .map_err(|_| LogError::Unreadable)?;
+        *stopped = scanner.stopped_at();
+        if let Some(e) = failed {
+            return Err(e);
+        }
+        for _ in &hits {
+            let _ = budget.record_hit();
+        }
+        Ok(hits)
+    }
+
+    /// A listed file, opened without following a link. Its head is read again only if it changed since the walk.
+    fn open_listed(
+        &self,
+        path: &Path,
+        scratch: &mut [u8],
+    ) -> Result<(File, Fingerprint), LogError> {
+        let file = open_regular(path).map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound => LogError::Missing,
+            _ => LogError::Unreadable,
+        })?;
+        let meta = file.metadata().map_err(|_| LogError::Unreadable)?;
+        let fp = Fingerprint::of_meta(&meta);
+        if self.heads.get(path, &fp).is_none() {
+            check_head(&file, fp.size, scratch)?;
+        }
+        Ok((file, fp))
+    }
+
+    fn open(
+        &self,
+        s: &SessionRef,
+        scratch: &mut [u8],
+    ) -> Result<(PathBuf, File, Fingerprint), LogError> {
         let path = self.path(s).ok_or(LogError::Missing)?;
         let file = File::open(&path).map_err(|e| match e.kind() {
             io::ErrorKind::NotFound => LogError::Missing,
             // A directory name past the file system's limit: Claude shortened it and no such directory was found.
             _ if e.raw_os_error() == Some(36) => LogError::Missing,
-            _ => LogError::Disabled(UNREADABLE),
+            _ => LogError::Unreadable,
         })?;
-        let meta = file
-            .metadata()
-            .map_err(|_| LogError::Disabled(UNREADABLE))?;
+        let meta = file.metadata().map_err(|_| LogError::Unreadable)?;
         let fp = Fingerprint::of_meta(&meta);
-        check_head(&file, fp.size)?;
+        check_head(&file, fp.size, scratch)?;
         Ok((path, file, fp))
     }
 
@@ -135,7 +243,7 @@ impl ClaudeLog {
         {
             return Ok(c.clone());
         }
-        let chain = Arc::new(Chain::build(file, fp).map_err(|_| LogError::Disabled(UNREADABLE))?);
+        let chain = Arc::new(Chain::build(file, fp).map_err(|_| LogError::Unreadable)?);
         let mut cache = self.chains.lock().unwrap();
         cache.retain(|(p, _)| p != path);
         cache.push((path.to_path_buf(), chain.clone()));
@@ -146,17 +254,43 @@ impl ClaudeLog {
     }
 }
 
-pub(super) const UNREADABLE: &str = "unreadable file";
+/// The read buffer of an index build: well under glibc's mmap threshold, so one per file is not a map and an unmap.
+const BUILD_READ: usize = 32 * 1024;
+
+/// The most of a file's head read to find where the session ran.
+const CWD_HEAD: usize = 64 * 1024;
+
+/// The directory the session ran in: the first record that names a `cwd`, within the head of the file. The folder
+/// name is lossy (every non-alphanumeric is a "-"), so the path comes from the records.
+fn head_cwd(file: &File, size: u64, scratch: &mut [u8]) -> Option<PathBuf> {
+    #[derive(Deserialize)]
+    struct Rec<'a> {
+        #[serde(borrow)]
+        cwd: Option<Cow<'a, str>>,
+    }
+    let len = (size as usize).min(CWD_HEAD).min(scratch.len());
+    let buf = &mut scratch[..len];
+    file.read_exact_at(buf, 0).ok()?;
+    let mut lines: Vec<&[u8]> = buf.split(|b| *b == b'\n').collect();
+    if size as usize > len || buf.last() != Some(&b'\n') {
+        lines.pop(); // not a whole line
+    }
+    lines
+        .into_iter()
+        .filter_map(|l| serde_json::from_slice::<Rec>(l).ok()?.cwd)
+        .map(|c| PathBuf::from(c.into_owned()))
+        .find(|p| p.is_absolute())
+}
 
 /// Whether the head of the file looks like a Claude session this code understands.
-fn check_head(file: &File, size: u64) -> Result<(), LogError> {
-    let len = (size as usize).min(BLOCK);
+fn check_head(file: &File, size: u64, scratch: &mut [u8]) -> Result<(), LogError> {
+    let len = (size as usize).min(BLOCK).min(scratch.len());
     if len == 0 {
         return Ok(());
     }
-    let mut buf = vec![0u8; len];
-    file.read_exact_at(&mut buf, 0)
-        .map_err(|_| LogError::Disabled(UNREADABLE))?;
+    let buf = &mut scratch[..len];
+    file.read_exact_at(buf, 0)
+        .map_err(|_| LogError::Unreadable)?;
     let mut pieces: Vec<&[u8]> = buf.split(|b| *b == b'\n').collect();
     pieces.pop(); // after the last newline: empty, or a line not finished
     if pieces.is_empty() {
@@ -270,7 +404,7 @@ impl Chain {
             len: usize,
         }
         // Only what the file held when the fingerprint was taken: a record being appended is not chased.
-        let mut r = BufReader::with_capacity(BLOCK, AtRead { file, pos: 0 }.take(fp.size));
+        let mut r = BufReader::with_capacity(BUILD_READ, AtRead { file, pos: 0 }.take(fp.size));
         let mut line = Vec::new();
         let mut at = 0u64;
         let mut recs: Vec<Rec> = Vec::new();
@@ -369,6 +503,19 @@ fn notice() -> Part {
     }
 }
 
+/// Whether a line can show any text to a search, judged from its bytes alone, before any JSON is parsed. A tool's
+/// output or input never reaches a hit, so a line that is only that is dropped here instead of parsed and discarded.
+/// It errs towards parsing: a marker is a quoted JSON name, which text inside a string never matches (its quotes are
+/// escaped), and an unexpected layout falls through to the parse.
+fn may_hold_text(line: &[u8]) -> bool {
+    let has = |m: &[u8]| memchr::memmem::find(line, m).is_some();
+    if has(br#""tool_result""#) {
+        // A user turn that answers a tool; it shows text only when it also carries a text block.
+        return has(br#""text""#);
+    }
+    has(br#""text""#) || has(br#""thinking""#) || has(br#""content":""#) || has(br#""content": ""#)
+}
+
 /// What a record shows. Tool input and output are not read here at all.
 fn parts(v: &Value) -> Vec<Part> {
     let ty = v.get("type").and_then(Value::as_str).unwrap_or("");
@@ -440,7 +587,7 @@ fn entries_of(file: &File, node: &Node) -> Result<Vec<Entry>, LogError> {
     file.read_exact_at(&mut buf, node.offset)
         .map_err(|e| match e.kind() {
             io::ErrorKind::UnexpectedEof => LogError::StaleCursor,
-            _ => LogError::Disabled(UNREADABLE),
+            _ => LogError::Unreadable,
         })?;
     let Ok(v) = serde_json::from_slice::<Value>(&buf) else {
         return Ok(vec![Entry::notice(&node.uuid, UNMAPPABLE)]);
@@ -467,73 +614,95 @@ impl SessionLog for ClaudeLog {
         query: &str,
         run: &mut SearchRun,
     ) -> Result<Vec<Hit>, LogError> {
-        let Some(needle) = Needle::new(query) else {
+        let Some(needle) = run.needle(query) else {
             return Ok(Vec::new());
         };
-        let (path, file, fp) = self.open(s)?;
-        let SearchRun { scanner, budget } = run;
-        let limit = budget
-            .limits()
-            .per_session
-            .min(budget.limits().max_hits.saturating_sub(budget.hits()));
-        if limit == 0 {
+        let (path, file, fp) = self.open(s, run.scanner.scratch())?;
+        self.search_opened(path, file, fp, &needle, query, run)
+    }
+
+    fn search_file(
+        &self,
+        f: &SessionFile,
+        query: &str,
+        run: &mut SearchRun,
+    ) -> Result<Vec<Hit>, LogError> {
+        let Some(needle) = run.needle(query) else {
             return Ok(Vec::new());
-        }
-        let mut hits: Vec<Hit> = Vec::new();
-        let mut chain: Option<Arc<Chain>> = None;
-        let mut failed: Option<LogError> = None;
-        scanner
-            .scan_file(&file, fp.size, &needle, budget, |c| {
-                // The scan matched bytes; what counts is the scrubbed text of a record on the active branch.
-                let Ok(v) = serde_json::from_slice::<Value>(c.bytes) else {
-                    return ControlFlow::Continue(()); // torn
+        };
+        let (file, fp) = self.open_listed(&f.path, run.scanner.scratch())?;
+        self.search_opened(f.path.clone(), file, fp, &needle, query, run)
+    }
+
+    fn list(&self, since: Option<std::time::SystemTime>, budget: &mut Budget) -> Listing {
+        let mut cands = Vec::new();
+        for folder in real_entries(&self.root, true) {
+            if budget.cancelled() {
+                break;
+            }
+            for e in real_entries(&folder.path(), false) {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let Some(id) = name.strip_suffix(".jsonl").filter(|i| plain_id(i)) else {
+                    continue;
                 };
-                let Some(uuid) = v.get("uuid").and_then(Value::as_str) else {
-                    return ControlFlow::Continue(());
-                };
-                if chain.is_none() {
-                    match self.chain(&file, &path, fp) {
-                        Ok(c) => chain = Some(c),
-                        Err(e) => {
-                            failed = Some(e);
-                            return ControlFlow::Break(());
-                        }
-                    }
-                }
-                if !chain.as_ref().is_some_and(|c| c.index.contains_key(uuid)) {
-                    return ControlFlow::Continue(());
-                }
-                for (n, p) in parts(&v).into_iter().enumerate() {
-                    if matches!(p.kind, Kind::Tool | Kind::Notice) {
-                        continue;
-                    }
-                    let Some((snippet, highlight)) = snippet(&p.text, query) else {
-                        continue;
-                    };
-                    hits.push(Hit {
-                        turn: turn_id(uuid, n),
-                        kind: p.kind,
-                        snippet,
-                        highlight,
-                        at: v
-                            .get("timestamp")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                    });
-                    if hits.len() >= limit {
-                        return ControlFlow::Break(());
-                    }
-                }
-                ControlFlow::Continue(())
-            })
-            .map_err(|_| LogError::Disabled(UNREADABLE))?;
-        if let Some(e) = failed {
-            return Err(e);
+                let Ok(meta) = e.metadata() else { continue };
+                let Ok(mtime) = meta.modified() else { continue };
+                cands.push(Cand {
+                    id: id.to_string(),
+                    path: e.path(),
+                    fp: Fingerprint::of_meta(&meta),
+                    mtime,
+                });
+            }
         }
-        for _ in &hits {
-            let _ = budget.record_hit();
+        let cost = (BLOCK + CWD_HEAD) as u64;
+        walk_heads(
+            AGENT,
+            cands,
+            since,
+            budget,
+            &self.heads,
+            cost,
+            |file, len, buf| {
+                check_head(file, len, buf).ok()?;
+                head_cwd(file, len, buf)
+            },
+        )
+    }
+
+    fn find(&self, id: &str, cancel: &Cancel) -> Option<SessionFile> {
+        if !plain_id(id) {
+            return None;
         }
-        Ok(hits)
+        let name = format!("{id}.jsonl");
+        let mut scanner = PooledScanner::take();
+        for folder in real_entries(&self.root, true) {
+            if cancel.is_cancelled() {
+                return None;
+            }
+            let path = folder.path().join(&name);
+            if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
+                continue;
+            }
+            let Ok((file, fp)) = self.open_listed(&path, scanner.scratch()) else {
+                continue;
+            };
+            let Some(dir) = head_cwd(&file, fp.size, scanner.scratch()) else {
+                continue;
+            };
+            return Some(SessionFile {
+                agent: AGENT.into(),
+                id: id.to_string(),
+                dir,
+                path,
+                mtime: std::time::UNIX_EPOCH + std::time::Duration::from_nanos(fp.mtime_ns as u64),
+            });
+        }
+        None
+    }
+
+    fn last_event(&self, s: &SessionRef) -> Option<std::time::SystemTime> {
+        std::fs::metadata(self.path(s)?).ok()?.modified().ok()
     }
 
     fn window(
@@ -543,7 +712,8 @@ impl SessionLog for ClaudeLog {
         before: usize,
         after: usize,
     ) -> Result<Window, LogError> {
-        let (path, file, fp) = self.open(s)?;
+        let mut scanner = PooledScanner::take();
+        let (path, file, fp) = self.open(s, scanner.scratch())?;
         let chain = self.chain(&file, &path, fp)?;
         let at = chain.node_of(anchor).ok_or(LogError::NoAnchor)?;
         let own = entries_of(&file, &chain.nodes[at])?;
@@ -590,7 +760,8 @@ impl SessionLog for ClaudeLog {
         direction: Direction,
         count: usize,
     ) -> Result<Page, LogError> {
-        let (path, file, fp) = self.open(s)?;
+        let mut scanner = PooledScanner::take();
+        let (path, file, fp) = self.open(s, scanner.scratch())?;
         if let Some(c) = cursor {
             if !c.fingerprint.still_holds(&fp) {
                 return Err(LogError::StaleCursor);

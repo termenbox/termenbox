@@ -1,12 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { SessionSearch, landingOf, resumeOutcome, cleanQuery, cutText, groupHits, parts, whenText, MAX_HITS_PER_SERVER, type SearchState } from './sessionSearch';
+import { SessionSearch, landingOf, resumeOutcome, cleanQuery, cutText, loadRange, sinceOf, olderText, groupHits, dirLabel, isUnheld, resumeAskText, sessionResumedOutcome, loadGroupMode, saveGroupMode, parts, whenText, limitHits, sessionKey, sessionSpans, hitKey, resetsPieces, PIECE, MAX_HITS_PER_SERVER, type SearchState } from './sessionSearch';
 import type { ClientMessage, SearchHitMessage, ServerMessage } from './protocol';
 
-function rig(servers = [{ id: 'a', name: 'Box' }]) {
+const NOW = Date.parse('2026-11-01T00:00:00Z');
+function rig(servers = [{ id: 'a', name: 'Box' }], saved: Record<string, string> = {}) {
   const sent: { to: string; msg: ClientMessage }[] = [];
   const states: SearchState[] = [];
-  const s = new SessionSearch({ servers: () => servers, send: (to, msg) => sent.push({ to, msg }), onchange: (st) => states.push(st) });
-  return { s, sent, states };
+  const store = { getItem: (k: string) => saved[k] ?? null, setItem: (k: string, v: string) => { saved[k] = v; } };
+  const s = new SessionSearch({ servers: () => servers, send: (to, msg) => sent.push({ to, msg }), onchange: (st) => states.push(st), now: () => NOW, store });
+  return { s, sent, states, saved };
 }
 const hit = (id: number, over: Partial<SearchHitMessage> = {}): ServerMessage => ({ type: 'search_hit', id, workspace: 'w1', tab: 't1', agent: 'claude', up: true, turn: 'u1', kind: 'user', snippet: 'fix the parser bug', highlight: [8, 14], at: '2026-10-30T10:00:00Z', ...over });
 const done = (id: number, over: Record<string, unknown> = {}): ServerMessage => ({ type: 'search_done', id, off: [], ...over }) as ServerMessage;
@@ -141,9 +143,36 @@ describe('grouping', () => {
     s.handle('a', hit(id, { workspace: 'old', turn: '1', at: '2026-10-01T00:00:00Z' }));
     s.handle('a', hit(id, { workspace: 'new', turn: '2', at: '2026-10-29T00:00:00Z' }));
     s.handle('a', hit(id, { workspace: 'new', turn: '3', at: '2026-10-30T00:00:00Z' }));
-    const g = groupHits(s.current.hits, (_sid, w) => (w === 'new' ? 'Fresh' : undefined));
+    const g = groupHits(s.current.hits, 'workspace', (_sid, w) => (w === 'new' ? 'Fresh' : undefined));
     expect(g.map((x) => x.name)).toEqual(['Fresh', 'old']);
     expect(g[0].hits.map((h) => h.turn)).toEqual(['3', '2']);
+  });
+  it('groups by agent, or not at all, newest first', () => {
+    const { s, sent } = rig();
+    s.run('x');
+    const id = (sent[0].msg as { id: number }).id;
+    s.handle('a', hit(id, { workspace: 'w1', agent: 'claude', turn: '1', at: '2026-10-01T00:00:00Z' }));
+    s.handle('a', hit(id, { workspace: 'w2', agent: 'codex', turn: '2', at: '2026-10-29T00:00:00Z' }));
+    s.handle('a', hit(id, { workspace: 'w2', agent: 'claude', turn: '3', at: '2026-10-30T00:00:00Z' }));
+    const by = groupHits(s.current.hits, 'agent', () => undefined);
+    expect(by.map((x) => x.name)).toEqual(['claude', 'codex']);
+    expect(by[0].hits.map((h) => h.turn)).toEqual(['3', '1']);
+    const flat = groupHits(s.current.hits, 'none', () => undefined);
+    expect(flat).toHaveLength(1);
+    expect(flat[0].hits.map((h) => h.turn)).toEqual(['3', '2', '1']);
+  });
+  it('remembers the grouping per viewer and survives missing or broken storage', () => {
+    const m = new Map<string, string>();
+    const store = { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v) };
+    expect(loadGroupMode(store)).toBe('workspace');
+    saveGroupMode('agent', store);
+    expect(loadGroupMode(store)).toBe('agent');
+    m.set([...m.keys()][0], 'bogus');
+    expect(loadGroupMode(store)).toBe('workspace');
+    const broken = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } };
+    expect(loadGroupMode(broken)).toBe('workspace');
+    expect(() => saveGroupMode('none', broken)).not.toThrow();
+    expect(loadGroupMode(undefined)).toBe('workspace');
   });
   it('formats a time as the clock today and the day otherwise', () => {
     const now = Date.parse('2026-10-31T12:00:00Z');
@@ -190,5 +219,320 @@ describe('what a tap does', () => {
   });
   it('does not claim a resume from a server that did not say', () => {
     expect(resumeOutcome({ tab: 't1', agent: 'codex' }, undefined)).toMatchObject({ jump: false, ok: false });
+  });
+});
+
+describe('time window', () => {
+  it('asks for the last 30 days by default and for any age when told', () => {
+    const { s, sent } = rig();
+    s.run('parser');
+    expect(sent[0].msg).toMatchObject({ type: 'search', since: NOW - 30 * 86_400_000 });
+    s.setRange('any');
+    expect('since' in sent[1].msg).toBe(false);
+    expect(s.current.range).toBe('any');
+  });
+  it('re-asks with the new window, remembers it, and ignores the answers of the old one', () => {
+    const { s, sent, saved } = rig();
+    s.run('parser');
+    const first = (sent[0].msg as { id: number }).id;
+    s.setRange('24h');
+    expect(sent.map((x) => x.msg).filter((m) => m.type === 'search' && !m.cancel)).toHaveLength(2);
+    expect(sent[2].msg).toMatchObject({ query: 'parser', since: NOW - 86_400_000 });
+    s.handle('a', hit(first));
+    expect(s.current.hits).toHaveLength(0);
+    expect(loadRange({ getItem: (k) => saved[k] ?? null })).toBe('24h');
+  });
+  it('starts from the remembered window and from 30 days when the store is unusable', () => {
+    expect(rig(undefined, { termenbox_search_range: '7d' }).s.current.range).toBe('7d');
+    expect(rig(undefined, { termenbox_search_range: 'bogus' }).s.current.range).toBe('30d');
+    expect(loadRange({ getItem: () => { throw new Error('blocked'); } })).toBe('30d');
+    expect(sinceOf('any', NOW)).toBeUndefined();
+  });
+  it('sums the older conversations the servers skipped and says nothing else about a range cut', () => {
+    const { s, sent } = rig([{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }]);
+    s.run('parser');
+    const id = (sent[0].msg as { id: number }).id;
+    s.handle('a', done(id, { cut: 'range', older: 2 }));
+    s.handle('b', done(id, { older: 1 }));
+    expect(s.current.older).toBe(3);
+    expect(s.current.cuts).toEqual([]);
+    expect(olderText(1)).toBe('1 older conversation not searched.');
+  });
+});
+
+describe('a conversation no workspace holds (decision 0182)', () => {
+  const unheld = { workspace: '', agent: 'claude', dir: '/home/me/code/api' };
+  it('carries the session and directory, and is grouped under the last two segments of the directory', () => {
+    const { s, sent } = rig();
+    s.run('x');
+    const id = (sent[0].msg as { id: number }).id;
+    s.handle('a', hit(id, { workspace: '', tab: '', up: false, dir: '/home/me/code/api', session: 'abc', turn: 'u1' }));
+    s.handle('a', hit(id, { workspace: '', tab: '', up: false, dir: '/home/me/code/api', session: 'def', turn: 'u2' }));
+    s.handle('a', hit(id, { workspace: '', tab: '', up: false, dir: '/srv/other', session: 'ghi', turn: 'u3' }));
+    expect(s.current.hits[0]).toMatchObject({ session: 'abc', dir: '/home/me/code/api' });
+    const g = groupHits(s.current.hits, 'workspace', () => undefined);
+    expect(g.map((x) => [x.name, x.title, x.hits.length]).sort()).toEqual([['code/api', '/home/me/code/api', 2], ['srv/other', '/srv/other', 1]]);
+  });
+  it('names the folder and says it is unheld', () => {
+    expect(dirLabel('/a/b/c')).toBe('b/c');
+    expect(dirLabel('')).toBe('Unknown folder');
+    expect(isUnheld(unheld)).toBe(true);
+    expect(isUnheld({ workspace: 'w1' })).toBe(false);
+  });
+  it('asks differently for a held dormant workspace and an unheld conversation', () => {
+    expect(resumeAskText(unheld)).toContain('new workspace in api'.replace('api', 'code/api'));
+    expect(resumeAskText({ ...unheld, workspace: 'w1' })).toContain('This workspace is not running');
+  });
+  it('tells what the server did, goes to the workspace it named, and offers nothing for a missing directory', () => {
+    expect(sessionResumedOutcome(unheld, { outcome: 'resumed', workspace: 'ws-1' })).toEqual({ message: 'Resuming claude in a new workspace.', go: true, ok: true });
+    expect(sessionResumedOutcome(unheld, { outcome: 'switched', workspace: 'ws-1' })).toMatchObject({ go: true, ok: true });
+    const shell = sessionResumedOutcome(unheld, { outcome: 'shell', workspace: 'ws-1', reason: 'this agent cannot resume a conversation' });
+    expect(shell).toMatchObject({ go: true, ok: false });
+    expect(shell.message).toContain('is a shell');
+    expect(shell.message).toContain('this agent cannot resume');
+    expect(sessionResumedOutcome(unheld, { outcome: 'missing' })).toMatchObject({ go: false, ok: false, message: expect.stringContaining('gone') });
+    expect(sessionResumedOutcome(unheld, { outcome: 'resumed' })).toMatchObject({ go: false, ok: false });
+  });
+});
+
+describe('paging and expanding', () => {
+  const first = () => {
+    const r = rig();
+    r.s.run('parser');
+    const id = (r.sent[0].msg as { id: number }).id;
+    r.s.handle('a', hit(id, { session: 's1', turn: 'u1' }));
+    r.s.handle('a', done(id, { cut: 'hits', next: 'cursor1' }));
+    return { ...r, id };
+  };
+  it('keeps the cursor, offers more and says nothing of a cut that paging cures', () => {
+    const { s } = first();
+    expect(s.current.next).toEqual({ a: 'cursor1' });
+    expect(s.current.cuts).toEqual([]);
+    expect(s.hasMore).toBe(true);
+  });
+  it('asks for the next page with the cursor and the window, appends and never repeats a hit', () => {
+    const { s, sent } = first();
+    s.more();
+    const m = sent.at(-1)!.msg as { id: number; after?: string; since?: number; query: string };
+    expect(m).toMatchObject({ type: 'search', query: 'parser', after: 'cursor1' });
+    expect(m.since).toBe(NOW - 30 * 86_400_000);
+    expect(s.current.status).toBe('searching');
+    s.handle('a', hit(m.id, { session: 's1', turn: 'u1' }));
+    s.handle('a', hit(m.id, { session: 's2', turn: 'u2' }));
+    s.handle('a', done(m.id));
+    expect(s.current.hits.map((h) => h.turn)).toEqual(['u1', 'u2']);
+    expect(s.current.next).toEqual({});
+    expect(s.hasMore).toBe(false);
+  });
+  it('stops asking when a cursor does not move', () => {
+    const { s, sent } = first();
+    s.more();
+    const id = (sent.at(-1)!.msg as { id: number }).id;
+    s.handle('a', done(id, { next: 'cursor1' }));
+    expect(s.hasMore).toBe(false);
+  });
+  it('a new query during paging drops the late page', () => {
+    const { s, sent } = first();
+    s.more();
+    const old = (sent.at(-1)!.msg as { id: number }).id;
+    s.run('other');
+    s.handle('a', hit(old, { session: 's9', turn: 'late' }));
+    expect(s.current.hits).toEqual([]);
+    expect(s.current.next).toEqual({});
+  });
+  it('expands one conversation once and leaves the main cursor alone', () => {
+    const { s, sent } = first();
+    const h = s.current.hits[0];
+    s.expand(h);
+    const m = sent.at(-1)!.msg as { id: number; session?: string; after?: string; since?: number };
+    expect(m).toMatchObject({ type: 'search', query: 'parser', session: 's1' });
+    expect(m.after).toBeUndefined();
+    s.handle('a', hit(m.id, { session: 's1', turn: 'u1' }));
+    s.handle('a', hit(m.id, { session: 's1', turn: 'u7' }));
+    s.handle('a', done(m.id, { cut: 'hits' }));
+    expect(s.current.hits).toHaveLength(2);
+    expect(s.current.next).toEqual({ a: 'cursor1' });
+    expect(s.current.expanded).toEqual([sessionKey(h)]);
+    const before = sent.length;
+    s.expand(h);
+    expect(sent).toHaveLength(before);
+  });
+  it('does not page or expand while a search runs', () => {
+    const { s, sent } = rig();
+    s.run('x');
+    s.more();
+    s.expand({ serverId: 'a', session: 's1' });
+    expect(sent).toHaveLength(1);
+  });
+  it('keeps far more than one page of hits in memory', () => {
+    const { s, sent } = rig();
+    s.run('x');
+    const id = (sent[0].msg as { id: number }).id;
+    for (let i = 0; i < 300; i++) s.handle('a', hit(id, { turn: `u${i}` }));
+    expect(s.current.hits).toHaveLength(300);
+  });
+  it('draws the first N hits across groups', () => {
+    const { s, sent } = rig();
+    s.run('x');
+    const id = (sent[0].msg as { id: number }).id;
+    for (let i = 0; i < PIECE + 5; i++) s.handle('a', hit(id, { workspace: i % 2 ? 'w1' : 'w2', turn: `u${i}`, at: `2026-10-${10 + (i % 20)}T00:00:00Z` }));
+    const g = limitHits(groupHits(s.current.hits, 'workspace', () => undefined), PIECE);
+    expect(g.reduce((n, x) => n + x.hits.length, 0)).toBe(PIECE);
+    expect(limitHits(groupHits(s.current.hits, 'none', () => undefined), 0)).toEqual([]);
+  });
+});
+
+describe('paging under Stop, caps and lost servers', () => {
+  const first = (servers = [{ id: 'a', name: 'Box' }]) => {
+    const r = rig(servers);
+    r.s.run('parser');
+    const id = (r.sent[0].msg as { id: number }).id;
+    r.s.handle('a', hit(id, { session: 's1', turn: 'u1' }));
+    r.s.handle('a', done(id, { cut: 'hits', next: 'cursor1', older: 4 }));
+    return { ...r, id };
+  };
+  it('keeps the cursor through a Stop during a page, so the page can be asked again', () => {
+    const { s, sent } = first();
+    s.more();
+    const page = (sent.at(-1)!.msg as { id: number }).id;
+    s.stop();
+    s.handle('a', hit(page, { session: 's2', turn: 'late' }));
+    s.handle('a', done(page));
+    expect(s.current.hits.map((h) => h.turn)).toEqual(['u1']);
+    expect(s.current.next).toEqual({ a: 'cursor1' });
+    expect(s.hasMore).toBe(true);
+  });
+  it('takes the expanded mark back on Stop during an expansion, and on a lost server', () => {
+    const { s, sent } = first();
+    const h = s.current.hits[0];
+    s.expand(h);
+    expect(s.current.expanded).toEqual([sessionKey(h)]);
+    s.stop();
+    expect(s.current.expanded).toEqual([]);
+    s.expand(h);
+    expect(sent.at(-1)!.msg).toMatchObject({ session: 's1' });
+    s.lost('a');
+    expect(s.current.expanded).toEqual([]);
+    expect(s.current.lost).toBe(1);
+  });
+  it('a Stop on a page does not unmark an expansion that finished earlier', () => {
+    const { s, sent } = first();
+    const h = s.current.hits[0];
+    s.expand(h);
+    const id = (sent.at(-1)!.msg as { id: number }).id;
+    s.handle('a', done(id));
+    s.more();
+    s.stop();
+    expect(s.current.expanded).toEqual([sessionKey(h)]);
+  });
+  it('counts the older conversations once, from the first page', () => {
+    const { s, sent } = first();
+    expect(s.current.older).toBe(4);
+    s.more();
+    const id = (sent.at(-1)!.msg as { id: number }).id;
+    s.handle('a', done(id, { older: 4, next: 'cursor2' }));
+    expect(s.current.older).toBe(4);
+  });
+  it('drops the cursor of a server that sits at the cap, and says the search was cut', () => {
+    const { s, sent } = rig();
+    s.run('x');
+    const id = (sent[0].msg as { id: number }).id;
+    for (let i = 0; i < MAX_HITS_PER_SERVER + 5; i++) s.handle('a', hit(id, { turn: `u${i}` }));
+    s.handle('a', done(id, { cut: 'hits', next: 'c' }));
+    expect(s.current.next).toEqual({});
+    expect(s.hasMore).toBe(false);
+    expect(s.current.cuts).toEqual([cutText('hits')]);
+  });
+  it('says nothing of a time or bytes cut while a cursor offers the rest', () => {
+    for (const cut of ['time', 'bytes']) {
+      const { s, sent } = rig();
+      s.run('x');
+      const id = (sent[0].msg as { id: number }).id;
+      s.handle('a', done(id, { cut, next: 'c' }));
+      expect(s.current.cuts).toEqual([]);
+      expect(s.hasMore).toBe(true);
+    }
+  });
+  it('never pages or expands from a server that went away', () => {
+    const servers = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }];
+    const { s, sent } = rig(servers);
+    s.run('p');
+    const id = (sent[0].msg as { id: number }).id;
+    s.handle('a', hit(id, { session: 's1' }));
+    s.handle('b', hit(id, { session: 's2', turn: 'u2' }));
+    s.handle('a', done(id, { cut: 'hits', next: 'ca' }));
+    s.handle('b', done(id, { cut: 'hits', next: 'cb' }));
+    servers.pop();
+    const before = sent.length;
+    s.expand(s.current.hits.find((h) => h.serverId === 'b')!);
+    expect(sent).toHaveLength(before);
+    s.more();
+    expect(sent.slice(before).map((x) => x.to)).toEqual(['a']);
+    expect(s.current.pending).toEqual(['a']);
+    expect(s.current.next).toEqual({ a: 'ca' });
+  });
+  it('asks every page for the window of the first, even when the clock moves on', () => {
+    let now = NOW;
+    const sent: { to: string; msg: ClientMessage }[] = [];
+    const s = new SessionSearch({ servers: () => [{ id: 'a', name: 'Box' }], send: (to, msg) => sent.push({ to, msg }), onchange: () => {}, now: () => now, store: { getItem: () => null, setItem: () => {} } });
+    s.run('p');
+    const id = (sent[0].msg as { id: number }).id;
+    s.handle('a', done(id, { cut: 'hits', next: 'c1' }));
+    now += 3_600_000;
+    s.more();
+    expect((sent.at(-1)!.msg as { since?: number }).since).toBe((sent[0].msg as { since?: number }).since);
+  });
+  it('a hit keeps one key, joined with a separator no field holds', () => {
+    const k = hitKey({ serverId: 'a', workspace: 'w', tab: 't', session: 's', turn: 'u' });
+    expect(k).toBe('a\u0000w\u0000t\u0000s\u0000u');
+    expect(hitKey({ serverId: 'a', workspace: 'wt', tab: '', session: 's', turn: 'u' })).not.toBe(hitKey({ serverId: 'a', workspace: 'w', tab: 't', session: 's', turn: 'u' }));
+  });
+});
+
+describe('when the drawn list starts over', () => {
+  it('only for a different query or window, never for a hit that arrives', () => {
+    const a = { query: 'p', range: '30d' as const };
+    expect(resetsPieces(undefined, a)).toBe(true);
+    expect(resetsPieces(a, { ...a })).toBe(false);
+    expect(resetsPieces(a, { ...a, query: 'q' })).toBe(true);
+    expect(resetsPieces(a, { ...a, range: 'any' })).toBe(true);
+  });
+});
+
+describe('a page of 1000 hits', () => {
+  const framed = () => {
+    const sent: { to: string; msg: ClientMessage }[] = [];
+    const states: SearchState[] = [];
+    let frames: (() => void)[] = [];
+    const s = new SessionSearch({ servers: () => [{ id: 'a', name: 'Box' }], send: (to, msg) => sent.push({ to, msg }), onchange: (st) => states.push(st), now: () => NOW, frame: (fn) => frames.push(fn), store: { getItem: () => null, setItem: () => {} } });
+    const paint = () => { const f = frames; frames = []; f.forEach((fn) => fn()); };
+    return { s, sent, states, paint };
+  };
+  it('tells the owner once per frame, not once per hit', () => {
+    const { s, sent, states, paint } = framed();
+    s.run('p');
+    const id = (sent[0].msg as { id: number }).id;
+    const before = states.length;
+    for (let i = 0; i < 1000; i++) s.handle('a', hit(id, { turn: `u${i}`, session: `s${i}` }));
+    expect(states.length).toBe(before);
+    paint();
+    expect(states.length).toBe(before + 1);
+    expect(s.current.hits).toHaveLength(1000);
+  });
+  it('keeps the cap with a counter, and shows queued hits before a done or a Stop', () => {
+    const { s, sent, states, paint } = framed();
+    s.run('p');
+    const id = (sent[0].msg as { id: number }).id;
+    for (let i = 0; i < MAX_HITS_PER_SERVER + 5; i++) s.handle('a', hit(id, { turn: `u${i}`, session: `s${i}` }));
+    s.handle('a', done(id, { cut: 'hits', next: 'c1' }));
+    expect(s.current.hits).toHaveLength(MAX_HITS_PER_SERVER);
+    expect(s.current.status).toBe('done');
+    expect(s.current.next).toEqual({});
+    paint();
+    expect(states.at(-1)!.hits).toHaveLength(MAX_HITS_PER_SERVER);
+  });
+  it('counts a conversation in one pass', () => {
+    const hs = [{ serverId: 'a', session: 's1' }, { serverId: 'a', session: 's2' }, { serverId: 'a', session: 's1' }, { serverId: 'a', session: '' }];
+    expect(sessionSpans(hs)).toEqual(new Map([['a/s1', { count: 2, last: 2 }], ['a/s2', { count: 1, last: 1 }]]));
   });
 });

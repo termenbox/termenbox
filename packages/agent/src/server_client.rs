@@ -186,6 +186,7 @@ impl ServerClient {
             | ServerMessage::HistoryDeleted { .. }
             | ServerMessage::SearchHit { .. }
             | ServerMessage::SearchDone { .. }
+            | ServerMessage::SessionResumed { .. }
             | ServerMessage::SessionWindow { .. }
             | ServerMessage::ServerHealth { .. }
             | ServerMessage::HealthHistory { .. }

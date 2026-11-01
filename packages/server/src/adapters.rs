@@ -386,6 +386,7 @@ pub fn agent_name(command: &str) -> Option<&'static str> {
 /// flags; an agent without a resume command, or an id that is not a plain token, gives `None` and the tab stays a shell.
 pub fn resume_command(agent: &str, session: &str) -> Option<String> {
     let plain = !session.is_empty()
+        && !session.starts_with('-')
         && session.len() <= 128
         && session
             .bytes()
@@ -909,7 +910,17 @@ mod tests {
             Some("opencode --session ses_9")
         );
         assert_eq!(resume_command("gemini", "x"), None);
-        for bad in ["", "a b", "a;b", "$(x)", "-x y", &"a".repeat(129), "é"] {
+        for bad in [
+            "",
+            "a b",
+            "a;b",
+            "$(x)",
+            "-x y",
+            "--dangerously-skip-permissions",
+            "-x",
+            &"a".repeat(129),
+            "é",
+        ] {
             assert_eq!(resume_command("claude", bad), None, "{bad:?}");
         }
     }

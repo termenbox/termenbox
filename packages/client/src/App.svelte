@@ -12,7 +12,7 @@
   import InboxSheet from './InboxSheet.svelte';
   import SearchSheet from './SearchSheet.svelte';
   import { fileChanged, withWindow, type WindowMap } from './lib/acpHistory';
-  import { SessionSearch, landingOf, resumeOutcome, parts as hitParts, IDLE as SEARCH_IDLE, type SearchState } from './lib/sessionSearch';
+  import { SessionSearch, landingOf, resumeOutcome, isUnheld, sessionResumedOutcome, parts as hitParts, IDLE as SEARCH_IDLE, type SearchState } from './lib/sessionSearch';
   import { inbox, mergeAttention, markAllRead, unreadCount } from './lib/inbox';
   import { currentEndpoint, disablePush, enablePush, pushSupported } from './lib/push';
   import WorkspaceActions from './WorkspaceActions.svelte';
@@ -185,12 +185,13 @@
         if (!away && id === activeServerId && key === activeKey) showWorkspace(key, activeTabId ?? undefined);
       });
     },
-    onDrop: (_id, reason, upMs) => { sessionSearch.lost(_id); dirClients.get(_id)?.fail('The connection was lost.'); noteError(`connection lost after ${Math.round(upMs / 1000)} s: ${reason}`); },
+    onDrop: (_id, reason, upMs) => { sessionSearch.lost(_id); dropSessionAsk(_id, 'The connection was lost before the server answered the resume.'); dirClients.get(_id)?.fail('The connection was lost.'); noteError(`connection lost after ${Math.round(upMs / 1000)} s: ${reason}`); },
     onFatal: (_id, reason) => { noteError(`connection: ${reason}`); showToast(reason, 'error'); },
     onMessage: (_id, msg) => {
       const id = _id;
       dirClients.get(_id)?.handle(msg);
       if (msg.type === 'search_hit' || msg.type === 'search_done') sessionSearch.handle(_id, msg);
+      else if (msg.type === 'session_resumed') sessionResumed(_id, msg);
       if (msg.type === 'snapshot') snapshots.apply(workspaceKey(_id, msg.workspace), msg);
       else if (msg.type === 'workspace_attached') { resumedReply(_id, msg); preview = null; if (id === activeServerId && msg.workspace_id === activeWorkspaceId && msg.tab) { activeTab = msg.tab; saveActiveTab(workspaceKey(id, msg.workspace_id), msg.tab); } }
       else if (msg.type === 'workspace_view') { if (id === activeServerId && msg.workspace === activeWorkspaceId) heldView = mergeView(heldView, msg); }
@@ -374,8 +375,27 @@
   function closeSearch() { searchOpen = false; sessionSearch.close(); }
   // The three landings (decision 0156): an open terminal tab is switched to; an open ACP workspace is switched to and
   // scrolled to the turn; a dormant one is reopened only after the person chose Resume, and says what became of the agent.
-  type TappedHit = { serverId: string; workspace: string; tab: string; agent: string; up: boolean; turn: string; snippet: string; highlight: [number, number] };
+  type TappedHit = { serverId: string; workspace: string; tab: string; agent: string; up: boolean; turn: string; snippet: string; highlight: [number, number]; session?: string };
   let resumeAsked: { key: string; hit: TappedHit } | null = null;
+  // A conversation no workspace holds (decision 0182): the server switches to the workspace that holds it or makes one; nothing is typed from here.
+  let sessionAsked: { serverId: string; hit: TappedHit } | null = null;
+  let sessionAskTimer: ReturnType<typeof setTimeout> | undefined;
+  const SESSION_ASK_MS = 20_000;
+  /** Forget the open ask, for `serverId` only when given: a reply that will not come must not claim a later one. */
+  function dropSessionAsk(serverId?: string, say?: string) {
+    if (!sessionAsked || (serverId !== undefined && sessionAsked.serverId !== serverId)) return;
+    sessionAsked = null;
+    clearTimeout(sessionAskTimer);
+    if (say) showToast(say, 'error');
+  }
+  function sessionResumed(serverId: string, msg: import('./lib/protocol').SessionResumedMessage) {
+    const ask = sessionAsked;
+    if (!ask || ask.serverId !== serverId) return;
+    dropSessionAsk();
+    const r = sessionResumedOutcome(ask.hit, msg);
+    showToast(r.message, r.ok ? undefined : 'error');
+    if (r.go && msg.workspace) void attach(workspaceKey(serverId, msg.workspace), msg.tab || undefined);
+  }
   function pickHit(h: TappedHit) {
     closeSearch();
     const key = workspaceKey(h.serverId, h.workspace);
@@ -384,6 +404,14 @@
   }
   function resumeHit(h: TappedHit) {
     closeSearch();
+    if (isUnheld(h)) {
+      if (!h.session) { showToast('This server cannot resume a conversation that no workspace holds.', 'error'); return; }
+      sessionAsked = { serverId: h.serverId, hit: h };
+      clearTimeout(sessionAskTimer);
+      sessionAskTimer = setTimeout(() => dropSessionAsk(undefined, 'The server did not answer the resume.'), SESSION_ASK_MS);
+      hub.send(h.serverId, { type: 'resume_session', agent: h.agent, session: h.session });
+      return;
+    }
     const key = workspaceKey(h.serverId, h.workspace);
     void attach(key, h.tab || undefined);
     // An ACP workspace is restored by opening its view, which sends no `workspace_attached`: say it now and go to the turn.
@@ -1389,7 +1417,7 @@
   {/if}
 
   {#if menuOpen && user}<MenuSheet {user} {avatar} onservers={leaveServer} onsettings={() => go('settings')} onreport={openReport} ondiagnostics={() => openDiagnostics()} onlogout={logout} onclose={() => menuOpen = false} unread={unreadCount($inbox)} oninbox={() => inboxOpen = true} onsearch={() => searchOpen = true} />{/if}
-  {#if searchOpen}<SearchSheet bind:open={searchOpen} {wide} search={searchState} {now} nameOf={(sid, w) => hub.findWorkspace(workspaceKey(sid, w))?.name} onquery={(t) => sessionSearch.run(t)} onstop={() => sessionSearch.stop()} onpick={pickHit} onresume={resumeHit} onclose={closeSearch} />{/if}
+  {#if searchOpen}<SearchSheet bind:open={searchOpen} {wide} search={searchState} {now} nameOf={(sid, w) => hub.findWorkspace(workspaceKey(sid, w))?.name} onquery={(t) => sessionSearch.run(t)} onrange={(r) => sessionSearch.setRange(r)} onstop={() => sessionSearch.stop()} onmore={() => sessionSearch.more()} onexpand={(h) => sessionSearch.expand(h)} onpick={pickHit} onresume={resumeHit} onclose={closeSearch} />{/if}
   {#if inboxOpen}<InboxSheet items={$inbox} {now} agents={$allAgents} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} onreply={(key, text) => sendWorkspace({ type: 'reply', workspace: key, text })} onopen={openWaiting} onhome={() => go('home')} onread={() => inbox.update(markAllRead)} onclear={() => inbox.set([])} onclose={() => { inboxOpen = false; inbox.update(markAllRead); }} />{/if}
   {#if actionWorkspace}<WorkspaceActions workspace={actionWorkspace} canClose={['tmux', 'acp'].includes(backendOf(actionWorkspace))} confirmFirst={actionConfirm} onrename={(name) => renameWorkspace(actionWorkspace.key, name)} placement={placementOf($allWorkspaces, actionWorkspace.key)} onmove={(to) => moveWorkspace($allWorkspaces, actionWorkspace.key, to)} ondetach={() => detach(actionWorkspace.key)} oncloseworkspace={() => closeWorkspace(actionWorkspace.key)} onclose={() => actionKey = null} />{/if}
   {#if tabMenuOpen}

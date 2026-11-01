@@ -3030,6 +3030,7 @@ version = "0.1.57"
 dependencies = [
  "aes-gcm",
  "agent-client-protocol-schema",
+ "aho-corasick",
  "anyhow",
  "async-trait",
  "axum",

@@ -340,3 +340,111 @@ fn a_long_directory_name_is_found_by_its_head() {
     );
     std::fs::remove_dir_all(root).ok();
 }
+
+#[test]
+fn a_needle_in_a_big_tool_result_costs_no_parse() {
+    use super::scan::tests::allocs;
+    use std::io::Write;
+    let root = tmp();
+    let dir = projects(&root);
+    let log = ClaudeLog::new(root.clone());
+    // Two copies of a session that differ in one tool result: the needle is in one and not in the other.
+    for (id, filler) in [
+        ("withneedle", "zebra quartz "),
+        ("without", "filler words "),
+    ] {
+        std::fs::copy(dir.join("short.jsonl"), dir.join(format!("{id}.jsonl"))).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.join(format!("{id}.jsonl")))
+            .unwrap();
+        let out = filler.repeat(40_000);
+        writeln!(f, r#"{{"parentUuid":"a5","type":"user","uuid":"u99","timestamp":"2026-10-31T10:00:10Z","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_9","content":"{out}"}}]}},"toolUseResult":{{"stdout":"{out}"}}}}"#).unwrap();
+    }
+    let count = |id: &str| {
+        let s = session(id);
+        log.search(&s, "zebra quartz", 5).unwrap(); // the first run warms what a run reuses
+        let before = allocs();
+        let hits = log.search(&s, "zebra quartz", 5).unwrap();
+        (allocs() - before, hits)
+    };
+    let (with, hits) = count("withneedle");
+    let (without, _) = count("without");
+    assert!(hits.is_empty(), "tool output is never a hit");
+    assert_eq!(with, without, "the tool result was parsed");
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn only_a_line_with_text_in_it_is_worth_parsing() {
+    assert!(may_hold_text(
+        br#"{"type":"user","message":{"role":"user","content":"hello"}}"#
+    ));
+    assert!(may_hold_text(
+        br#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#
+    ));
+    assert!(may_hold_text(
+        br#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hm"}]}}"#
+    ));
+    assert!(may_hold_text(
+        br#"{"type":"user","message":{"content":[{"type":"tool_result","content":"x"},{"type":"text","text":"and a note"}]}}"#
+    ));
+    assert!(!may_hold_text(
+        br#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":"out"}]}}"#
+    ));
+    assert!(!may_hold_text(
+        br#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}"#
+    ));
+    // Tool output that quotes the markers carries them escaped, so they do not count.
+    assert!(!may_hold_text(
+        br#"{"type":"user","message":{"content":[{"type":"tool_result","content":"{\"type\":\"text\",\"text\":\"x\"}"}]}}"#
+    ));
+}
+
+#[test]
+fn a_file_named_like_a_flag_is_never_listed() {
+    let root = tmp();
+    let dir = projects(&root);
+    std::fs::copy(
+        dir.join("short.jsonl"),
+        dir.join("--dangerously-skip-permissions.jsonl"),
+    )
+    .unwrap();
+    let log = ClaudeLog::new(root.clone());
+    let listing = log.list(None, &mut Budget::new(Limits::default(), Cancel::default()));
+    assert!(!listing.files.is_empty());
+    assert!(listing.files.iter().all(|f| !f.id.starts_with('-')));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn listing_and_searching_many_files_allocate_no_block_per_file() {
+    use super::scan::tests::big_allocs;
+    let root = tmp();
+    let dir = projects(&root);
+    for n in 0..30 {
+        std::fs::copy(dir.join("short.jsonl"), dir.join(format!("copy{n}.jsonl"))).unwrap();
+    }
+    let log = ClaudeLog::new(root.clone());
+    let pass = |log: &ClaudeLog| {
+        let mut walk = scan::Budget::new(scan::Limits::default(), scan::Cancel::default());
+        let listing = log.list(None, &mut walk);
+        let mut run = SearchRun::new(scan::Limits::default(), scan::Cancel::default());
+        for f in &listing.files {
+            log.search_file(f, "the", &mut run).unwrap();
+        }
+        listing.files.len()
+    };
+    assert!(pass(&log) >= 30); // warms the scanner pool
+                               // A fresh log has no cached heads, so every file's head is read again.
+    let log = ClaudeLog::new(root.clone());
+    let before = big_allocs();
+    assert!(pass(&log) >= 30);
+    // The scanner's block and the head scratch come from the pool: no allocation per file.
+    assert!(
+        big_allocs() - before <= 2,
+        "{} block-sized allocations for 30 files",
+        big_allocs() - before
+    );
+    std::fs::remove_dir_all(root).ok();
+}
