@@ -1,5 +1,7 @@
 # Agent view as the main mode: levels, orientation, inspector, rules and the default flip, built template-first
 
+> **Paused 2026-11-01 (decision 0177).** R82, R83, R84 and R86 wait for the control plane (`docs/plans/attention-control-plane.md`, resumes after its step 6.5). R81 and R85 continue; R85 now depends on R81 only and its Rules UI opens from the Home stream (plan step 6.1).
+
 Decisions: 0162 (default view, credential-aware for Claude; draft), 0163 (levels, orientation, stepping), 0164 (strip, inspector, chrome budget), 0165 (permission rules), 0166 (message roles on the type scale), 0167 (template-first build order), 0168 (away digest, stuck signal, queued prompt). Fact 0069 (Anthropic terms), fact 0040 (what each agent sends). Guardrails `auto-answered-permissions-are-scoped-visible-and-audited`, `agent-view-meaning-never-rests-on-colour-alone`, `ui-features-ship-templates-tests-and-media-before-wiring`. Procedures `build-an-agent-view-slice-template-first`, `add-a-message-role-to-the-agent-view`. Roadmap steps R81 (foundation), R82 (reading), R83 (orientation), R84 (inspector, composer), R85 (rules), R86 (default flip). Related, not changed: 0137 (amended by 0162), R75 (ACP window host in tabs), R74 (stable ids; owner gates), R73 (UX harness; scenarios move to it when it lands), R78 and `docs/plans/cross-session-search.md` (scroll-to-turn reuses the turn anchors built here).
 
 ## Cold start

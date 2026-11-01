@@ -13,9 +13,10 @@ after work sessions; validated via `lint` on demand; queried via
 
 ## Project Overview
 
-**Termenbox** — a web-based terminal for managing remote AI coding agents
-(Codex, Claude Code) from any mobile browser, with Mosh-level
-session persistence. Web-first, with optional native wrappers. No subscriptions. Self-hosted.
+**Termenbox** — an attention control plane for one person running 100 to 1,000 agents
+(DECISION-0169): contracts, rules and a deputy remove asks, cluster cards batch the rest, and
+the session follows you across devices. Built on a web terminal with Mosh-level persistence.
+Web-first, optional native wrappers. No subscriptions. Self-hosted. Built dogfood-first (DECISION-0178).
 
 ## Key Directories
 
@@ -77,7 +78,7 @@ lint
 - **Wrappers**: optional Capacitor (iOS/Android) + `@capacitor-community/electron` (desktop); one Svelte build, PWA first-class (DECISION-0140)
 - **Deployment**: Docker image (ghcr.io), one command from the client; 512MB RAM, 1 vCPU (FACT-0001)
 - **Branches**: PRs target `develop`, the default branch; `master` moves only for a release (DECISION-0129)
-- **Plan**: docs/plans/termenbox-roadmap.md, tracked in GitHub issues
+- **Plan**: docs/plans/termenbox-roadmap.md; control plane: docs/plans/attention-control-plane.md (R87-R102); tracked in GitHub issues
 
 ## Guardrail Highlights
 

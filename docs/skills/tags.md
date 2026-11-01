@@ -64,6 +64,10 @@ bootstrap-generated: true
 | stun | STUN discovery of public addresses |
 | turn | TURN relays |
 | updater | In-place server updates |
+| control-plane | The attention control plane: conductor, operator session, clusters, contracts, deputy, dispatcher |
+| deputy | The optional triage model that answers obligations on a ladder |
+| fleet | Many nodes and agents run as one |
+| dogfood | Using a slice on the owner's own fleet before it counts as done |
 
 <!-- Umbrella tags (carried by >50% of active decisions): -->
 <!-- None yet — decisions still drafting -->
