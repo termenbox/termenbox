@@ -412,4 +412,5 @@ Do: Remove `Reducer`, `reducer.rs` (keep `Screen` and `WEAK_KEY` where used), `s
 `PIN_MAX_MS`, the duplicated `GRACE_MS`, `derive_activity`, the legacy `settle*` raise and clear, and
 `#![allow(dead_code)]` in `status/mod.rs`; drop the client fallbacks to the old fields once old clients are retired
 (B.7 keeps them until then).
+Keep `EventHub::attention_items` and `StatusChange::Attention`, which `conductor_link` reads. Control-plane step 2.4c makes the conductor forward `tier`, `ask` and `cause` before the old `attention` wire message is removed here.
 Done-when: `grep -n "set_screen_state\|PIN_MAX_MS" packages/server/src` finds nothing and `cargo test --workspace` passes.
