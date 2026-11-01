@@ -73,7 +73,7 @@ export async function startRealServer() {
 export async function launchReal({ viewport, scale, phone, recordDir, overlay }) {
   const real = await startRealServer();
   const browser = await launch(['--disable-features=WebRtcHideLocalIpsWithMdns', '--allow-loopback-in-peer-connection']);
-  const ctx = await browser.newContext(contextOptions({ viewport, deviceScaleFactor: scale, isMobile: phone, hasTouch: phone, recordVideo: { dir: recordDir, size: viewport } }));
+  const ctx = await browser.newContext(contextOptions({ reducedMotion: 'reduce', viewport, deviceScaleFactor: scale, isMobile: phone, hasTouch: phone, recordVideo: { dir: recordDir, size: viewport } }));
   await ctx.addInitScript(overlay, phone);
   // The preview names the account the server runs as; a video shows a stand-in name, never the machine's real one.
   await ctx.addInitScript(([real, shown]) => {

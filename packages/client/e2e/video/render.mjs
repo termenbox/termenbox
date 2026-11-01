@@ -58,7 +58,7 @@ try {
     cases[caseName].prepare?.(server);
     t = await startApp(shared, {
       server, viewport, deviceScaleFactor: scale, storage: { termenbox_ios_hint: '1', ...cases[caseName].storage },
-      contextExtra: { ...(phone ? { isMobile: true, hasTouch: true } : {}), recordVideo: { dir: work, size: viewport } },
+      contextExtra: { reducedMotion: 'reduce', ...(phone ? { isMobile: true, hasTouch: true } : {}), recordVideo: { dir: work, size: viewport } },
     });
     await t.ctx.addInitScript(overlayScript, phone);
     await t.open();
