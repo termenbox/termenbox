@@ -19,7 +19,7 @@ import { join, resolve } from 'node:path';
 
 const arg = (name) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : undefined; };
 if (process.argv.includes('--list')) {
-  const rows = Object.entries(cases).map(([id, c]) => ({ id, title: c.title, group: c.group, page: c.page, inputs: c.inputs, real: !!c.real, profiles: c.profiles ?? ['phone', 'desktop'], steps: c.steps }));
+  const rows = Object.entries(cases).map(([id, c]) => ({ id, title: c.title, group: c.group, page: c.page, inputs: c.inputs, real: !!c.real, template: !!c.probe, profiles: c.profiles ?? ['phone', 'desktop'], steps: c.steps }));
   console.log(process.argv.includes('--json') ? JSON.stringify(rows, null, 2) : rows.map((c) => c.id).join('\n'));
   process.exit(0);
 }

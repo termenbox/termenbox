@@ -73,7 +73,7 @@ jobs:
           node -e '
             const rows = JSON.parse(require("fs").readFileSync(process.env.RUNNER_TEMP + "/catalog.json", "utf8"));
             const want = process.env.CASE;
-            const pick = want === "all" ? rows : rows.filter((r) => r.id === want);
+            const pick = want === "all" ? rows.filter((r) => !r.template) : rows.filter((r) => r.id === want);
             if (!pick.length) { console.error("unknown case; choose all or one of: " + rows.map((r) => r.id).join(" ")); process.exit(1); }
             const profiles = process.env.PROFILE === "both" ? "phone desktop" : process.env.PROFILE;
             const out = [`cases=${pick.map((r) => r.id).join(" ")}`, `profiles=${profiles}`, `real=${pick.some((r) => r.real)}`];

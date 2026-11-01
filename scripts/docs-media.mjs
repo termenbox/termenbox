@@ -60,10 +60,10 @@ export function check(text, { mediaDir, hashes = {}, siteDir }) {
   return { errors, warnings };
 }
 
-/** Cases that no page marks: every case outside the `dialog` group (those are optional extras) needs a media marker in some page. */
+/** Cases that no page marks: every case outside the `dialog` group (optional extras) and not a template (review only) needs a media marker in some page. */
 export function unmarked(catalog, texts) {
   const marked = new Set(texts.flatMap((x) => markers(x).map((id) => splitId(id).case)));
-  return catalog.filter((c) => c.group !== 'dialog' && !marked.has(c.id)).map((c) => c.id);
+  return catalog.filter((c) => c.group !== 'dialog' && !c.template && !marked.has(c.id)).map((c) => c.id);
 }
 
 function selfTest() {
@@ -96,8 +96,8 @@ function selfTest() {
     assert.match(check('<!-- media:missing -->', { mediaDir: media }).errors[0], /no approved video/);
     assert.match(check(once, { mediaDir: media, hashes: { 'add-server': 'h2' } }).warnings[0], /stale/);
     assert.equal(check('no markers here', { mediaDir: media }).errors.length, 0);
-    const cat = [{ id: 'add-server', group: 'core' }, { id: 'gone', group: 'start' }, { id: 'extra', group: 'dialog' }];
-    assert.deepEqual(unmarked(cat, ['<!-- media:add-server-phone -->']), ['gone'], 'a case without a marker is reported, a dialog case is not');
+    const cat = [{ id: 'add-server', group: 'core' }, { id: 'gone', group: 'start' }, { id: 'extra', group: 'dialog' }, { id: 'tpl', group: 'core', template: true }];
+    assert.deepEqual(unmarked(cat, ['<!-- media:add-server-phone -->']), ['gone'], 'a case without a marker is reported, a dialog case and a template are not');
     assert.deepEqual(unmarked(cat, ['<!-- media:add-server -->', '<!-- media:gone-desktop -->']), []);
     assert.deepEqual(splitId('add-server-desktop'), { case: 'add-server', profile: 'desktop' });
   } finally { rmSync(root, { recursive: true, force: true }); }
