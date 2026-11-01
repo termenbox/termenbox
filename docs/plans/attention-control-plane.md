@@ -20,6 +20,22 @@ Termenbox is a web terminal for remote AI coding agents: Rust server `packages/s
 
 **Where today's code is.** Attention and Activity state: `packages/server/src/events.rs`, `reducer.rs` (decision 0122), `workspaces.rs`, `push.rs`, `turn.rs`; ACP in `acp.rs`, `acp_stream.rs`; wire types `ClientMessage` and `ServerMessage` in `packages/core/src/protocol.rs`. Client: `Home.svelte`, `lib/cards.ts`, `NeedsYouBanner.svelte`, `InboxSheet.svelte`, `DecisionPanel.svelte`, `QuickReply.svelte`, `lib/acpStore.ts`, `lib/protocol.ts`. The candidate-path connection model is decision 0123 (`candidates.rs`, `connection.rs`).
 
+## Resume here (updated 2026-11-01)
+
+**State.** Merged to `develop` and released as beta `v0.1.57-beta.23` (beta.24 adds the device class): the meter (1.1, 1.1b, 1.2, 1.4), the conductor (2.2 to 2.6), mission contracts (6.2), checkpoints (8.1). The owner runs the beta on their own machine; the 7-day baseline for 1.3 started 2026-11-01 (a partial first day: 10.5 s per agent-hour, 167 agent-minutes, 31 human answers). The meter file is `~/.config/termenbox/attention_meter.json`.
+
+**Blocked on the owner, in order.** (1) the 1.3 note after 7 days of readings; (2) choose the conductor and one or two nodes and enrol them for 2.7 (`--conductor-enrol`, one tap); (3) the 2.7 note. Nothing else may be marked done before its dogfood note.
+
+**Next for an agent, when the owner has written the note.** 1.3 closed, then 4.1 (the cluster study from the real meter data), 4.2, 8.4. After 2.7: 2.8, 3.1, 5.1. Unblocked now: nothing whose `Needs` are all `[x]`; 8.1 and 6.2 are the last of those. If asked to do something meanwhile: price table (`prices.json` beside the meter file, step 1.4) and the sampling of dwell against a stopwatch to check 1.1b.
+
+**Open issues from dogfood.** Dwell likely under-counts reading time before a question appears (look at the meter data after a week before changing it). A turn running at a restart counts from its next state change. Cost stays 0 without `prices.json`.
+
+**How to work and release here.**
+- Pool worktree: `sh scripts/pool.sh acquire <type>/<slug>`; on this machine run cargo as in the memory note: `sg docker -c "scripts/dev.sh env HOME=/tmp/h CARGO_TARGET_DIR=/cache/target-sergei CARGO_HOME=/cache/cargo-sergei cargo test -p termenbox-server --bin termenbox-server <filter>"`; `--full` for pnpm and e2e. About 20 server tests (e2e, tmux, pty) fail in that image and pass in CI; clippy there fails in other crates under the newer toolchain, CI's clippy is the judge. After a core change `touch packages/core/src/*.rs` if the server build reports missing items.
+- Watch CI with `.go-getter/bin/go-getter watch --until done -- gh pr checks <n> --watch`. A browser-matrix job sometimes fails once and passes on `gh run rerun <id> --failed`.
+- Beta release (decisions 0129, 0133): squash-merge the PR into `develop`, wait for the push CI on that commit to be green, `git push origin <sha>:refs/heads/master` (a fast-forward to the merged commit, not to a newer `develop` head), `git tag v0.1.57-beta.N <sha> && git push origin v0.1.57-beta.N`, watch `Release (beta)`. Check `gh release view v0.1.57-beta.N`.
+- Decision numbers 0180 and 0181 and fact 0071 are ours (develop took 0165, 0166 and 0069 for the native wrappers); the next free decision is 0182 unless develop has moved.
+
 ## Slice 0: scaffolding and the map
 
 ### 0.1 Dogfood log and its format — [x]‖
@@ -36,7 +52,7 @@ Done-when: the file names each of those modules with line references and a secti
 
 ## Slice 1: the meter (R87)
 
-### 1.1 Server meter: layers, dwell and answer latency — [ ] (code and Check done, awaits the 1.3 dogfood note)
+### 1.1 Server meter: layers, dwell and answer latency — [ ] (code and Check done, awaits the 1.3 dogfood note; the answering device class arrives on `card_seen` from `lib/deviceClass.ts`, and a card shown after the answer moves it from `other`)
 Class: implement · Needs: 0.2 · Check: `scripts/dev.sh cargo test -p termenbox-server attention_meter`
 Context: Decision 0169: attention leverage is human seconds per agent-hour. Data stays on the server, metadata only, bounded (`resource-constraints`, decision 0105 for the pattern). No prompt or agent text is stored.
 Do: Add `packages/server/src/attention_meter.rs`: for every obligation record `raised_at`, `resolved_at`, the layer that resolved it (`human`, `rule`, later `contract`, `deputy`), the answering device (never a name), and for a human the dwell (card foreground time reported by the client) and answer latency. Keep a ring of the last 30 days as daily buckets in the server's state directory, atomically written. Compute `human_seconds` and `agent_hours` (sum of working time per tab from the reducer) per day and a 7-day figure. Add `ClientMessage::CardSeen { obligation, ms }` and `ServerMessage::AttentionStats { days }` in `packages/core/src/protocol.rs`, mirrored in `packages/client/src/lib/protocol.ts` with a round-trip test. Test: bucket rollover, bounded size, a rule-resolved obligation adds zero human seconds, no text stored.
