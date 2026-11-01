@@ -539,6 +539,29 @@ pub enum ClientMessage {
         query: String,
         #[serde(default)]
         cancel: bool,
+        /// Only records at or after this time (ms since the epoch) are searched; absent means any age.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<u64>,
+        /// Only this conversation (its `search_hit.session`), with all its matches up to a fixed cap and whatever its
+        /// age: the rest of a conversation a page showed three hits of.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+        /// The agent of `session` (its `search_hit.agent`): two agents may use one id, and only this one is searched.
+        /// Absent searches every agent that has the id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+        /// The `next` of an earlier `search_done` of the same query: continue after it. The server keeps no search
+        /// state, so the cursor holds the position and the file's identity.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
+    },
+    /// Resume a conversation a search found (decision 0182): switch to the workspace that already holds `session` of
+    /// `agent`, else create a workspace in the directory the session's file names and start the agent's resume command
+    /// there. The client names the conversation, never a path; the answer is `session_resumed`. Owner only. The
+    /// session id is never logged.
+    ResumeSession {
+        agent: String,
+        session: String,
     },
     /// The turns around `turn` of the session of `workspace`'s tab `tab` (empty for an ACP workspace); the answer is
     /// `session_window`. Owner only.
@@ -957,14 +980,23 @@ pub enum ServerMessage {
     HistoryDeleted {
         removed: u64,
     },
-    /// One match of a `search`. `workspace` and `tab` locate it, `up` says whether the workspace is running (a hit in a
-    /// dormant one offers Resume). `snippet` is scrubbed; `highlight` is the matched part, in characters of `snippet`.
+    /// One match of a `search`. `workspace` and `tab` locate the tab that holds the conversation (empty when none
+    /// does). `state` is `open` (a running tab holds it) or `resume`; `up` is the same as a flag, for older clients.
+    /// `dir` is where the session ran, read from its file. `snippet` is scrubbed; `highlight` is the matched part, in
+    /// characters of `snippet`.
     SearchHit {
         id: u64,
         workspace: String,
         tab: String,
         agent: String,
         up: bool,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        state: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        dir: String,
+        /// The conversation's id, for `resume_session`.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        session: String,
         turn: String,
         kind: String,
         snippet: String,
@@ -972,13 +1004,35 @@ pub enum ServerMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         at: Option<String>,
     },
-    /// Ends a `search`. `cut` is why it stopped before it had looked everywhere (`hits`, `bytes`, `time` or
-    /// `cancelled`); `off` lists the agents whose search is off, each with a fixed reason.
+    /// Answers `resume_session`. `outcome`: `switched` (a workspace already held the conversation; attach to it),
+    /// `resumed` (a new workspace runs the resume command), `shell` (a new workspace is a shell, `reason` says why) or
+    /// `missing` (the directory or the conversation is gone; nothing was created).
+    SessionResumed {
+        outcome: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        workspace: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        tab: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// Ends a `search`. `cut` is why it stopped before it had looked everywhere (`hits`, `bytes`, `time`, `range` or
+    /// `cancelled`; `range` only when the `since` bound alone kept it from looking); `older` counts the conversations
+    /// that bound skipped or stopped reading; `off` lists the agents whose search is off, each with a fixed reason.
     SearchDone {
         id: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cut: Option<String>,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        older: u32,
         off: Vec<SearchOff>,
+        /// Set when the search stopped with more to look at: send it as `after` for the next page.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next: Option<String>,
+        /// The conversation the cursor pointed into was rewritten, so it was read again from its newest line and a
+        /// hit may repeat.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        restarted: bool,
     },
     /// Answers `window`: entries in conversation order, at most 48 KiB of text. `anchor` is the index of the asked turn.
     /// `fingerprint` changes when the session file was rewritten: hits found earlier may no longer hold.

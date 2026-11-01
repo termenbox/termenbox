@@ -11,7 +11,11 @@ thread_local! {
     static ALLOCS: Cell<u64> = const { Cell::new(0) };
     static LIVE: Cell<i64> = const { Cell::new(0) };
     static PEAK: Cell<i64> = const { Cell::new(0) };
+    static BIG: Cell<u64> = const { Cell::new(0) };
 }
+
+/// An allocation this big is a block, not a working buffer (glibc serves it with its own mmap).
+const BIG_ALLOC: usize = 64 * 1024;
 
 struct Counting;
 
@@ -22,6 +26,9 @@ fn note(delta: i64, allocation: bool) {
     });
     if allocation {
         let _ = ALLOCS.try_with(|n| n.set(n.get() + 1));
+        if delta >= BIG_ALLOC as i64 {
+            let _ = BIG.try_with(|n| n.set(n.get() + 1));
+        }
     }
 }
 
@@ -47,8 +54,13 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static COUNTING: Counting = Counting;
 
-fn allocs() -> u64 {
+pub(crate) fn allocs() -> u64 {
     ALLOCS.with(Cell::get)
+}
+
+/// How many allocations of a block's size the thread has made.
+pub(crate) fn big_allocs() -> u64 {
+    BIG.with(Cell::get)
 }
 
 /// Starts measuring the heap peak from what is held now.
@@ -90,6 +102,7 @@ fn unlimited() -> Limits {
         per_session: usize::MAX,
         max_time: Duration::from_secs(600),
         max_bytes: u64::MAX,
+        since_ms: None,
     }
 }
 
@@ -629,4 +642,483 @@ fn bench_200_mb_scan_stays_within_budget() {
     } else {
         assert_eq!(end, End::Cut(Cut::Bytes), "200 MB is the byte cap's edge");
     }
+}
+
+/// A corpus of one kind for the baseline: `ascii` lines only, `mixed` (every tenth line non-ASCII, as the benchmark
+/// above) or `cyrillic` lines only.
+fn write_corpus(path: &Path, bytes: usize, kind: &str) {
+    let mut out = std::io::BufWriter::with_capacity(1 << 20, File::create(path).unwrap());
+    let ascii = "The assistant read the file, ran the build, and reported that every check passed on the first try ";
+    let cyr = "Привет, мир: создаём файл с кириллицей и акцентами — café, naïve, façade, ünïcödé ";
+    let (mut written, mut n) = (0usize, 0u64);
+    while written < bytes {
+        n += 1;
+        let body = match kind {
+            "ascii" => ascii,
+            "cyrillic" => cyr,
+            _ if n.is_multiple_of(10) => cyr,
+            _ => ascii,
+        };
+        let line = format!(
+            r#"{{"type":"assistant","uuid":"{n:016x}","message":{{"content":[{{"type":"text","text":"{body}{body}{body}"}}]}}}}{}"#,
+            "\n"
+        );
+        out.write_all(line.as_bytes()).unwrap();
+        written += line.len();
+    }
+    out.flush().unwrap();
+}
+
+/// Drops the file's pages from the page cache so the next read is cold.
+fn evict(file: &File) {
+    use std::os::fd::AsRawFd;
+    unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
+}
+
+/// The figures of `session_log/README.md`: run by hand in a release build, `-- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement, not a check"]
+fn measure_the_scan_baseline() {
+    const BYTES: usize = 200 * 1024 * 1024;
+    let mb = |d: Duration| BYTES as f64 / 1048576.0 / d.as_secs_f64();
+    let dir = TempDir::new();
+    let needle = Needle::new("zebra quartz").unwrap();
+    for kind in ["ascii", "mixed", "cyrillic"] {
+        let path = dir.0.join(format!("{kind}.jsonl"));
+        write_corpus(&path, BYTES, kind);
+        let file = File::open(&path).unwrap();
+        let size = file.metadata().unwrap().len();
+        let mut scanner = Scanner::new();
+        let scan = |scanner: &mut Scanner| {
+            let mut budget = Budget::new(unlimited(), Cancel::default());
+            let t = Instant::now();
+            let end = scanner
+                .scan_file(&file, size, &needle, &mut budget, |_| {
+                    ControlFlow::Continue(())
+                })
+                .unwrap();
+            assert_eq!(end, End::Done);
+            t.elapsed()
+        };
+        evict(&file);
+        let cold = scan(&mut scanner);
+        let hot = (0..3).map(|_| scan(&mut scanner)).min().unwrap();
+
+        // Phases over the same bytes, hot: pread alone, then the newline split, then the fold of every line, then
+        // memmem over folded lines. The rest of `hot` is the loop and the carry copies.
+        let mut buf = vec![0u8; BLOCK];
+        let t = Instant::now();
+        let mut at = 0u64;
+        while at < size {
+            let len = BLOCK.min((size - at) as usize);
+            read_exact_at(&file, &mut buf[..len], at).unwrap();
+            at += len as u64;
+        }
+        let pread = t.elapsed();
+        let (mut split, mut fold_t, mut find_t) = (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+        let mut folded = Vec::new();
+        let mut at = 0u64;
+        while at < size {
+            let len = BLOCK.min((size - at) as usize);
+            read_exact_at(&file, &mut buf[..len], at).unwrap();
+            at += len as u64;
+            let block = &buf[..len];
+            let t = Instant::now();
+            let lines: Vec<&[u8]> = block.split(|&b| b == b'\n').collect();
+            split += t.elapsed();
+            // One timer per block: a timer per line costs more than the fold of an ASCII line.
+            let fold_line = |l: &[u8], folded: &mut Vec<u8>| {
+                folded.clear();
+                if l.is_ascii() {
+                    folded.extend(l.iter().map(u8::to_ascii_lowercase));
+                } else {
+                    for chunk in l.utf8_chunks() {
+                        for c in chunk.valid().chars() {
+                            fold_char(c, |f| push_char(folded, f));
+                        }
+                    }
+                }
+            };
+            let t = Instant::now();
+            for l in &lines {
+                fold_line(l, &mut folded);
+            }
+            fold_t += t.elapsed();
+            let t = Instant::now();
+            for l in &lines {
+                fold_line(l, &mut folded);
+                std::hint::black_box(memchr::memmem::find(&folded, b"zebra quartz"));
+            }
+            find_t += t.elapsed();
+        }
+        let find_t = find_t.saturating_sub(fold_t);
+
+        // One line's JSON parse, as the adapters pay it per candidate.
+        let line = {
+            let mut first = Vec::new();
+            read_exact_at(&file, &mut buf[..4096], 0).unwrap();
+            first.extend_from_slice(buf[..4096].split(|&b| b == b'\n').next().unwrap());
+            first
+        };
+        let t = Instant::now();
+        for _ in 0..20_000 {
+            std::hint::black_box(serde_json::from_slice::<serde_json::Value>(&line).unwrap());
+        }
+        let parse_us = t.elapsed().as_secs_f64() * 1e6 / 20_000.0;
+
+        // A fresh `Scanner` and one search of a small file: what a keystroke's search allocates.
+        let small = dir.0.join("small.jsonl");
+        write_corpus(&small, 1024 * 1024, kind);
+        let sf = File::open(&small).unwrap();
+        let ssize = sf.metadata().unwrap().len();
+        let (rss0, a0, h0) = (vm_rss_kib(), allocs(), reset_peak());
+        let mut s2 = Scanner::new();
+        let mut budget = Budget::new(unlimited(), Cancel::default());
+        s2.scan_file(&sf, ssize, &needle, &mut budget, |_| {
+            ControlFlow::Continue(())
+        })
+        .unwrap();
+        let (n_allocs, peak) = (allocs() - a0, peak_above(h0));
+        drop(s2);
+        eprintln!(
+            "[{kind}] cold {:.0} MB/s ({cold:?}), hot {:.0} MB/s ({hot:?}); phases hot: pread {:.0} MB/s, newline split {:.1}% , fold {:.1}%, memmem {:.1}% of hot; parse {parse_us:.1} us/line; fresh search: {n_allocs} allocs, heap peak {peak} B, rss {} KiB -> {} KiB",
+            mb(cold),
+            mb(hot),
+            mb(pread),
+            100.0 * split.as_secs_f64() / hot.as_secs_f64(),
+            100.0 * fold_t.as_secs_f64() / hot.as_secs_f64(),
+            100.0 * find_t.as_secs_f64() / hot.as_secs_f64(),
+            rss0,
+            vm_rss_kib(),
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+}
+
+#[test]
+fn a_hundred_searches_allocate_one_set_of_blocks() {
+    let dir = TempDir::new();
+    let path = dir.0.join("bulk.jsonl");
+    write_bulk(&path, 1024 * 1024, &[]);
+    let needle = Needle::new("zebra quartz").unwrap();
+    let file = File::open(&path).unwrap();
+    let size = file.metadata().unwrap().len();
+    // A pool of its own, so searches in other tests do not hand this one a warm scanner.
+    let pool: &'static ScannerPool = Box::leak(Box::new(ScannerPool::new()));
+    let cancel = Cancel::default();
+    let search = || {
+        let mut scanner = pool.take();
+        let mut budget = Budget::new(unlimited(), cancel.clone());
+        scanner
+            .scan_file(&file, size, &needle, &mut budget, |_| {
+                ControlFlow::Continue(())
+            })
+            .unwrap();
+    };
+    let (a0, h0) = (allocs(), reset_peak());
+    search();
+    let first = allocs() - a0;
+    let a1 = allocs();
+    for _ in 0..99 {
+        search();
+    }
+    // The first search made the block and the working buffers; the other 99 reuse them (the pool lock and the
+    // scanner's buffers are the only things touched, none of which allocate).
+    assert_eq!(allocs() - a1, 0, "99 more searches, first made {first}");
+    assert!(peak_above(h0) < 2 * BLOCK as i64, "one block, not many");
+    // Process RSS is not asserted: tests share the process. No allocation means no growth to measure.
+    assert_eq!(pool.idle(), 1);
+}
+
+#[test]
+fn the_pool_keeps_two_idle_scanners_and_trims_big_buffers() {
+    let pool: &'static ScannerPool = Box::leak(Box::new(ScannerPool::new()));
+    let (a, b, c) = (pool.take(), pool.take(), pool.take());
+    drop((a, b, c));
+    assert_eq!(pool.idle(), POOL_MAX);
+    let mut s = pool.take();
+    s.line.resize(IDLE_CAP * 4, 0);
+    drop(s);
+    let s = pool.take();
+    assert!(s.line.capacity() <= IDLE_CAP && s.line.is_empty());
+    assert_eq!(s.buf.len(), BLOCK);
+}
+
+#[test]
+fn a_cancelled_or_early_search_returns_its_scanner() {
+    let dir = TempDir::new();
+    let path = dir.0.join("bulk.jsonl");
+    write_bulk(&path, 1024 * 1024, &[]);
+    let file = File::open(&path).unwrap();
+    let size = file.metadata().unwrap().len();
+    let needle = Needle::new("zebra quartz").unwrap();
+    let pool: &'static ScannerPool = Box::leak(Box::new(ScannerPool::new()));
+    let cancel = Cancel::default();
+    cancel.cancel();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut scanner = pool.take();
+        let mut budget = Budget::new(unlimited(), cancel.clone());
+        let end = scanner
+            .scan_file(
+                &file,
+                size,
+                &needle,
+                &mut budget,
+                |_| ControlFlow::Break(()),
+            )
+            .unwrap();
+        assert!(matches!(end, End::Cut(_)));
+        panic!("unwinds with the scanner held");
+    }));
+    assert!(result.is_err());
+    assert_eq!(pool.idle(), 1);
+}
+
+/// The lines that hold `query`, newest first, found the slow way: every line folded and compared.
+fn lines_with(text: &[u8], query: &str) -> Vec<(u64, Vec<u8>)> {
+    let needle = Needle::new(query).unwrap();
+    let mut scratch = Vec::new();
+    let mut out = Vec::new();
+    let mut offset = 0u64;
+    for line in text.split_inclusive(|&b| b == b'\n') {
+        let body = line.strip_suffix(b"\n").unwrap_or(line);
+        if !body.is_empty() && needle.matches(body, &mut scratch) {
+            out.push((offset, body.to_vec()));
+        }
+        offset += line.len() as u64;
+    }
+    out.reverse();
+    out
+}
+
+fn scan_lines(path: &Path, query: &str) -> Vec<(u64, Vec<u8>)> {
+    let file = File::open(path).unwrap();
+    let size = file.metadata().unwrap().len();
+    let needle = Needle::new(query).unwrap();
+    let mut budget = Budget::new(unlimited(), Cancel::default());
+    let mut found = Vec::new();
+    let end = Scanner::new()
+        .scan_file(&file, size, &needle, &mut budget, |c| {
+            found.push((c.offset, c.bytes.to_vec()));
+            ControlFlow::Continue(())
+        })
+        .unwrap();
+    assert_eq!(end, End::Done);
+    found
+}
+
+#[test]
+fn the_block_search_finds_what_the_line_search_finds() {
+    // Several blocks of lines, ASCII runs and accented runs, matches at the start, middle and end of blocks, a match
+    // that is only a prefix of a word, the same line twice in a row, and a needle in more than one place per line.
+    let mut text = Vec::new();
+    let mut i = 0u32;
+    while text.len() < 3 * BLOCK + 1000 {
+        let line = match i % 11 {
+            0 => format!("{{\"n\":{i},\"t\":\"Zebra Quartz here\"}}"),
+            1 => format!("{{\"n\":{i},\"t\":\"café zebra QUARTZ\"}}"),
+            2 => format!("{{\"n\":{i},\"t\":\"zebra quartzzebra quartz\"}}"),
+            3 => format!("{{\"n\":{i},\"t\":\"zebra\"}}"),
+            4 => String::new(),
+            _ => format!(
+                "{{\"n\":{i},\"t\":\"{}\"}}",
+                "filler ".repeat(1 + (i % 40) as usize)
+            ),
+        };
+        text.extend_from_slice(line.as_bytes());
+        text.push(b'\n');
+        i += 1;
+    }
+    text.extend_from_slice(b"zebra quartz without a newline");
+    let dir = TempDir::new();
+    let path = dir.0.join("mixed.jsonl");
+    std::fs::write(&path, &text).unwrap();
+    for query in [
+        "zebra quartz",
+        "ZEBRA",
+        "quartz",
+        "café",
+        "cafe",
+        "é",
+        "filler",
+        "a\nb",
+        "nothing here",
+    ] {
+        assert_eq!(
+            scan_lines(&path, query),
+            lines_with(&text, query),
+            "{query:?}"
+        );
+    }
+}
+
+#[test]
+fn accents_do_not_matter_on_either_path() {
+    // One ASCII block and one with an accent: "cafe" must find "CAFÉ" and "café" must find "cafe" in both.
+    let dir = TempDir::new();
+    let ascii = dir.0.join("ascii.jsonl");
+    std::fs::write(&ascii, b"{\"t\":\"a cafe\"}\n{\"t\":\"CAFE\"}\nnone\n").unwrap();
+    let accented = dir.0.join("accented.jsonl");
+    std::fs::write(&accented, "{\"t\":\"un café\"}\n{\"t\":\"CAFÉ\"}\nnone\n").unwrap();
+    for query in ["cafe", "café", "CAFÉ", "Cafe"] {
+        assert_eq!(scan_lines(&ascii, query).len(), 2, "ASCII text, {query:?}");
+        assert_eq!(
+            scan_lines(&accented, query).len(),
+            2,
+            "accented text, {query:?}"
+        );
+    }
+    // A needle that is not ASCII once folded cannot be in ASCII text.
+    assert!(scan_lines(&ascii, "привет").is_empty());
+}
+
+#[test]
+fn iso_times_parse_to_epoch_milliseconds() {
+    assert_eq!(parse_iso_ms(b"1970-01-01T00:00:00.000Z"), Some(0));
+    assert_eq!(parse_iso_ms(b"2000-03-01T00:00:00Z"), Some(951_868_800_000));
+    assert_eq!(
+        parse_iso_ms(b"2024-02-29T12:34:56.789Z\",x"),
+        Some(1_709_210_096_789)
+    );
+    assert_eq!(parse_iso_ms(b"2025-13-01T00:00:00Z"), None);
+    assert_eq!(parse_iso_ms(b"not a time at all.."), None);
+    assert_eq!(parse_iso_ms(b"2025-01-01"), None);
+}
+
+/// `lines` records, each `pad` bytes of text, one a second from `start_s`; the last holds "needle".
+fn timed_file(path: &Path, start_s: u64, lines: u64, pad: usize) {
+    let mut out = std::io::BufWriter::new(File::create(path).unwrap());
+    let pad = "x".repeat(pad);
+    for n in 0..lines {
+        let t = (start_s + n) * 1000;
+        let (s, ms) = (t / 1000, t % 1000);
+        let (days, rem) = (s / 86_400, s % 86_400);
+        // 1970-01-01 plus `days`, which only needs to stay within January 1970 here.
+        let day = 1 + days;
+        let text = if n == lines - 1 { "needle" } else { "plain" };
+        writeln!(
+            out,
+            r#"{{"type":"user","timestamp":"1970-01-{day:02}T{:02}:{:02}:{:02}.{ms:03}Z","message":"{text} {pad}"}}"#,
+            rem / 3600,
+            rem / 60 % 60,
+            rem % 60
+        )
+        .unwrap();
+    }
+    out.flush().unwrap();
+}
+
+#[test]
+fn a_file_stops_at_the_first_block_older_than_the_bound() {
+    let dir = TempDir::new();
+    let path = dir.0.join("timed.jsonl");
+    // 4000 lines of ~1 KB, one a second: about 4 MB, 16 blocks. Needle only in the newest line.
+    timed_file(&path, 0, 4000, 1000);
+    let size = std::fs::metadata(&path).unwrap().len();
+    let all = scan(&path, "needle", unlimited());
+    assert_eq!((all.0.len(), all.1), (1, End::Done));
+    assert_eq!(all.2.bytes_read(), size);
+    assert_eq!(all.2.older(), 0);
+
+    // Everything from second 3900 on is wanted: the needle is found, the older 3.8 MB is not read.
+    let wanted = Limits {
+        since_ms: Some(3900 * 1000),
+        ..unlimited()
+    };
+    let (found, end, budget) = scan(&path, "needle", wanted);
+    assert_eq!((found.len(), end), (1, End::Range));
+    assert_eq!(budget.older(), 1);
+    assert!(
+        budget.bytes_read() <= 3 * BLOCK as u64,
+        "read {} of {size}",
+        budget.bytes_read()
+    );
+
+    // A bound older than the whole file reads all of it and reports nothing skipped.
+    let all_new = Limits {
+        since_ms: Some(0),
+        ..unlimited()
+    };
+    let (found, end, budget) = scan(&path, "needle", all_new);
+    assert_eq!((found.len(), end, budget.older()), (1, End::Done, 0));
+}
+
+#[test]
+fn one_old_looking_line_does_not_end_the_scan() {
+    let dir = TempDir::new();
+    let path = dir.0.join("odd.jsonl");
+    let pad = "x".repeat(1000);
+    let mut data = String::new();
+    // Needle in the oldest records; a block-sized run of records whose first lines look old sits in the middle only
+    // once, so the second-block rule keeps reading to the needle.
+    data.push_str(&format!(
+        "{{\"timestamp\":\"1970-01-01T00:20:00.000Z\",\"m\":\"needle {pad}\"}}\n"
+    ));
+    for i in 0..600u64 {
+        // Every record nests an older `timestamp`; only the top-level one counts.
+        let t = 1200 + i;
+        data.push_str(&format!(
+            "{{\"m\":{{\"timestamp\":\"1970-01-01T00:00:01.000Z\"}},\"timestamp\":\"1970-01-01T{:02}:{:02}:{:02}.000Z\",\"p\":\"{pad}\"}}\n",
+            t / 3600, t / 60 % 60, t % 60
+        ));
+    }
+    let path = dir.file("odd.jsonl", data.as_bytes());
+    let wanted = Limits {
+        since_ms: Some(1_000 * 1000),
+        ..unlimited()
+    };
+    let (found, end, budget) = scan(&path, "needle", wanted);
+    assert_eq!((found.len(), end, budget.older()), (1, End::Done, 0));
+}
+
+#[test]
+fn reading_the_first_line_time_allocates_nothing() {
+    let block = b"tail of a line\n{\"m\":{\"timestamp\":\"1970-01-01T00:00:01.000Z\"},\"timestamp\":\"1970-01-01T00:01:00.000Z\"}\nrest\n";
+    let before = allocs();
+    let t = first_line_time(block);
+    assert_eq!(allocs(), before);
+    assert_eq!(t, Some(60_000));
+}
+
+#[test]
+fn a_cut_between_blocks_resumes_after_a_newline_and_loses_no_line() {
+    let dir = TempDir::new();
+    let data = generated(9, 6 * BLOCK, 3000, 3);
+    let path = dir.file("a.jsonl", &data);
+    let file = File::open(&path).unwrap();
+    let size = file.metadata().unwrap().len();
+    let needle = Needle::new("needle").unwrap();
+    let mut scanner = Scanner::new();
+    let mut budget = Budget::new(
+        Limits {
+            max_bytes: 2 * BLOCK as u64,
+            ..unlimited()
+        },
+        Cancel::default(),
+    );
+    let mut first: Found = Vec::new();
+    let end = scanner
+        .scan_file(&file, size, &needle, &mut budget, |c| {
+            first.push((c.offset, c.bytes.to_vec(), c.complete));
+            ControlFlow::Continue(())
+        })
+        .unwrap();
+    assert_eq!(end, End::Cut(Cut::Bytes));
+    let at = scanner.stopped_at().expect("a cut says where");
+    assert_eq!(data[at as usize - 1], b'\n', "just after a newline");
+    let mut budget = Budget::new(unlimited(), Cancel::default());
+    let mut rest: Found = Vec::new();
+    scanner
+        .scan_file(&file, at, &needle, &mut budget, |c| {
+            rest.push((c.offset, c.bytes.to_vec(), c.complete));
+            ControlFlow::Continue(())
+        })
+        .unwrap();
+    assert!(
+        rest.iter().all(|r| r.2),
+        "every line of the resumed scan is whole"
+    );
+    let mut both: Found = first;
+    both.extend(rest);
+    assert_eq!(both, naive(&data, "needle"), "no line twice, none lost");
 }

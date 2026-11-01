@@ -20,18 +20,6 @@ Termenbox is a web terminal for remote AI coding agents: Rust server `packages/s
 
 **Where today's code is.** Attention and Activity state: `packages/server/src/events.rs`, `reducer.rs` (decision 0122), `workspaces.rs`, `push.rs`, `turn.rs`; ACP in `acp.rs`, `acp_stream.rs`; wire types `ClientMessage` and `ServerMessage` in `packages/core/src/protocol.rs`. Client: `Home.svelte`, `lib/cards.ts`, `NeedsYouBanner.svelte`, `InboxSheet.svelte`, `DecisionPanel.svelte`, `QuickReply.svelte`, `lib/acpStore.ts`, `lib/protocol.ts`. The candidate-path connection model is decision 0123 (`candidates.rs`, `connection.rs`).
 
-## Resume here (updated 2026-11-01)
-
-**State.** Merged to `develop` and released as beta `v0.1.57-beta.23` (beta.24 attributed the device by the card that was shown, which was wrong when two devices showed it; beta.25 attributes it to the connection that answers): the meter (1.1, 1.1b, 1.2, 1.4), the conductor (2.2 to 2.6), mission contracts (6.2), checkpoints (8.1). The owner runs the beta on their own machine; the 7-day baseline for 1.3 started 2026-11-01 (a partial first day; restarts lose a running turn's time, so day one reads high). The meter file is `~/.config/termenbox/attention_meter.json`.
-
-**Blocked on the owner, in order.** (1) the 1.3 note after 7 days of readings; (2) choose the conductor and one or two nodes and enrol them for 2.7 (`--conductor-enrol`, one tap); (3) the 2.7 note. Nothing else may be marked done before its dogfood note.
-
-**First, in the next session.** (1) Read `~/.config/termenbox/attention_meter.json` and report it (`by_device` should show `phone` and `desktop` once beta.25 runs on both devices; day 20758 is a partial, restart-skewed day, so do not quote its seconds per agent-hour). (2) Do step 1.1c below as a small PR, watch it, merge on green, and release the next beta only if the owner says so. Nothing else is unblocked.
-
-**Next for an agent, when the owner has written the note.** 1.3 closed, then 4.1 (the cluster study from the real meter data), 4.2, 8.4. After 2.7: 2.8, 3.1, 5.1. Unblocked now: nothing whose `Needs` are all `[x]`; 8.1 and 6.2 are the last of those. If asked to do something meanwhile: price table (`prices.json` beside the meter file, step 1.4) and the sampling of dwell against a stopwatch to check 1.1b.
-
-**Open issues from dogfood.** Dwell likely under-counts reading time before a question appears (look at the meter data after a week before changing it). A turn running at a restart counts from its next state change. Cost stays 0 without `prices.json`.
-
 **How to work and release here.**
 - Pool worktree: `sh scripts/pool.sh acquire <type>/<slug>`; on this machine run cargo as in the memory note: `sg docker -c "scripts/dev.sh env HOME=/tmp/h CARGO_TARGET_DIR=/cache/target-sergei CARGO_HOME=/cache/cargo-sergei cargo test -p termenbox-server --bin termenbox-server <filter>"`; `--full` for pnpm and e2e. About 20 server tests (e2e, tmux, pty) fail in that image and pass in CI; clippy there fails in other crates under the newer toolchain, CI's clippy is the judge. After a core change `touch packages/core/src/*.rs` if the server build reports missing items.
 - Watch CI with `.go-getter/bin/go-getter watch --until done -- gh pr checks <n> --watch`. A browser-matrix job sometimes fails once and passes on `gh run rerun <id> --failed`.
@@ -54,7 +42,7 @@ Done-when: the file names each of those modules with line references and a secti
 
 ## Slice 1: the meter (R87)
 
-### 1.1 Server meter: layers, dwell and answer latency — [ ] (code and Check done, awaits the 1.3 dogfood note; the answering device is the class (`device_class` message, `lib/deviceClass.ts`) of the connection that sent the answer, reply or keys; a question cleared with no such connection is `other`)
+### 1.1 Server meter: layers, dwell and answer latency — [ ] (code and Check done, awaits the 1.3 dogfood note; released in beta `v0.1.57-beta.26`; the answering device is the class (`device_class` message, `lib/deviceClass.ts`) of the connection that sent the answer, reply or keys; a question cleared with no such connection is `other`; `by_device` shows `phone` and `desktop` once beta.26 runs on both devices, and day 20758 is a partial, restart-skewed day, so do not quote its seconds per agent-hour)
 Class: implement · Needs: 0.2 · Check: `scripts/dev.sh cargo test -p termenbox-server attention_meter`
 Context: Decision 0169: attention leverage is human seconds per agent-hour. Data stays on the server, metadata only, bounded (`resource-constraints`, decision 0105 for the pattern). No prompt or agent text is stored.
 Do: Add `packages/server/src/attention_meter.rs`: for every obligation record `raised_at`, `resolved_at`, the layer that resolved it (`human`, `rule`, later `contract`, `deputy`), the answering device (never a name), and for a human the dwell (card foreground time reported by the client) and answer latency. Keep a ring of the last 30 days as daily buckets in the server's state directory, atomically written. Compute `human_seconds` and `agent_hours` (sum of working time per tab from the reducer) per day and a 7-day figure. Add `ClientMessage::CardSeen { obligation, ms }` and `ServerMessage::AttentionStats { days }` in `packages/core/src/protocol.rs`, mirrored in `packages/client/src/lib/protocol.ts` with a round-trip test. Test: bucket rollover, bounded size, a rule-resolved obligation adds zero human seconds, no text stored.
@@ -66,25 +54,25 @@ Context: Decision 0169. The owner must see their own number every day for dogfoo
 Do: Add `packages/client/src/AttentionMeter.svelte` (props only: days, window) showing "Attention: N s per agent-hour (7 days), M% of asks answered without you", shown on `Home.svelte` under the fleet summary; send `CardSeen` from the Needs-you card dwell. Test names, the empty state (no agents), and that it never shows agent text.
 Done-when: the test passes and `Home.test.ts` still passes.
 
-### 1.1b Count the time spent on a question in its own tab — [ ] (code and Check done; awaits the 1.3 dogfood note. Found in dogfood: `human_ms` read 0 while three questions were answered in terminal tabs, because only Home's hero card reported dwell)
+### 1.1b Count the time spent on a question in its own tab — [ ] (code and Check done; awaits the 1.3 dogfood note. Found in dogfood: `human_ms` read 0 while three questions were answered in terminal tabs, because only Home's hero card reported dwell. Open: dwell likely under-counts reading time before a question appears; look at the meter data after a week before changing it)
 Class: implement · Needs: 1.2 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm vitest run src/lib/askDwell.test.ts'`
 Context: The owner's first beta reading was 0 s per agent-hour with 3 human answers (`latency_ms` 410 s): they answer in the tab, not on Home. Decision 0169 measures the human's seconds, so the tab counts.
 Do: `lib/askDwell.ts` reports `card_seen` for the question of the open tab while the page is visible, as Home does for its card; the server credits it the same way.
 Done-when: the test passes and `human_ms` is above 0 after the owner answers in a tab.
 
-### 1.1c Keep the working time of a running turn across a restart — [ ]
+### 1.1c Keep the working time of a running turn across a restart — [x] (`flush()` banks the open spans every 60 s; released in beta `v0.1.57-beta.26`. Live check open: after the owner restarts the server during a turn, `agent_ms` should grow by about the turn's length minus at most a minute. A tab found working at startup counts from its next event)
 Class: implement · Needs: 1.1 · Check: `scripts/dev.sh cargo test -p termenbox-server --bin termenbox-server attention_meter`
 Context: Found in dogfood: after a server restart the meter lost the time of every turn that was running (agent time grew 1.7 min while the owner's time grew 81 s, so the reading jumped from 11.8 to 30.9 s per agent-hour). A span is only written when a tab stops working, and a restart drops the open ones. A restart is a normal event here (every beta update), so it must not skew the baseline.
 Do: In `attention_meter.rs`, make `flush()` (every 60 s) also bank the open spans: add each span's time up to now to its day and restart the span at now, so a restart or crash loses at most one flush interval. Test: a span open across two flushes is counted once, in full, and a restart after a flush keeps the banked time; a tab that stops working after a flush adds only the time since it. Also count a tab found working at startup from its next event (already so; say so in a comment).
 Done-when: the tests pass and, after the owner restarts the server during a turn, `agent_ms` in `~/.config/termenbox/attention_meter.json` grows by about the turn's length minus at most a minute.
 
-### 1.4 Task telemetry: tokens, cost, model, verifier result, decision points (R99) — [ ] (code and Check done, awaits the 1.3 dogfood note; open: ACP reports no model so its turns count under `unknown`, agent-reported ACP costs are not yet folded into the day cost, and the verifier outcome has no producer until 10.1)
+### 1.4 Task telemetry: tokens, cost, model, verifier result, decision points (R99) — [ ] (code and Check done, awaits the 1.3 dogfood note; open: ACP reports no model so its turns count under `unknown`, agent-reported ACP costs are not yet folded into the day cost, and the verifier outcome has no producer until 10.1; cost stays 0 without `prices.json` beside the meter file `~/.config/termenbox/attention_meter.json`. Work an agent can do meanwhile: the price table, and sampling dwell against a stopwatch to check 1.1b)
 Class: implement · Needs: 1.1 · Check: `scripts/dev.sh cargo test -p termenbox-server task_telemetry`
 Context: Decision 0179: the dispatcher cannot be tuned without per-task data, and the baseline week (1.3) should already hold it. Token use arrives in ACP `usage` updates (`packages/client/src/lib/acpStream.ts`, `packages/server/src/acp_stream.rs`) and through the Claude status-line forwarder (R19). Metadata only; no agent text (`resource-constraints`, decision 0105).
 Do: Extend `packages/server/src/attention_meter.rs` (or add `task_telemetry.rs` beside it): per turn or task record agent, model id, tokens in and out, cache reads, estimated cost from a small price table the owner can edit, verifier outcome when one exists (pass, fail, none), and the number of obligations raised. Roll into the same 30-day buckets. Add the fields to `AttentionStats` in `packages/core/src/protocol.rs` and the client mirror. Show "$ per verified outcome" on the meter line when data exists. Test bounded size, no text stored, and a turn with no usage data.
 Done-when: the tests pass and a test asserts the stored file holds no agent text.
 
-### 1.3 Dogfood: the baseline week — [ ]
+### 1.3 Dogfood: the baseline week — [ ] (blocked on the owner: the 7-day baseline started 2026-11-01 on beta.23, a partial first day; read the meter file when the owner has written the note. Closing it unblocks 4.1, 4.2 and 8.4)
 Class: review · Needs: 1.2, 1.4 · Check: `grep -q "^## 1.3" docs/plans/assets/control-plane/dogfood.md`
 Context: Decision 0178. Without a baseline no later slice can show it helped. The owner installs the build; agents do not touch the owner's service.
 Do: Hand the owner the build with the meter and the task telemetry (1.4) on. The owner runs it for 7 days of normal work and writes the note `## 1.3 <date>` with the 7-day figure and what hurt. Record the number in `docs/plans/assets/control-plane/baseline.md`.
@@ -134,7 +122,7 @@ Context: Terminal bytes cross the link only on an explicit open (guardrail `cond
 Do: Add open and close of a terminal on a node through the conductor, stopping on close; test that bytes flow only between open and close and that a closed device leaves nothing open.
 Done-when: the test passes.
 
-### 2.7 Dogfood M1: the owner's own fleet — [ ]
+### 2.7 Dogfood M1: the owner's own fleet — [ ] (blocked on the owner: choose the conductor and one or two nodes and enrol them with `--conductor-enrol`, one tap, after 1.3. Closing it unblocks 2.8, 3.1 and 5.1)
 Class: review · Needs: 2.5, 2.6, 1.3 · Check: `grep -q "^## 2.7" docs/plans/assets/control-plane/dogfood.md`
 Context: Decision 0178. The owner enrols two or three of their own machines to a conductor they pin, behind the switch, and works from one phone connection. This is the first milestone.
 Do: Hand over the build and the install command. The owner runs it for 7 days and writes `## 2.7 <date>` with the 7-day meter reading beside the 1.3 baseline and what hurt. Turn each pain into a step or an edit to 2.8, 3.x or 4.x before they are wired.
