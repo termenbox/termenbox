@@ -23,9 +23,9 @@ Do: At start, if `RunMarker` says `Unclean`, log the warning with those fields a
 Done-when: a connection test shows a manager given an unclean exit sends `previous_exit` and one without sends none; `cargo test -p termenbox-core` still passes. (Done: `workspaces::propagation_tests::a_sign_in_after_an_unclean_exit_is_told_and_a_clean_one_is_not`.)
 
 ### 2.1 Audit panic paths in ACP session code — [x]‖
-Class: explore · Needs: none · Check: `test -s docs/plans/server-viability-and-logging-audit.md`
+Class: explore · Needs: none · Check: `test -s docs/plans/archive/server-viability-and-logging-audit.md`
 Context: `packages/server/src/acp.rs`, `acp_stream.rs`, `backend.rs`, `event_log.rs`. Decision 0143 requires that one session's panic cannot stop others or poison shared state. Only 3 `tokio::spawn` calls are in `acp.rs`; the audit must also cover `std::thread`, `spawn_blocking`, `std::sync::Mutex`/`RwLock` shared across sessions, `unwrap`/`expect`/indexing on agent-provided data, and unbounded channels.
-Do: List every shared lock and every spawned task in the ACP path with file:line, who can panic while holding it, and a recommended fix (parking_lot, catch_unwind at the task root, bounded channel). Write the result to `docs/plans/server-viability-and-logging-audit.md`. Change no code.
+Do: List every shared lock and every spawned task in the ACP path with file:line, who can panic while holding it, and a recommended fix (parking_lot, catch_unwind at the task root, bounded channel). Write the result to `docs/plans/archive/server-viability-and-logging-audit.md`. Change no code.
 Done-when: the audit file exists with a table covering each of the four source files above.
 
 ### 2.2 Supervise each ACP session — [x]
