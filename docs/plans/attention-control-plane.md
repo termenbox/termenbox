@@ -254,7 +254,7 @@ Done-when: the note exists with an agreement rate.
 
 ## Slice 8: the 10^4 levers (R94 to R97), M5
 
-### 8.1 Checkpoints: a verified restorable state per agent (R94) — [ ]
+### 8.1 Checkpoints: a verified restorable state per agent (R94) — [x] (`checkpoint.rs`: a bounded copy of the workspace (`.git` never copied or touched, symlinks skipped), verified by a scratch restore, `Status::permits_undoable_answer` is the one thing the ladder reads, undo and expiry by age then bytes. Not yet called: the permission path and 8.2 use it; the module carries `allow(dead_code)` until then. The git-worktree variant is not built; a copy works for any directory)
 Class: implement · Needs: 6.2 · Check: `scripts/dev.sh cargo test -p termenbox-server checkpoint`
 Context: Decision 0176 lever 1 and guardrail `irreversible-classes-never-leave-propose-without-a-checkpoint`. Agent workspaces are directories on the node; a git worktree or a snapshot gives undo.
 Do: Add `packages/server/src/checkpoint.rs`: create a checkpoint when a contract-bound run starts and before a risky class runs, verify it restores (a test restore into a scratch dir), expose undo, and expire by bytes and age. The server reports `checkpoint: verified` to the ladder. Tests: restore, expiry, a failed verify leaves the class at propose.

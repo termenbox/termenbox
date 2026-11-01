@@ -25,6 +25,7 @@ mod backend;
 mod bundle;
 mod candidates;
 mod cert;
+mod checkpoint;
 mod claude_hooks;
 mod cloudflare;
 mod command_match;
