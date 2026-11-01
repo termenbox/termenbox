@@ -60,7 +60,7 @@ Done-when: the note and `baseline.md` exist with the human-seconds figure and th
 
 ## Slice 2: the conductor (R88), M1
 
-### 2.1 Spike: conductor protocol, enrolment and failure behaviour — [ ]
+### 2.1 Spike: conductor protocol, enrolment and failure behaviour — [x]
 Class: plan · Needs: 0.2 · Check: `test -f docs/plans/assets/control-plane/conductor.md`
 Context: Decision 0170 and guardrail `conductor-links-carry-attention-metadata-only`. Nodes dial out to the conductor over the existing signed identity (decision 0123; `candidates.rs`, `connection.rs`, `signal.rs`). Ids are per server today (see the map from 0.2).
 Do: Write `docs/plans/assets/control-plane/conductor.md`: the node-to-conductor messages (hello with node key and name, obligation raised, cleared, acked, answered, usage, incident, node health), the enrolment flow (a pairing link from the conductor, one tap on the node's owner device, using the pairing in `--print-pairing`), how ids are keyed `(node, workspace, tab, obligation)`, reconnect and bounded-queue behaviour while a node is away, what the conductor shows when a node is silent, how a device opens a terminal on a node (proxy through the conductor, or a signed path), and the budget for 50 idle agents per node in bytes per minute. State the standby design for later step 2.8.
