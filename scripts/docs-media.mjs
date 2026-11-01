@@ -2,12 +2,16 @@
 //   <!-- media:add-server-phone -->...<!-- /media -->     (`add-server` alone means the phone video)
 // and `embed` writes a poster image that links to the video in docs/media/, with a path relative to the page. GitHub plays no MP4
 // inline in a README, so the chapter shows the poster still, linked to the video, with its length (DECISION-0161). Files reach docs/media only through an approved render's pull request.
-// Run: node scripts/docs-media.mjs embed|check [--media <dir>] <file.md>... | --self-test
+// Run: node scripts/docs-media.mjs embed|check [--media <dir>] [--site <dir>] <file.md>... | --self-test
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+
+const SITE = 'https://termenbox.dev';
+/** `docs/course/01-install.md` -> `01-install`; any other page -> null. */
+export const chapterOf = (file) => /(?:^|[\\/])docs[\\/]course[\\/](\d\d-[a-z0-9-]+)\.md$/.exec(file)?.[1] ?? null;
 
 const MARKER = /<!-- media:([a-z0-9-]+) -->[\s\S]*?<!-- \/media -->|<!-- media:([a-z0-9-]+) -->(?![\s\S]*?<!-- \/media -->)/g;
 
@@ -25,28 +29,31 @@ export const markers = (text) => [...text.matchAll(MARKER)].map((m) => m[1] ?? m
 const has = (mediaDir, id) => ['.mp4', '-poster.png', '.render.json'].every((tail) => existsSync(join(mediaDir, `${stem(id)}${tail}`)));
 
 /** The block for `id` with links relative to the page's directory. */
-function block(id, mediaDir, pageDir) {
+function block(id, mediaDir, pageDir, chapter) {
   const { case: c } = splitId(id);
   const rel = (tail) => relative(pageDir, join(mediaDir, `${stem(id)}${tail}`)).split('\\').join('/');
   const { seconds } = JSON.parse(readFileSync(join(mediaDir, `${stem(id)}.render.json`), 'utf8'));
   if (!Number.isFinite(seconds)) throw new Error(`media:${id}: its render.json has no length (seconds)`);
-  return `<!-- media:${id} -->\n[![Walkthrough: ${c.replace(/-/g, ' ')}](${rel('-poster.png')})](${rel('.mp4')})\n\nWatch, ${seconds} s\n<!-- /media -->`;
+  // a course chapter's poster opens the player page on termenbox.dev (GitHub downloads an MP4); other pages link the file
+  const target = chapter ? `${SITE}/course/${chapter}/` : rel('.mp4');
+  return `<!-- media:${id} -->\n[![Walkthrough: ${c.replace(/-/g, ' ')}](${rel('-poster.png')})](${target})\n\nWatch, ${seconds} s\n<!-- /media -->`;
 }
 
 /** `text` with every marker filled from `mediaDir`; throws on a marker whose video is not there. */
-export function embed(text, { mediaDir, pageDir }) {
+export function embed(text, { mediaDir, pageDir, chapter }) {
   return text.replace(MARKER, (_all, a, b) => {
     const id = a ?? b;
     if (!has(mediaDir, id)) throw new Error(`media:${id} has no video in ${relative(process.cwd(), mediaDir) || mediaDir}`);
-    return block(id, mediaDir, pageDir);
+    return block(id, mediaDir, pageDir, chapter);
   });
 }
 
 /** Errors for markers whose video is missing; warnings for an input hash that no longer matches (`hashes` maps case -> hash). */
-export function check(text, { mediaDir, hashes = {} }) {
+export function check(text, { mediaDir, hashes = {}, siteDir }) {
   const errors = [], warnings = [];
   for (const id of markers(text)) {
     if (!has(mediaDir, id)) { errors.push(`media:${id} has no approved video`); continue; }
+    if (siteDir) for (const tail of ['.mp4', '-poster.png']) if (!existsSync(join(siteDir, 'media', `${stem(id)}${tail}`))) errors.push(`media:${id} is missing from the site output (${stem(id)}${tail})`);
     const meta = JSON.parse(readFileSync(join(mediaDir, `${stem(id)}.render.json`), 'utf8'));
     if (hashes[meta.case] && hashes[meta.case] !== meta.hash) warnings.push(`media:${id} may be stale: its inputs changed since the approval`);
   }
@@ -77,6 +84,15 @@ function selfTest() {
     assert.throws(() => embed('<!-- media:missing-phone -->', { mediaDir: media, pageDir: root }), /no video/);
     assert.throws(() => embed('<!-- media:half -->', { mediaDir: media, pageDir: root }), /no video/, 'a video without its poster and render.json is refused');
     assert.deepEqual(check(once, { mediaDir: media }), { errors: [], warnings: [] });
+    const chap = embed(page, { mediaDir: media, pageDir: join(root, 'docs/course'), chapter: '02-connect-your-phone' });
+    assert.ok(chap.includes('](https://termenbox.dev/course/02-connect-your-phone/)'), 'a chapter poster links to its player page');
+    assert.equal(chapterOf('docs/course/02-connect-your-phone.md'), '02-connect-your-phone');
+    assert.equal(chapterOf('docs/course/README.md'), null);
+    const site = join(root, 'site-dist');
+    mkdirSync(join(site, 'media'), { recursive: true });
+    assert.equal(check(once, { mediaDir: media, siteDir: site }).errors.length, 2, 'a video missing from the site output fails');
+    for (const tail of ['.mp4', '-poster.png']) writeFileSync(join(site, 'media', `add-server-phone${tail}`), 'x');
+    assert.equal(check(once, { mediaDir: media, siteDir: site }).errors.length, 0);
     assert.match(check('<!-- media:missing -->', { mediaDir: media }).errors[0], /no approved video/);
     assert.match(check(once, { mediaDir: media, hashes: { 'add-server': 'h2' } }).warnings[0], /stale/);
     assert.equal(check('no markers here', { mediaDir: media }).errors.length, 0);
@@ -104,13 +120,15 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const [mode, ...rest] = args;
     const mi = rest.indexOf('--media');
     const mediaDir = resolve(mi >= 0 ? rest.splice(mi, 2)[1] : 'docs/media');
-    if (!['embed', 'check'].includes(mode) || !rest.length) { console.error('usage: docs-media.mjs embed|check [--media <dir>] <file.md>... | --self-test'); process.exit(2); }
+    const si = rest.indexOf('--site');
+    const siteDir = si >= 0 ? resolve(rest.splice(si, 2)[1]) : undefined;
+    if (!['embed', 'check'].includes(mode) || !rest.length) { console.error('usage: docs-media.mjs embed|check [--media <dir>] [--site <dir>] <file.md>... | --self-test'); process.exit(2); }
     let failed = false;
     for (const f of rest) {
       const text = readFileSync(f, 'utf8');
       if (!markers(text).length) continue;
-      if (mode === 'embed') { try { writeFileSync(f, embed(text, { mediaDir, pageDir: dirname(resolve(f)) })); console.log(`ok  embedded ${f}`); } catch (e) { console.error(`FAIL ${f}: ${e.message}`); failed = true; } }
-      else { const r = check(text, { mediaDir }); r.warnings.forEach((w) => console.warn(`warn ${f}: ${w}`)); r.errors.forEach((e) => { console.error(`FAIL ${f}: ${e}`); failed = true; }); }
+      if (mode === 'embed') { try { writeFileSync(f, embed(text, { mediaDir, pageDir: dirname(resolve(f)), chapter: chapterOf(f) })); console.log(`ok  embedded ${f}`); } catch (e) { console.error(`FAIL ${f}: ${e.message}`); failed = true; } }
+      else { const r = check(text, { mediaDir, siteDir }); r.warnings.forEach((w) => console.warn(`warn ${f}: ${w}`)); r.errors.forEach((e) => { console.error(`FAIL ${f}: ${e}`); failed = true; }); }
     }
     if (failed) process.exit(1);
   }

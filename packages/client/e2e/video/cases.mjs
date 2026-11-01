@@ -190,7 +190,6 @@ Object.assign(cases, {
     page: 'docs/course/01-install.md',
     server: 'replay',
     replay: true,
-    disclaimer: "A rendered replay of the real installer's output, not a live install",
     inputs: ['packages/client/installer/install.sh', 'packages/client/e2e/video/**'],
     steps: [
       { id: 'open', caption: 'On the machine that will run your agents, open a terminal', label: null },
@@ -427,7 +426,6 @@ Object.assign(cases, {
     page: 'docs/plans/attention-control-plane.md',
     server: 'probe',
     probe: 'fleet',
-    disclaimer: 'A template on fixture data, not a live fleet',
     inputs: ['packages/client/src/FleetNeedsYou.svelte', 'packages/client/src/lib/fleet.ts', 'packages/client/src/lib/fleetFixtures.ts', 'packages/client/e2e/FleetProbe.svelte', 'packages/client/e2e/video/**'],
     steps: [
       { id: 'list', caption: 'One list holds the asks of every node, oldest first, each with its node chip', label: null },
