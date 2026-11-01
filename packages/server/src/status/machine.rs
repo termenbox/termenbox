@@ -72,7 +72,7 @@ pub enum InfoKind {
 }
 
 /// Which Attention item an effect is about.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ItemId {
     Ask(String),
     Result,

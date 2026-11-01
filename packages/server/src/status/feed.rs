@@ -1,7 +1,7 @@
 //! The machines of every live session, one per (workspace, tab), and the transcript tails that feed them. Evidence
 //! sources (hook route, pane scan, transcript) call `feed`; nothing sets a status. Through B.6a nothing reads the
 //! machines except tests: the old paths still decide what clients see.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -13,6 +13,14 @@ use crate::session_log::LogError;
 
 type Key = (String, String);
 
+/// An effect with the session it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Routed {
+    pub workspace: String,
+    pub tab: String,
+    pub effect: Effect,
+}
+
 struct Followed {
     path: PathBuf,
     tail: Tail,
@@ -22,6 +30,8 @@ struct Followed {
 pub struct Machines {
     machines: Mutex<HashMap<Key, Machine>>,
     tails: Mutex<HashMap<Key, Followed>>,
+    /// Sessions whose Attention the machine owns: a Claude hook has reached them (plan B.6b-2).
+    backed: Mutex<HashSet<Key>>,
 }
 
 impl Machines {
@@ -33,6 +43,21 @@ impl Machines {
             .entry((workspace.to_string(), tab.to_string()))
             .or_default()
             .apply(event, now)
+    }
+
+    /// Marks a session as machine-backed: the legacy writers stop raising and clearing its Attention.
+    pub fn mark_backed(&self, workspace: &str, tab: &str) {
+        self.backed
+            .lock()
+            .unwrap()
+            .insert((workspace.to_string(), tab.to_string()));
+    }
+
+    pub fn is_backed(&self, workspace: &str, tab: &str) -> bool {
+        self.backed
+            .lock()
+            .unwrap()
+            .contains(&(workspace.to_string(), tab.to_string()))
     }
 
     pub fn view(&self, workspace: &str, tab: &str, now: u64) -> Option<View> {
@@ -54,16 +79,25 @@ impl Machines {
     }
 
     /// Lets the quiet window and the retry threshold lapse on every machine.
-    pub fn tick(&self, now: u64) {
-        for m in self.machines.lock().unwrap().values_mut() {
-            m.tick(now);
+    pub fn tick(&self, now: u64) -> Vec<Routed> {
+        let mut out = Vec::new();
+        for ((workspace, tab), m) in self.machines.lock().unwrap().iter_mut() {
+            for effect in m.tick(now) {
+                out.push(Routed {
+                    workspace: workspace.clone(),
+                    tab: tab.clone(),
+                    effect,
+                });
+            }
         }
+        out
     }
 
     pub fn forget_tab(&self, workspace: &str, tab: &str) {
         let key = (workspace.to_string(), tab.to_string());
         self.machines.lock().unwrap().remove(&key);
         self.tails.lock().unwrap().remove(&key);
+        self.backed.lock().unwrap().remove(&key);
     }
 
     /// Drops the sessions of workspaces under `prefix` that are not in `live`.
@@ -71,6 +105,7 @@ impl Machines {
         let keep = |(w, _): &Key| !w.starts_with(prefix) || live.contains(w);
         self.machines.lock().unwrap().retain(|k, _| keep(k));
         self.tails.lock().unwrap().retain(|k, _| keep(k));
+        self.backed.lock().unwrap().retain(|k| keep(k));
     }
 
     /// Follows the transcript a hook named for this session: a new path starts a tail at the end of the file, so only
@@ -96,7 +131,7 @@ impl Machines {
     /// Reads what each followed transcript gained and feeds it to its machine. Blocking file reads: call it from a
     /// blocking thread. An unreadable or replaced file is dropped from the tails (the hook and the screen carry on)
     /// and logged without content.
-    pub fn poll_transcripts(&self, now: u64) {
+    pub fn poll_transcripts(&self, now: u64) -> Vec<Routed> {
         let mut batches: Vec<(Key, Vec<Event>)> = Vec::new();
         {
             let mut tails = self.tails.lock().unwrap();
@@ -118,11 +153,19 @@ impl Machines {
                 }
             });
         }
+        let mut out = Vec::new();
         for ((workspace, tab), events) in batches {
             for event in events {
-                self.feed(&workspace, &tab, event, now);
+                for effect in self.feed(&workspace, &tab, event, now) {
+                    out.push(Routed {
+                        workspace: workspace.clone(),
+                        tab: tab.clone(),
+                        effect,
+                    });
+                }
             }
         }
+        out
     }
 }
 
