@@ -30,7 +30,7 @@ function block(id, mediaDir, pageDir) {
   const rel = (tail) => relative(pageDir, join(mediaDir, `${stem(id)}${tail}`)).split('\\').join('/');
   const { seconds } = JSON.parse(readFileSync(join(mediaDir, `${stem(id)}.render.json`), 'utf8'));
   if (!Number.isFinite(seconds)) throw new Error(`media:${id}: its render.json has no length (seconds)`);
-  return `<!-- media:${id} -->\n[![Walkthrough: ${c.replace(/-/g, ' ')}](${rel('-poster.png')})](${rel('.mp4')})\n\nWatch, ${seconds} s\n\n*A rendered walkthrough on scripted data, not a recording of a real device.*\n<!-- /media -->`;
+  return `<!-- media:${id} -->\n[![Walkthrough: ${c.replace(/-/g, ' ')}](${rel('-poster.png')})](${rel('.mp4')})\n\nWatch, ${seconds} s\n<!-- /media -->`;
 }
 
 /** `text` with every marker filled from `mediaDir`; throws on a marker whose video is not there. */
@@ -72,7 +72,7 @@ function selfTest() {
     assert.ok(once.includes('](../media/add-server-phone-poster.png)](../media/add-server-phone.mp4)'), 'relative to the guide page');
     assert.ok(once.includes('\nWatch, 41 s\n'), 'the length from render.json');
     assert.ok(embed(page, { mediaDir: media, pageDir: root }).includes('](docs/media/add-server-phone.mp4)'), 'relative to the README');
-    assert.ok(once.includes('rendered walkthrough on scripted data') && once.includes('<!-- /media -->'));
+    assert.ok(once.includes('Watch, ') && once.includes('<!-- /media -->'));
     assert.equal(embed(once, { mediaDir: media, pageDir: join(root, 'docs/guide') }), once, 'a second embed changes nothing');
     assert.throws(() => embed('<!-- media:missing-phone -->', { mediaDir: media, pageDir: root }), /no video/);
     assert.throws(() => embed('<!-- media:half -->', { mediaDir: media, pageDir: root }), /no video/, 'a video without its poster and render.json is refused');

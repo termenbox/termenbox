@@ -13,4 +13,4 @@ tags: [client, ux, ci, testing, video]
 ## Rule
 A scenario step that records or screenshots a state **MUST** first wait for and assert that state (the layer is visible, has the expected title and rows, the chosen value is shown). A failed assertion **MUST** fail the run.
 A scenario **MUST NOT** wrap a capture in `if (await x.isVisible())` or any branch that skips it.
-A video **MUST** be recorded from the same steps that pass as a test, with human pacing (typing and tap delays, a visible cursor or touch spot), and **MUST** say it is a rendered walkthrough on scripted data (`a-phone-check-names-its-platform`).
+A video **MUST** be recorded from the same steps that pass as a test, with human pacing (typing and tap delays, a visible cursor or touch spot).

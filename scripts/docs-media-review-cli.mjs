@@ -10,7 +10,7 @@ export function issueBody({ dir, previewUrl, runId }) {
   const lines = readdirSync(dir).filter((f) => f.endsWith('.render.json')).sort()
     .map((f) => JSON.parse(readFileSync(join(dir, f), 'utf8')))
     .map((r) => `- [ ] ${r.case} ${r.profile} ${r.hash}`);
-  return `Rendered walkthroughs on scripted data, run ${runId}. Watch them on your phone: ${previewUrl}\n\nTick the lines that belong in the docs, then comment \`/approve\` once: a branch with all the ticked videos is pushed for you to open as a pull request (\`/approve all\` takes every line). Comment \`/regen <case> [pace=slow] [profile=phone|desktop] [caption=off] <what to change>\` to send one back.\n\n${lines.join('\n')}\n`;
+  return `Rendered videos, run ${runId}. Watch them on your phone: ${previewUrl}\n\nTick the lines that belong in the docs, then comment \`/approve\` once: a branch with all the ticked videos is pushed for you to open as a pull request (\`/approve all\` takes every line). Comment \`/regen <case> [pace=slow] [profile=phone|desktop] [caption=off] <what to change>\` to send one back.\n\n${lines.join('\n')}\n`;
 }
 
 /**

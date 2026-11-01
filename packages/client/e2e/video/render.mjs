@@ -4,7 +4,7 @@
 //   node e2e/video/render.mjs --case recent-folder|other-agent|browse-folder|type-path --profile phone|desktop --out DIR
 // phone is 390 x 844 at DPR 2 with touch; desktop is 1280 x 800. The page is the built client (pnpm run e2e:build) against the
 // scripted server and its fake home, recorded with Playwright and converted with ffmpeg. A case whose final assertion fails
-// exits non-zero and leaves no file in DIR. The video says it is a rendered walkthrough on scripted data, not a real device.
+// exits non-zero and leaves no file in DIR. Only a case that declares a `disclaimer` says anything about its data on the video.
 import { startShared, startApp, ScriptedServer } from '../app-lib.mjs';
 import { humanPage, overlayScript, paceFactor, sleep } from './lib.mjs';
 import { cases } from './cases.mjs';
@@ -66,7 +66,7 @@ try {
   await sleep(800);
   ready = (Date.now() - started) / 1000;
   h = humanPage(t.page, profile, { pace, caption: captions, seed: caseName, steps: cases[caseName].steps });
-  await h.say(cases[caseName].disclaimer ?? 'A rendered walkthrough on scripted data, not a real device');
+  if (cases[caseName].disclaimer) await h.say(cases[caseName].disclaimer);
   const dialog = t.page.locator('dialog[aria-label="New workspace"]');
   await cases[caseName].run({ h, t, page: t.page, dialog, q: (id) => dialog.locator(`[data-testid="${id}"]`), server: t.server, real: t.real, replay: t.replay });
   h.assertSteps();
@@ -93,7 +93,7 @@ const base = `${caseName}-${profile}`;
 const mp4 = join(out, `${base}.mp4`);
 // Start where the app is ready (not on the blank load); even dimensions for H.264; faststart so it plays while it downloads.
 const trim = ['-ss', String(Math.max(0, ready - 0.3))];
-const comment = `Rendered walkthrough "${cases[caseName].title}" on ${cases[caseName].real ? 'a local test server' : cases[caseName].probe ? 'template fixtures' : cases[caseName].replay ? 'the installer\'s captured output' : 'scripted data'} (${profile}); not a recording of a real device or agent.`;
+const comment = `"${cases[caseName].title}" on ${cases[caseName].real ? 'a local test server' : cases[caseName].probe ? 'template fixtures' : cases[caseName].replay ? 'the installer\'s captured output' : 'scripted data'} (${profile}).`;
 const run = (args) => { const r = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', ...args], { stdio: 'inherit' }); if (r.status !== 0) { console.error(`FAIL ffmpeg ${args.slice(0, 4).join(' ')}`); rmSync(work, { recursive: true, force: true }); rmSync(mp4, { force: true }); process.exit(1); } };
 run([...trim, '-i', webm, '-vf', `scale=${viewport.width * scale}:${viewport.height * scale}:flags=lanczos,fps=30`, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '23', '-movflags', '+faststart', '-an', '-metadata', `comment=${comment}`, mp4]);
 rmSync(work, { recursive: true, force: true });
