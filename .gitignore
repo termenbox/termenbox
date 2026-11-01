@@ -67,3 +67,4 @@ package-lock.json
 test-results/
 /origin/
 /.claude/worktrees/
+/site-dist/

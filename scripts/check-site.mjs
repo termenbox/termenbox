@@ -30,6 +30,7 @@ const summaries = [...html.matchAll(/<summary>([^<]+)<\/summary>/g)].map((m) => 
 for (const q of faq?.mainEntity ?? []) need(summaries.includes(q.name), `structured question not visible on the page: ${q.name}`);
 
 for (const m of html.matchAll(/(?:href|src)="(\/[^"#]*)"/g)) {
+  if (m[1].startsWith('/course/')) continue; // built from docs/course by scripts/build-site.mjs
   const file = m[1] === '/' ? 'index.html' : m[1].slice(1);
   need(existsSync(join(here, file)), `local asset missing: ${m[1]}`);
 }

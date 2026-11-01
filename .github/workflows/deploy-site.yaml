@@ -3,7 +3,7 @@ name: Deploy landing site
 on:
   push:
     branches: [master]
-    paths: ['packages/site/**', 'scripts/check-site.mjs', 'README.md', '.github/workflows/deploy-site.yaml']
+    paths: ['packages/site/**', 'scripts/check-site.mjs', 'scripts/build-site.mjs', 'docs/course/**', 'docs/media/**', 'README.md', '.github/workflows/deploy-site.yaml']
   workflow_dispatch:
 
 permissions:
@@ -26,11 +26,14 @@ jobs:
       - name: Check the site
         run: node scripts/check-site.mjs
 
+      - name: Build the site with the course and its videos
+        run: node scripts/build-site.mjs
+
       - name: Install Wrangler
         run: npm install -g wrangler
 
       - name: Deploy to Cloudflare Pages
-        run: wrangler pages deploy packages/site --project-name=${{ vars.TERMENBOX_SITE_PROJECT_NAME || 'termenbox-site' }} --branch=master
+        run: wrangler pages deploy site-dist --project-name=${{ vars.TERMENBOX_SITE_PROJECT_NAME || 'termenbox-site' }} --branch=master
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
