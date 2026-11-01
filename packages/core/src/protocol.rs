@@ -445,10 +445,13 @@ pub enum ClientMessage {
         attention_id: String,
     },
     /// How long this device showed the card of an attention item in the foreground, for the attention meter
-    /// (decision 0169). A number only; never what the card said. Older servers ignore it.
+    /// (decision 0169). A number only; never what the card said. Older servers ignore it. `device` is a class
+    /// (`phone`, `desktop`), never a name; the server keeps nothing else.
     CardSeen {
         obligation: String,
         ms: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
     },
     /// Asks for the workspace view (decision 0103): the cleaned screen tail, the parsed prompt and the tier in use.
     /// `hash` is the one the client already holds; the server then answers `unchanged`.
@@ -1838,6 +1841,7 @@ mod tests {
         let v = serde_json::to_value(ClientMessage::CardSeen {
             obligation: "a1".into(),
             ms: 4200,
+            device: Some("phone".into()),
         })
         .unwrap();
         assert_eq!(
@@ -1850,6 +1854,10 @@ mod tests {
         );
         let m: ClientMessage = serde_json::from_value(v).unwrap();
         assert!(matches!(m, ClientMessage::CardSeen { ms: 4200, .. }));
+        // An older client sends no device.
+        let old: ClientMessage =
+            serde_json::from_str(r#"{"type":"card_seen","obligation":"a1","ms":1}"#).unwrap();
+        assert!(matches!(old, ClientMessage::CardSeen { device: None, .. }));
         assert!(!m.is_control());
         let day = AttentionDay {
             day: 20_000,
