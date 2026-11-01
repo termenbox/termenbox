@@ -1,7 +1,6 @@
 // A terminal that replays the real installer's captured output (DECISION-0161). The page is a plain xterm.js terminal; the
 // bytes and their timing come from fixtures/installer.{typescript,timing}, captured by scripts/capture-installer-output.sh from
-// the real installer in a clean container and scrubbed of every real address. Nothing here runs the installer: the video says
-// it is a rendered walkthrough.
+// the real installer in a clean container and scrubbed of every real address. Nothing here runs the installer.
 import { launch, contextOptions } from '../browser.mjs';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';

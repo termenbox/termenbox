@@ -33,7 +33,7 @@ function player(id, body) {
   const seconds = /Watch, (\d+) s/.exec(body)?.[1];
   const label = /\*([^*]+)\*\s*$/.exec(body.trim())?.[1] ?? '';
   return `<figure class="player"><video controls playsinline preload="metadata" poster="/media/${stem}-poster.png"><source src="/media/${stem}.mp4" type="video/mp4"><a href="/media/${stem}.mp4">Watch${seconds ? `, ${seconds} s` : ''}</a></video>` +
-    `<figcaption>${seconds ? `${seconds} s. ` : ''}${esc(label)}</figcaption></figure>`;
+    `<figcaption>${seconds ? `${seconds} s` : ''}${label ? `. ${esc(label)}` : ''}</figcaption></figure>`;
 }
 
 /** Markdown of a course page to HTML: headings, paragraphs, lists, links, code and the media blocks. */

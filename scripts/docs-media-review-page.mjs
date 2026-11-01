@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-const LABEL = 'Rendered walkthrough on scripted data, not a recording of a real device or agent.';
 
 const CSS = `:root{color-scheme:light dark;--bg:#fff;--fg:#14171a;--mut:#5b6670;--card:#f3f5f7;--line:#d5dbe0}
 @media (prefers-color-scheme:dark){:root{--bg:#101316;--fg:#e8ecef;--mut:#99a4ad;--card:#191e22;--line:#2b3238}}
@@ -36,7 +35,7 @@ ${stills.length ? `<div class="stills">${stills.map((s) => `<a href="${esc(s)}">
   });
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${esc(title)}</title><style>${CSS}</style></head>
-<body><main><h1>${esc(title)}</h1><p>${LABEL}</p>
+<body><main><h1>${esc(title)}</h1>
 ${cards.join('\n') || '<p>No renders in this folder.</p>'}
 </main></body></html>
 `;
@@ -52,7 +51,6 @@ function selfTest() {
     writeFileSync(join(dir, 'x-phone.render.json'), JSON.stringify({ case: '<script>alert(1)</script>', profile: 'phone', hash: 'h', files: [] }));
     const html = buildPage(dir);
     assert.equal((html.match(/<article /g) ?? []).length, 3, 'a card per render');
-    assert.ok(html.includes(LABEL), 'the scripted-data label');
     assert.ok(!/<script/i.test(html), 'no script at all, and hostile text is escaped');
     assert.ok(html.includes('&lt;script&gt;'));
     assert.ok(html.includes('name="robots" content="noindex"'));

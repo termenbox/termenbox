@@ -8,8 +8,6 @@ You are at your desk, and the agent will work on this machine, so this is where 
 [![Walkthrough: install](../media/install-desktop-poster.png)](../media/install-desktop.mp4)
 
 Watch, 32 s
-
-*A rendered walkthrough on scripted data, not a recording of a real device.*
 <!-- /media -->
 
 <!-- course-steps:install -->

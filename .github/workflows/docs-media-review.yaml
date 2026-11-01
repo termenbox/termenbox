@@ -99,7 +99,7 @@ jobs:
           done < "$RUNNER_TEMP/approve.txt"
           node scripts/docs-media.mjs embed README.md docs/guide/*.md
           git add -A docs README.md
-          git commit -m "docs(media): add the walkthroughs approved by $APPROVER" -m "Why: $APPROVER approved these rendered walkthroughs in issue #$ISSUE (run $RUN_ID)." -m "What: adds the video, poster, stills and render.json of each approved line and fills the media markers."
+          git commit -m "docs(media): add the walkthroughs approved by $APPROVER" -m "Why: $APPROVER approved these videos in issue #$ISSUE (run $RUN_ID)." -m "What: adds the video, poster, stills and render.json of each approved line and fills the media markers."
           git push --force origin "$branch"
           url="https://github.com/$GITHUB_REPOSITORY/compare/develop...$branch?expand=1"
           printf 'Approved by %s. Open the pull request to add them to the docs: %s\n' "$APPROVER" "$url" > "$RUNNER_TEMP/reply.md"

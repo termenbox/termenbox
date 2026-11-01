@@ -10,8 +10,6 @@ The folders you have used before sit above the field, one tap away. The first ti
 [![Walkthrough: recent folder](../media/recent-folder-phone-poster.png)](../media/recent-folder-phone.mp4)
 
 Watch, 29 s
-
-*A rendered walkthrough on scripted data, not a recording of a real device.*
 <!-- /media -->
 
 <!-- course-steps:recent-folder -->

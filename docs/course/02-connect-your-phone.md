@@ -8,8 +8,6 @@ The server is running, but your phone has never heard of it. Open the camera on 
 [![Walkthrough: add server](../media/add-server-phone-poster.png)](../media/add-server-phone.mp4)
 
 Watch, 59 s
-
-*A rendered walkthrough on scripted data, not a recording of a real device.*
 <!-- /media -->
 
 <!-- course-steps:add-server -->

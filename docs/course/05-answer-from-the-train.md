@@ -10,8 +10,6 @@ To be told while the app is closed, turn on notifications once, in Settings. A n
 [![Walkthrough: answer from the train](../media/answer-from-the-train-phone-poster.png)](../media/answer-from-the-train-phone.mp4)
 
 Watch, 30 s
-
-*A rendered walkthrough on scripted data, not a recording of a real device.*
 <!-- /media -->
 
 <!-- course-steps:answer-from-the-train -->

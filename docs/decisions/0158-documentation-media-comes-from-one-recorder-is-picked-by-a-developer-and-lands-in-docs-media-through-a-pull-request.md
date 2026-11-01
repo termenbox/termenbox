@@ -28,6 +28,6 @@ Not chosen: an orphan `docs-media` branch with a checksum manifest and a gated s
 ## Consequences
 
 - A new dispatch-only render workflow and a review workflow replace `dialog-videos.yaml`; the render workflow uses the Pages deploy token that `deploy-site` already uses, and only runs on dispatch by someone with write access (`media-commands-come-only-from-people-with-write-access`).
-- Preview deployments are public to anyone with the URL: they show scripted data only and say so.
+- Preview deployments are public to anyone with the URL: they show scripted data only (amended 2026-11-01: they no longer carry a label saying so).
 - Files enter `docs/media/` only from a ticked render whose hash matches (`nothing-is-published-without-a-matching-approval-record`); `deploy-site` is unchanged.
 - Real-device checks (`mobile-ui-device-check`) stay a gate for UI changes; a picked video is a rendered walkthrough, not evidence of a device.
