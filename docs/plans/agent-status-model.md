@@ -145,7 +145,7 @@ Done-when: `cargo test -p termenbox-core events` passes with a round-trip test f
 value of each.
 Progress: done 2026-11-01. `SubReason`, `AskKind`, `FailureCause`, `AttentionTier` in `core/src/events.rs`; `Attention` gained optional `tier`, `ask`, `cause`, `WorkspaceActivity` gained `sub_reason` and `bg` (all defaulted, off the wire when empty). Writers fill them from B.2/B.6; the server literals set `None`/0 for now. Note for later steps: `cargo clippy --workspace` fails in `bridge-contract` (`explicit_counter_loop`, not ours), so clippy `-p termenbox-core` only; the two `e2e::agent_events_flow...` tests fail in the plain image on the clean baseline too.
 
-### B.2 The pure per-session machine and its transition table — [ ]
+### B.2 The pure per-session machine and its transition table — [x]
 Class: implement · Needs: B.1 · Check: `scripts/dev.sh cargo test -p termenbox-server status::`
 Context: Today's logic is split across `packages/server/src/reducer.rs` (turn and obligation reducer), `tabstatus.rs`
 (per-tab states with their own writers) and the ring in `events.rs` (`derive_activity`, `settle`, `raise`). Decision
@@ -157,6 +157,7 @@ screen or transcript, viewed, dismiss), `machine.rs` (state, transitions, the qu
 key, failure classes) and a table-driven test with one row per transition in this plan, including late, duplicate and
 out-of-order delivery. One constant for the grace and for the disagreement count.
 Done-when: The test enumerates every status, sub-reason, failure cause and event kind and fails if one has no row.
+Progress: done 2026-11-01. `packages/server/src/status/{event,machine,transitions}.rs`: `Event` (20 kinds), `Machine::apply/tick/view`, `rollup`, constants `GRACE_MS` 4 s, `DISAGREE_SCANS` 2 (a transcript reading counts once), `QUIET_MS` 60 s, `RETRY_INFO_MS` 120 s. 56 transition rows plus the coverage test (`every_status_reason_cause_and_event_has_a_row`). Not read by anything yet (`#![allow(dead_code)]` in `status/mod.rs`, drop it in B.6). Choices B.3 to B.5 must honour: `TurnEnd` carries `bg` (from `Stop`); a `ToolStart` within `GRACE_MS` of a turn end is late and opens nothing; `AskContent` attaches only to an open ask of the same key; `ProcessGone` with an open turn or ask is `failed(crashed)`; screen `Blocked` with no ask is a hint only; the Esc paths close through `Observe` (screen twice, transcript once) or `AskClose{Escaped}`. Catalogue cases beyond the transitions (two tabs, restart, devices) stay for D.1/D.5.
 
 ### B.3 Adapters emit typed events, with full ask content — [ ]
 Class: implement · Needs: A.2, B.2 · Check: `scripts/dev.sh cargo test -p termenbox-server adapters`
