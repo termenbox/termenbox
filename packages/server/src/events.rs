@@ -525,6 +525,13 @@ impl EventHub {
         credited
     }
 
+    /// Tells the devices the meter again while a tab works, because its time grows without any card being answered.
+    pub fn announce_working_time(&self) {
+        if self.meter.as_ref().is_some_and(|m| m.working()) {
+            self.announce_meter();
+        }
+    }
+
     fn announce_meter(&self) {
         if self.meter.is_some() {
             let _ = self.status_tx.send(StatusChange::Meter(self.meter_days()));
@@ -908,6 +915,10 @@ impl EventHub {
                 state == AgentState::Working,
                 now_ms(),
             );
+            // A tab starting or ending work changes the number; without this the Home line waits for a card.
+            if state == AgentState::Working || prev == Some(AgentState::Working) {
+                self.announce_meter();
+            }
         }
         if state != AgentState::NeedsInput {
             self.clear_where(workspace, |a| {
@@ -3388,6 +3399,26 @@ mod tests {
             !h.card_seen("a999", 1_000),
             "an unknown card is not credited"
         );
+    }
+
+    #[test]
+    fn attention_meter_tells_the_devices_when_a_tab_starts_and_stops_working() {
+        let (h, _status) = tab_hub();
+        let h = h.with_meter(Arc::new(crate::attention_meter::AttentionMeter::in_memory()));
+        let mut rx = h.subscribe_status();
+        let meters = |rx: &mut broadcast::Receiver<StatusChange>| {
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .filter(|c| matches!(c, StatusChange::Meter(_)))
+                .count()
+        };
+        tab_hook(&h, "t1", "UserPromptSubmit", quiet(), 1_000);
+        assert_eq!(meters(&mut rx), 1, "start of work");
+        h.announce_working_time();
+        assert_eq!(meters(&mut rx), 1, "still working");
+        tab_hook(&h, "t1", "Stop", quiet(), 5_000);
+        assert_eq!(meters(&mut rx), 1, "end of work");
+        h.announce_working_time();
+        assert_eq!(meters(&mut rx), 0, "nothing is working");
     }
 
     #[test]

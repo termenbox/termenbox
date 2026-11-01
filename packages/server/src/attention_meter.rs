@@ -361,6 +361,11 @@ impl AttentionMeter {
         }
     }
 
+    /// Whether any tab is working now, so its time is still growing.
+    pub fn working(&self) -> bool {
+        !self.inner.lock().unwrap().spans.is_empty()
+    }
+
     /// Closes the working spans of workspaces for which `gone` is true (a closed tab, a removed workspace).
     pub fn close_where(&self, now: u64, gone: impl Fn(&str, &str) -> bool) {
         let mut g = self.inner.lock().unwrap();
