@@ -1,5 +1,5 @@
 ---
-id: 0183-asks-raise-at-once-and-are-enriched-later
+id: 0190-asks-raise-at-once-and-are-enriched-later
 title: An ask is raised at the first evidence with a typed kind, its text and options are filled in when they arrive, and the UI never shows an empty ask
 status: active
 date: 2026-11-01
@@ -19,4 +19,4 @@ tags: [agents, notifications, client, server]
 
 ## Why
 
-Asks arrive without questions today because the text rides on the late `Notification`, is matched to any open ask in the workspace, and never reads `tool_input` for `AskUserQuestion` or `ExitPlanMode`; `TabPrompt` is never filled for Claude (fact 0071). Holding the ask until its text is known would delay status and sound, which is the opposite bug. Raising early and enriching in place gives a correct status immediately and a complete card as soon as the facts exist.
+Asks arrive without questions today because the text rides on the late `Notification`, is matched to any open ask in the workspace, and never reads `tool_input` for `AskUserQuestion` or `ExitPlanMode`; `TabPrompt` is never filled for Claude (fact 0074). Holding the ask until its text is known would delay status and sound, which is the opposite bug. Raising early and enriching in place gives a correct status immediately and a complete card as soon as the facts exist.

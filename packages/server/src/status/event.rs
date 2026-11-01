@@ -1,4 +1,4 @@
-//! The typed events every evidence source emits (decision 0182). A source never says "the status is X".
+//! The typed events every evidence source emits (decision 0189). A source never says "the status is X".
 use termenbox_core::events::{AskKind, FailureCause};
 
 /// Where an observation came from; ranks hook > transcript > screen > scan.
@@ -22,7 +22,7 @@ pub enum Seen {
 pub enum Outcome {
     Done,
     Failed(FailureCause),
-    /// The human pressed Esc: idle, not failed (decision 0185).
+    /// The human pressed Esc: idle, not failed (decision 0192).
     Interrupted,
 }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Measures which progress proofs keep arriving while Claude Code is silent (decisions 0181, 0185, plan
+// Measures which progress proofs keep arriving while Claude Code is silent (decisions 0188, 0192, plan
 // docs/plans/agent-status-model.md A.3): a hook edge, a transcript append, a pane change (raw, and with the
 // spinner line stripped) and a live child process of the agent.
 //
@@ -56,7 +56,7 @@ const PROMPTS = {
   stall: 'Write a numbered list of the first 40 prime numbers with one sentence about each, then reply DONE.',
 };
 
-// Child processes of the pane's process tree: a live command under the agent is a proof (decision 0181).
+// Child processes of the pane's process tree: a live command under the agent is a proof (decision 0188).
 function childCount() {
   const pid = tmux('display-message', '-p', '-t', 'p', '#{pane_pid}').stdout.trim();
   if (!pid) return 0;

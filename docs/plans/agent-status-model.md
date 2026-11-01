@@ -1,7 +1,7 @@
 # Agent status model: one machine, one output, proven end to end
 
-Decisions: 0180 (one machine per session, workspace roll-up), 0181 (working, background badge), 0182 (evidence ranks),
-0183 (asks), 0184 (alerts), 0185 (failures), 0186 (info tier, viewed by a human). Amends 0095. Fact 0071 is the as-is
+Decisions: 0187 (one machine per session, workspace roll-up), 0188 (working, background badge), 0189 (evidence ranks),
+0190 (asks), 0191 (alerts), 0192 (failures), 0193 (info tier, viewed by a human). Amends 0095. Fact 0074 is the as-is
 pipeline. Guardrails: `no-alert-without-a-visible-status`, `status-changes-ship-with-a-model-transition-test`.
 Procedure: `add-a-status-transition`. Branch: `fix/agent-status` (pool-01), PRs target `develop`.
 
@@ -14,7 +14,7 @@ Workspace and agent status is wrong in practice: a Claude session shows working 
 the reducer pins a turn for 30 min) or does not show working when it is (the 60 s Activity decay); a chime sounds with
 no status change (the chime reads workspace Attention, the chip reads per-tab or Activity state); asks arrive without
 their question (the text rides on the late `Notification` hook, matched to any open ask in the workspace, and
-`AskUserQuestion` input is never read). Three parallel state paths cause it (fact 0071).
+`AskUserQuestion` input is never read). Three parallel state paths cause it (fact 0074).
 
 ## The model in brief (the decisions hold the detail)
 
@@ -94,7 +94,7 @@ the loop in docs.
 
 ### A.1 Measure the lag between hook, transcript and screen — [x]
 Class: explore · Needs: none · Check: `test -f docs/facts/0072-claude-hook-transcript-and-screen-lag.md && ls packages/server/testdata/transcripts | grep -c claude`
-Context: Decision 0182 ranks hook > transcript > screen > scan and promotes the Claude session file to a status
+Context: Decision 0189 ranks hook > transcript > screen > scan and promotes the Claude session file to a status
 source, with the grace values set from measured lag. Fact 0048 measured hooks only (claude 2.1.302, n=1). The Claude
 session-log adapter is `packages/server/src/session_log/claude.rs` behind the port in `session_log/mod.rs`
 (decision 0157); fixtures live in `packages/server/testdata/{events,screens,transcripts}`. Use a throwaway tmux
@@ -123,21 +123,21 @@ Done-when: Fact 0073 answers each question above with a measured result or "coul
 Progress: done 2026-11-01. `scripts/status-events.mjs`, fact 0073, fixtures in `testdata/events/a2/`. Key results for B.2 to B.5: `Stop` carries `background_tasks` and `session_crons` (the `bg` badge needs no scan); a finished background task or a wake opens a turn through `UserPromptSubmit`; retries emit no hook, so `retrying` is screen-only until `StopFailure` (about 3 min); `PermissionDenied` and context overflow were not reproduced (n = 1, no claude credentials for an error of that class).
 
 ### A.3 Measure the progress proofs for a silent tool and set the quiet window — [x]
-Class: explore · Needs: A.1 · Check: `grep -q "quiet window" docs/decisions/0181-working-means-in-progress-except-human-input-and-background-work-is-a-badge.md && grep -q "retry threshold" docs/decisions/0185-failures-are-classed-by-whether-the-turn-ended.md`
-Context: Decision 0181 shows `working(quiet)` when no progress proof arrives for a window, and 0185 raises an `info`
+Class: explore · Needs: A.1 · Check: `grep -q "quiet window" docs/decisions/0188-working-means-in-progress-except-human-input-and-background-work-is-a-badge.md && grep -q "retry threshold" docs/decisions/0192-failures-are-classed-by-whether-the-turn-ended.md`
+Context: Decision 0188 shows `working(quiet)` when no progress proof arrives for a window, and 0192 raises an `info`
 item when a session is `retrying` too long; both numbers are TBD. Progress proofs: hook edge, transcript append, pane
 change, live child process.
 Do: Using A.1's script, run a 20-minute silent tool (sleep loop, a real test run) and a stalled turn (kill the network
 mid-inference). Record which proofs keep arriving. Pick the quiet window and the retry threshold with the evidence,
-and write them into 0181 and 0185 as "quiet window" and "retry threshold" with the measured basis.
+and write them into 0188 and 0192 as "quiet window" and "retry threshold" with the measured basis.
 Done-when: Both decisions state a number and the run it comes from.
-Progress: done 2026-11-01. `scripts/status-quiet.mjs` (rerunnable; the stall uses a local blackhole proxy, no host network change). Quiet window 60 s, retry threshold 120 s, written into 0181 and 0185. Findings for B.2/B.5: a 20-minute silent tool has no hook or transcript line but a live child process the whole time, so the child is the proof that matters; the raw pane is never a proof (spinner, counters, status line tick); a stalled turn ends in `StopFailure server_error` after 687 s (A.2 said about 3 min, which was for retries that kept progressing), with retry screens in between. n = 1 per run.
+Progress: done 2026-11-01. `scripts/status-quiet.mjs` (rerunnable; the stall uses a local blackhole proxy, no host network change). Quiet window 60 s, retry threshold 120 s, written into 0188 and 0192. Findings for B.2/B.5: a 20-minute silent tool has no hook or transcript line but a live child process the whole time, so the child is the proof that matters; the raw pane is never a proof (spinner, counters, status line tick); a stalled turn ends in `StopFailure server_error` after 687 s (A.2 said about 3 min, which was for retries that kept progressing), with retry screens in between. n = 1 per run.
 
 ### B.1 Core types for sub-reason, tier, cause and bg — [x]
 Class: implement · Needs: none · Check: `scripts/dev.sh cargo test -p termenbox-core events`
 Context: Shared protocol types are in `packages/core/src/events.rs` (`Activity` working/blocked/idle/unknown,
 `Attention`/`AttentionKind`, `Task`, `WorkspaceActivity`; every enum has an `Unknown` fallback so an older peer ignores
-values it does not know). Decisions 0180, 0181, 0185 and 0186 add data to them. The WASM build must still compile.
+values it does not know). Decisions 0187, 0188, 0192 and 0193 add data to them. The WASM build must still compile.
 Do: Add `SubReason`, `FailureCause`, the Attention tier (`needs_you`, `result`, `info`), the `bg` count and the typed
 ask kind (`permission|question|plan|trust|elicitation`) with `Unknown` fallbacks and serde defaults so old peers
 and old clients still parse. Add wire round-trip tests including unknown values.
@@ -149,7 +149,7 @@ Progress: done 2026-11-01. `SubReason`, `AskKind`, `FailureCause`, `AttentionTie
 Class: implement · Needs: B.1 · Check: `scripts/dev.sh cargo test -p termenbox-server status::`
 Context: Today's logic is split across `packages/server/src/reducer.rs` (turn and obligation reducer), `tabstatus.rs`
 (per-tab states with their own writers) and the ring in `events.rs` (`derive_activity`, `settle`, `raise`). Decision
-0180 replaces them with one machine per (workspace, tab) session. It is pure: typed events and a clock in, state and
+0187 replaces them with one machine per (workspace, tab) session. It is pure: typed events and a clock in, state and
 Attention changes out, no I/O, so it can be tested as a table.
 Do: Create `packages/server/src/status/` with `event.rs` (typed events: turn start/end, tool start/end, ask
 open/content/close, subagent and background start/end, compact, session start/end, process gone, observation from
@@ -163,7 +163,7 @@ Progress: done 2026-11-01. `packages/server/src/status/{event,machine,transition
 Class: implement · Needs: A.2, B.2 · Check: `scripts/dev.sh cargo test -p termenbox-server adapters`
 Context: `packages/server/src/adapters.rs` `claude` maps 13 hooks to edges; `claude_hooks.rs` installs them.
 `tool_summary` returns "" for `AskUserQuestion` and `ExitPlanMode`, so their question and plan text are lost
-(fact 0071). Subagent, compaction and background events are unmapped.
+(fact 0074). Subagent, compaction and background events are unmapped.
 Do: Map every hook to a typed event. Read `tool_input` for AskUserQuestion (question, options), ExitPlanMode (plan)
 and permissions (tool, arguments); sanitize and cap as untrusted agent text (decision 0095 limits). Subscribe the
 new hooks found in A.2 in `claude_hooks.rs` and keep the opt-in consent flow (decision 0079). Fixture tests use
@@ -174,7 +174,7 @@ Progress: done 2026-11-01. `adapters::claude_events` maps every hook to `status:
 
 ### B.4 Transcript as an evidence source — [x]
 Class: implement · Needs: A.1, B.2 · Check: `scripts/dev.sh cargo test -p termenbox-server session_log`
-Context: `packages/server/src/session_log/claude.rs` parses the transcript for search and usage only. Decision 0182
+Context: `packages/server/src/session_log/claude.rs` parses the transcript for search and usage only. Decision 0189
 makes it a reconciler and the source of ask text. The contract for adapters is `session_log/contract.rs`.
 Do: Expose turn start and end, tool calls with and without results, pending asks and error stops as typed
 observations through the port, tail the file of each live session, and feed the machine. Keep the adapter behind the
@@ -188,7 +188,7 @@ Progress: done 2026-11-01. `session_log/observe.rs`: `Tail` reads the complete l
 ### B.5 Screen and scan reconcile every agent pane; the process gone closes the turn — [x]
 Class: implement · Needs: B.2 · Check: `scripts/dev.sh cargo test -p termenbox-server agentwatch`
 Context: `packages/server/src/agentwatch.rs` reconciles only the one chosen pane per workspace (active pane
-preferred), and skips a pane whose command is no longer an agent without closing its state (fact 0071).
+preferred), and skips a pane whose command is no longer an agent without closing its state (fact 0074).
 Do: Run reconcile per agent pane, emit observation events instead of setting state, and emit `process gone` when an
 agent pane's command stops being an agent or its process exits. A screen hint never raises Attention.
 Done-when: A test with two agent tabs reconciles both, and one that kills the agent mid-turn ends with `failed(crashed)`.
@@ -197,10 +197,10 @@ Progress: done 2026-11-01. `agentwatch::PaneWatch` turns one scan into `TabEvent
 ### B.6 Retire the parallel state paths — [ ]
 Class: implement · Needs: B.3, B.4, B.5 · Check: `scripts/dev.sh cargo test --workspace`
 Context: `TabStatus` writers (`set_hook_state`, `set_screen_state`, `set_scan_state`, `apply_pane`), the ring's flat
-`state`, `derive_activity`'s 60 s decay and `PIN_MAX_MS` are the paths that disagree (fact 0071). Attention is raised
+`state`, `derive_activity`'s 60 s decay and `PIN_MAX_MS` are the paths that disagree (fact 0074). Attention is raised
 in `events.rs` `raise`, `settle`, `settle_tab`.
-Do: Make the machine the only writer. Derive the workspace roll-up from the machines in the order of decision 0180.
-Raise and clear Attention only from the machine, per tier (decision 0186), clear only on a viewed or dismiss event.
+Do: Make the machine the only writer. Derive the workspace roll-up from the machines in the order of decision 0187.
+Raise and clear Attention only from the machine, per tier (decision 0193), clear only on a viewed or dismiss event.
 Drop `task` on idle. Remove the dead `TabPrompt` branch or fill it from the ask content, attached by tab and key.
 Delete the duplicated `GRACE_MS`. Keep the ack and the push ladder behaviour.
 Done-when: `cargo test --workspace` passes and `grep -n "set_screen_state\|PIN_MAX_MS" packages/server/src` finds no
@@ -227,7 +227,7 @@ Not started: no code changed. The branch is 6 commits behind `develop`; rebase b
 ### B.7 One snapshot frame on the status channel — [ ]
 Class: implement · Needs: B.6 · Check: `scripts/dev.sh cargo test -p termenbox-server e2e`
 Context: Status and Attention travel as separate messages (`activity`, `attention`, `tab_states`, polled every 500
-ms in `packages/server/src/workspaces.rs`). Decision 0184 needs the status and the Attention item in the same frame.
+ms in `packages/server/src/workspaces.rs`). Decision 0191 needs the status and the Attention item in the same frame.
 Do: Send per-session status, sub-reason, cause, `bg`, tier, and ask content in one ordered frame on the status
 channel (decision 0096); keep old messages for old clients until they are retired. Version it and test an old
 client against the new server.
@@ -240,7 +240,7 @@ Context: Three readers today: `lib/agents.ts` `derived()` (chip, tab strip), `li
 (Home, sidebar, fleet counts), and `lib/tabs.ts`, `lib/notify.ts` (queue, title, badge, chime). Components:
 `WorkspaceCard.svelte`, `TabStrip.svelte`, `WorkspaceList.svelte`, `shell/BottomBar.svelte`, `lib/home.ts`.
 Do: Add `lib/status.ts`, the only store applying the snapshot frame, with selectors for each surface and the roll-up
-of decision 0180 (counts, first-ask tab). Switch every surface to the selectors and delete `derived()` and the mix in
+of decision 0187 (counts, first-ask tab). Switch every surface to the selectors and delete `derived()` and the mix in
 `rowOf`. Drawing nothing for `unknown`.
 Done-when: `grep -rn "aggregateStatus\|derived(" packages/client/src` finds no use outside `status.ts` and its tests,
 and the status unit tests pass.
@@ -248,7 +248,7 @@ and the status unit tests pass.
 ### C.2 Alerts play from the renderer — [ ]
 Class: implement · Needs: C.1 · Check: `scripts/dev.sh sh -c 'cd packages/client && pnpm test -- notify'`
 Context: `lib/notify.ts` `createAlerter` and `createNotifier` fire on workspace Attention from `App.svelte` around
-line 500; `lib/bell.ts`, `lib/chimes.ts` play. Decision 0184 requires alerts to fire from the code that applied the
+line 500; `lib/bell.ts`, `lib/chimes.ts` play. Decision 0191 requires alerts to fire from the code that applied the
 same snapshot, only for `needs_you` and `result` tiers.
 Do: Move the alerter into the status store's apply step, run after render, key it on the rising edge of the tier,
 and keep the freshness window and the kept-sound behaviour. `info` never alerts. Expose a test hook that records every
@@ -334,7 +334,7 @@ Done-when: `--dry-run` lists the cases and the fixtures they compare, and one re
 ### E.1 Close the docs loop — [ ]
 Class: implement · Needs: B.7, C.4, D.5 · Check: `lint`
 Context: Decision 0095 still says `task` is dropped on idle and that Codex has scan state only; both are wrong or
-changed (fact 0071). The roadmap in `docs/plans/termenbox-roadmap.md` does not list this work.
-Do: Mark fact 0071 as historical with a pointer to the decisions, update 0095's text for the points above, record the
+changed (fact 0074). The roadmap in `docs/plans/termenbox-roadmap.md` does not list this work.
+Do: Mark fact 0074 as historical with a pointer to the decisions, update 0095's text for the points above, record the
 results of A.1 to A.3 in the decisions that name a TBD, add a roadmap item with the owner's go-ahead, and run `lint`.
-Done-when: `lint` reports no dangling reference or stale cross-reference for 0071 and 0180 to 0186.
+Done-when: `lint` reports no dangling reference or stale cross-reference for 0074 and 0187 to 0193.

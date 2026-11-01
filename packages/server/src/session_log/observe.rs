@@ -1,4 +1,4 @@
-//! The transcript as an evidence source for the status machine (decision 0182). A tail reads the lines appended to a
+//! The transcript as an evidence source for the status machine (decision 0189). A tail reads the lines appended to a
 //! Claude session file since its last read and maps them to typed `Event`s: tool calls and results, a pending ask with
 //! its question and options, the Esc paths, an error stop. It never says a status.
 //!

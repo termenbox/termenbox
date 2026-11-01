@@ -171,7 +171,7 @@ const ASK_OPTION_CHARS: usize = 80;
 const ASK_OPTIONS: usize = 8;
 
 /// What a dialog asks, read from `tool_input`: `AskUserQuestion` carries the question and its options, `ExitPlanMode`
-/// the plan, any other tool the tool and its summary (fact 0071: these were dropped before).
+/// the plan, any other tool the tool and its summary (fact 0074: these were dropped before).
 #[allow(dead_code)] // read by the status machine from B.6
 pub(crate) fn ask_content(name: &str, input: &Value) -> Option<(String, Vec<String>)> {
     match name {
@@ -225,7 +225,7 @@ pub(crate) fn ask_kind(tool: &str) -> AskKind {
     }
 }
 
-/// `StopFailure.error` to the class of decision 0185. Anything unrecognised is `Unknown`, still a failure.
+/// `StopFailure.error` to the class of decision 0192. Anything unrecognised is `Unknown`, still a failure.
 #[allow(dead_code)] // read by the status machine from B.6
 pub(crate) fn failure_cause(error: &str) -> FailureCause {
     match error {
@@ -237,7 +237,7 @@ pub(crate) fn failure_cause(error: &str) -> FailureCause {
     }
 }
 
-/// Claude Code hook payloads as typed events for the per-session machine (`status::machine`, decision 0182).
+/// Claude Code hook payloads as typed events for the per-session machine (`status::machine`, decision 0189).
 /// A hook states what happened, never the status. Every hook maps to something or is deliberately ignored:
 /// `SubagentStop` with no `agent_type` fires from the main loop after each `Stop` and is noise (fact 0073), and
 /// `idle_prompt` carries no information the `Stop` before it did not (fact 0073).
@@ -317,7 +317,7 @@ pub fn claude_events(d: &Value) -> Vec<Event> {
         }
         "Notification" => match text(d, "notification_type") {
             // Only the words: the ask itself is opened by `PermissionRequest` or `Elicitation`, and a notification
-            // that comes first or never changes nothing (decision 0183).
+            // that comes first or never changes nothing (decision 0190).
             "" | "permission_prompt" | "elicitation_dialog" => {
                 let msg = sanitize_text(text(d, "message"), ASK_TEXT_CHARS);
                 if msg.is_empty() {

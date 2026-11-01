@@ -2,9 +2,9 @@
 id: no-alert-without-a-visible-status
 title: No sound, vibration, push or badge fires unless the status it announces is rendered, and no needs-you status renders without its alert
 status: active
-governed-by: 0184-alerts-fire-only-from-a-rendered-attention-edge
-grounded-in: [0180-agent-status-is-one-per-session-machine-and-the-workspace-is-a-roll-up, 0184-alerts-fire-only-from-a-rendered-attention-edge, 0071]
-derivation-note: Given that the chime, the chip and the push read different state today (fact 0071), a rule on the pair is the only check that catches a sound with no status change and a status with no sound.
+governed-by: 0191-alerts-fire-only-from-a-rendered-attention-edge
+grounded-in: [0187-agent-status-is-one-per-session-machine-and-the-workspace-is-a-roll-up, 0191-alerts-fire-only-from-a-rendered-attention-edge, 0074]
+derivation-note: Given that the chime, the chip and the push read different state today (fact 0074), a rule on the pair is the only check that catches a sound with no status change and a status with no sound.
 tags: [agents, notifications, client, testing]
 ---
 

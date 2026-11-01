@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Measures the lag between the three sources of agent status for Claude Code: a hook, the session
-// transcript append and the first pane redraw (decision 0182, plan docs/plans/agent-status-model.md A.1).
+// transcript append and the first pane redraw (decision 0189, plan docs/plans/agent-status-model.md A.1).
 //
 //   node scripts/status-lag.mjs [--runs 5] [--cases plain,permission] [--out DIR] [--fixtures] [--dry-run]
 //

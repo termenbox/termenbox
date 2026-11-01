@@ -1,17 +1,17 @@
 ---
-id: 0071
+id: 0074
 title: Claude Code status runs through three parallel paths that can disagree, and its asks lose their question text
 status: active
 tags: [agents, server, client, notifications]
 date: 2026-11-01
 kind: observed
-governed-by: 0180
+governed-by: 0187
 last-verified: 2026-11-01
 ---
 
 # Agent status pipeline as it was on develop at a31db0d
 
-Read from the code, not executed (a code-read trace of `packages/server/src` and `packages/client/src`). Superseded in shape by decisions 0180 to 0186 once the plan `docs/plans/agent-status-model.md` lands. Paths below are under `packages/`.
+Read from the code, not executed (a code-read trace of `packages/server/src` and `packages/client/src`). Superseded in shape by decisions 0187 to 0193 once the plan `docs/plans/agent-status-model.md` lands. Paths below are under `packages/`.
 
 ## Sources and who writes what
 

@@ -365,7 +365,7 @@ pub trait SessionLog: Send + Sync {
         direction: Direction,
         count: usize,
     ) -> Result<Page, LogError>;
-    /// The status events of what was appended to the session since `tail` last read (decision 0182). An agent whose
+    /// The status events of what was appended to the session since `tail` last read (decision 0189). An agent whose
     /// adapter does not read for status is off for this, the way an unreadable file is off for search.
     fn observe(
         &self,

@@ -220,7 +220,7 @@ pub enum AttentionKind {
     Unknown,
 }
 
-/// Why a `working` session is working (decision 0181); the tool name rides beside it.
+/// Why a `working` session is working (decision 0188); the tool name rides beside it.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SubReason {
@@ -235,7 +235,7 @@ pub enum SubReason {
     Unknown,
 }
 
-/// What a `needs_you` item waits for (decision 0183).
+/// What a `needs_you` item waits for (decision 0190).
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AskKind {
@@ -248,7 +248,7 @@ pub enum AskKind {
     Unknown,
 }
 
-/// Why a turn ended badly (decision 0185).
+/// Why a turn ended badly (decision 0192).
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureCause {
@@ -261,7 +261,7 @@ pub enum FailureCause {
     Unknown,
 }
 
-/// How loud an Attention item is (decision 0186): `needs_you` and `result` alert, `info` is silent.
+/// How loud an Attention item is (decision 0193): `needs_you` and `result` alert, `info` is silent.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AttentionTier {

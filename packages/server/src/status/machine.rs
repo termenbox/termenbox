@@ -1,5 +1,5 @@
 //! One session's machine: `apply(event, now)` and `tick(now)` return the Attention effects, `view(now)` the status.
-//! Pure and deterministic, so a transition table can test it (decision 0180).
+//! Pure and deterministic, so a transition table can test it (decision 0187).
 use std::collections::BTreeMap;
 
 use termenbox_core::events::{AskKind, FailureCause, SubReason};
@@ -13,9 +13,9 @@ pub const DISAGREE_SCANS: u8 = 2;
 /// Events newer than this are never contradicted by an observation, and a tool event this soon after the turn ended
 /// is a late delivery. Longer than the transcript's lag behind a hook (fact 0072: up to 400 ms).
 pub const GRACE_MS: u64 = 4_000;
-/// No progress proof for this long shows `working(quiet)` (decision 0181).
+/// No progress proof for this long shows `working(quiet)` (decision 0188).
 pub const QUIET_MS: u64 = 60_000;
-/// `retrying` for this long raises a silent info item (decision 0185).
+/// `retrying` for this long raises a silent info item (decision 0192).
 pub const RETRY_INFO_MS: u64 = 120_000;
 /// An `AskContent` key that names no ask: the text belongs to the one open ask that has none yet. A late
 /// `Notification` carries words but no key (fact 0072).
@@ -41,7 +41,7 @@ impl Status {
         Status::Unknown,
     ];
 
-    /// Position in the roll-up order, worst first (decision 0180); `Unknown` is not ranked.
+    /// Position in the roll-up order, worst first (decision 0187); `Unknown` is not ranked.
     fn rank(self) -> Option<u8> {
         match self {
             Status::NeedsYou => Some(0),
@@ -63,7 +63,7 @@ pub fn rollup(tabs: &[Status]) -> Status {
         .map_or(Status::Unknown, |(_, s)| s)
 }
 
-/// A silent note (decision 0186).
+/// A silent note (decision 0193).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum InfoKind {
     BackgroundDone,
@@ -123,7 +123,7 @@ pub struct View {
     /// The kind of the first open ask.
     pub ask: Option<AskKind>,
     pub asks: usize,
-    /// A blocked screen with no ask to back it: a hint, never an alert (decision 0182).
+    /// A blocked screen with no ask to back it: a hint, never an alert (decision 0189).
     pub hint_blocked: bool,
 }
 

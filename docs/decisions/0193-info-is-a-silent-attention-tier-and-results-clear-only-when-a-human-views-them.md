@@ -1,5 +1,5 @@
 ---
-id: 0186-info-is-a-silent-attention-tier-and-results-clear-only-when-a-human-views-them
+id: 0193-info-is-a-silent-attention-tier-and-results-clear-only-when-a-human-views-them
 title: Info is a silent Attention tier, and finished, failed and info items clear only when a human views them
 status: active
 date: 2026-11-01

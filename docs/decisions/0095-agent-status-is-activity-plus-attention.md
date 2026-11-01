@@ -6,7 +6,7 @@ date: 2026-10-15
 track: product
 accepted-by: Sergey Strebulaev <s@vivantel.dev>
 supersedes: [0061]
-amended-by: [0180-agent-status-is-one-per-session-machine-and-the-workspace-is-a-roll-up, 0181-working-means-in-progress-except-human-input-and-background-work-is-a-badge, 0182-evidence-ranks-hook-transcript-screen-scan, 0183-asks-raise-at-once-and-are-enriched-later, 0184-alerts-fire-only-from-a-rendered-attention-edge, 0185-failures-are-classed-by-whether-the-turn-ended, 0186-info-is-a-silent-attention-tier-and-results-clear-only-when-a-human-views-them]
+amended-by: [0187-agent-status-is-one-per-session-machine-and-the-workspace-is-a-roll-up, 0188-working-means-in-progress-except-human-input-and-background-work-is-a-badge, 0189-evidence-ranks-hook-transcript-screen-scan, 0190-asks-raise-at-once-and-are-enriched-later, 0191-alerts-fire-only-from-a-rendered-attention-edge, 0192-failures-are-classed-by-whether-the-turn-ended, 0193-info-is-a-silent-attention-tier-and-results-clear-only-when-a-human-views-them]
 tags: [agents, notifications, pwa, protocol, roadmap]
 ---
 

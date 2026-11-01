@@ -5,7 +5,7 @@ status: active
 tags: [agents, hooks, claude, status]
 date: 2026-11-01
 kind: environmental
-governed-by: 0182
+governed-by: 0189
 last-verified: 2026-11-01
 ---
 
