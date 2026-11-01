@@ -73,7 +73,7 @@ jobs:
           node -e '
             const rows = JSON.parse(require("fs").readFileSync(process.env.RUNNER_TEMP + "/catalog.json", "utf8"));
             const want = process.env.CASE;
-            const pick = want === "all" ? rows : rows.filter((r) => r.id === want);
+            const pick = want === "all" ? rows.filter((r) => !r.template) : rows.filter((r) => r.id === want);
             if (!pick.length) { console.error("unknown case; choose all or one of: " + rows.map((r) => r.id).join(" ")); process.exit(1); }
             const profiles = process.env.PROFILE === "both" ? "phone desktop" : process.env.PROFILE;
             const out = [`cases=${pick.map((r) => r.id).join(" ")}`, `profiles=${profiles}`, `real=${pick.some((r) => r.real)}`];
@@ -106,8 +106,11 @@ jobs:
           flags="--pace $PACE --skip-unsupported"; [ "$CAPTION" = off ] && flags="$flags --no-caption"
           for c in $CASES; do
             for p in $PROFILES; do
+              # a render the flicker check rejects is tried again (a slow runner drops frames); three in a row fail the job
               # shellcheck disable=SC2086
-              node e2e/video/render.mjs --case "$c" --profile "$p" --out "$GITHUB_WORKSPACE/media" $flags
+              node e2e/video/render.mjs --case "$c" --profile "$p" --out "$GITHUB_WORKSPACE/media" $flags \
+                || node e2e/video/render.mjs --case "$c" --profile "$p" --out "$GITHUB_WORKSPACE/media" $flags \
+                || node e2e/video/render.mjs --case "$c" --profile "$p" --out "$GITHUB_WORKSPACE/media" $flags
             done
           done
           ls -l "$GITHUB_WORKSPACE/media"

@@ -42,10 +42,16 @@ export const overlayScript = (phone) => {
   };
   const ready = () => { if (document.body) mount(); else document.addEventListener('DOMContentLoaded', mount, { once: true }); };
   ready();
-  // A later modal dialog covers an earlier top-layer element; showing the overlay again moves it back on top.
+  // A later modal dialog covers an earlier top-layer element; showing the overlay again moves it back on top. Only when a modal
+  // opened since the last time: hiding and showing the popover drops the overlay from the frame recorded in between (a flicker).
+  let raisedOver = null;
   window.__humanTop = () => {
     const h = window.__human;
     if (!h) return;
+    const modals = [...document.querySelectorAll('dialog')].filter((d) => d.matches(':modal'));
+    const top = modals[modals.length - 1] ?? null;
+    if (top === raisedOver && h.root.matches(':popover-open')) return;
+    raisedOver = top;
     try { h.root.hidePopover(); h.root.showPopover(); } catch { /* not supported: the caption still shows in the page */ }
   };
   window.__humanMove = (x, y) => {
