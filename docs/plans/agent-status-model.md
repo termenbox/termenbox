@@ -108,7 +108,7 @@ transcript lines and screens as fixtures. Write fact 0072 with the table, the ve
 Done-when: Fact 0072 holds a lag table for every listed case with n >= 5, and fixtures from the real run exist for each.
 Progress: done 2026-11-01. `scripts/status-lag.mjs` (rerunnable), fact 0072, fixtures in `testdata/{events,transcripts,screens}/lag/`. Findings for later steps: the transcript has the pending ask and the Esc cancel within 500 ms, and the transcript trails the hook by up to 400 ms (so the reconcile grace must exceed 500 ms); a foreground `sleep` is refused with no hook (A.3 must use a busy loop); `Notification` was not seen. The skipped part: the script has no case for a 20-minute tool (A.3).
 
-### A.2 Measure the unmeasured events and background behaviour — [ ]‖
+### A.2 Measure the unmeasured events and background behaviour — [x]‖
 Class: explore · Needs: none · Check: `test -f docs/facts/0073-claude-events-subagents-background-and-errors.md`
 Context: Fact 0048 lists what was not measured: `StopFailure`, `Elicitation`, `ElicitationResult`,
 `PermissionDenied`, `idle_prompt`, plan-mode approval and parallel dialogs. Also not subscribed today
@@ -120,6 +120,7 @@ what a scheduled wakeup or loop emits; what a 429 retry loop emits before `StopF
 `SessionStart` source=compact and resume emit; whether panes can be split inside a tab. Save fixtures under
 `packages/server/testdata/events/`. Write fact 0073 and index it.
 Done-when: Fact 0073 answers each question above with a measured result or "could not reproduce, how tried".
+Progress: done 2026-11-01. `scripts/status-events.mjs`, fact 0073, fixtures in `testdata/events/a2/`. Key results for B.2 to B.5: `Stop` carries `background_tasks` and `session_crons` (the `bg` badge needs no scan); a finished background task or a wake opens a turn through `UserPromptSubmit`; retries emit no hook, so `retrying` is screen-only until `StopFailure` (about 3 min); `PermissionDenied` and context overflow were not reproduced (n = 1, no claude credentials for an error of that class).
 
 ### A.3 Measure the progress proofs for a silent tool and set the quiet window — [ ]
 Class: explore · Needs: A.1 · Check: `grep -q "quiet window" docs/decisions/0181-working-means-in-progress-except-human-input-and-background-work-is-a-badge.md && grep -q "retry threshold" docs/decisions/0185-failures-are-classed-by-whether-the-turn-ended.md`
