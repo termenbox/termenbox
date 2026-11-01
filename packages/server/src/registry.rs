@@ -273,6 +273,21 @@ impl Registry {
         dir: Option<&str>,
         kind: &str,
     ) -> Result<String> {
+        self.create_workspace_resuming(backend, name, backend_kind, dir, kind, None)
+            .await
+    }
+
+    /// `create_workspace` whose first tab starts `resume` = (command line, session id) in place of the bare template,
+    /// and records the session id so the tab is the one that holds the conversation (decision 0167).
+    pub async fn create_workspace_resuming(
+        &self,
+        backend: &dyn WorkspaceBackend,
+        name: &str,
+        backend_kind: Option<&str>,
+        dir: Option<&str>,
+        kind: &str,
+        resume: Option<(String, String)>,
+    ) -> Result<String> {
         let kind = if kind.is_empty() { "shell" } else { kind };
         if !valid_template(kind) {
             return Err(anyhow!("Unknown agent template"));
@@ -290,7 +305,7 @@ impl Registry {
             kind: kind.into(),
             // A workspace without a directory starts where tmux starts; the real path is read back below.
             dir: explicit.clone().unwrap_or_default(),
-            resume: None,
+            resume: resume.as_ref().map(|(c, _)| c.clone()),
         };
         let kinds = backend.kinds();
         let chosen = backend_kind
@@ -345,7 +360,7 @@ impl Registry {
                 dir: String::new(),
                 order: 0,
                 window: made.window,
-                agent_session: None,
+                agent_session: resume.map(|(_, id)| id),
             }],
             next_tab: 2,
         };

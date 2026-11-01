@@ -2,7 +2,7 @@
 // read from the agents' own conversation files. This module keeps the state of one search: it numbers the search, drops
 // answers of an older one, groups hits (by agent, workspace or not at all) and says why a search stopped early. The query goes to the servers
 // and nowhere else: it is not written to storage, the breadcrumbs or any log. Texts from a server are shown as text only.
-import type { ClientMessage, SearchDoneMessage, SearchHitMessage, ServerMessage, TabResumed } from './protocol';
+import type { ClientMessage, SearchDoneMessage, SearchHitMessage, ServerMessage, SessionResumedMessage, TabResumed } from './protocol';
 
 export const MAX_QUERY = 512;
 export const DEBOUNCE_MS = 250;
@@ -22,11 +22,19 @@ export interface Hit {
   turn: string;
   kind: string;
   snippet: string;
+  /** Where the session ran, from its file (decision 0167); empty from an older server. */
+  dir: string;
+  /** The conversation's id, for `resume_session`; empty from an older server. */
+  session: string;
   /** [start, end) in characters of `snippet`, already clamped. */
   highlight: [number, number];
   at?: number;
 }
-export interface Group { key: string; serverId: string; serverName: string; workspace: string; name: string; agent: string; up: boolean; hits: Hit[] }
+export interface Group {
+  key: string; serverId: string; serverName: string; workspace: string; name: string; agent: string; up: boolean; hits: Hit[];
+  /** The full directory of a group named after one, shown as a tooltip. */
+  title?: string;
+}
 
 export type Status = 'idle' | 'searching' | 'done';
 export interface SearchState {
@@ -174,7 +182,7 @@ export class SessionSearch {
     const snippet = typeof m.snippet === 'string' ? m.snippet : '';
     const hit: Hit = {
       serverId, serverName: this.names.get(serverId) ?? 'Server', workspace: m.workspace, tab: m.tab ?? '', agent: m.agent, up: !!m.up,
-      turn: m.turn, kind: m.kind, snippet, highlight: clamp(m.highlight, snippet.length), at: time(m.at),
+      turn: m.turn, kind: m.kind, snippet, dir: typeof m.dir === 'string' ? m.dir : '', session: typeof m.session === 'string' ? m.session : '', highlight: clamp(m.highlight, snippet.length), at: time(m.at),
     };
     this.set({ ...this.state, hits: [...this.state.hits, hit] });
   }
@@ -193,6 +201,12 @@ export class SessionSearch {
     const next = edit({ ...this.state, pending: this.state.pending.filter((p) => p !== serverId) });
     this.set({ ...next, status: next.pending.length ? 'searching' : 'done' });
   }
+}
+
+/** The last two segments of a directory, for a heading; the full path goes in a tooltip. */
+export function dirLabel(dir: string): string {
+  const segs = dir.split('/').filter(Boolean);
+  return segs.length ? segs.slice(-2).join('/') : 'Unknown folder';
 }
 
 export type GroupMode = 'agent' | 'workspace' | 'none';
@@ -219,11 +233,13 @@ export function saveGroupMode(mode: GroupMode, store: Pick<Storage, 'setItem'> |
 export function groupHits(hits: Hit[], mode: GroupMode, nameOf: (serverId: string, workspace: string) => string | undefined): Group[] {
   const by = new Map<string, Group>();
   for (const h of hits) {
-    const key = mode === 'workspace' ? `${h.serverId}/${h.workspace}` : mode === 'agent' ? `${h.serverId}/agent:${h.agent}` : 'all';
+    // A conversation no workspace holds is grouped under the directory it ran in.
+    const folder = mode === 'workspace' && !h.workspace;
+    const key = folder ? `${h.serverId}/dir:${h.dir}` : mode === 'workspace' ? `${h.serverId}/${h.workspace}` : mode === 'agent' ? `${h.serverId}/agent:${h.agent}` : 'all';
     let g = by.get(key);
     if (!g) {
-      const name = mode === 'workspace' ? nameOf(h.serverId, h.workspace) ?? h.workspace : mode === 'agent' ? h.agent : '';
-      g = { key, serverId: h.serverId, serverName: h.serverName, workspace: mode === 'workspace' ? h.workspace : '', name, agent: h.agent, up: h.up, hits: [] };
+      const name = folder ? dirLabel(h.dir) : mode === 'workspace' ? nameOf(h.serverId, h.workspace) ?? h.workspace : mode === 'agent' ? h.agent : '';
+      g = { key, serverId: h.serverId, serverName: h.serverName, workspace: mode === 'workspace' ? h.workspace : '', name, agent: h.agent, up: h.up, hits: [], ...(folder && h.dir ? { title: h.dir } : {}) };
       by.set(key, g);
     }
     g.hits.push(h);
@@ -272,4 +288,24 @@ export function resumeOutcome(h: Pick<Hit, 'tab' | 'agent'>, said: TabResumed[] 
   if (r?.outcome === 'resumed') return { message: `Resuming ${h.agent} in this tab.`, jump: false, ok: true };
   if (r) return { message: `Could not resume ${h.agent}: ${r.reason ?? 'no reason given'}. The tab is a shell again.`, jump: false, ok: false };
   return { message: 'Workspace reopened. This server did not say whether the conversation was resumed.', jump: false, ok: false };
+}
+
+/** True when no workspace holds the hit's conversation: Resume creates one in the hit's directory (decision 0167). */
+export const isUnheld = (h: Pick<Hit, 'workspace'>): boolean => !h.workspace;
+
+/** What to tell after `resume_session`, and whether the view should now go to the workspace the server named. */
+export function sessionResumedOutcome(h: Pick<Hit, 'agent'>, r: Pick<SessionResumedMessage, 'outcome' | 'reason' | 'workspace'>): { message: string; go: boolean; ok: boolean } {
+  if (r.outcome === 'missing') return { message: 'The folder or the conversation is gone, so it cannot be resumed.', go: false, ok: false };
+  if (!r.workspace) return { message: 'This server did not say where the conversation went.', go: false, ok: false };
+  if (r.outcome === 'switched') return { message: 'Switched to the workspace that holds this conversation.', go: true, ok: true };
+  if (r.outcome === 'resumed') return { message: `Resuming ${h.agent} in a new workspace.`, go: true, ok: true };
+  if (r.outcome === 'shell') return { message: `Could not resume ${h.agent}: ${r.reason ?? 'no reason given'}. The new workspace is a shell.`, go: true, ok: false };
+  return { message: 'This server answered in a way this app does not know.', go: false, ok: false };
+}
+
+/** What the Resume confirmation says: a dormant workspace is reopened, a conversation no workspace holds gets a new one. */
+export function resumeAskText(h: Pick<Hit, 'workspace' | 'agent' | 'dir'>): string {
+  return isUnheld(h)
+    ? `No workspace holds this conversation. Resume opens a new workspace in ${h.dir ? dirLabel(h.dir) : 'its folder'} and starts ${h.agent} again with it.`
+    : `This workspace is not running. Resume opens it and starts ${h.agent} again with this conversation.`;
 }

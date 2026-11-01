@@ -93,6 +93,8 @@ export type ClientMessage =
   | { type: 'history_delete' }
   /** R78: searches the agents' own conversation files. Hits stream as `search_hit`, then `search_done`. A newer `id`, or `cancel`, stops the previous search. Owner only. */
   | { type: 'search'; id: number; query: string; cancel?: boolean; /** Only records at or after this time (ms since the epoch); absent searches any age. */ since?: number }
+  /** Resume a conversation a search found: the server switches to the workspace that holds it, else creates one in the session's directory and runs the agent's resume command; the answer is `session_resumed`. Owner only. */
+  | { type: 'resume_session'; agent: string; session: string }
   /** The turns around `turn` of the session of a tab (`tab` empty for an ACP workspace); the answer is `session_window`. Owner only. */
   | { type: 'window'; workspace: string; tab?: string; turn: string; before?: number; after?: number };
 
@@ -172,6 +174,7 @@ export type ServerMessage =
   | { type: 'history_deleted'; removed: number }
   | SearchHitMessage
   | SearchDoneMessage
+  | SessionResumedMessage
   | SessionWindowMessage
   | { type: 'error'; message: string }
   | { type: 'pong' }
@@ -199,12 +202,17 @@ export interface SearchHitMessage {
   state?: 'open' | 'resume' | string;
   /** Where the session ran, from its file. */
   dir?: string;
+  /** The conversation's id, for `resume_session`. */
+  session?: string;
   turn: string;
   kind: SessionEntryKind;
   snippet: string;
   highlight: [number, number];
   at?: string;
 }
+
+/** Answers `resume_session`. `switched`: a workspace already held the conversation; `resumed`: a new one runs the resume command; `shell`: a new one is a shell (`reason`); `missing`: the directory or conversation is gone and nothing was created. */
+export interface SessionResumedMessage { type: 'session_resumed'; outcome: 'switched' | 'resumed' | 'shell' | 'missing' | string; workspace?: string; tab?: string; reason?: string }
 
 /** Ends a search. `cut`: why it stopped before it had looked everywhere. `off`: agents whose search is off, with a fixed reason. */
 export interface SearchDoneMessage {

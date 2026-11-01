@@ -543,6 +543,14 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since: Option<u64>,
     },
+    /// Resume a conversation a search found (decision 0167): switch to the workspace that already holds `session` of
+    /// `agent`, else create a workspace in the directory the session's file names and start the agent's resume command
+    /// there. The client names the conversation, never a path; the answer is `session_resumed`. Owner only. The
+    /// session id is never logged.
+    ResumeSession {
+        agent: String,
+        session: String,
+    },
     /// The turns around `turn` of the session of `workspace`'s tab `tab` (empty for an ACP workspace); the answer is
     /// `session_window`. Owner only.
     Window {
@@ -964,12 +972,27 @@ pub enum ServerMessage {
         state: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         dir: String,
+        /// The conversation's id, for `resume_session`.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        session: String,
         turn: String,
         kind: String,
         snippet: String,
         highlight: (u32, u32),
         #[serde(default, skip_serializing_if = "Option::is_none")]
         at: Option<String>,
+    },
+    /// Answers `resume_session`. `outcome`: `switched` (a workspace already held the conversation; attach to it),
+    /// `resumed` (a new workspace runs the resume command), `shell` (a new workspace is a shell, `reason` says why) or
+    /// `missing` (the directory or the conversation is gone; nothing was created).
+    SessionResumed {
+        outcome: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        workspace: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        tab: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     /// Ends a `search`. `cut` is why it stopped before it had looked everywhere (`hits`, `bytes`, `time`, `range` or
     /// `cancelled`; `range` only when the `since` bound alone kept it from looking); `older` counts the conversations

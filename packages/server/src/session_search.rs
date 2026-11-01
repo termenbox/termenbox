@@ -176,6 +176,17 @@ fn note_off(summary: &mut Summary, agent: &str, why: &'static str) {
     }
 }
 
+/// The directory the session file of (`agent`, `id`) says it ran in, if the agent's root holds such a file. The client
+/// names a conversation, never a path, so only a file the adapter lists can be resumed.
+pub fn locate(logs: &SessionLogs, agent: &str, id: &str) -> Option<PathBuf> {
+    logs.list(None)
+        .0
+        .files
+        .into_iter()
+        .find(|f| f.agent == agent && f.id == id)
+        .map(|f| f.dir)
+}
+
 /// The turns around `turn` of the session of `workspace`'s `tab`. Only a session the server knows can be read, so a
 /// client cannot name a file.
 pub fn window(
@@ -456,11 +467,18 @@ mod tests {
         assert!(got.iter().all(|(f, _)| f.dir == PathBuf::from(DIR)));
         // A replaced session is no longer the tab's, yet its file is still searched: only `short` is held.
         let got = hits_of(&root, vec![known("short", "ws-up", "t1", true)], "by size");
-        let held: Vec<_> = got.iter().filter(|(f, _)| f.session_id == "short").collect();
+        let held: Vec<_> = got
+            .iter()
+            .filter(|(f, _)| f.session_id == "short")
+            .collect();
         assert!(!held.is_empty() && held.iter().all(|(f, _)| f.open && f.workspace == "ws-up"));
         assert!(got.iter().any(|(f, _)| f.session_id == "rewind" && !f.open));
         // A dormant workspace holds a session without running it: named, but `resume`.
-        let got = hits_of(&root, vec![known("short", "ws-down", "t1", false)], "by size");
+        let got = hits_of(
+            &root,
+            vec![known("short", "ws-down", "t1", false)],
+            "by size",
+        );
         assert!(got
             .iter()
             .any(|(f, _)| f.session_id == "short" && f.workspace == "ws-down" && !f.open));
@@ -481,7 +499,11 @@ mod tests {
         let project = root.join("-home-fixture-project");
         std::os::unix::fs::symlink(outside.join("out.jsonl"), project.join("link.jsonl")).unwrap();
         std::os::unix::fs::symlink(&outside, root.join("-linked-folder")).unwrap();
-        std::fs::write(project.join("junk.jsonl"), "not json at all\nzebrafinch junk\n").unwrap();
+        std::fs::write(
+            project.join("junk.jsonl"),
+            "not json at all\nzebrafinch junk\n",
+        )
+        .unwrap();
         assert!(hits_of(&root, Vec::new(), "zebrafinch").is_empty());
         // The same file, really inside the root, is found: the link was the only reason it was not.
         std::fs::copy(outside.join("out.jsonl"), project.join("real.jsonl")).unwrap();
@@ -504,6 +526,9 @@ mod tests {
             open: true,
         };
         let text = format!("{found:?}");
-        assert!(!text.contains("secret-id") && !text.contains("private"), "{text}");
+        assert!(
+            !text.contains("secret-id") && !text.contains("private"),
+            "{text}"
+        );
     }
 }

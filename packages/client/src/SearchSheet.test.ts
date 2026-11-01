@@ -6,7 +6,7 @@ import { IDLE, NOTICE, cutText, type Hit, type SearchState } from './lib/session
 const html = (props: Record<string, unknown>) =>
   (render as unknown as (c: unknown, o: { props: Record<string, unknown> }) => { body: string })(SearchSheet, { props: { open: true, onquery: () => {}, onstop: () => {}, onpick: () => {}, onresume: () => {}, ...props } }).body;
 
-const hit = (over: Partial<Hit> = {}): Hit => ({ serverId: 'a', serverName: 'Box', workspace: 'w1', tab: 'build', agent: 'claude', up: true, turn: 'u1', kind: 'user', snippet: 'fix the parser bug', highlight: [8, 14], at: Date.parse('2026-10-30T10:00:00Z'), ...over });
+const hit = (over: Partial<Hit> = {}): Hit => ({ serverId: 'a', serverName: 'Box', workspace: 'w1', tab: 'build', agent: 'claude', up: true, turn: 'u1', kind: 'user', snippet: 'fix the parser bug', highlight: [8, 14], dir: '', session: '', at: Date.parse('2026-10-30T10:00:00Z'), ...over });
 const st = (over: Partial<SearchState>): SearchState => ({ ...IDLE, ...over });
 
 describe('SearchSheet', () => {
@@ -65,5 +65,12 @@ describe('SearchSheet', () => {
     expect(out).toContain('data-testid="search-older-go"');
     expect(html({ search: st({ query: 'x', status: 'done', older: 3, range: 'any' }) })).not.toContain('search-older-go');
     expect(html({ search: st({ query: 'x', status: 'done' }) })).not.toContain('search-older"');
+  });
+  it('groups a conversation no workspace holds under its directory, with the full path as a tooltip, and badges it Resume', () => {
+    const out = html({ search: st({ query: 'x', status: 'done', hits: [hit({ workspace: '', tab: '', up: false, dir: '/home/me/code/api', session: 's1' })] }) });
+    expect(out).toContain('>code/api<');
+    expect(out).toContain('title="/home/me/code/api"');
+    expect(out).toContain('Resume');
+    expect(out).not.toContain('>Open<');
   });
 });

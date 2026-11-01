@@ -258,6 +258,79 @@ impl WorkspaceManager {
         all
     }
 
+    /// Resumes one conversation a search found (decision 0167): the workspace that already holds it is switched to,
+    /// else a workspace named after the directory is created there with the agent's resume command. Nothing is
+    /// created when the conversation or its directory is gone. The id and the path are never logged or echoed.
+    async fn resume_session(&self, agent: &str, session: &str) -> Result<ServerMessage> {
+        let said = |outcome: &str, workspace: String, tab: String, reason: Option<&str>| {
+            ServerMessage::SessionResumed {
+                outcome: outcome.into(),
+                workspace,
+                tab,
+                reason: reason.map(str::to_string),
+            }
+        };
+        if let Some(k) = self
+            .registry
+            .known_sessions()
+            .into_iter()
+            .find(|k| k.agent == agent && k.session_id == session)
+        {
+            return Ok(said("switched", k.workspace, k.tab, None));
+        }
+        let (logs, a, s) = (
+            self.session_logs.clone(),
+            agent.to_string(),
+            session.to_string(),
+        );
+        let dir = tokio::task::spawn_blocking(move || crate::session_search::locate(&logs, &a, &s))
+            .await?;
+        let Some(dir) = dir.filter(|d| d.is_absolute() && d.is_dir()) else {
+            return Ok(said("missing", String::new(), String::new(), None));
+        };
+        let name = dir
+            .file_name()
+            .map(|n| {
+                n.to_string_lossy()
+                    .chars()
+                    .filter(|c| !c.is_control() && *c != '|')
+                    .collect::<String>()
+            })
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| agent.to_string());
+        let name: String = name.chars().take(64).collect();
+        let (kind, resume, reason) = match crate::adapters::resume_command(agent, session) {
+            Some(cmd) => (agent, Some((cmd, session.to_string())), None),
+            None => (
+                "shell",
+                None,
+                Some("this agent cannot resume a conversation"),
+            ),
+        };
+        let id = self
+            .registry
+            .create_workspace_resuming(
+                self.backend.as_ref(),
+                &name,
+                None,
+                dir.to_str(),
+                kind,
+                resume,
+            )
+            .await?;
+        let tab = self
+            .registry
+            .record(&id)
+            .and_then(|r| r.focus)
+            .unwrap_or_default();
+        Ok(said(
+            if reason.is_none() { "resumed" } else { "shell" },
+            id,
+            tab,
+            reason,
+        ))
+    }
+
     /// Stops the search of connection `conn`, if one runs.
     fn stop_search(&self, conn: u64) {
         if let Some(cancel) = self.searches.lock().unwrap().remove(&conn) {
@@ -295,6 +368,7 @@ impl WorkspaceManager {
                     up: s.open,
                     state: if s.open { "open" } else { "resume" }.into(),
                     dir: s.dir.to_string_lossy().into_owned(),
+                    session: s.session_id.clone(),
                     turn: h.turn,
                     kind: kind_name(h.kind).into(),
                     snippet: h.snippet,
@@ -1988,6 +2062,20 @@ impl WorkspaceManager {
                 info!(target: "audit", event = "session_search", provider = %identity.provider, account_id = %identity.id);
                 self.start_search(conn, id, query, since, tx);
             }
+            ClientMessage::ResumeSession { agent, session } => {
+                if !Self::is_owner(auth, identity) {
+                    return Err(anyhow::anyhow!("Only the owner can resume conversations"));
+                }
+                // Who resumed, never which conversation.
+                info!(target: "audit", event = "session_resume", provider = %identity.provider, account_id = %identity.id);
+                let reply = self.resume_session(&agent, &session).await?;
+                if reply_changes_list(&reply) {
+                    let workspaces = self.registry.list(self.backend.as_ref()).await?;
+                    send_r(tx, &ServerMessage::Workspaces { workspaces }).await?;
+                    let _ = self.list_changed.send(conn);
+                }
+                send_r(tx, &reply).await?;
+            }
             ClientMessage::Window {
                 workspace,
                 tab,
@@ -2183,6 +2271,11 @@ fn tab_path(root: &str, relative: &str) -> String {
 
 /// The longest search text the server takes, in bytes.
 const SEARCH_QUERY_BYTES: usize = 512;
+
+/// A reply that made a workspace, so the list changed.
+fn reply_changes_list(m: &ServerMessage) -> bool {
+    matches!(m, ServerMessage::SessionResumed { outcome, .. } if outcome == "resumed" || outcome == "shell")
+}
 
 fn kind_name(kind: crate::session_log::Kind) -> &'static str {
     use crate::session_log::Kind;
@@ -4153,6 +4246,154 @@ mod search_tests {
         assert!(serde_json::to_string(&w).unwrap().len() <= 48 * 1024 + 2048);
         assert!(send_msg(&rig, "1", ask("nope"), &link).await.is_err());
         let _ = std::fs::remove_dir_all(&rig.root);
+    }
+
+    /// A tmux-like backend that records what a created workspace was asked to start.
+    #[derive(Default)]
+    struct Maker(Mutex<Vec<(Option<String>, Option<String>, String)>>);
+    #[async_trait::async_trait]
+    impl WorkspaceBackend for Maker {
+        fn name(&self) -> &str {
+            "tmux"
+        }
+        async fn list(&self) -> Result<Vec<termenbox_core::protocol::WorkspaceInfo>> {
+            Ok(Vec::new())
+        }
+        async fn create(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn attach(&self, _: &str, _: u16, _: u16) -> Result<Attachment> {
+            Err(anyhow::anyhow!("no"))
+        }
+        async fn create_workspace(
+            &self,
+            name: &str,
+            _: Option<&str>,
+            dir: Option<&str>,
+            _: Option<&str>,
+            first: &crate::backend::TabSpec,
+        ) -> Result<crate::backend::CreatedWorkspace> {
+            self.0.lock().unwrap().push((
+                dir.map(str::to_string),
+                first.resume.clone(),
+                name.to_string(),
+            ));
+            Ok(crate::backend::CreatedWorkspace {
+                id: "ws-new".into(),
+                window: Some("@1".into()),
+            })
+        }
+    }
+
+    /// A session file whose `cwd` is `work`, in a Claude root of its own.
+    fn session_in(work: &std::path::Path, id: &str) -> (std::path::PathBuf, SessionLogs) {
+        let root = std::env::temp_dir().join(format!("tm-resume-{}", uuid::Uuid::new_v4()));
+        let folder: String = work
+            .to_string_lossy()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        std::fs::create_dir_all(root.join(&folder)).unwrap();
+        let line = format!(
+            r#"{{"parentUuid":null,"type":"user","uuid":"u1","timestamp":"2026-10-31T10:00:01.000Z","cwd":{:?},"sessionId":"{id}","message":{{"role":"user","content":"hello there"}}}}"#,
+            work.to_string_lossy()
+        );
+        std::fs::write(root.join(&folder).join(format!("{id}.jsonl")), line + "\n").unwrap();
+        let mut logs = SessionLogs::default();
+        logs.register(Arc::new(ClaudeLog::new(root.clone())));
+        (root, logs)
+    }
+
+    fn resume_manager(maker: Arc<Maker>, logs: SessionLogs) -> WorkspaceManager {
+        WorkspaceManager::new(maker, RunMode::Container, Arc::new(Registry::memory()))
+            .with_session_logs(Arc::new(logs))
+    }
+
+    #[tokio::test]
+    async fn an_unheld_session_gets_a_workspace_named_after_its_directory() {
+        let work = std::env::temp_dir().join(format!("tm-work-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&work).unwrap();
+        let (root, logs) = session_in(&work, "abc-123");
+        let maker = Arc::new(Maker::default());
+        let manager = resume_manager(maker.clone(), logs);
+        let reply = manager.resume_session("claude", "abc-123").await.unwrap();
+        let ServerMessage::SessionResumed {
+            outcome, workspace, ..
+        } = reply
+        else {
+            panic!("{reply:?}")
+        };
+        assert_eq!(
+            (outcome.as_str(), workspace.as_str()),
+            ("resumed", "ws-new")
+        );
+        let made = maker.0.lock().unwrap().clone();
+        assert_eq!(made.len(), 1);
+        assert_eq!(made[0].0.as_deref(), work.to_str());
+        assert_eq!(made[0].1.as_deref(), Some("claude --resume abc-123"));
+        assert_eq!(
+            Some(made[0].2.as_str()),
+            work.file_name().and_then(|n| n.to_str())
+        );
+        // The new tab holds the conversation now: the same ask switches to it and creates nothing.
+        let again = manager.resume_session("claude", "abc-123").await.unwrap();
+        assert!(
+            matches!(&again, ServerMessage::SessionResumed { outcome, workspace, .. }
+            if outcome == "switched" && workspace == "ws-new"),
+            "{again:?}"
+        );
+        assert_eq!(maker.0.lock().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[tokio::test]
+    async fn a_session_that_a_workspace_holds_opens_no_duplicate() {
+        let work = std::env::temp_dir().join(format!("tm-work-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&work).unwrap();
+        let (root, logs) = session_in(&work, "held-1");
+        let maker = Arc::new(Maker::default());
+        let manager = resume_manager(maker.clone(), logs);
+        manager
+            .registry
+            .create_workspace_resuming(
+                manager.backend.as_ref(),
+                "Held",
+                None,
+                work.to_str(),
+                "claude",
+                Some(("claude --resume held-1".into(), "held-1".into())),
+            )
+            .await
+            .unwrap();
+        let before = maker.0.lock().unwrap().len();
+        let reply = manager.resume_session("claude", "held-1").await.unwrap();
+        assert!(
+            matches!(&reply, ServerMessage::SessionResumed { outcome, .. } if outcome == "switched"),
+            "{reply:?}"
+        );
+        assert_eq!(maker.0.lock().unwrap().len(), before);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[tokio::test]
+    async fn a_gone_directory_or_an_unknown_session_creates_nothing() {
+        let work = std::env::temp_dir().join(format!("tm-work-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&work).unwrap();
+        let (root, logs) = session_in(&work, "gone-1");
+        std::fs::remove_dir_all(&work).unwrap();
+        let maker = Arc::new(Maker::default());
+        let manager = resume_manager(maker.clone(), logs);
+        for (agent, id) in [("claude", "gone-1"), ("claude", "nope"), ("claude", "../x")] {
+            let reply = manager.resume_session(agent, id).await.unwrap();
+            assert!(
+                matches!(&reply, ServerMessage::SessionResumed { outcome, .. } if outcome == "missing"),
+                "{reply:?}"
+            );
+        }
+        assert!(maker.0.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[derive(Clone, Default)]

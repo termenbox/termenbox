@@ -12,7 +12,7 @@
   import InboxSheet from './InboxSheet.svelte';
   import SearchSheet from './SearchSheet.svelte';
   import { fileChanged, withWindow, type WindowMap } from './lib/acpHistory';
-  import { SessionSearch, landingOf, resumeOutcome, parts as hitParts, IDLE as SEARCH_IDLE, type SearchState } from './lib/sessionSearch';
+  import { SessionSearch, landingOf, resumeOutcome, isUnheld, sessionResumedOutcome, parts as hitParts, IDLE as SEARCH_IDLE, type SearchState } from './lib/sessionSearch';
   import { inbox, mergeAttention, markAllRead, unreadCount } from './lib/inbox';
   import { currentEndpoint, disablePush, enablePush, pushSupported } from './lib/push';
   import WorkspaceActions from './WorkspaceActions.svelte';
@@ -191,6 +191,7 @@
       const id = _id;
       dirClients.get(_id)?.handle(msg);
       if (msg.type === 'search_hit' || msg.type === 'search_done') sessionSearch.handle(_id, msg);
+      else if (msg.type === 'session_resumed') sessionResumed(_id, msg);
       if (msg.type === 'snapshot') snapshots.apply(workspaceKey(_id, msg.workspace), msg);
       else if (msg.type === 'workspace_attached') { resumedReply(_id, msg); preview = null; if (id === activeServerId && msg.workspace_id === activeWorkspaceId && msg.tab) { activeTab = msg.tab; saveActiveTab(workspaceKey(id, msg.workspace_id), msg.tab); } }
       else if (msg.type === 'workspace_view') { if (id === activeServerId && msg.workspace === activeWorkspaceId) heldView = mergeView(heldView, msg); }
@@ -374,8 +375,18 @@
   function closeSearch() { searchOpen = false; sessionSearch.close(); }
   // The three landings (decision 0156): an open terminal tab is switched to; an open ACP workspace is switched to and
   // scrolled to the turn; a dormant one is reopened only after the person chose Resume, and says what became of the agent.
-  type TappedHit = { serverId: string; workspace: string; tab: string; agent: string; up: boolean; turn: string; snippet: string; highlight: [number, number] };
+  type TappedHit = { serverId: string; workspace: string; tab: string; agent: string; up: boolean; turn: string; snippet: string; highlight: [number, number]; session?: string };
   let resumeAsked: { key: string; hit: TappedHit } | null = null;
+  // A conversation no workspace holds (decision 0167): the server switches to the workspace that holds it or makes one; nothing is typed from here.
+  let sessionAsked: { serverId: string; hit: TappedHit } | null = null;
+  function sessionResumed(serverId: string, msg: import('./lib/protocol').SessionResumedMessage) {
+    const ask = sessionAsked;
+    if (!ask || ask.serverId !== serverId) return;
+    sessionAsked = null;
+    const r = sessionResumedOutcome(ask.hit, msg);
+    showToast(r.message, r.ok ? undefined : 'error');
+    if (r.go && msg.workspace) void attach(workspaceKey(serverId, msg.workspace), msg.tab || undefined);
+  }
   function pickHit(h: TappedHit) {
     closeSearch();
     const key = workspaceKey(h.serverId, h.workspace);
@@ -384,6 +395,12 @@
   }
   function resumeHit(h: TappedHit) {
     closeSearch();
+    if (isUnheld(h)) {
+      if (!h.session) { showToast('This server cannot resume a conversation that no workspace holds.', 'error'); return; }
+      sessionAsked = { serverId: h.serverId, hit: h };
+      hub.send(h.serverId, { type: 'resume_session', agent: h.agent, session: h.session });
+      return;
+    }
     const key = workspaceKey(h.serverId, h.workspace);
     void attach(key, h.tab || undefined);
     // An ACP workspace is restored by opening its view, which sends no `workspace_attached`: say it now and go to the turn.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SessionSearch, landingOf, resumeOutcome, cleanQuery, cutText, loadRange, sinceOf, olderText, groupHits, loadGroupMode, saveGroupMode, parts, whenText, MAX_HITS_PER_SERVER, type SearchState } from './sessionSearch';
+import { SessionSearch, landingOf, resumeOutcome, cleanQuery, cutText, loadRange, sinceOf, olderText, groupHits, dirLabel, isUnheld, resumeAskText, sessionResumedOutcome, loadGroupMode, saveGroupMode, parts, whenText, MAX_HITS_PER_SERVER, type SearchState } from './sessionSearch';
 import type { ClientMessage, SearchHitMessage, ServerMessage } from './protocol';
 
 const NOW = Date.parse('2026-11-01T00:00:00Z');
@@ -257,5 +257,40 @@ describe('time window', () => {
     expect(s.current.older).toBe(3);
     expect(s.current.cuts).toEqual([]);
     expect(olderText(1)).toBe('1 older conversation not searched.');
+  });
+});
+
+describe('a conversation no workspace holds (decision 0167)', () => {
+  const unheld = { workspace: '', agent: 'claude', dir: '/home/me/code/api' };
+  it('carries the session and directory, and is grouped under the last two segments of the directory', () => {
+    const { s, sent } = rig();
+    s.run('x');
+    const id = (sent[0].msg as { id: number }).id;
+    s.handle('a', hit(id, { workspace: '', tab: '', up: false, dir: '/home/me/code/api', session: 'abc', turn: 'u1' }));
+    s.handle('a', hit(id, { workspace: '', tab: '', up: false, dir: '/home/me/code/api', session: 'def', turn: 'u2' }));
+    s.handle('a', hit(id, { workspace: '', tab: '', up: false, dir: '/srv/other', session: 'ghi', turn: 'u3' }));
+    expect(s.current.hits[0]).toMatchObject({ session: 'abc', dir: '/home/me/code/api' });
+    const g = groupHits(s.current.hits, 'workspace', () => undefined);
+    expect(g.map((x) => [x.name, x.title, x.hits.length]).sort()).toEqual([['code/api', '/home/me/code/api', 2], ['srv/other', '/srv/other', 1]]);
+  });
+  it('names the folder and says it is unheld', () => {
+    expect(dirLabel('/a/b/c')).toBe('b/c');
+    expect(dirLabel('')).toBe('Unknown folder');
+    expect(isUnheld(unheld)).toBe(true);
+    expect(isUnheld({ workspace: 'w1' })).toBe(false);
+  });
+  it('asks differently for a held dormant workspace and an unheld conversation', () => {
+    expect(resumeAskText(unheld)).toContain('new workspace in api'.replace('api', 'code/api'));
+    expect(resumeAskText({ ...unheld, workspace: 'w1' })).toContain('This workspace is not running');
+  });
+  it('tells what the server did, goes to the workspace it named, and offers nothing for a missing directory', () => {
+    expect(sessionResumedOutcome(unheld, { outcome: 'resumed', workspace: 'ws-1' })).toEqual({ message: 'Resuming claude in a new workspace.', go: true, ok: true });
+    expect(sessionResumedOutcome(unheld, { outcome: 'switched', workspace: 'ws-1' })).toMatchObject({ go: true, ok: true });
+    const shell = sessionResumedOutcome(unheld, { outcome: 'shell', workspace: 'ws-1', reason: 'this agent cannot resume a conversation' });
+    expect(shell).toMatchObject({ go: true, ok: false });
+    expect(shell.message).toContain('is a shell');
+    expect(shell.message).toContain('this agent cannot resume');
+    expect(sessionResumedOutcome(unheld, { outcome: 'missing' })).toMatchObject({ go: false, ok: false, message: expect.stringContaining('gone') });
+    expect(sessionResumedOutcome(unheld, { outcome: 'resumed' })).toMatchObject({ go: false, ok: false });
   });
 });

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Sheet } from './lib/ui/sheet';
   import AgentIcon from './AgentIcon.svelte';
-  import { NOTICE, landingOf, cutText, debounced, groupHits, GROUP_MODES, RANGES, olderText, loadGroupMode, saveGroupMode, offText, parts, whenText, type GroupMode, type RangeId, type Hit, type SearchState } from './lib/sessionSearch';
+  import { NOTICE, landingOf, isUnheld, dirLabel, resumeAskText, cutText, debounced, groupHits, GROUP_MODES, RANGES, olderText, loadGroupMode, saveGroupMode, offText, parts, whenText, type GroupMode, type RangeId, type Hit, type SearchState } from './lib/sessionSearch';
 
   /**
    * Find text in the agents' own conversations (R78, decision 0156). The sheet shows what `search` holds and tells its owner
@@ -20,7 +20,7 @@
   let mode = $state<GroupMode>(loadGroupMode());
   const pickMode = (m: GroupMode) => { mode = m; saveGroupMode(m); };
   const groups = $derived(groupHits(search.hits, mode, nameOf));
-  const where = (h: Hit) => nameOf(h.serverId, h.workspace) ?? h.workspace;
+  const where = (h: Hit) => isUnheld(h) ? dirLabel(h.dir) : nameOf(h.serverId, h.workspace) ?? h.workspace;
   const cuts = $derived(search.cuts);
   const searching = $derived(search.status === 'searching');
   const empty = $derived(search.status === 'done' && search.hits.length === 0 && search.query !== '');
@@ -50,7 +50,7 @@
 
     {#if resuming}
       <div class="flex flex-col gap-2 rounded-card border border-line bg-raised p-3" role="alertdialog" aria-label="Resume" data-testid="search-resume">
-        <p class="text-sm text-fg">This workspace is not running. Resume opens it and starts {resuming.agent} again with this conversation.</p>
+        <p class="text-sm text-fg" data-testid="search-resume-text" title={resuming.dir}>{resumeAskText(resuming)}</p>
         <div class="flex gap-2">
           <button type="button" data-testid="search-resume-go" onclick={() => { const h = resuming; resuming = null; if (h) onresume(h); }} class="h-11 flex-1 rounded-control bg-accent px-4 text-base font-semibold text-on-accent">Resume</button>
           <button type="button" data-testid="search-resume-cancel" onclick={() => (resuming = null)} class="h-11 rounded-control bg-transparent px-4 text-base font-semibold text-soft">Not now</button>
@@ -83,7 +83,7 @@
     {#if search.lost}<p class="rounded-control bg-raised px-3 py-2 text-sm text-soft" data-testid="search-lost">{search.lost === 1 ? 'A server' : `${search.lost} servers`} went away before it finished, so its matches may be missing.</p>{/if}
 
     {#each groups as g (g.key)}
-      <section aria-label={g.name} data-testid="search-group" data-workspace={g.workspace} data-mode={mode} class="flex flex-col">
+      <section aria-label={g.name} title={g.title} data-testid="search-group" data-workspace={g.workspace} data-mode={mode} class="flex flex-col">
         {#if mode !== 'none'}
         <h4 class="flex h-11 items-center gap-2 text-sm font-semibold text-fg">
           <AgentIcon agent={g.agent} size={20} />
@@ -91,7 +91,7 @@
           <span class="shrink-0 text-xs font-normal text-muted">{g.serverName}</span>
         </h4>
         {/if}
-        {#each g.hits as h (h.serverId + h.workspace + h.turn + h.tab)}
+        {#each g.hits as h (h.serverId + h.workspace + h.session + h.turn + h.tab)}
           {@const p = parts(h)}
           <button type="button" data-testid="search-hit" data-turn={h.turn} onclick={() => tap(h)}
             class="flex min-h-11 w-full flex-col gap-1 rounded-control bg-transparent px-2 py-2 text-left">
