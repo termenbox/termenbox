@@ -35,6 +35,13 @@ for (const m of html.matchAll(/(?:href|src)="(\/[^"#]*)"/g)) {
   need(existsSync(join(here, file)), `local asset missing: ${m[1]}`);
 }
 for (const f of ['robots.txt', 'sitemap.xml', '_headers']) need(existsSync(join(here, f)), `${f} is missing`);
+// Cloudflare merges every matching _headers rule and a browser applies each CSP, so a path rule can only tighten the
+// policy: the player's media-src belongs in the one global policy, not in a /course/* rule.
+{
+  const headers = readFileSync(join(here, '_headers'), 'utf8');
+  need((headers.match(/Content-Security-Policy:/g) ?? []).length === 1, '_headers must carry exactly one Content-Security-Policy');
+  need(/media-src 'self'/.test(headers), "_headers CSP needs media-src 'self' for the course player");
+}
 
 const command = 'curl -fsSL https://app.termenbox.dev/i | sh';
 need(html.includes(`<code id="cmd">${command}</code>`), 'the hero command differs from the documented one');
