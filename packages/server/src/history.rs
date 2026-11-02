@@ -669,7 +669,8 @@ impl History {
     /// The agent reported `micros` millionths of `currency` spent in this workspace so far. The step since its previous
     /// report is the task's cost; the first report counts whole (a workspace the server started sees its first report in its
     /// first turn).
-    pub fn cost(&self, workspace: &str, micros: u64, currency: &str) {
+    /// Returns the step and its currency when one was recorded (not when no task is in flight or the table is full).
+    pub fn cost(&self, workspace: &str, micros: u64, currency: &str) -> Option<(u64, String)> {
         // A currency code, as letters only.
         let currency: String = currency
             .chars()
@@ -678,7 +679,7 @@ impl History {
             .collect::<String>()
             .to_ascii_uppercase();
         if currency.is_empty() {
-            return;
+            return None;
         }
         let currency = currency.as_str();
         let mut costs = self.costs.lock().unwrap();
@@ -686,13 +687,13 @@ impl History {
         // With no task in flight the baseline stays where it was: the spend since then lands on the next task's step
         // rather than on nothing.
         if !open.contains_key(workspace) {
-            return;
+            return None;
         }
         if !costs.contains_key(workspace) && costs.len() >= MAX_OPEN {
             // Workspaces with no task in flight can be re-read from their next report; make room from them.
             costs.retain(|k, _| open.contains_key(k));
             if costs.len() >= MAX_OPEN {
-                return;
+                return None;
             }
         }
         // A baseline in another currency is no baseline for this one.
@@ -714,6 +715,7 @@ impl History {
                 u.cost_micros = Some(u.cost_micros.unwrap_or(0).saturating_add(step));
             }
         }
+        Some((step, currency.to_string()))
     }
 
     /// The agent said it was rate limited.
