@@ -5,9 +5,11 @@ In 3 minutes your server is running and showing a QR code.
 You are at your desk, and the agent will work on this machine, so this is where Termenbox goes first. Sit at the machine that will run your agents: your own computer, or a server you reach over SSH. One command installs it, and when it finishes it prints a QR code and a link. Leave that window open; the next chapter needs it.
 
 <!-- media:install-desktop -->
+https://github.com/user-attachments/assets/2021e7f6-e8b8-4194-9277-e82d7eb72439
+
 [![Walkthrough: install](../media/install-desktop-poster.png)](https://termenbox.dev/course/01-install/)
 
-Watch, 32 s
+Watch, 27 s
 <!-- /media -->
 
 <!-- course-steps:install -->

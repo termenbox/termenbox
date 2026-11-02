@@ -28,6 +28,19 @@ export const markers = (text) => [...text.matchAll(MARKER)].map((m) => m[1] ?? m
 /** Which files an approved video has in `mediaDir`. */
 const has = (mediaDir, id) => ['.mp4', '-poster.png', '.render.json'].every((tail) => existsSync(join(mediaDir, `${stem(id)}${tail}`)));
 
+export const ASSET_URL = /^https:\/\/github\.com\/user-attachments\/assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'));
+
+/** The GitHub upload records (`<case>-<profile>` -> { url, hash, run }); written only by docs-media-upload.mjs. */
+export const readAssets = (mediaDir) => (existsSync(join(mediaDir, 'github-assets.json')) ? readJson(join(mediaDir, 'github-assets.json')) : {});
+
+/** The upload record of `id` when it still matches the video's render.json (same input hash and render run), else null. */
+function freshAsset(id, mediaDir) {
+  const rec = readAssets(mediaDir)[stem(id)];
+  const meta = readJson(join(mediaDir, `${stem(id)}.render.json`));
+  return rec && ASSET_URL.test(rec.url ?? '') && rec.hash === meta.hash && rec.run === meta.run ? rec : null;
+}
+
 /** The block for `id` with links relative to the page's directory. */
 function block(id, mediaDir, pageDir, chapter) {
   const { case: c } = splitId(id);
@@ -36,7 +49,9 @@ function block(id, mediaDir, pageDir, chapter) {
   if (!Number.isFinite(seconds)) throw new Error(`media:${id}: its render.json has no length (seconds)`);
   // a course chapter's poster opens the player page on termenbox.dev (GitHub downloads an MP4); other pages link the file
   const target = chapter ? `${SITE}/course/${chapter}/` : rel('.mp4');
-  return `<!-- media:${id} -->\n[![Walkthrough: ${c.replace(/-/g, ' ')}](${rel('-poster.png')})](${target})\n\nWatch, ${seconds} s\n<!-- /media -->`;
+  // a chapter also gets the bare user-attachments URL: github.com renders that line as a player (docs/plans/assets/github-video-probe.md)
+  const asset = chapter ? freshAsset(id, mediaDir) : null;
+  return `<!-- media:${id} -->\n${asset ? `${asset.url}\n\n` : ''}[![Walkthrough: ${c.replace(/-/g, ' ')}](${rel('-poster.png')})](${target})\n\nWatch, ${seconds} s\n<!-- /media -->`;
 }
 
 /** `text` with every marker filled from `mediaDir`; throws on a marker whose video is not there. */
@@ -49,12 +64,18 @@ export function embed(text, { mediaDir, pageDir, chapter }) {
 }
 
 /** Errors for markers whose video is missing; warnings for an input hash that no longer matches (`hashes` maps case -> hash). */
-export function check(text, { mediaDir, hashes = {}, siteDir }) {
+export function check(text, { mediaDir, hashes = {}, siteDir, chapter }) {
   const errors = [], warnings = [];
   for (const id of markers(text)) {
     if (!has(mediaDir, id)) { errors.push(`media:${id} has no approved video`); continue; }
     if (siteDir) for (const tail of ['.mp4', '-poster.png']) if (!existsSync(join(siteDir, 'media', `${stem(id)}${tail}`))) errors.push(`media:${id} is missing from the site output (${stem(id)}${tail})`);
     const meta = JSON.parse(readFileSync(join(mediaDir, `${stem(id)}.render.json`), 'utf8'));
+    if (chapter) {
+      const rec = readAssets(mediaDir)[stem(id)];
+      if (!rec) errors.push(`media:${id} has no GitHub upload record in github-assets.json (run scripts/docs-media-upload.mjs)`);
+      else if (!freshAsset(id, mediaDir)) errors.push(`media:${id} has a stale or malformed GitHub upload: re-run scripts/docs-media-upload.mjs ${stem(id)}`);
+      else if (!text.includes(`<!-- media:${id} -->\n${rec.url}\n`)) errors.push(`media:${id} does not show its GitHub upload line (run docs-media.mjs embed)`);
+    }
     if (hashes[meta.case] && hashes[meta.case] !== meta.hash) warnings.push(`media:${id} may be stale: its inputs changed since the approval`);
   }
   return { errors, warnings };
@@ -88,6 +109,24 @@ function selfTest() {
     assert.ok(chap.includes('](https://termenbox.dev/course/02-connect-your-phone/)'), 'a chapter poster links to its player page');
     assert.equal(chapterOf('docs/course/02-connect-your-phone.md'), '02-connect-your-phone');
     assert.equal(chapterOf('docs/course/README.md'), null);
+    // GitHub upload records: a chapter needs a fresh one and shows its URL line; other pages neither
+    const url = 'https://github.com/user-attachments/assets/6e77429d-ea0c-41b0-b806-876f711b68f1';
+    const ch = '02-connect-your-phone';
+    writeFileSync(join(media, 'add-server-phone.render.json'), JSON.stringify({ case: 'add-server', profile: 'phone', hash: 'h1', run: 'r1', seconds: 41 }));
+    const plain = embed(page, { mediaDir: media, pageDir: root, chapter: ch });
+    assert.ok(!plain.includes('user-attachments'), 'no record, no URL line');
+    assert.match(check(plain, { mediaDir: media, chapter: ch }).errors[0], /no GitHub upload record/);
+    assert.equal(check(plain, { mediaDir: media }).errors.length, 0, 'a page that is not a chapter needs no record');
+    writeFileSync(join(media, 'github-assets.json'), JSON.stringify({ 'add-server-phone': { url, hash: 'h1', run: 'r1' } }));
+    const shown = embed(page, { mediaDir: media, pageDir: root, chapter: ch });
+    assert.ok(shown.includes(`<!-- media:add-server -->\n${url}\n\n[![`), 'the bare URL line sits above the poster');
+    assert.ok(!embed(page, { mediaDir: media, pageDir: root }).includes('user-attachments'), 'a non-chapter page shows no URL line');
+    assert.equal(embed(shown, { mediaDir: media, pageDir: root, chapter: ch }), shown, 'a second embed changes nothing');
+    assert.deepEqual(check(shown, { mediaDir: media, chapter: ch }).errors, []);
+    assert.match(check(plain, { mediaDir: media, chapter: ch }).errors[0], /does not show its GitHub upload line/);
+    writeFileSync(join(media, 'add-server-phone.render.json'), JSON.stringify({ case: 'add-server', profile: 'phone', hash: 'h1', run: 'r2', seconds: 41 }));
+    assert.match(check(shown, { mediaDir: media, chapter: ch }).errors[0], /stale/, 'a re-render makes the upload stale');
+    assert.ok(!embed(page, { mediaDir: media, pageDir: root, chapter: ch }).includes('user-attachments'), 'a stale record is not written');
     const site = join(root, 'site-dist');
     mkdirSync(join(site, 'media'), { recursive: true });
     assert.equal(check(once, { mediaDir: media, siteDir: site }).errors.length, 2, 'a video missing from the site output fails');
@@ -128,7 +167,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       const text = readFileSync(f, 'utf8');
       if (!markers(text).length) continue;
       if (mode === 'embed') { try { writeFileSync(f, embed(text, { mediaDir, pageDir: dirname(resolve(f)), chapter: chapterOf(f) })); console.log(`ok  embedded ${f}`); } catch (e) { console.error(`FAIL ${f}: ${e.message}`); failed = true; } }
-      else { const r = check(text, { mediaDir, siteDir }); r.warnings.forEach((w) => console.warn(`warn ${f}: ${w}`)); r.errors.forEach((e) => { console.error(`FAIL ${f}: ${e}`); failed = true; }); }
+      else { const r = check(text, { mediaDir, siteDir, chapter: chapterOf(f) }); r.warnings.forEach((w) => console.warn(`warn ${f}: ${w}`)); r.errors.forEach((e) => { console.error(`FAIL ${f}: ${e}`); failed = true; }); }
     }
     if (failed) process.exit(1);
   }
