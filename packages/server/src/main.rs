@@ -40,6 +40,7 @@ mod contract;
 mod control;
 mod crash;
 mod directory;
+mod dispatcher;
 #[cfg(test)]
 mod e2e;
 mod event_log;
