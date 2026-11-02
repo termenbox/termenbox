@@ -12,6 +12,8 @@ export const CHANNEL_ID = 0;
 export const TERM_CHANNEL_ID = 1;
 /** The channel for control messages (cancel, answers, window and workspace changes); used only when `auth_ok` says `control_channel`. */
 export const CONTROL_CHANNEL_ID = 2;
+/** The channel for upload frames, binary and client to server only; an older server never opens it, so nothing is sent. */
+export const UPLOAD_CHANNEL_ID = 3;
 /** How long an ICE 'disconnected' may last before the connection counts as dropped. */
 export const DISCONNECT_GRACE_MS = 3000;
 
@@ -59,7 +61,7 @@ export class RtcTransport implements Transport {
   private closed = false;
   private dropTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private pc: RTCPeerConnection, private dc: RTCDataChannel, private term?: RTCDataChannel, private ctl?: RTCDataChannel) {
+  constructor(private pc: RTCPeerConnection, private dc: RTCDataChannel, private term?: RTCDataChannel, private ctl?: RTCDataChannel, private upload?: RTCDataChannel) {
     dc.onmessage = (e) => typeof e.data === 'string' && this.onmessage?.(e.data);
     if (ctl) ctl.onmessage = (e) => typeof e.data === 'string' && this.onmessage?.(e.data);
     if (term) {
@@ -84,6 +86,12 @@ export class RtcTransport implements Transport {
   sendControl(text: string): boolean {
     if (this.ctl?.readyState !== 'open') return false;
     this.ctl.send(text);
+    return true;
+  }
+
+  sendUpload(frame: Uint8Array): boolean {
+    if (this.upload?.readyState !== 'open') return false;
+    this.upload.send(new Uint8Array(frame));
     return true;
   }
 
@@ -116,6 +124,7 @@ export async function openRtc(record: RtcTarget, timeoutMs: number, signal?: Abo
   const dc = pc.createDataChannel('t', { negotiated: true, id: CHANNEL_ID });
   const term = pc.createDataChannel('term', { negotiated: true, id: TERM_CHANNEL_ID });
   const ctl = pc.createDataChannel('ctl', { negotiated: true, id: CONTROL_CHANNEL_ID });
+  const upload = pc.createDataChannel('upload', { negotiated: true, id: UPLOAD_CHANNEL_ID });
   try {
     const offer = await pc.createOffer();
     const sdp = setIceCredentials(offer.sdp!, randomUfrag());
@@ -136,7 +145,7 @@ export async function openRtc(record: RtcTarget, timeoutMs: number, signal?: Abo
         }
       };
     });
-    return new RtcTransport(pc, dc, term, ctl);
+    return new RtcTransport(pc, dc, term, ctl, upload);
   } catch (e) {
     pc.close();
     throw e;

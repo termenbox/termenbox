@@ -172,6 +172,12 @@ export class Connection {
     this.transport.send(text);
   }
 
+  /** Sends one binary upload frame; false when the carrier has no upload lane (open) or the connection is not ready. */
+  sendUpload(frame: Uint8Array): boolean {
+    if (!this.transport || !this.authed) return false;
+    return this.transport.sendUpload?.(frame) ?? false;
+  }
+
   /** Sends a control message and resolves with the server's result. A server that does not acknowledge (an older one)
    *  resolves at once as `{ ok: true, acknowledged: false }`; a lost connection or no answer within `timeoutMs`
    *  resolves `{ ok: false }` with the reason. */

@@ -1,10 +1,10 @@
 ---
 id: 0194-a-file-is-uploaded-to-the-active-tabs-working-folder-pinned-at-start-resumable-and-owner-only
 title: A file is uploaded from the device to the active tab's working folder, pinned at the start, resumable, owner-only and bounded by free disk
-status: draft
+status: active
 date: 2026-11-02
 track: product
-accepted-by: -
+accepted-by: Sergey Strebulaev
 tags: [protocol, security, client, ux]
 ---
 
@@ -38,5 +38,5 @@ Not chosen: a folder browsed by the owner (the first draft, 0151, never accepted
 - A tab working outside `$HOME` cannot receive a file. Revisit if that proves common.
 - The server keeps a partial file for up to 10 minutes after a drop, so a flaky link can leave disk used for a while; the free-disk floor bounds the harm.
 - With no size cap, one owner upload can use the disk down to the floor and hold the connection for a long time. A stuck upload is visible in the sheet and cancellable.
-- Draft: the 1 GiB floor, the 10-minute grace period, the 1 MiB window, 60 starts a minute and 100 files a batch are starting values the owner has not confirmed. The decision stays a draft until accepted.
+- Accepted 2026-11-02 by the owner with the starting values as written: a 1 GiB free-disk floor, a 10-minute grace period, a 1 MiB window, 60 starts a minute and 100 files a batch. There is no size cap; the only limit is the free space on the target.
 - Supersedes the never-accepted draft 0151 (folder browsed by the owner, 25 MiB, no resume), which was not committed.

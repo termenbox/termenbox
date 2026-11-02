@@ -12,12 +12,16 @@ use tokio::sync::{mpsc, Notify};
 
 /// First byte of a binary WebSocket frame that carries terminal bytes.
 pub const LANE_TERM: u8 = 1;
+/// First byte of a binary WebSocket frame that carries an upload chunk (fact 0076).
+pub const LANE_UPLOAD: u8 = 2;
 
 /// What the client sent: a JSON message, or terminal input bytes from the `term` lane.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Inbound {
     Json(String),
     Term(Vec<u8>),
+    /// An upload frame (`termenbox_core::UploadFrame`), client to server only.
+    Upload(Vec<u8>),
 }
 
 /// Outgoing half. `wake` lets a transport that owns its own event loop (WebRTC) notice new output.

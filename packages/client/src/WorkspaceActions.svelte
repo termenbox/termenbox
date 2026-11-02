@@ -10,6 +10,8 @@
   export let ondetach: () => void;
   export let oncloseworkspace: () => void;
   export let onclose: () => void;
+  /** Copies files from this device into the open tab's folder. Missing: no Upload. */
+  export let onupload: (() => void) | undefined = undefined;
   /** Sets the name shown for the workspace; the sheet closes with it. Missing: no Rename. */
   export let onrename: ((name: string) => void) | undefined = undefined;
   /** Moves the workspace in the user's own order (inside its server) and says where it ended up. Missing: no Move buttons. */
@@ -70,6 +72,7 @@
       </div>
       <p class="where" data-testid="workspace-position">Position {placement.position} of {placement.count} on {workspace.serverName}</p>
     {/if}
+    {#if onupload}<button on:click={onupload} data-testid="workspace-upload">Upload files…</button>{/if}
     <button on:click={() => { onclose(); ondetach(); }}>Detach (keeps it running)</button>
     {#if canClose}<button class="danger" on:click={() => (confirming = true)}>Close workspace…</button>{/if}
     <button class="secondary" on:click={onclose}>Cancel</button>

@@ -141,6 +141,12 @@ impl ServerClient {
             | ServerMessage::Candidates { .. }
             | ServerMessage::DirListing { .. }
             | ServerMessage::DirError { .. }
+            | ServerMessage::UploadReady { .. }
+            | ServerMessage::UploadProgress { .. }
+            | ServerMessage::UploadDone { .. }
+            | ServerMessage::UploadDenied { .. }
+            | ServerMessage::UploadFailed { .. }
+            | ServerMessage::UploadCancelled { .. }
             | ServerMessage::ConductorTerminalOpened { .. }
             | ServerMessage::ConductorTerminalClosed { .. }
             | ServerMessage::StatusFrame { .. } => {}

@@ -1,7 +1,7 @@
 ---
 id: uploads-are-owner-only-pinned-home-confined-and-never-executable
 title: An upload is owner-only, lands in the pinned working folder under home, never executes or overwrites without a choice, and leaves a content-free trace
-status: draft
+status: active
 governed-by: 0194-a-file-is-uploaded-to-the-active-tabs-working-folder-pinned-at-start-resumable-and-owner-only
 grounded-in: [0194-a-file-is-uploaded-to-the-active-tabs-working-folder-pinned-at-start-resumable-and-owner-only, 0147-remote-folders-are-browsed-through-an-owner-only-home-confined-listdir, listdir-is-owner-only-home-confined-and-directories-only, audit-logging-no-secrets, resource-constraints]
 derivation-note: A request that writes a file from a browser onto the server's disk (0194) is stronger than reading a listing (0147), so it must reach no one but the owner, no place but the folder the owner was shown, create nothing that can run, and leave a trace without content.

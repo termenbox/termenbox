@@ -3,6 +3,8 @@ import type { Transport } from './transport';
 
 /** First byte of a binary frame that carries terminal bytes; must match packages/server/src/link.rs. */
 export const LANE_TERM = 1;
+/** First byte of a binary frame that carries an upload chunk (client to server). */
+export const LANE_UPLOAD = 2;
 
 class WsTransport implements Transport {
   readonly kind = 'ws' as const;
@@ -36,6 +38,15 @@ class WsTransport implements Transport {
     frame[0] = LANE_TERM;
     frame.set(bytes, 1);
     this.ws.send(frame);
+    return true;
+  }
+
+  sendUpload(frame: Uint8Array): boolean {
+    if (this.ws.readyState !== WebSocket.OPEN) return false;
+    const tagged = new Uint8Array(frame.length + 1);
+    tagged[0] = LANE_UPLOAD;
+    tagged.set(frame, 1);
+    this.ws.send(tagged);
     return true;
   }
 

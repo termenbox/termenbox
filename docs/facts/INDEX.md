@@ -76,3 +76,4 @@
 | 0071 | Anthropic's terms allow a subscription login in the unmodified Claude Code binary, but point Agent SDK products at API keys | agents, acp, legal | active |
 | 0075 | Claude Code word-wraps with explicit row ends, so neither xterm nor tmux capture-pane -J can rejoin its lines | client, terminal, copy, tmux | active |
 | 0076 | LiteLLM and OpenRouter publish model prices without a key; LiteLLM repeats each model under many provider prefixes and differs from fact 0041 on one cache price | meter, cost, network | active |
+| 0077 | Neither transport carries a client-to-server upload frame yet; a tab's live folder is the path of its window state | protocol, server, client, upload | active |

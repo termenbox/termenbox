@@ -41,6 +41,9 @@ pub const TERM_CHANNEL_ID: u16 = 1;
 /// its own queue and SCTP stream, so a cancel never waits behind agent events or terminal bytes. A client that does
 /// not open it keeps control on the first channel.
 pub const CONTROL_CHANNEL_ID: u16 = 2;
+/// The fourth negotiated channel, binary and client to server only: upload frames (fact 0076). Its own SCTP stream, so
+/// a chunk never waits in front of a keystroke. A client that does not open it cannot upload.
+pub const UPLOAD_CHANNEL_ID: u16 = 3;
 /// Queued terminal chunks are joined into messages of about this size (the SCTP limit is 64 KiB).
 const TERM_MESSAGE: usize = 16 * 1024;
 /// A single message above this closes the connection; clients send small JSON.
@@ -52,6 +55,8 @@ const OVERSIZE_REPLY: &str =
 /// one message per colour (about 260 at once after an attach), which must not cost the peer its connection.
 const BACKLOG_BYTES: usize = 256 * 1024;
 const BACKLOG_MESSAGES: usize = 4096;
+/// Upload bytes waiting for the workspace: one window and a frame (fact 0076).
+const UPLOAD_BACKLOG: usize = termenbox_core::protocol::UPLOAD_WINDOW_BYTES + 32 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct Limits {
@@ -334,6 +339,7 @@ struct Peer {
     cid: Option<ChannelId>,
     term_cid: Option<ChannelId>,
     ctl_cid: Option<ChannelId>,
+    upload_cid: Option<ChannelId>,
     /// Control replies taken from the workspace that the channel had no room for yet.
     control_queue: VecDeque<String>,
     /// Terminal bytes taken from the workspace that the channel had no room for yet.
@@ -579,6 +585,7 @@ impl Server {
                 ("t", CHANNEL_ID),
                 ("term", TERM_CHANNEL_ID),
                 ("ctl", CONTROL_CHANNEL_ID),
+                ("upload", UPLOAD_CHANNEL_ID),
             ] {
                 d.create_data_channel(ChannelConfig {
                     label: label.into(),
@@ -659,6 +666,11 @@ impl Server {
                 negotiated: Some(CONTROL_CHANNEL_ID),
                 ..Default::default()
             });
+            d.create_data_channel(ChannelConfig {
+                label: "upload".into(),
+                negotiated: Some(UPLOAD_CHANNEL_ID),
+                ..Default::default()
+            });
         }
         debug!("new peer {src}");
         Some(Peer::new(rtc, now, self.limits.half_open_ttl))
@@ -669,6 +681,8 @@ fn inbound_len(m: &Inbound) -> usize {
     match m {
         Inbound::Json(t) => t.len(),
         Inbound::Term(b) => b.len(),
+        // Counted against its own bound (`UPLOAD_BACKLOG`), not the 256 KiB one a window of chunks would overrun.
+        Inbound::Upload(_) => 0,
     }
 }
 
@@ -680,6 +694,7 @@ impl Peer {
             cid: None,
             term_cid: None,
             ctl_cid: None,
+            upload_cid: None,
             control_queue: VecDeque::new(),
             term_pending: None,
             created: now,
@@ -948,6 +963,17 @@ impl Peer {
             .sum();
     }
 
+    /// Bytes of upload frames waiting for the workspace.
+    fn upload_backlog(&self) -> usize {
+        self.backlog
+            .iter()
+            .map(|m| match m {
+                Inbound::Upload(b) => b.len(),
+                _ => 0,
+            })
+            .sum()
+    }
+
     /// False means drop this peer.
     fn on_event(&mut self, e: Event, state: &AppState, wake: &Arc<Notify>) -> bool {
         match e {
@@ -957,6 +983,9 @@ impl Peer {
                 if let Some(mut ch) = self.rtc.channel(cid) {
                     ch.set_buffered_amount_low_threshold(32 * 1024);
                 }
+            }
+            Event::ChannelOpen(cid, label) if label == "upload" => {
+                self.upload_cid = Some(cid);
             }
             Event::ChannelOpen(cid, label) if label == "ctl" => {
                 self.ctl_cid = Some(cid);
@@ -978,7 +1007,12 @@ impl Peer {
                     return false;
                 }
                 // The status channel carries text, the term channel bytes; anything else is a broken client.
-                let msg = if Some(d.id) == self.term_cid {
+                let msg = if Some(d.id) == self.upload_cid {
+                    if !d.binary {
+                        return false;
+                    }
+                    Inbound::Upload(d.data.to_vec())
+                } else if Some(d.id) == self.term_cid {
                     if !d.binary {
                         return false;
                     }
@@ -999,7 +1033,8 @@ impl Peer {
                     self.backlog.push_back(msg);
                 }
                 // More than this waiting means the client floods faster than the workspace reads.
-                if self.backlog_bytes > BACKLOG_BYTES
+                if self.upload_backlog() > UPLOAD_BACKLOG
+                    || self.backlog_bytes > BACKLOG_BYTES
                     || self.backlog.len() + self.control_backlog.len() > BACKLOG_MESSAGES
                 {
                     return false;

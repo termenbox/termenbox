@@ -48,6 +48,14 @@ export type ClientMessage =
   | { type: 'list_workspaces' }
   /** Decision 0147: the directories inside `path` (the server user's home when absent), owner only; answered with `dir_listing` or `dir_error`. */
   | { type: 'list_dir'; path?: string; prefix?: string; hidden?: boolean }
+  /** Decision 0194: copy a file from the device into the working folder of a tab. The client names the tab, never a folder; owner only. `id` also tags the binary chunks. */
+  | { type: 'upload_start'; id: number; workspace: string; tab: string; name: string; size: number; collision?: UploadCollision }
+  /** Continues an upload kept after a dropped connection, from the offset in `upload_ready`. */
+  | { type: 'upload_resume'; id: number }
+  /** All bytes were sent; the server checks the size and moves the file into place. */
+  | { type: 'upload_finish'; id: number }
+  /** Stops an upload and deletes its partial file. */
+  | { type: 'upload_cancel'; id: number }
   /** U14: the server's in-memory health samples; the answer is `health_history`. Older servers do not answer. */
   | { type: 'health_history' }
   | { type: 'new_workspace'; name: string; backend?: string; dir?: string; template?: string }
@@ -146,6 +154,17 @@ export type ServerMessage =
   | { type: 'dir_listing'; path: string; parent?: string | null; entries: DirEntry[]; truncated?: boolean; home: string }
   /** `list_dir` was refused or failed; `reason` is a short sentence to show. */
   | { type: 'dir_error'; reason: string }
+  /** The server pinned `dir` for upload `id` and expects chunks from byte `offset`. */
+  | { type: 'upload_ready'; id: number; dir: string; offset: number }
+  /** The server has written `received` bytes of upload `id`. */
+  | { type: 'upload_progress'; id: number; received: number }
+  /** The file is in place at `path` (the final name, after Keep both). */
+  | { type: 'upload_done'; id: number; path: string; size: number }
+  /** Refused before any byte was written; `reason` is a short sentence to show. */
+  | { type: 'upload_denied'; id: number; reason: string }
+  /** Stopped after it began; the partial file is gone. */
+  | { type: 'upload_failed'; id: number; reason: string }
+  | { type: 'upload_cancelled'; id: number }
   /** `resumed`: set when this attach reopened a dormant workspace (decision 0152): per tab that held an agent conversation, whether its resume command was started or the tab is a shell again (`reason` says why). */
   | { type: 'workspace_attached'; workspace_id: string; tab?: string | null; resumed?: TabResumed[] }
   | { type: 'output'; data: string }
@@ -375,6 +394,9 @@ export interface TimelineMessage {
   files?: string[];
   last_message?: string;
 }
+
+/** What to do when the name is taken in the folder (decision 0194). */
+export type UploadCollision = 'keep_both' | 'replace' | 'skip';
 
 /** One directory in a `dir_listing`: a name only, never a path. */
 export interface DirEntry { name: string; symlink?: boolean; hidden?: boolean }

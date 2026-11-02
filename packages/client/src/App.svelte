@@ -38,6 +38,9 @@
   import { parseClaim, parseServerLink, serverCode, serverLink } from './lib/onboard';
   import { sendServerLink } from './lib/share';
   import { DirClient } from './lib/dirClient';
+  import UploadSheet from './UploadSheet.svelte';
+  import { UploadQueue, type UploadItem } from './lib/uploadQueue';
+  import { dragHasFiles, filesOf, pastedName, takesPaste, type TransferLike } from './lib/uploadInput';
   import { ServerHub, newWorkspaceTargets, serverKey, workspaceDestinations, workspaceKey, type HubServer, type HubWorkspace } from './lib/hub';
   import { lookup } from './lib/directory';
   import { linksToAccount, mergePaired, parsePairLink, type PairLink } from './lib/pair';
@@ -160,6 +163,34 @@
     if (!c) dirClients.set(serverId, c = new DirClient(m => hub.send(serverId, m)));
     return c.list(req);
   };
+  // Decision 0194: files from this device into the active tab's working folder. One sheet, one queue, one server.
+  let upload: { queue: UploadQueue; serverId: string; tabName: string; started: boolean } | null = null;
+  let uploadItems: UploadItem[] = [];
+  function openUpload(files: File[] = []) {
+    if (upload) { if (!upload.started || uploadItems.some(i => i.state === 'queued' || i.state === 'uploading')) upload.queue.add(files); return; }
+    const w = activeWorkspace;
+    if (!w || away || !activeTabId) { showToast('Open a terminal tab to upload into', 'error'); return; }
+    const serverId = w.serverId;
+    const queue = new UploadQueue({ workspace: w.id, tab: activeTabId, send: m => hub.send(serverId, m), sendChunk: f => hub.sendUpload(serverId, f) });
+    queue.subscribe(() => { uploadItems = queue.items.map(i => ({ ...i })); }); // copies: the queue edits its items in place, and a keyed each skips an item it has seen
+    queue.add(files);
+    upload = { queue, serverId, tabName: w.tabs?.find(t => t.id === activeTabId)?.label ?? w.name, started: false };
+  }
+  const closeUpload = () => { upload = null; uploadItems = []; };
+  const onUploadDragOver = (e: DragEvent) => { if (dragHasFiles(e.dataTransfer as TransferLike)) e.preventDefault(); };
+  const onUploadDrop = (e: DragEvent) => {
+    if (!dragHasFiles(e.dataTransfer as TransferLike)) return;
+    e.preventDefault(); // a file dropped anywhere must not make the browser navigate to it
+    const files = filesOf(e.dataTransfer as TransferLike) as File[];
+    if (files.length) openUpload(files);
+  };
+  const onUploadPaste = (e: ClipboardEvent) => {
+    const t = e.clipboardData as TransferLike | null;
+    if (!takesPaste(t) || away || !activeKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openUpload((filesOf(t) as File[]).map(f => f.name === pastedName(f.name, f.type) ? f : new File([f], pastedName(f.name, f.type), { type: f.type })));
+  };
   const hub = new ServerHub({
     credentials: async () => {
       const pair = await deviceKey();
@@ -175,6 +206,7 @@
     },
     onSaved: server => saveServers(servers.map(s => serverKey(s) === serverKey(server) ? server : s)),
     onReady: (id, msg, reconnect) => {
+      if (upload?.serverId === id && reconnect) upload.queue.resume();
       hub.send(id, { type: 'push_info' });
       for (const q of hookQueries()) hub.send(id, q);
       if (!reconnect) showToast(`Connected to ${$hubServers.find(s => s.id === id)?.server.server_name || msg.server_name}`); // a reconnect is shown by the status line, not a toast each time
@@ -185,11 +217,12 @@
         if (!away && id === activeServerId && key === activeKey) showWorkspace(key, activeTabId ?? undefined);
       });
     },
-    onDrop: (_id, reason, upMs) => { sessionSearch.lost(_id); dropSessionAsk(_id, 'The connection was lost before the server answered the resume.'); dirClients.get(_id)?.fail('The connection was lost.'); noteError(`connection lost after ${Math.round(upMs / 1000)} s: ${reason}`); },
+    onDrop: (_id, reason, upMs) => { sessionSearch.lost(_id); dropSessionAsk(_id, 'The connection was lost before the server answered the resume.'); dirClients.get(_id)?.fail('The connection was lost.'); if (upload?.serverId === _id) upload.queue.pause(); noteError(`connection lost after ${Math.round(upMs / 1000)} s: ${reason}`); },
     onFatal: (_id, reason) => { noteError(`connection: ${reason}`); showToast(reason, 'error'); },
     onMessage: (_id, msg) => {
       const id = _id;
       dirClients.get(_id)?.handle(msg);
+      if (upload?.serverId === _id) upload.queue.handle(msg);
       if (msg.type === 'search_hit' || msg.type === 'search_done') sessionSearch.handle(_id, msg);
       else if (msg.type === 'session_resumed') sessionResumed(_id, msg);
       if (msg.type === 'snapshot') snapshots.apply(workspaceKey(_id, msg.workspace), msg);
@@ -1091,6 +1124,7 @@
     const [name, arg] = id.split(':');
     if (name === 'new-workspace') newWorkspace();
     else if (name === 'search-sessions') searchOpen = true;
+    else if (name === 'upload-files') openUpload();
     else if (name === 'pause' && arg) hub.pause(arg);
     else if (name === 'resume' && arg) hub.resume(arg);
     else if (['approve-decision', 'deny-decision', 'next-needs-you', 'focus-composer'].includes(name)) setTimeout(() => handleShortcut(name), 0); // after the palette has closed and let go of focus
@@ -1293,6 +1327,7 @@
     }
   });
 </script>
+<svelte:window on:dragover={onUploadDragOver} on:drop={onUploadDrop} on:paste|capture={onUploadPaste} />
 
 <AppShell pinned={!!user && servers.length > 0}>
   {#if !user}
@@ -1420,7 +1455,8 @@
   {#if menuOpen && user}<MenuSheet {user} {avatar} onservers={leaveServer} onsettings={() => go('settings')} onreport={openReport} ondiagnostics={() => openDiagnostics()} onlogout={logout} onclose={() => menuOpen = false} unread={unreadCount($inbox)} oninbox={() => inboxOpen = true} onsearch={() => searchOpen = true} />{/if}
   {#if searchOpen}<SearchSheet bind:open={searchOpen} {wide} search={searchState} {now} nameOf={(sid, w) => hub.findWorkspace(workspaceKey(sid, w))?.name} onquery={(t) => sessionSearch.run(t)} onrange={(r) => sessionSearch.setRange(r)} onstop={() => sessionSearch.stop()} onmore={() => sessionSearch.more()} onexpand={(h) => sessionSearch.expand(h)} onpick={pickHit} onresume={resumeHit} onclose={closeSearch} />{/if}
   {#if inboxOpen}<InboxSheet items={$inbox} {now} agents={$allAgents} onanswer={(key, choice, prompt) => sendWorkspace({ type: 'answer', workspace: key, prompt_id: prompt.id, seq: prompt.seq, choice })} onreply={(key, text) => sendWorkspace({ type: 'reply', workspace: key, text })} onopen={openWaiting} onhome={() => go('home')} onread={() => inbox.update(markAllRead)} onclear={() => inbox.set([])} onclose={() => { inboxOpen = false; inbox.update(markAllRead); }} />{/if}
-  {#if actionWorkspace}<WorkspaceActions workspace={actionWorkspace} canClose={['tmux', 'acp'].includes(backendOf(actionWorkspace))} confirmFirst={actionConfirm} onrename={(name) => renameWorkspace(actionWorkspace.key, name)} placement={placementOf($allWorkspaces, actionWorkspace.key)} onmove={(to) => moveWorkspace($allWorkspaces, actionWorkspace.key, to)} ondetach={() => detach(actionWorkspace.key)} oncloseworkspace={() => closeWorkspace(actionWorkspace.key)} onclose={() => actionKey = null} />{/if}
+  {#if actionWorkspace}<WorkspaceActions workspace={actionWorkspace} canClose={['tmux', 'acp'].includes(backendOf(actionWorkspace))} confirmFirst={actionConfirm} onrename={(name) => renameWorkspace(actionWorkspace.key, name)} placement={placementOf($allWorkspaces, actionWorkspace.key)} onmove={(to) => moveWorkspace($allWorkspaces, actionWorkspace.key, to)} ondetach={() => detach(actionWorkspace.key)} oncloseworkspace={() => closeWorkspace(actionWorkspace.key)} onclose={() => actionKey = null} onupload={() => { const k = actionKey; actionKey = null; if (k === activeKey) openUpload(); else showToast('Open that workspace first, then upload', 'error'); }} />{/if}
+  {#if upload}<UploadSheet tabName={upload.tabName} items={uploadItems} started={upload.started} onpick={files => upload?.queue.add(files)} onconfirm={() => { if (upload) { upload.started = true; upload.queue.start(); } }} oncollision={(id, c, rest) => upload?.queue.setCollision(id, c, rest)} onretry={id => upload?.queue.retry(id)} oncancel={() => upload?.queue.cancel()} onclose={closeUpload} />{/if}
   {#if tabMenuOpen}
     <TabMenu groups={tabMenuGroups} activeKey={activeKey} activeTab={activeTabId} states={$allTabStates} cacheTtlMs={$settings.cacheTtlMs} onopen={openTab}
       onrename={canTab ? askRenameTab : undefined}

@@ -1030,7 +1030,7 @@ pub async fn serve(mut link: Link, conductor: Arc<Conductor>, hello: NodeMessage
                         }
                     }
                     // The link carries attention metadata only (`conductor-links-carry-attention-metadata-only`).
-                    Some(Inbound::Term(_)) => {}
+                    Some(Inbound::Term(_) | Inbound::Upload(_)) => {}
                     None => break,
                 },
                 out = rx.recv() => match out {

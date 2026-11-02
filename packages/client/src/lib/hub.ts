@@ -12,7 +12,7 @@ import { orderVersion, orderWorkspaces } from './order';
 import { deviceClass } from './deviceClass';
 import { applyWindowList, forgetWindows, type WindowMap } from './windows';
 
-export type HubConnection = Pick<Connection, 'start' | 'close' | 'subscribe' | 'send'> & Partial<Pick<Connection, 'kind' | 'pathLabel' | 'rtt' | 'drops' | 'retry' | 'retryNow'>>;
+export type HubConnection = Pick<Connection, 'start' | 'close' | 'subscribe' | 'send'> & Partial<Pick<Connection, 'sendUpload' | 'kind' | 'pathLabel' | 'rtt' | 'drops' | 'retry' | 'retryNow'>>;
 export type ServerState = ConnState | 'paused';
 export interface HubServer {
   id: string;
@@ -151,6 +151,7 @@ export class ServerHub {
   /** This device's last round trip to a server, from its heartbeat; null before the first one. */
   rtt(id: string): number | null { return this.entries.get(id)?.connection?.rtt ?? null; }
   send(id: string, message: ClientMessage) { this.connection(id)?.send(message); }
+  sendUpload(id: string, frame: Uint8Array): boolean { return this.connection(id)?.sendUpload?.(frame) ?? false; }
   /** A tab message for the workspace a device shows: the wire carries the server-local workspace id. */
   sendTab(key: string, message: ClientMessage) { this.sendToWorkspace(key, message); }
   newTab(key: string, template: string, label = '', dir = '') {

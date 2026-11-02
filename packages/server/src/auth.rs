@@ -26,6 +26,9 @@ pub struct Identity {
     /// Issue time of the certificate this connection used; never written to owner.json.
     #[serde(skip)]
     pub issued_at: Option<u64>,
+    /// Id of the device key this connection used, for audit lines; never written to owner.json.
+    #[serde(skip)]
+    pub device: Option<String>,
 }
 
 fn default_provider() -> String {
@@ -328,6 +331,7 @@ impl AuthState {
             id: device.account_id,
             login: device.login.clone(),
             issued_at: device.issued_at,
+            device: Some(device.device.clone()),
         };
         let decision = self
             .authorize(&identity, claim)
@@ -434,6 +438,7 @@ mod tests {
             id: n.to_string(),
             login: format!("user{n}"),
             issued_at: None,
+            device: None,
         }
     }
 
@@ -443,6 +448,7 @@ mod tests {
             id: id.into(),
             login: format!("{provider}{id}"),
             issued_at: None,
+            device: None,
         }
     }
 
