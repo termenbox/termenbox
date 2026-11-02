@@ -7,9 +7,11 @@ You have left your desk. The agent keeps working, and sooner or later it needs a
 To be told while the app is closed, turn on notifications once, in Settings. A notification only says that a workspace needs you; it never carries what the agent wrote. Tapping it opens the same choices.
 
 <!-- media:answer-from-the-train-phone -->
+https://github.com/user-attachments/assets/51e01fe2-dea0-48b0-9dc3-4d7df697aed6
+
 [![Walkthrough: answer from the train](../media/answer-from-the-train-phone-poster.png)](https://termenbox.dev/course/05-answer-from-the-train/)
 
-Watch, 30 s
+Watch, 27 s
 <!-- /media -->
 
 <!-- course-steps:answer-from-the-train -->

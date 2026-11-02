@@ -5,9 +5,11 @@ In 2 minutes your phone lists your server as connected.
 The server is running, but your phone has never heard of it. Open the camera on your phone and point it at the QR code from chapter 1. If you cannot scan it, copy the link instead and paste it into **Add Server** in the app. Nothing is claimed yet: the app first says what you are adding and checks that your phone can reach it. You confirm, and the server shows up in your list.
 
 <!-- media:add-server-phone -->
+https://github.com/user-attachments/assets/b2e9df3f-c1be-4b9a-9fdc-5fad92b7b0df
+
 [![Walkthrough: add server](../media/add-server-phone-poster.png)](https://termenbox.dev/course/02-connect-your-phone/)
 
-Watch, 59 s
+Watch, 55 s
 <!-- /media -->
 
 <!-- course-steps:add-server -->

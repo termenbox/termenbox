@@ -7,9 +7,11 @@ Your workspace is open, and the agent waits at its prompt. This is the moment yo
 Your phone keyboard has no Escape, and agents like it. The row of keys above the keyboard has the ones a phone leaves out. Tap **Escape** there when you want the agent to stop what it is doing.
 
 <!-- media:talk-to-agent-phone -->
+https://github.com/user-attachments/assets/d4dcca8d-d78b-49db-a8c0-08e7610eed1a
+
 [![Walkthrough: talk to agent](../media/talk-to-agent-phone-poster.png)](https://termenbox.dev/course/04-talk-to-your-agent/)
 
-Watch, 49 s
+Watch, 45 s
 <!-- /media -->
 
 <!-- course-steps:talk-to-agent -->
