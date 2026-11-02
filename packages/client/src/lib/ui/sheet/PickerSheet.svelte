@@ -85,8 +85,8 @@
   >
     {#if opt.icon}<AgentIcon agent={opt.icon} command={opt.icon} size={24} />{/if}
     <span class="min-w-0 flex-1">
-      <span class="block truncate font-medium">{opt.label}</span>
-      {#if opt.description}<span class="block truncate text-sm text-soft">{opt.description}</span>{/if}
+      <span class="block truncate font-medium" title={opt.label}>{opt.label}</span>
+      {#if opt.description}<span class="block truncate text-sm text-soft" title={opt.description}>{opt.description}</span>{/if}
     </span>
     {#if selected === opt.value}
       <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" class="flex-shrink-0 text-accent" aria-hidden="true" data-testid="picker-check">

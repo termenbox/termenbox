@@ -24,6 +24,11 @@
   } = $props();
 
   let expanded = $state(false);
+  // A new value (a chip, the picker) starts collapsed again; the full path is one tap away.
+  $effect(() => {
+    void value;
+    expanded = false;
+  });
   const CHIPS = 3;
   const others = $derived(recents.filter(r => r !== value));
   const chips = $derived(others.slice(0, CHIPS));
@@ -81,9 +86,9 @@
 <style>
   .chip { min-height: 44px; max-width: 100%; padding: 0 14px; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 22px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chip.more { background: transparent; color: var(--fg-muted); }
-  .field { flex: 1; min-width: 0; min-height: 48px; padding: 0 12px; text-align: left; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; font-family: ui-monospace, monospace; font-size: 0.9rem; }
+  .field { flex: 1; min-width: 0; min-height: 48px; padding: 8px 12px; text-align: left; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; font-family: ui-monospace, monospace; font-size: 0.9rem; }
   .field.empty { color: var(--fg-muted); font-family: inherit; }
-  .field span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .field span.wrap { white-space: normal; overflow-wrap: anywhere; padding: 10px 0; }
+  .field span { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .field span.wrap { white-space: normal; overflow-wrap: anywhere; word-break: break-word; padding: 6px 0; }
   .change { flex: none; min-height: 48px; padding: 0 16px; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; }
 </style>

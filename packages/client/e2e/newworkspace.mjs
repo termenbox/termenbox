@@ -116,7 +116,7 @@ for (const [width, height] of only ? [only] : WIDTHS) {
     await see(q('picker-list').locator('[data-dir="termenbox"]'), 'termenbox inside code');
     await text(q('picker-trail'), /code/, 'the breadcrumb');
     if (await q('picker-up').isDisabled()) throw new Error(at('Up is disabled inside code'));
-    await text(q('picker-select'), /code/, 'the Select button');
+    await text(q('picker-select-path'), /code/, 'the selected path in the picker footer');
     await rules('picker nested');
     await q('picker-filter').fill('app');
     await see(q('picker-list').locator('[data-dir="app"]'), 'app after filtering');
@@ -157,7 +157,7 @@ for (const [width, height] of only ? [only] : WIDTHS) {
     await rules('typed relative path');
     await go(`${HOME}/code/app`);
     await see(q('picker-empty'), 'the typed folder');
-    await text(q('picker-select'), /app/, 'Select for the typed folder');
+    await text(q('picker-select-path'), /app/, 'the typed folder in the picker footer');
     await tap(q('picker-select'));
     await gone(q('folder-picker'), 'the picker after Select');
     await text(q('folder-value'), /code\/app$/, 'the chosen folder');
@@ -165,15 +165,31 @@ for (const [width, height] of only ? [only] : WIDTHS) {
     if (!(await focused('folder-change'))) throw new Error(at('focus did not return to Change'));
     await rules('folder chosen');
 
-    // A 200-character folder outside home, accepted as typed, truncates instead of overflowing.
+    // A 200-character folder outside home: collapsed by default, a tap shows all of it, a second tap collapses it.
     const long = `/srv/${'segment-'.repeat(24)}end`;
     await tap(q('folder-change'));
     await go(long);
     await see(q('picker-outside'), 'the outside-home notice');
+    await text(q('picker-select-path'), /…/, 'the collapsed long path in the picker footer');
+    if ((await q('picker-select-path').getAttribute('aria-expanded')) !== 'false') throw new Error(at('the picker path is expanded by default'));
+    await tap(q('picker-select-path'));
+    await text(q('picker-select-path'), /segment-/, 'the full long path after a tap');
+    if ((await q('picker-select-path').getAttribute('aria-expanded')) !== 'true') throw new Error(at('the picker path did not expand'));
+    await rules('expanded picker path');
+    await tap(q('picker-select-path'));
+    await text(q('picker-select-path'), /…/, 'the collapsed long path after a second tap');
     await tap(q('picker-select'));
     await gone(q('folder-picker'), 'the picker after Select');
-    await text(q('folder-value'), /…/, 'the truncated long path');
-    await text(q('summary'), /…/, 'the truncated summary');
+    await text(q('folder-value'), /…/, 'the collapsed chosen path');
+    if ((await q('folder-value').getAttribute('aria-expanded')) !== 'false') throw new Error(at('the chosen path is expanded by default'));
+    await tap(q('folder-value'));
+    await text(q('folder-value'), /segment-/, 'the full chosen path after a tap');
+    if ((await q('folder-value').getAttribute('aria-expanded')) !== 'true') throw new Error(at('the chosen path did not expand'));
+    await tap(q('folder-value'));
+    await text(q('folder-value'), /…/, 'the chosen path collapses again');
+    const summaryTitle = await q('summary').getAttribute('title');
+    if (summaryTitle !== long) throw new Error(at(`the summary title is ${JSON.stringify(summaryTitle)}`));
+    await text(q('summary'), /…/, 'the collapsed summary');
     await rules('long path');
 
     // Create: recents are written now, not before; the request carries the folder.
