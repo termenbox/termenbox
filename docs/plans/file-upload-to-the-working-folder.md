@@ -51,7 +51,8 @@ Context: The e2e suite is `packages/client/e2e/` (run by `node e2e/run.mjs`, bui
 Do: Add scenarios: upload a small file from the picker and check it exists in the active tab's folder with mode `0600`; drop two files, choose Replace for one and Keep both for the other; paste an image; switch tabs and `cd` during an upload and check the file landed in the pinned folder; cancel an upload and check no partial remains; kill the connection mid-upload and check it resumes; paste plain text and check it reaches the terminal.
 Done-when: the e2e run passes all of these scenarios in CI.
 
-### 3.2 Review, accept the decision and close the roadmap item — [ ]
+### 3.2 Review, accept the decision and close the roadmap item — [~]
+Progress: conform run on the branch; R39 note added. Open: audit lines carry provider and account but no key fingerprint (guardrail and decision say fingerprint); throughput not yet measured; owner acceptance and archiving R103 still to do.
 Class: review · Needs: 3.1 · Check: `python3 docs/plans/roadmap/check.py && python3 docs/plans/roadmap/rank.py`
 Context: The decision is a draft; the 1 GiB floor, 10-minute grace, 1 MiB window, 60 starts a minute and 100 files a batch are unconfirmed starting values (DECISION-0194, Consequences). Acceptance is the owner's. Docs that describe behaviour must follow the code (decision 0159); the user manual is a course (decision 0160), so a chapter or note may be needed.
 Do: Check the diff against DECISION-0194 and the guardrail with the `conform` skill. Report the real numbers measured in the e2e (throughput on the window size) so the owner can confirm or change the starting values. After the owner accepts, set the decision and guardrail to `active` with `accepted-by`, update both INDEX rows, move `docs/plans/roadmap/R103.md` to `roadmap/archive/` with `Status: done (PR #n)`, and regenerate the Order table with `rank.py`. Add a line to R39 saying the confirm sheet now exists.
