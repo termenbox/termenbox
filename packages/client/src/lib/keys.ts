@@ -1,4 +1,5 @@
 // Soft-keyboard helpers: the key row's sequences, sticky Ctrl/Alt, and pinch-to-zoom font sizing.
+import { joinRows, type Row } from './terminal/copyJoin';
 
 export const KEYS = {
   esc: '\x1b',
@@ -78,12 +79,11 @@ export const FN_KEYS: [string, string][] = [
 
 export const SYMBOLS = ['{', '}', '[', ']', '(', ')', '<', '>', '\\', '`', '$', '&', '*', ';', '"', "'", '#', '@', '!', '=', '+', '_', '%', '^', ':', '?'];
 
-/** The last `maxLines` lines of a terminal buffer as plain text, trailing blank lines dropped (for the Select view). */
-export function bufferText(getLine: (i: number) => string | undefined, length: number, maxLines = 1000): string {
-  const out: string[] = [];
-  for (let i = Math.max(0, length - maxLines); i < length; i++) out.push((getLine(i) ?? '').replace(/\s+$/, ''));
-  while (out.length && out[out.length - 1] === '') out.pop();
-  return out.join('\n');
+/** The last `maxLines` lines of a terminal buffer as plain text, rows of one line joined, trailing blank lines dropped (for the Select view). */
+export function bufferText(getRow: (i: number) => Row | undefined, length: number, cols: number, maxLines = 1000): string {
+  const rows: Row[] = [];
+  for (let i = Math.max(0, length - maxLines); i < length; i++) rows.push(getRow(i) ?? { text: '' });
+  return joinRows(rows, cols);
 }
 
 /** tmux writes its prefix as `C-b`, `M-a`, a bare character, or `None`; this is what the terminal receives for it. */

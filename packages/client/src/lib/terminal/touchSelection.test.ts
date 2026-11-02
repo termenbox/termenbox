@@ -11,7 +11,7 @@ function setup(lines: Record<number, string> = { 1001: 'git commit -m "x"' }) {
   const term: TermLike = {
     cols: 80,
     rows: 20,
-    buffer: { active: { viewportY: 1000, getLine: (i) => (lines[i] === undefined ? undefined : { translateToString: () => lines[i] }) } },
+    buffer: { active: { viewportY: 1000, getLine: (i) => (lines[i] === undefined ? undefined : { isWrapped: false, translateToString: () => lines[i] }) } },
     select: (c, r, l) => calls.push(`select ${c},${r},${l}`),
     clearSelection: () => calls.push('clear'),
     getSelection: () => 'picked',
