@@ -685,8 +685,6 @@ struct Inner {
     turn: bool,
     /// `session/load` replays history as updates; those are not news.
     replaying: bool,
-    /// The model the agent named when the session began (plan step 1.4), for the meter's per-model buckets.
-    model: Option<String>,
     /// What the workspace view shows (T0): kept here, bounded, and handed to a client on `acp_open`.
     stream: Stream,
     /// The conversation as scrubbed `session/update` frames with a sequence number, for a client that resumes.
@@ -1033,7 +1031,6 @@ fn spawn_agent(
             acp_id: String::new(),
             turn: false,
             replaying: false,
-            model: None,
             stream: Stream::new(agent, dir, crate::events::now_ms()),
             log: crate::event_log::EventLog::new("", crate::events::now_ms(), event_ring_bytes),
         }),
@@ -1173,7 +1170,10 @@ async fn handshake(
             let new: acp::NewSessionResponse = decode(&r, "session/new result")
                 .ok_or_else(|| anyhow!("the agent's session/new answer has no workspace id"))?;
             live.stream(|st| st.workspace_state(&r));
-            live.inner.lock_or_recover().model = model_of(&r);
+            let model = model_of(&r);
+            if let Some(hub) = &live.hub {
+                hub.note_model(&live.event_name, model.as_deref());
+            }
             Ok(new.session_id.to_string())
         }
         Some(id) if caps.session_capabilities.resume.is_some() => {
@@ -1184,7 +1184,10 @@ async fn handshake(
                 .request("session/resume", params, Some(SETUP_TIMEOUT))
                 .await?;
             live.stream(|st| st.workspace_state(&r));
-            live.inner.lock_or_recover().model = model_of(&r);
+            let model = model_of(&r);
+            if let Some(hub) = &live.hub {
+                hub.note_model(&live.event_name, model.as_deref());
+            }
             Ok(id.to_string())
         }
         Some(id) if caps.load_session => {
@@ -1203,7 +1206,10 @@ async fn handshake(
                 r?
             };
             live.stream(|st| st.workspace_state(&r));
-            live.inner.lock_or_recover().model = model_of(&r);
+            let model = model_of(&r);
+            if let Some(hub) = &live.hub {
+                hub.note_model(&live.event_name, model.as_deref());
+            }
             Ok(id.to_string())
         }
         Some(_) => Err(anyhow!("the agent can neither resume nor load a workspace")),
@@ -2021,10 +2027,8 @@ impl WorkspaceBackend for AcpBackend {
             if let (Ok(v), Some(hub)) = (&r, &live.hub) {
                 if let Some(u) = v.get("usage").filter(|u| u.is_object()) {
                     let n = |k: &str| u.get(k).and_then(Value::as_u64);
-                    let model = live.inner.lock_or_recover().model.clone();
                     hub.record_tokens(
                         &live.event_name,
-                        model.as_deref(),
                         crate::history::Tokens {
                             input: n("inputTokens"),
                             output: n("outputTokens"),

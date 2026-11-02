@@ -1,6 +1,6 @@
 //! The agent event hub (plan v6, P.2): sanitises, stamps and stores what agents report, and fans it out.
 //! Agent text is untrusted: it is cleaned before it is stored, logged or sent anywhere.
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -506,6 +506,10 @@ pub struct EventHub {
     history: Option<Arc<crate::history::History>>,
     /// Where each Claude Code workspace's token counts are read from (U13).
     usage: Arc<crate::transcript::UsageTracker>,
+    /// ACP workspaces that report their own spend, and the model each named (plan step 1.4): their turns are not priced
+    /// from tokens, so a cost is not counted twice.
+    cost_reporters: Arc<Mutex<HashSet<String>>>,
+    models: Arc<Mutex<HashMap<String, String>>>,
     /// Per-tab state (decision 0149); absent in tests that do not need it.
     tab_status: Option<Arc<TabStatus>>,
     /// The attention meter (decision 0169); absent in tests that do not need it.
@@ -543,6 +547,8 @@ impl EventHub {
             status_tx: broadcast::channel(256).0,
             history: None,
             usage: Arc::default(),
+            cost_reporters: Arc::default(),
+            models: Arc::default(),
             tab_status: None,
             meter: None,
             answerers: Arc::default(),
@@ -705,18 +711,33 @@ impl EventHub {
     }
 
     /// Counts an ACP agent reported for a turn (U13), kept against the task in flight.
-    pub fn record_tokens(&self, workspace: &str, model: Option<&str>, t: crate::history::Tokens) {
+    pub fn record_tokens(&self, workspace: &str, t: crate::history::Tokens) {
         if let Some(h) = &self.history {
             h.tokens(workspace, t);
         }
-        // ACP names no model with its counts: `model` is what the agent named when the session began.
-        self.meter_tokens(model, &t);
+        // ACP names no model with its counts: the model is what the agent named when the session began.
+        let model = self.models.lock().unwrap().get(workspace).cloned();
+        let estimate = !self.cost_reporters.lock().unwrap().contains(workspace);
+        self.meter_tokens(model.as_deref(), &t, estimate);
+    }
+
+    /// The model an ACP agent named when a session began.
+    pub fn note_model(&self, workspace: &str, model: Option<&str>) {
+        let mut models = self.models.lock().unwrap();
+        match model {
+            Some(m) if models.len() < 256 || models.contains_key(workspace) => {
+                models.insert(workspace.to_string(), m.to_string());
+            }
+            _ => {
+                models.remove(workspace);
+            }
+        }
     }
 
     /// Task telemetry (plan step 1.4): a turn's counts go to the meter's day bucket. Numbers and a model id only.
-    fn meter_tokens(&self, model: Option<&str>, t: &crate::history::Tokens) {
+    fn meter_tokens(&self, model: Option<&str>, t: &crate::history::Tokens, estimate: bool) {
         if let Some(m) = &self.meter {
-            m.turn_used(model, t, now_ms());
+            m.turn_used(model, t, estimate, now_ms());
             self.announce_meter();
         }
     }
@@ -779,7 +800,7 @@ impl EventHub {
                 // Counts only (audit-logging-no-secrets).
                 tracing::info!(target: "audit", event = "usage_collected", session = %workspace, input = t.input, output = t.output, cache_read = t.cache_read, cache_write = t.cache_write);
                 history.tokens(workspace, t);
-                self.meter_tokens(self.usage.model(workspace).as_deref(), &t);
+                self.meter_tokens(self.usage.model(workspace).as_deref(), &t, true);
             }
         }
     }
@@ -809,7 +830,20 @@ impl EventHub {
                 cost: Some(cost), ..
             } => {
                 if let Some((micros, currency)) = crate::history::parse_cost(cost) {
-                    history.cost(workspace, micros, &currency);
+                    let step = history.cost(workspace, micros, &currency);
+                    // The meter counts US dollars only, and the agent's figure replaces the estimate from tokens.
+                    if let (Some((step, c)), Some(m)) = (step, &self.meter) {
+                        if c == "USD" {
+                            let mut rep = self.cost_reporters.lock().unwrap();
+                            if rep.len() < 256 || rep.contains(workspace) {
+                                rep.insert(workspace.to_string());
+                            }
+                            drop(rep);
+                            let model = self.models.lock().unwrap().get(workspace).cloned();
+                            m.agent_cost(model.as_deref(), step, ts);
+                            self.announce_meter();
+                        }
+                    }
                 }
             }
             _ => {}
@@ -3873,7 +3907,6 @@ mod tests {
         );
         h.record_tokens(
             "acp",
-            None,
             crate::history::Tokens {
                 input: Some(1472),
                 output: Some(35),
