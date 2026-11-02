@@ -172,7 +172,7 @@
     if (!w || away || !activeTabId) { showToast('Open a terminal tab to upload into', 'error'); return; }
     const serverId = w.serverId;
     const queue = new UploadQueue({ workspace: w.id, tab: activeTabId, send: m => hub.send(serverId, m), sendChunk: f => hub.sendUpload(serverId, f) });
-    queue.subscribe(() => { uploadItems = [...queue.items]; });
+    queue.subscribe(() => { uploadItems = queue.items.map(i => ({ ...i })); }); // copies: the queue edits its items in place, and a keyed each skips an item it has seen
     queue.add(files);
     upload = { queue, serverId, tabName: w.tabs?.find(t => t.id === activeTabId)?.label ?? w.name, started: false };
   }
@@ -1124,6 +1124,7 @@
     const [name, arg] = id.split(':');
     if (name === 'new-workspace') newWorkspace();
     else if (name === 'search-sessions') searchOpen = true;
+    else if (name === 'upload-files') openUpload();
     else if (name === 'pause' && arg) hub.pause(arg);
     else if (name === 'resume' && arg) hub.resume(arg);
     else if (['approve-decision', 'deny-decision', 'next-needs-you', 'focus-composer'].includes(name)) setTimeout(() => handleShortcut(name), 0); // after the palette has closed and let go of focus
