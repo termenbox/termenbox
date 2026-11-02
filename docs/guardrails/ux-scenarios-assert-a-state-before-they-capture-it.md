@@ -14,3 +14,4 @@ tags: [client, ux, ci, testing, video]
 A scenario step that records or screenshots a state **MUST** first wait for and assert that state (the layer is visible, has the expected title and rows, the chosen value is shown). A failed assertion **MUST** fail the run.
 A scenario **MUST NOT** wrap a capture in `if (await x.isVisible())` or any branch that skips it.
 A video **MUST** be recorded from the same steps that pass as a test, with human pacing (typing and tap delays, a visible cursor or touch spot).
+A render the flicker check rejects (`scripts/video-flicker.mjs`) **MUST** fail the render and **MUST** be fixed at its cause. A workflow or script **MUST NOT** retry it, raise the check's threshold or skip a case to get past it. Motion the recorder or the app makes on purpose (the pointer's path, the overlay hidden for a still, the terminal cursor's blink) is kept out of the frames or out of the check by the recorder, with a test, not by a looser check.

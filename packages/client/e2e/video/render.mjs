@@ -96,18 +96,21 @@ const mp4 = join(out, `${base}.mp4`);
 const trim = ['-ss', String(Math.max(0, ready - 0.3))];
 const comment = `"${cases[caseName].title}" on ${cases[caseName].real ? 'a local test server' : cases[caseName].probe ? 'template fixtures' : cases[caseName].replay ? 'the installer\'s captured output' : 'scripted data'} (${profile}).`;
 const run = (args) => { const r = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', ...args], { stdio: 'inherit' }); if (r.status !== 0) { console.error(`FAIL ffmpeg ${args.slice(0, 4).join(' ')}`); rmSync(work, { recursive: true, force: true }); rmSync(mp4, { force: true }); process.exit(1); } };
-// The frames in which the overlay was hidden for a still are cut out, so the caption and pointer do not blink. The recording
-// starts when the page is created, later than `started`; the two clocks are aligned at their end (the context closed just now).
+// The pointer's own path is left out of the flicker check below: it is moved on purpose. Seconds in the recording, from the page clock.
 const lastTime = [...spawnSync('ffmpeg', ['-i', webm, '-f', 'null', '-'], { encoding: 'utf8' }).stderr.matchAll(/time=(\d+):(\d+):([\d.]+)/g)].pop();
 const recorded = lastTime ? Number(lastTime[1]) * 3600 + Number(lastTime[2]) * 60 + Number(lastTime[3]) : NaN;
+// The recording starts when the page is created, later than `started`; the clocks are aligned at their end (the context closed just now).
 const lag = Number.isFinite(recorded) ? (closed - started) / 1000 - recorded : 0;
 const at = (ms) => ((ms - started) / 1000 - lag - Number(trim[1])).toFixed(2);
-const cut = (h?.hidden ?? []).map(([a, b]) => `between(t,${at(a - 300)},${at(b + 300)})`);
-const without = cut.length ? `,select='not(${cut.join('+')})',setpts=N/(30*TB)` : '';
-run([...trim, '-i', webm, '-vf', `scale=${viewport.width * scale}:${viewport.height * scale}:flags=lanczos,fps=30${without}`, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '23', '-movflags', '+faststart', '-an', '-metadata', `comment=${comment}`, mp4]);
+run([...trim, '-i', webm, '-vf', `scale=${viewport.width * scale}:${viewport.height * scale}:flags=lanczos,fps=30`, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '23', '-movflags', '+faststart', '-an', '-metadata', `comment=${comment}`, mp4]);
 rmSync(work, { recursive: true, force: true });
 // A frame that loses the caption or the pointer for one frame is a flicker (scripts/video-flicker.mjs): the render fails instead of reaching the reviewer.
-const flicker = spawnSync('node', [resolve(import.meta.dirname, '../../../../scripts/video-flicker.mjs'), mp4], { encoding: 'utf8' });
+// The pointer's own path (moved on purpose, with overshoot) is left out of that check: [seconds in the output, x, y, radius] in its pixels.
+const pointerFile = join(tmpdir(), `pointer-${process.pid}.json`);
+writeFileSync(pointerFile, JSON.stringify((h?.pointer ?? []).map(([ms, x, y]) => { const t = Number(at(ms)); return [t, x * scale, y * scale, 48 * scale]; })));
+const flicker = spawnSync('node', [resolve(import.meta.dirname, '../../../../scripts/video-flicker.mjs'), '--pointer', pointerFile, mp4], { encoding: 'utf8' });
+if (flicker.status !== 0 && process.env.VIDEO_DEBUG) copyFileSync(pointerFile, join(out, `${base}.pointer.json`));
+rmSync(pointerFile, { force: true });
 if (flicker.status !== 0) { console.error(`FAIL ${base}: ${flicker.stdout.trim() || flicker.stderr.trim()}`); if (process.env.VIDEO_DEBUG) renameSync(mp4, join(out, `${base}.flicker.mp4`)); else rmSync(mp4, { force: true }); process.exit(1); }
 // The length the chapter shows next to the poster ("Watch, N s").
 const probe = spawnSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', mp4], { encoding: 'utf8' });
