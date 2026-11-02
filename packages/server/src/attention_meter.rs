@@ -35,8 +35,35 @@ const MAX_ID: usize = 32;
 const FILE: &str = "attention_meter.json";
 const FILE_VERSION: u32 = 1;
 /// The owner's price table (plan step 1.4): `{"<model id>": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75}}`,
-/// US dollars per million tokens. Termenbox ships no prices; a model without an entry costs nothing in the meter.
+/// US dollars per million tokens. Termenbox starts from `DEFAULT_PRICES` and the owner's entries replace them per model;
+/// a model with no entry in either costs nothing in the meter.
 const PRICES_FILE: &str = "prices.json";
+/// Anthropic list prices, standard tier, 5-minute cache writes (fact 0041, accessed 2026-10-04, expires 2027-01-04):
+/// (model id, input, output, cache read, cache write). Estimates only: the owner's `prices.json` wins.
+const DEFAULT_PRICES: [(&str, f64, f64, f64, f64); 6] = [
+    ("claude-fable-5-1", 10.0, 50.0, 0.25, 12.5),
+    ("claude-opus-5-5", 4.0, 20.0, 0.2, 5.0),
+    ("claude-opus-5", 5.0, 25.0, 0.5, 6.25),
+    ("claude-sonnet-5-5", 2.0, 10.0, 0.2, 2.5),
+    ("claude-sonnet-5", 2.0, 10.0, 0.2, 2.5),
+    ("claude-haiku-4-5", 1.0, 5.0, 0.1, 1.25),
+];
+
+fn default_prices() -> HashMap<String, Price> {
+    DEFAULT_PRICES
+        .iter()
+        .map(|&(id, input, output, cache_read, cache_write)| {
+            let p = Price {
+                input,
+                output,
+                cache_read,
+                cache_write,
+            };
+            (id.to_string(), p)
+        })
+        .collect()
+}
+
 /// Models kept per day, and the longest model id; a model past the cap is counted as `other`.
 const MAX_MODELS: usize = 16;
 const MAX_MODEL_LEN: usize = 64;
@@ -227,6 +254,20 @@ impl AttentionMeter {
         self
     }
 
+    /// The entry for a model id, or for the longest listed id it extends (`claude-haiku-4-5-20251001` is `claude-haiku-4-5`).
+    fn price_of(&self, key: &str) -> Option<&Price> {
+        self.prices.get(key).or_else(|| {
+            self.prices
+                .iter()
+                .filter(|(id, _)| {
+                    key.strip_prefix(id.as_str())
+                        .is_some_and(|r| r.starts_with('-'))
+                })
+                .max_by_key(|(id, _)| id.len())
+                .map(|(_, p)| p)
+        })
+    }
+
     /// A turn used `t` on `model` (None when the agent names none). Counts only; the estimated cost uses the owner's
     /// price table and is zero for a model it does not list.
     pub fn turn_used(&self, model: Option<&str>, t: &Tokens, now: u64) {
@@ -234,7 +275,7 @@ impl AttentionMeter {
             return;
         }
         let key = model_key(model);
-        let cost = self.prices.get(&key).map_or(0, |p| p.micros(t));
+        let cost = self.price_of(&key).map_or(0, |p| p.micros(t));
         let mut g = self.inner.lock().unwrap();
         let b = g.bucket(now);
         let key = if b.by_model.contains_key(&key) || b.by_model.len() < MAX_MODELS {
@@ -278,10 +319,13 @@ impl AttentionMeter {
                 }
             }
         }
-        let prices = std::fs::read(dir.join(PRICES_FILE))
+        let mut prices = default_prices();
+        if let Some(owner) = std::fs::read(dir.join(PRICES_FILE))
             .ok()
             .and_then(|raw| serde_json::from_slice::<HashMap<String, Price>>(&raw).ok())
-            .unwrap_or_default();
+        {
+            prices.extend(owner);
+        }
         let oldest = day_of(now).saturating_sub(KEEP_DAYS as u32 - 1);
         inner.days.retain(|d, _| *d >= oldest);
         Ok(Self {
@@ -592,6 +636,32 @@ mod attention_meter_tests {
         let again = AttentionMeter::open(&d, D0).unwrap();
         assert_eq!(again.stats(D0)[0].cost_micros, 3_000_000);
         assert_eq!(again.stats(D0)[0].verified["pass"], 1);
+    }
+
+    #[test]
+    fn task_telemetry_default_prices_apply_to_dated_ids_and_the_owners_file_overrides_them() {
+        let d = dir("defaults");
+        let m = AttentionMeter::open(&d, D0).unwrap();
+        m.turn_used(
+            Some("claude-haiku-4-5-20251001"),
+            &tokens(1_000_000, 0, 0),
+            D0,
+        );
+        m.turn_used(Some("claude-sonnet-5-5"), &tokens(1_000_000, 0, 0), D0);
+        let by = &m.stats(D0)[0].by_model;
+        assert_eq!(by["claude-haiku-4-5-20251001"].cost_micros, 1_000_000);
+        assert_eq!(by["claude-sonnet-5-5"].cost_micros, 2_000_000);
+        std::fs::write(
+            d.join(PRICES_FILE),
+            r#"{"claude-sonnet-5-5":{"input":7.0}}"#,
+        )
+        .unwrap();
+        let m = AttentionMeter::open(&d, D0).unwrap();
+        m.turn_used(Some("claude-sonnet-5-5"), &tokens(1_000_000, 0, 0), D0);
+        m.turn_used(Some("claude-opus-5-5"), &tokens(1_000_000, 0, 0), D0);
+        let by = &m.stats(D0)[0].by_model;
+        assert_eq!(by["claude-sonnet-5-5"].cost_micros, 7_000_000);
+        assert_eq!(by["claude-opus-5-5"].cost_micros, 4_000_000);
     }
 
     #[test]
