@@ -668,7 +668,7 @@ export type NodeMessage =
 
 /** Conductor to node. An answer or ack without `actor` and `owner` is not valid. */
 export type ConductorMessage =
-  | { type: 'welcome'; epoch_ack: number; heartbeat_s: number; conductor_epoch?: number }
+  | { type: 'welcome'; epoch_ack: number; heartbeat_s: number; conductor_epoch?: number; standby?: string }
   | { type: 'resync' }
   | { type: 'answer'; target: { workspace: string; tab?: string; prompt_id: string }; id: string; actor: string; owner: string; device: string; option: string; idem: string }
   | { type: 'ack'; id: string; actor: string; owner: string; idem: string }

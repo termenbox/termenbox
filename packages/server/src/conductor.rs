@@ -474,6 +474,7 @@ impl Conductor {
             epoch_ack: epoch,
             heartbeat_s: HEARTBEAT_S,
             conductor_epoch: 0,
+            standby: None,
         }
     }
 
@@ -1818,6 +1819,7 @@ mod tests {
             urls: vec![format!("ws://127.0.0.1:{port}")],
             enrol: Some(secret),
             enabled: true,
+            standby: None,
         };
         pin.save(&dir).unwrap();
         let hub = EventHub::new([7; 32]);
@@ -1964,6 +1966,7 @@ mod tests {
             urls: vec![format!("ws://127.0.0.1:{port}")],
             enrol: Some(secret),
             enabled: true,
+            standby: None,
         };
         pin.save(&dir).unwrap();
         let hub = EventHub::new([7; 32]);

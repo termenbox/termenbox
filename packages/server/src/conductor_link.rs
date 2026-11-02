@@ -49,7 +49,20 @@ pub struct Pin {
     pub enrol: Option<String>,
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// The standby conductor the active announced in `Welcome`; dialled only after the active has been gone for
+    /// `STANDBY_AFTER`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standby: Option<Peer>,
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct Peer {
+    pub conductor: String,
+    pub urls: Vec<String>,
+}
+
+/// How long the active conductor may be unreachable before the node also dials the standby (three heartbeats).
+pub const STANDBY_AFTER: Duration = Duration::from_secs(90);
 
 fn yes() -> bool {
     true
@@ -73,6 +86,7 @@ impl Pin {
             urls,
             enrol,
             enabled: true,
+            standby: None,
         })
     }
 
@@ -510,6 +524,8 @@ struct State {
     applied: VecDeque<String>,
     /// The highest conductor epoch seen; a conductor below it is a returning old active and is refused.
     lease: crate::conductor_standby::Lease,
+    /// Set once a welcome was accepted on this dial round.
+    up: bool,
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -521,7 +537,17 @@ enum Ended {
 }
 
 /// Keeps the link up for as long as the process runs, unless the conductor removes the node.
-pub async fn run(dir: PathBuf, mut pin: Pin, node: Node, mut backoff: Backoff) {
+pub async fn run(dir: PathBuf, pin: Pin, node: Node, backoff: Backoff) {
+    run_with(dir, pin, node, backoff, STANDBY_AFTER).await
+}
+
+async fn run_with(
+    dir: PathBuf,
+    mut pin: Pin,
+    node: Node,
+    mut backoff: Backoff,
+    standby_after: Duration,
+) {
     let mut rx = node.hub.subscribe_status();
     let mut st = State {
         epoch: rand::random::<u64>() >> 1,
@@ -530,28 +556,45 @@ pub async fn run(dir: PathBuf, mut pin: Pin, node: Node, mut backoff: Backoff) {
         differ: Differ::default(),
         applied: VecDeque::new(),
         lease: Default::default(),
+        up: false,
     };
+    let mut down_since: Option<tokio::time::Instant> = None;
     // Whatever is open now reaches the conductor in the first snapshot.
     st.differ.reset(&node.hub.attention_items());
     loop {
         let started = tokio::time::Instant::now();
-        for url in pin.urls.clone() {
-            let Ok(Ok((ws, _))) =
-                tokio::time::timeout(STEP, tokio_tungstenite::connect_async(url.as_str())).await
-            else {
-                continue;
-            };
-            match session(ws, &mut pin, &dir, &node, &mut st, &mut rx).await {
-                Ok(Ended::Disabled) => {
-                    tracing::info!("conductor removed this node; the link stays off");
-                    pin.enabled = false;
-                    let _ = pin.save(&dir);
-                    return;
-                }
-                Ok(Ended::Lost) => {}
-                Err(e) => tracing::debug!("conductor link: {e:#}"),
+        st.up = false;
+        let mut targets = vec![(pin.conductor.clone(), pin.urls.clone(), false)];
+        if down_since.is_some_and(|d| d.elapsed() >= standby_after) {
+            if let Some(p) = &pin.standby {
+                targets.push((p.conductor.clone(), p.urls.clone(), true));
             }
-            break;
+        }
+        'dial: for (id, urls, standby) in targets {
+            for url in urls {
+                let Ok(Ok((ws, _))) =
+                    tokio::time::timeout(STEP, tokio_tungstenite::connect_async(url.as_str()))
+                        .await
+                else {
+                    continue;
+                };
+                match session(ws, &mut pin, &dir, &node, &mut st, &mut rx, &id, standby).await {
+                    Ok(Ended::Disabled) if !standby => {
+                        tracing::info!("conductor removed this node; the link stays off");
+                        pin.enabled = false;
+                        let _ = pin.save(&dir);
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::debug!("conductor link: {e:#}"),
+                }
+                break 'dial;
+            }
+        }
+        if st.up {
+            down_since = Some(tokio::time::Instant::now());
+        } else {
+            down_since.get_or_insert_with(tokio::time::Instant::now);
         }
         if started.elapsed() >= Duration::from_secs(30) {
             backoff.reset();
@@ -672,6 +715,8 @@ async fn session<S>(
     node: &Node,
     st: &mut State,
     rx: &mut tokio::sync::broadcast::Receiver<StatusChange>,
+    expect: &str,
+    standby: bool,
 ) -> Result<Ended>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -680,10 +725,7 @@ where
     send_json(&mut tx, &ClientMessage::Hello { protocol: PROTOCOL }).await?;
     let nonce = match recv::<ServerMessage, _>(&mut inbound).await? {
         ServerMessage::Challenge { nonce, server_id } => {
-            anyhow::ensure!(
-                server_id == pin.conductor,
-                "the peer is not the pinned conductor"
-            );
+            anyhow::ensure!(server_id == expect, "the peer is not the pinned conductor");
             nonce
         }
         _ => anyhow::bail!("no challenge"),
@@ -698,7 +740,7 @@ where
             epoch: st.epoch,
             version: node.version.clone(),
             caps: Vec::new(),
-            enrol: pin.enrol.clone(),
+            enrol: if standby { None } else { pin.enrol.clone() },
             sig,
         }
         .capped(),
@@ -706,16 +748,44 @@ where
     .await?;
     match recv::<ConductorMessage, _>(&mut inbound).await? {
         ConductorMessage::Welcome {
-            conductor_epoch, ..
-        } => anyhow::ensure!(
-            st.lease.accept(conductor_epoch),
-            "the conductor's epoch is below one already seen"
-        ),
+            conductor_epoch,
+            standby: bundle,
+            ..
+        } => {
+            anyhow::ensure!(
+                st.lease.accept(conductor_epoch),
+                "the conductor's epoch is below one already seen"
+            );
+            // Only the active names the standby; the standby's own welcome never rewrites the pin.
+            if let (false, Some(wire)) = (standby, bundle.filter(|w| w.len() <= 4096)) {
+                if let Ok(b) = Bundle::verify(&wire, now_ms() / 1000, None, None) {
+                    let peer = Peer {
+                        conductor: b.server_id.clone(),
+                        urls: urls_of(&b),
+                    };
+                    if !peer.urls.is_empty() && pin.standby.as_ref() != Some(&peer) {
+                        pin.standby = Some(peer);
+                        pin.save(dir)?;
+                    }
+                }
+            }
+        }
         ConductorMessage::Disable => return Ok(Ended::Disabled),
         _ => anyhow::bail!("no welcome"),
     }
+    st.up = true;
+    if standby {
+        // The second view of the standby's takeover rule: this node cannot reach the active.
+        send_json(
+            &mut tx,
+            &NodeMessage::PeerReport {
+                active: pin.conductor.clone(),
+            },
+        )
+        .await?;
+    }
     // The secret is single use: once welcomed, forget it.
-    if pin.enrol.take().is_some() {
+    if !standby && pin.enrol.take().is_some() {
         pin.save(dir)?;
     }
     tracing::info!("conductor link up");
@@ -885,10 +955,11 @@ mod tests {
         State {
             epoch: 1,
             seq: 0,
-            outbox: Outbox::default(),
             differ: Differ::default(),
+            outbox: Outbox::default(),
             applied: VecDeque::new(),
             lease: Default::default(),
+            up: false,
         }
     }
 
@@ -1325,6 +1396,18 @@ mod tests {
         Vec<Message>,
         tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
     ) {
+        fake_conductor_with(listener, key, take, None).await
+    }
+
+    async fn fake_conductor_with(
+        listener: &TcpListener,
+        key: &ServerKey,
+        take: usize,
+        standby: Option<String>,
+    ) -> (
+        Vec<Message>,
+        tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    ) {
         let (sock, _) = listener.accept().await.unwrap();
         let mut ws = tokio_tungstenite::accept_async(sock).await.unwrap();
         let Some(Ok(Message::Text(hello))) = ws.next().await else {
@@ -1350,6 +1433,7 @@ mod tests {
             epoch_ack: 0,
             heartbeat_s: 30,
             conductor_epoch: 1,
+            standby,
         };
         ws.send(Message::Text(serde_json::to_string(&welcome).unwrap()))
             .await
@@ -1369,6 +1453,73 @@ mod tests {
             Message::Text(t) => serde_json::from_str(t).unwrap(),
             other => panic!("the link sent a non-text frame: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn conductor_link_dials_the_standby_only_after_the_active_has_been_gone_and_reports_it() {
+        let active_key = ServerKey::from_seed([9; 32]);
+        let standby_key = ServerKey::from_seed([8; 32]);
+        let active = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let standby = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (ap, sp) = (
+            active.local_addr().unwrap().port(),
+            standby.local_addr().unwrap().port(),
+        );
+        let bundle_of = |key: &ServerKey, port| {
+            signed_link(key, port, "")
+                .rsplit_once("/pair/")
+                .unwrap()
+                .1
+                .to_string()
+        };
+        let dir = tmpdir();
+        let pin = Pin::from_link(&signed_link(&active_key, ap, ""), now_ms() / 1000).unwrap();
+        pin.save(dir.as_path()).unwrap();
+        let node = Node {
+            key: ServerKey::from_seed([5; 32]),
+            name: "vps".into(),
+            version: "t".into(),
+            hub: EventHub::new([7; 32]),
+            applier: None,
+        };
+        tokio::spawn(run_with(
+            dir.clone(),
+            pin,
+            node,
+            Backoff::new(Duration::from_millis(20), Duration::from_millis(50)),
+            Duration::from_millis(300),
+        ));
+
+        // The active welcomes the node and names the standby; the node keeps it in the pin.
+        let (_, ws) =
+            fake_conductor_with(&active, &active_key, 2, Some(bundle_of(&standby_key, sp))).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let peer = Pin::load(dir.as_path()).unwrap().standby.unwrap();
+        assert_eq!(peer.conductor, standby_key.server_id());
+        // The standby is not dialled while the active answers: nothing is waiting on its listener yet.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), standby.accept())
+                .await
+                .is_err()
+        );
+
+        // The active goes away for good; once the window passes the node dials the standby and says why.
+        drop(ws);
+        drop(active);
+        let (frames, _ws) = tokio::time::timeout(
+            Duration::from_secs(5),
+            fake_conductor(&standby, &standby_key, 2),
+        )
+        .await
+        .expect("the node dials the standby");
+        let NodeMessage::Hello { enrol, .. } = parse(&frames[0]) else {
+            panic!("hello first")
+        };
+        assert_eq!(enrol, None);
+        let NodeMessage::PeerReport { active } = parse(&frames[1]) else {
+            panic!("a peer report right after the welcome")
+        };
+        assert_eq!(active, active_key.server_id());
     }
 
     #[tokio::test]

@@ -352,6 +352,9 @@ pub enum ConductorMessage {
         /// The conductor's own epoch (standby takeover raises it); a node ignores a lower one.
         #[serde(default)]
         conductor_epoch: u64,
+        /// The standby conductor's signed pairing bundle, so a node knows where to dial when the active is gone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        standby: Option<String>,
     },
     Resync,
     Answer {
@@ -501,6 +504,7 @@ mod tests {
             epoch_ack: 7,
             heartbeat_s: 30,
             conductor_epoch: 1,
+            standby: Some("bundle".into()),
         });
         round(ConductorMessage::Resync);
         round(ConductorMessage::Answer {
