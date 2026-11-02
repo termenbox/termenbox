@@ -332,7 +332,7 @@ Done-when: the file exists with those sections and slice 9b is appended.
 
 ## Slice 10: the dispatcher (R100 to R102, M7)
 
-### 10.1 Outcome spec — [ ]
+### 10.1 Outcome spec — [ ] (code and Check done, awaits the 1.4 dogfood note. `dispatcher/spec.rs`: command, diff-bound and reviewer verifiers, `record` writes the verdict to the meter. A declared verifier that could not judge counts as `none`, so the task is never a pass. Open: the reviewer is a trait until the deputy port (7.1) exists; nothing calls `run` until 10.2)
 Class: implement · Needs: 6.2, 1.4 · Check: `scripts/dev.sh cargo test -p termenbox-server dispatcher_spec`
 Context: Decision 0179 and guardrail `a-cheaper-tier-needs-a-verifier-for-the-outcome`. The contract (`packages/server/src/contract.rs`, step 6.2) already carries done criteria; verifiers must be machine-run.
 Do: Add `packages/server/src/dispatcher/spec.rs`: an outcome spec with verifiers of three kinds (command that must pass, diff bound, reviewer check by a different model through the deputy port), run by the server on the node after a task, with the result recorded in the telemetry (1.4). Tests: a failing command fails the task, a missing verifier is reported as "none", a reviewer check never uses the same model as the author.
