@@ -81,6 +81,7 @@ mod turn;
 mod uninstall;
 mod update_state;
 mod updater;
+mod upload;
 mod websocket;
 mod workspaces;
 

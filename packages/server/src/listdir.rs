@@ -21,6 +21,27 @@ pub fn path_hash(path: Option<&str>) -> String {
     crate::agentwatch::hex8(path.unwrap_or(""))
 }
 
+/// Why a path is not an acceptable folder.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Confinement {
+    Missing,
+    Outside,
+    NotDir,
+}
+
+/// The canonical form of `path`, which must be a folder at or below the canonical `home`. A `..` or a symlink that
+/// leaves `home` is `Outside`. Shared by the folder picker and uploads (decisions 0147, 0194).
+pub fn confine(home: &Path, path: &Path) -> Result<PathBuf, Confinement> {
+    let target = fs::canonicalize(path).map_err(|_| Confinement::Missing)?;
+    if !target.starts_with(home) {
+        return Err(Confinement::Outside);
+    }
+    if !target.is_dir() {
+        return Err(Confinement::NotDir);
+    }
+    Ok(target)
+}
+
 /// The reply to a `list_dir` request, `DirListing` or `DirError`. Blocking: call it from `spawn_blocking`.
 pub fn list_dir(
     home: &Path,
@@ -69,16 +90,14 @@ fn listing(
     let target = match path {
         None => home.clone(),
         Some(p) if Path::new(p).is_absolute() => {
-            fs::canonicalize(p).map_err(|_| "That folder does not exist")?
+            confine(&home, Path::new(p)).map_err(|c| match c {
+                Confinement::Missing => "That folder does not exist",
+                Confinement::Outside => "Only folders inside your home folder can be browsed",
+                Confinement::NotDir => "That is not a folder",
+            })?
         }
         Some(_) => return Err("Use an absolute path"),
     };
-    if !target.starts_with(&home) {
-        return Err("Only folders inside your home folder can be browsed");
-    }
-    if !target.is_dir() {
-        return Err("That is not a folder");
-    }
     let prefix = prefix.map(str::to_lowercase).filter(|p| !p.is_empty());
     let mut entries: Vec<DirEntry> = fs::read_dir(&target)
         .map_err(|_| "That folder cannot be read")?

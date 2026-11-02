@@ -21,7 +21,7 @@ Context: `packages/core/src/protocol.rs` defines `ClientMessage` and `ServerMess
 Do: Add the messages, the chunk frame encode/decode, and the constants `UPLOAD_FREE_DISK_FLOOR` (1 GiB), `UPLOAD_RESUME_GRACE_SECS` (600), `UPLOAD_WINDOW_BYTES` (1 MiB), `UPLOAD_STARTS_PER_MINUTE` (60), `UPLOAD_MAX_BATCH` (100). Add round-trip tests, a test that no message has a path field the client fills, and a test that a chunk over the frame limit is rejected by the decoder.
 Done-when: `cargo test -p termenbox-core upload` passes with tests for each message round trip, the frame round trip, an oversize frame and an out-of-order offset; the `UploadStart` struct has no field that carries a folder or path.
 
-### 2.2 Server: resolve and pin a tab's working folder — [ ]‖
+### 2.2 Server: resolve and pin a tab's working folder — [x]
 Class: implement · Needs: 1.1 · Check: `scripts/dev.sh cargo test -p termenbox-server upload_destination`
 Context: `packages/server/src/listdir.rs` already canonicalises a path and refuses one outside `$HOME` (decision 0147, guardrail listdir-...). Reuse its helper rather than a second copy. The tab's folder comes from the function named in the step 1.1 fact. Owner-only checks live where `ListDir` is dispatched in `packages/server/src/workspaces.rs`.
 Do: Add `packages/server/src/upload.rs` with `resolve_destination(workspace, tab) -> Result<PathBuf, Refusal>`: read the tab's current folder, canonicalise, refuse outside `$HOME`, refuse a symlink leaving `$HOME`, refuse a missing folder, return the canonical path. Add `check_name(name) -> Result<(), Refusal>` with the rules of DECISION-0194. Test with a temp home: a tab folder under home, outside home, deleted, a symlink out of home, and every bad name class.
