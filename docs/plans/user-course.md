@@ -181,6 +181,8 @@ Progress (2026-11-01, iPhone check): the owner played the chapter videos inline 
 
 Progress (2026-11-01, released): #482 merged, `master` fast-forwarded and tagged v0.1.57-beta.25; the deploy succeeded and https://termenbox.dev/course/ lists six chapters. 5.1c is done. Next: 5.1b, then one re-render and re-approval, then 5.1d.
 
+Progress (2026-11-02, released again): the re-rendered videos (#509) went out as v0.1.57-beta.30 (`master` fast-forwarded to 26bda9e). Release (beta) run 41376849840 and the Deploy landing site run 41376845923 succeeded; https://termenbox.dev/course/ lists six chapters, each chapter page has a `<video>` with its poster, and all six MP4 files answer a range request with 206.
+
 ### 5.1a Take the "rendered walkthrough" label off the videos and docs — [x]
 Class: implement · Needs: 5.1, 5.1c · Check: `git grep -n -i "rendered walkthrough" -- packages scripts docs/course docs/guide README.md`
 Context: owner's word, 2026-11-01: "remove text 'a rendered walkthrough...'". The label is a MUST in guardrail `nothing-is-published-without-a-matching-approval-record` (last rule line: every published video and still carries it) and in the procedures `render-a-feature-video` (step 5) and `review-and-publish-docs-media` (step 2), so those change first or the check and the review keep demanding it.
