@@ -632,6 +632,10 @@ export interface ConductorObligation {
   class_features?: string[];
   task?: string;
   prompt?: string;
+  /** Absent from an older node: an ask. A `result` waits to be viewed and is not an ask (decision 0193). */
+  tier?: AttentionTier;
+  ask?: AskKind;
+  cause?: FailureCause;
 }
 
 export interface ConductorUsageRow {
@@ -653,16 +657,18 @@ export type NodeMessage =
   | { type: 'hello'; v: number; node: string; name: string; epoch: number; version: string; caps?: string[]; enrol?: string; sig?: string }
   | { type: 'snapshot'; epoch: number; items: ConductorObligation[]; workspaces?: { workspace: string; activity: string }[] }
   | { type: 'raised'; epoch: number; seq: number; obligation: ConductorObligation }
+  | { type: 'filled'; epoch: number; seq: number; id: string; prompt?: string; ask?: AskKind }
   | { type: 'cleared'; epoch: number; seq: number; id: string; by: ClearedBy }
   | { type: 'acked'; epoch: number; seq: number; id: string; actor: string; owner: string }
   | { type: 'answered'; epoch: number; seq: number; id: string; actor: string; owner: string; device: string; option: string }
   | { type: 'usage'; epoch: number; seq: number; rows: ConductorUsageRow[] }
   | { type: 'incident'; epoch: number; seq: number; cause: string; workspace?: string; detail?: string }
+  | { type: 'peer_report'; active: string }
   | { type: 'health'; epoch: number; seq: number; agents: number; working: number; waiting: number; load?: number; queue_dropped?: number };
 
 /** Conductor to node. An answer or ack without `actor` and `owner` is not valid. */
 export type ConductorMessage =
-  | { type: 'welcome'; epoch_ack: number; heartbeat_s: number; conductor_epoch?: number }
+  | { type: 'welcome'; epoch_ack: number; heartbeat_s: number; conductor_epoch?: number; standby?: string }
   | { type: 'resync' }
   | { type: 'answer'; target: { workspace: string; tab?: string; prompt_id: string }; id: string; actor: string; owner: string; device: string; option: string; idem: string }
   | { type: 'ack'; id: string; actor: string; owner: string; idem: string }

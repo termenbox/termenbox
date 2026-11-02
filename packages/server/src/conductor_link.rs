@@ -18,7 +18,7 @@ use termenbox_core::bundle::{Bundle, CandidateKind};
 use termenbox_core::conductor::{
     cap, ClearedBy, ConductorMessage, NodeMessage, Obligation, MAX_NAME, MAX_USAGE_ROWS,
 };
-use termenbox_core::events::{AgentState, Attention};
+use termenbox_core::events::{AgentState, Attention, AttentionKind, AttentionTier};
 use termenbox_core::protocol::{ClientMessage, ServerMessage};
 use tokio::sync::broadcast::error::RecvError;
 use tokio_tungstenite::tungstenite::Message;
@@ -49,7 +49,20 @@ pub struct Pin {
     pub enrol: Option<String>,
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// The standby conductor the active announced in `Welcome`; dialled only after the active has been gone for
+    /// `STANDBY_AFTER`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standby: Option<Peer>,
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct Peer {
+    pub conductor: String,
+    pub urls: Vec<String>,
+}
+
+/// How long the active conductor may be unreachable before the node also dials the standby (three heartbeats).
+pub const STANDBY_AFTER: Duration = Duration::from_secs(90);
 
 fn yes() -> bool {
     true
@@ -73,6 +86,7 @@ impl Pin {
             urls,
             enrol,
             enabled: true,
+            standby: None,
         })
     }
 
@@ -160,6 +174,11 @@ impl Outbox {
                     |(m, _)| matches!(m, NodeMessage::Raised { obligation, .. } if &obligation.id == id),
                 ) {
                     self.remove(at);
+                    while let Some(f) = self.queue.iter().position(
+                        |(m, _)| matches!(m, NodeMessage::Filled { id: fid, .. } if fid == id),
+                    ) {
+                        self.remove(f);
+                    }
                     return;
                 }
             }
@@ -226,6 +245,19 @@ fn size_of(m: &NodeMessage) -> usize {
 
 // --- what the node tells ----------------------------------------------------------------------------------------
 
+/// The tier of an item; an item from before the status model derives it from its kind (decision 0193).
+fn tier_of(a: &Attention) -> AttentionTier {
+    a.tier.unwrap_or(match a.kind {
+        AttentionKind::NeedsInput => AttentionTier::NeedsYou,
+        _ => AttentionTier::Result,
+    })
+}
+
+/// Whether the conductor hears of the item: an ask or a result. `info` is silent and stays on the node.
+fn forwarded(a: &Attention) -> bool {
+    matches!(tier_of(a), AttentionTier::NeedsYou | AttentionTier::Result)
+}
+
 fn obligation_of(a: &Attention) -> Obligation {
     Obligation {
         id: a.id.clone(),
@@ -237,14 +269,19 @@ fn obligation_of(a: &Attention) -> Obligation {
         class_features: Vec::new(),
         task: a.task.as_ref().map(|t| t.title.clone()),
         prompt: a.prompt.clone(),
+        tier: Some(tier_of(a)),
+        ask: a.ask,
+        cause: a.cause,
     }
     .capped()
 }
 
-/// Turns the open list into changes: what appeared is raised, what left is cleared.
+/// Turns the open list into changes: what appeared is raised, what left is cleared, and what got its text later is
+/// filled under the same id.
 #[derive(Default)]
 struct Differ {
-    known: HashSet<String>,
+    /// Forwarded items and the prompt the conductor last heard for each.
+    known: HashMap<String, Option<String>>,
     /// How an item left when this node itself made it leave (an answer or an ack from the conductor).
     by: HashMap<String, ClearedBy>,
 }
@@ -252,19 +289,38 @@ struct Differ {
 impl Differ {
     fn changes(&mut self, epoch: u64, items: &[Attention]) -> Vec<NodeMessage> {
         let mut out = Vec::new();
-        for a in items {
-            if self.known.insert(a.id.clone()) {
-                out.push(NodeMessage::Raised {
-                    epoch,
-                    seq: 0,
-                    obligation: obligation_of(a),
-                });
+        for a in items.iter().filter(|a| forwarded(a)) {
+            let o = obligation_of(a);
+            match self.known.get_mut(&a.id) {
+                None => {
+                    self.known.insert(a.id.clone(), o.prompt.clone());
+                    out.push(NodeMessage::Raised {
+                        epoch,
+                        seq: 0,
+                        obligation: o,
+                    });
+                }
+                Some(heard) if o.prompt.is_some() && *heard != o.prompt => {
+                    *heard = o.prompt.clone();
+                    out.push(NodeMessage::Filled {
+                        epoch,
+                        seq: 0,
+                        id: o.id,
+                        prompt: o.prompt,
+                        ask: o.ask,
+                    });
+                }
+                Some(_) => {}
             }
         }
-        let open: HashSet<&str> = items.iter().map(|a| a.id.as_str()).collect();
+        let open: HashSet<&str> = items
+            .iter()
+            .filter(|a| forwarded(a))
+            .map(|a| a.id.as_str())
+            .collect();
         let gone: Vec<String> = self
             .known
-            .iter()
+            .keys()
             .filter(|id| !open.contains(id.as_str()))
             .cloned()
             .collect();
@@ -283,8 +339,12 @@ impl Differ {
 
     /// After a snapshot the conductor knows exactly this list.
     fn reset(&mut self, items: &[Attention]) {
-        self.known = items.iter().map(|a| a.id.clone()).collect();
-        self.by.retain(|id, _| self.known.contains(id));
+        self.known = items
+            .iter()
+            .filter(|a| forwarded(a))
+            .map(|a| (a.id.clone(), obligation_of(a).prompt))
+            .collect();
+        self.by.retain(|id, _| self.known.contains_key(id));
     }
 }
 
@@ -298,6 +358,19 @@ fn stamp(m: NodeMessage, seq: u64) -> NodeMessage {
             obligation,
         },
         NodeMessage::Cleared { epoch, id, by, .. } => NodeMessage::Cleared { epoch, seq, id, by },
+        NodeMessage::Filled {
+            epoch,
+            id,
+            prompt,
+            ask,
+            ..
+        } => NodeMessage::Filled {
+            epoch,
+            seq,
+            id,
+            prompt,
+            ask,
+        },
         NodeMessage::Acked {
             epoch,
             id,
@@ -449,6 +522,10 @@ struct State {
     differ: Differ,
     /// `idem` keys already applied, so a redelivery after a reconnect does nothing.
     applied: VecDeque<String>,
+    /// The highest conductor epoch seen; a conductor below it is a returning old active and is refused.
+    lease: crate::conductor_standby::Lease,
+    /// Set once a welcome was accepted on this dial round.
+    up: bool,
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -460,7 +537,17 @@ enum Ended {
 }
 
 /// Keeps the link up for as long as the process runs, unless the conductor removes the node.
-pub async fn run(dir: PathBuf, mut pin: Pin, node: Node, mut backoff: Backoff) {
+pub async fn run(dir: PathBuf, pin: Pin, node: Node, backoff: Backoff) {
+    run_with(dir, pin, node, backoff, STANDBY_AFTER).await
+}
+
+async fn run_with(
+    dir: PathBuf,
+    mut pin: Pin,
+    node: Node,
+    mut backoff: Backoff,
+    standby_after: Duration,
+) {
     let mut rx = node.hub.subscribe_status();
     let mut st = State {
         epoch: rand::random::<u64>() >> 1,
@@ -468,28 +555,46 @@ pub async fn run(dir: PathBuf, mut pin: Pin, node: Node, mut backoff: Backoff) {
         outbox: Outbox::default(),
         differ: Differ::default(),
         applied: VecDeque::new(),
+        lease: Default::default(),
+        up: false,
     };
+    let mut down_since: Option<tokio::time::Instant> = None;
     // Whatever is open now reaches the conductor in the first snapshot.
     st.differ.reset(&node.hub.attention_items());
     loop {
         let started = tokio::time::Instant::now();
-        for url in pin.urls.clone() {
-            let Ok(Ok((ws, _))) =
-                tokio::time::timeout(STEP, tokio_tungstenite::connect_async(url.as_str())).await
-            else {
-                continue;
-            };
-            match session(ws, &mut pin, &dir, &node, &mut st, &mut rx).await {
-                Ok(Ended::Disabled) => {
-                    tracing::info!("conductor removed this node; the link stays off");
-                    pin.enabled = false;
-                    let _ = pin.save(&dir);
-                    return;
-                }
-                Ok(Ended::Lost) => {}
-                Err(e) => tracing::debug!("conductor link: {e:#}"),
+        st.up = false;
+        let mut targets = vec![(pin.conductor.clone(), pin.urls.clone(), false)];
+        if down_since.is_some_and(|d| d.elapsed() >= standby_after) {
+            if let Some(p) = &pin.standby {
+                targets.push((p.conductor.clone(), p.urls.clone(), true));
             }
-            break;
+        }
+        'dial: for (id, urls, standby) in targets {
+            for url in urls {
+                let Ok(Ok((ws, _))) =
+                    tokio::time::timeout(STEP, tokio_tungstenite::connect_async(url.as_str()))
+                        .await
+                else {
+                    continue;
+                };
+                match session(ws, &mut pin, &dir, &node, &mut st, &mut rx, &id, standby).await {
+                    Ok(Ended::Disabled) if !standby => {
+                        tracing::info!("conductor removed this node; the link stays off");
+                        pin.enabled = false;
+                        let _ = pin.save(&dir);
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::debug!("conductor link: {e:#}"),
+                }
+                break 'dial;
+            }
+        }
+        if st.up {
+            down_since = Some(tokio::time::Instant::now());
+        } else {
+            down_since.get_or_insert_with(tokio::time::Instant::now);
         }
         if started.elapsed() >= Duration::from_secs(30) {
             backoff.reset();
@@ -610,6 +715,8 @@ async fn session<S>(
     node: &Node,
     st: &mut State,
     rx: &mut tokio::sync::broadcast::Receiver<StatusChange>,
+    expect: &str,
+    standby: bool,
 ) -> Result<Ended>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -618,10 +725,7 @@ where
     send_json(&mut tx, &ClientMessage::Hello { protocol: PROTOCOL }).await?;
     let nonce = match recv::<ServerMessage, _>(&mut inbound).await? {
         ServerMessage::Challenge { nonce, server_id } => {
-            anyhow::ensure!(
-                server_id == pin.conductor,
-                "the peer is not the pinned conductor"
-            );
+            anyhow::ensure!(server_id == expect, "the peer is not the pinned conductor");
             nonce
         }
         _ => anyhow::bail!("no challenge"),
@@ -636,19 +740,52 @@ where
             epoch: st.epoch,
             version: node.version.clone(),
             caps: Vec::new(),
-            enrol: pin.enrol.clone(),
+            enrol: if standby { None } else { pin.enrol.clone() },
             sig,
         }
         .capped(),
     )
     .await?;
     match recv::<ConductorMessage, _>(&mut inbound).await? {
-        ConductorMessage::Welcome { .. } => {}
+        ConductorMessage::Welcome {
+            conductor_epoch,
+            standby: bundle,
+            ..
+        } => {
+            anyhow::ensure!(
+                st.lease.accept(conductor_epoch),
+                "the conductor's epoch is below one already seen"
+            );
+            // Only the active names the standby; the standby's own welcome never rewrites the pin.
+            if let (false, Some(wire)) = (standby, bundle.filter(|w| w.len() <= 4096)) {
+                if let Ok(b) = Bundle::verify(&wire, now_ms() / 1000, None, None) {
+                    let peer = Peer {
+                        conductor: b.server_id.clone(),
+                        urls: urls_of(&b),
+                    };
+                    if !peer.urls.is_empty() && pin.standby.as_ref() != Some(&peer) {
+                        pin.standby = Some(peer);
+                        pin.save(dir)?;
+                    }
+                }
+            }
+        }
         ConductorMessage::Disable => return Ok(Ended::Disabled),
         _ => anyhow::bail!("no welcome"),
     }
+    st.up = true;
+    if standby {
+        // The second view of the standby's takeover rule: this node cannot reach the active.
+        send_json(
+            &mut tx,
+            &NodeMessage::PeerReport {
+                active: pin.conductor.clone(),
+            },
+        )
+        .await?;
+    }
     // The secret is single use: once welcomed, forget it.
-    if pin.enrol.take().is_some() {
+    if !standby && pin.enrol.take().is_some() {
         pin.save(dir)?;
     }
     tracing::info!("conductor link up");
@@ -659,13 +796,20 @@ where
         st.differ.reset(&items);
         NodeMessage::Snapshot {
             epoch: st.epoch,
-            items: items.iter().map(obligation_of).collect(),
+            items: items
+                .iter()
+                .filter(|a| forwarded(a))
+                .map(obligation_of)
+                .collect(),
             workspaces: Vec::new(),
         }
     };
-    st.outbox
-        .queue
-        .retain(|(m, _)| !matches!(m, NodeMessage::Raised { .. } | NodeMessage::Cleared { .. }));
+    st.outbox.queue.retain(|(m, _)| {
+        !matches!(
+            m,
+            NodeMessage::Raised { .. } | NodeMessage::Cleared { .. } | NodeMessage::Filled { .. }
+        )
+    });
     st.outbox.bytes = st.outbox.queue.iter().map(|(_, s)| s).sum();
     let first = snapshot(node, st);
     send_json(&mut tx, &first).await?;
@@ -811,9 +955,11 @@ mod tests {
         State {
             epoch: 1,
             seq: 0,
-            outbox: Outbox::default(),
             differ: Differ::default(),
+            outbox: Outbox::default(),
             applied: VecDeque::new(),
+            lease: Default::default(),
+            up: false,
         }
     }
 
@@ -930,6 +1076,149 @@ mod tests {
         assert_eq!(hub.attention_items().len(), 1);
     }
 
+    fn item(
+        id: &str,
+        kind: AttentionKind,
+        tier: Option<AttentionTier>,
+        prompt: Option<&str>,
+    ) -> Attention {
+        Attention {
+            id: id.into(),
+            workspace: "w".into(),
+            tab: Some("t".into()),
+            kind,
+            raised_at: 1,
+            task: None,
+            prompt: prompt.map(Into::into),
+            tier,
+            ask: (kind == AttentionKind::NeedsInput)
+                .then_some(termenbox_core::events::AskKind::Permission),
+            cause: None,
+        }
+    }
+
+    #[test]
+    fn conductor_link_forwards_asks_and_results_but_not_info() {
+        let mut d = Differ::default();
+        let items = [
+            item(
+                "a",
+                AttentionKind::NeedsInput,
+                Some(AttentionTier::NeedsYou),
+                Some("ok?"),
+            ),
+            item(
+                "r",
+                AttentionKind::FinishedUnseen,
+                Some(AttentionTier::Result),
+                None,
+            ),
+            item(
+                "i",
+                AttentionKind::FinishedUnseen,
+                Some(AttentionTier::Info),
+                None,
+            ),
+        ];
+        let out = d.changes(1, &items);
+        let tiers: Vec<_> = out
+            .iter()
+            .map(|m| match m {
+                NodeMessage::Raised { obligation, .. } => {
+                    (obligation.id.clone(), obligation.tier, obligation.is_ask())
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        // A result is carried as a result and is not an ask; info never leaves the node.
+        assert_eq!(tiers.len(), 2);
+        assert!(tiers.contains(&("a".into(), Some(AttentionTier::NeedsYou), true)));
+        assert!(tiers.contains(&("r".into(), Some(AttentionTier::Result), false)));
+    }
+
+    #[test]
+    fn conductor_link_an_item_from_before_the_status_model_derives_its_tier_from_its_kind() {
+        let mut d = Differ::default();
+        let out = d.changes(
+            1,
+            &[item("a", AttentionKind::NeedsInput, None, Some("ok?"))],
+        );
+        assert!(matches!(
+            out.as_slice(),
+            [NodeMessage::Raised { obligation, .. }] if obligation.tier == Some(AttentionTier::NeedsYou)
+        ));
+    }
+
+    #[test]
+    fn conductor_link_a_fill_keeps_the_id_and_never_raises_twice() {
+        let mut d = Differ::default();
+        let bare = item(
+            "a",
+            AttentionKind::NeedsInput,
+            Some(AttentionTier::NeedsYou),
+            None,
+        );
+        assert_eq!(d.changes(1, &[bare.clone()]).len(), 1);
+        assert!(d.changes(1, &[bare]).is_empty());
+        let filled = item(
+            "a",
+            AttentionKind::NeedsInput,
+            Some(AttentionTier::NeedsYou),
+            Some("Run cargo test?"),
+        );
+        let out = d.changes(1, &[filled.clone()]);
+        assert!(matches!(
+            out.as_slice(),
+            [NodeMessage::Filled { id, prompt: Some(p), .. }] if id == "a" && p == "Run cargo test?"
+        ));
+        // The same text again says nothing; a changed text fills again under the same id.
+        assert!(d.changes(1, &[filled.clone()]).is_empty());
+        let changed = Attention {
+            prompt: Some("Run cargo build?".into()),
+            ..filled
+        };
+        assert!(matches!(
+            d.changes(1, &[changed]).as_slice(),
+            [NodeMessage::Filled { id, .. }] if id == "a"
+        ));
+    }
+
+    #[test]
+    fn conductor_link_a_clear_while_away_drops_the_raise_and_its_fills() {
+        let mut q = Outbox::default();
+        q.push(raised("a"));
+        q.push(NodeMessage::Filled {
+            epoch: 1,
+            seq: 0,
+            id: "a".into(),
+            prompt: Some("p".into()),
+            ask: None,
+        });
+        q.push(NodeMessage::Cleared {
+            epoch: 1,
+            seq: 0,
+            id: "a".into(),
+            by: ClearedBy::Fact,
+        });
+        assert_eq!(q.len(), 0);
+    }
+
+    #[test]
+    fn conductor_link_the_cleared_by_view_path_still_clears_a_result() {
+        let mut d = Differ::default();
+        let r = item(
+            "r",
+            AttentionKind::FinishedUnseen,
+            Some(AttentionTier::Result),
+            None,
+        );
+        assert_eq!(d.changes(1, &[r]).len(), 1);
+        assert!(matches!(
+            d.changes(1, &[]).as_slice(),
+            [NodeMessage::Cleared { id, by: ClearedBy::Fact, .. }] if id == "r"
+        ));
+    }
+
     fn tmpdir() -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("termenbox-conductor-{}", uuid::Uuid::new_v4()));
@@ -951,6 +1240,9 @@ mod tests {
                 class_features: vec![],
                 task: None,
                 prompt: Some("p".into()),
+                tier: None,
+                ask: None,
+                cause: None,
             },
         }
     }
@@ -1104,6 +1396,18 @@ mod tests {
         Vec<Message>,
         tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
     ) {
+        fake_conductor_with(listener, key, take, None).await
+    }
+
+    async fn fake_conductor_with(
+        listener: &TcpListener,
+        key: &ServerKey,
+        take: usize,
+        standby: Option<String>,
+    ) -> (
+        Vec<Message>,
+        tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    ) {
         let (sock, _) = listener.accept().await.unwrap();
         let mut ws = tokio_tungstenite::accept_async(sock).await.unwrap();
         let Some(Ok(Message::Text(hello))) = ws.next().await else {
@@ -1129,6 +1433,7 @@ mod tests {
             epoch_ack: 0,
             heartbeat_s: 30,
             conductor_epoch: 1,
+            standby,
         };
         ws.send(Message::Text(serde_json::to_string(&welcome).unwrap()))
             .await
@@ -1148,6 +1453,73 @@ mod tests {
             Message::Text(t) => serde_json::from_str(t).unwrap(),
             other => panic!("the link sent a non-text frame: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn conductor_link_dials_the_standby_only_after_the_active_has_been_gone_and_reports_it() {
+        let active_key = ServerKey::from_seed([9; 32]);
+        let standby_key = ServerKey::from_seed([8; 32]);
+        let active = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let standby = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (ap, sp) = (
+            active.local_addr().unwrap().port(),
+            standby.local_addr().unwrap().port(),
+        );
+        let bundle_of = |key: &ServerKey, port| {
+            signed_link(key, port, "")
+                .rsplit_once("/pair/")
+                .unwrap()
+                .1
+                .to_string()
+        };
+        let dir = tmpdir();
+        let pin = Pin::from_link(&signed_link(&active_key, ap, ""), now_ms() / 1000).unwrap();
+        pin.save(dir.as_path()).unwrap();
+        let node = Node {
+            key: ServerKey::from_seed([5; 32]),
+            name: "vps".into(),
+            version: "t".into(),
+            hub: EventHub::new([7; 32]),
+            applier: None,
+        };
+        tokio::spawn(run_with(
+            dir.clone(),
+            pin,
+            node,
+            Backoff::new(Duration::from_millis(20), Duration::from_millis(50)),
+            Duration::from_millis(300),
+        ));
+
+        // The active welcomes the node and names the standby; the node keeps it in the pin.
+        let (_, ws) =
+            fake_conductor_with(&active, &active_key, 2, Some(bundle_of(&standby_key, sp))).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let peer = Pin::load(dir.as_path()).unwrap().standby.unwrap();
+        assert_eq!(peer.conductor, standby_key.server_id());
+        // The standby is not dialled while the active answers: nothing is waiting on its listener yet.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), standby.accept())
+                .await
+                .is_err()
+        );
+
+        // The active goes away for good; once the window passes the node dials the standby and says why.
+        drop(ws);
+        drop(active);
+        let (frames, _ws) = tokio::time::timeout(
+            Duration::from_secs(5),
+            fake_conductor(&standby, &standby_key, 2),
+        )
+        .await
+        .expect("the node dials the standby");
+        let NodeMessage::Hello { enrol, .. } = parse(&frames[0]) else {
+            panic!("hello first")
+        };
+        assert_eq!(enrol, None);
+        let NodeMessage::PeerReport { active } = parse(&frames[1]) else {
+            panic!("a peer report right after the welcome")
+        };
+        assert_eq!(active, active_key.server_id());
     }
 
     #[tokio::test]

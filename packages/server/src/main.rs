@@ -31,6 +31,8 @@ mod cloudflare;
 mod command_match;
 mod conductor;
 mod conductor_link;
+#[allow(dead_code)]
+mod conductor_standby;
 mod conductor_terminal;
 mod connection;
 mod container;
