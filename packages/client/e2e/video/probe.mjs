@@ -17,7 +17,7 @@ export async function startProbe(_shared, probe, { viewport, scale, phone, recor
   });
   await new Promise((r) => srv.listen(0, '127.0.0.1', r));
   const browser = await launch();
-  const ctx = await browser.newContext(contextOptions({ viewport, deviceScaleFactor: scale, isMobile: phone, hasTouch: phone, recordVideo: { dir: recordDir, size: viewport } }));
+  const ctx = await browser.newContext(contextOptions({ reducedMotion: 'reduce', viewport, deviceScaleFactor: scale, isMobile: phone, hasTouch: phone, recordVideo: { dir: recordDir, size: viewport } }));
   await ctx.addInitScript(overlay, phone);
   const page = await ctx.newPage();
   const errors = [];

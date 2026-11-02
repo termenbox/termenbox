@@ -57,6 +57,10 @@ export const overlayScript = (phone) => {
   window.__humanMove = (x, y) => {
     const h = window.__human;
     if (!h) return;
+    // The first move puts the pointer where it starts: without this it flies in from the corner of the screen.
+    const first = h.spot.style.opacity !== '1';
+    const kept = h.spot.style.transition;
+    if (first) { h.spot.style.transition = 'none'; h.spot.style.transform = `translate(${x}px, ${y}px)`; void h.spot.offsetWidth; h.spot.style.transition = kept; }
     h.spot.style.opacity = '1';
     h.spot.style.transform = `translate(${x}px, ${y}px)`;
     h.ring.style.left = `${x}px`; h.ring.style.top = `${y}px`;
@@ -96,22 +100,18 @@ export function humanPage(page, profile, { pace = 'normal', caption: drawCaption
     page, phone,
     /** Stills taken so far: {name, png}. render.mjs writes them only when the whole case passed. */
     stills: [],
-    /** [from, to] epoch milliseconds in which the overlay was hidden for a still. */
-    hidden: [],
+    /** [epoch milliseconds, x, y] of every pointer move (CSS pixels): the pointer is moved on purpose, so the flicker check leaves it out. */
+    pointer: [],
     /**
-     * A screenshot of the page at the context's pixel ratio, without the pointer and caption. Call it right after an
+     * A screenshot of the page at the context's pixel ratio, with the pointer and caption as they are on screen. Call it right after an
      * expectThat: it throws when no assertion has passed since the last still (GUARDRAIL ux-scenarios-assert-a-state-before-they-capture-it).
      */
     async still(name) {
       if (assertions === lastStill) throw new Error(`still ${name}: no state was asserted before it`);
       lastStill = assertions;
       await h.pause(400);
-      // The overlay is gone from the recording while the screenshot is taken: render.mjs cuts `hidden` out of the video.
-      await page.evaluate(() => { const r = document.getElementById('__human'); if (r) r.style.visibility = 'hidden'; });
-      const from = Date.now();
+      // The overlay stays on screen: hiding it for the screenshot drops the caption and pointer from about five recorded frames.
       const png = await page.screenshot({ type: 'png' });
-      await page.evaluate(() => { const r = document.getElementById('__human'); if (r) r.style.visibility = ''; });
-      h.hidden.push([from, Date.now()]);
       h.stills.push({ name, png });
     },
     top: () => page.evaluate(() => window.__humanTop?.()),
@@ -142,6 +142,7 @@ export function humanPage(page, profile, { pace = 'normal', caption: drawCaption
       await h.top();
       for (const { x, y, ms } of pointerPath(at, to, rng)) {
         if (!phone) await page.mouse.move(x, y);
+        h.pointer.push([Date.now(), x, y]);
         await page.evaluate(([px, py]) => window.__humanMove?.(px, py), [x, y]);
         await wait(ms);
       }

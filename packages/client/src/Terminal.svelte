@@ -513,7 +513,7 @@
   $: if (term && $settings) term.options.theme = terminalTheme(document.documentElement.dataset.theme === 'light');
 
   onMount(() => {
-    term = new XTermTerminal({ linkHandler: hyperlinkHandler(openRequested), cursorBlink: true, fontSize, fontFamily: FONT_FAMILY, theme: terminalTheme(document.documentElement.dataset.theme === 'light') });
+    term = new XTermTerminal({ linkHandler: hyperlinkHandler(openRequested), cursorBlink: !matchMedia('(prefers-reduced-motion: reduce)').matches, fontSize, fontFamily: FONT_FAMILY, theme: terminalTheme(document.documentElement.dataset.theme === 'light') });
     fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     serializer = new SerializeAddon();
