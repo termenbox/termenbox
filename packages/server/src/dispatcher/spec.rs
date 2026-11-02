@@ -150,7 +150,9 @@ impl Env for NodeEnv {
         for l in String::from_utf8_lossy(&out.stdout).lines() {
             let mut p = l.split('\t');
             let n = |s: Option<&str>| s.and_then(|x| x.parse::<u32>().ok()).unwrap_or(0);
-            lines = lines.saturating_add(n(p.next())).saturating_add(n(p.next()));
+            lines = lines
+                .saturating_add(n(p.next()))
+                .saturating_add(n(p.next()));
             files += 1;
         }
         Ok(DiffStat { files, lines })
@@ -197,16 +199,28 @@ mod tests {
 
     #[test]
     fn dispatcher_spec_a_failing_command_fails_the_task() {
-        let f = Fake { ok: false, stat: None };
+        let f = Fake {
+            ok: false,
+            stat: None,
+        };
         let o = run(&spec(vec![cmd()]), "a", dir(), &f, None);
         assert_eq!(o.verdict, Verdict::Fail);
-        let f = Fake { ok: true, stat: None };
-        assert_eq!(run(&spec(vec![cmd()]), "a", dir(), &f, None).verdict, Verdict::Pass);
+        let f = Fake {
+            ok: true,
+            stat: None,
+        };
+        assert_eq!(
+            run(&spec(vec![cmd()]), "a", dir(), &f, None).verdict,
+            Verdict::Pass
+        );
     }
 
     #[test]
     fn dispatcher_spec_a_missing_verifier_is_none_never_a_pass() {
-        let f = Fake { ok: true, stat: None };
+        let f = Fake {
+            ok: true,
+            stat: None,
+        };
         let o = run(&spec(vec![]), "a", dir(), &f, None);
         assert_eq!(o.verdict, Verdict::None);
         assert!(o.each.is_empty());
@@ -214,19 +228,37 @@ mod tests {
         let o = run(&spec(vec![cmd(), Verifier::Reviewer]), "a", dir(), &f, None);
         assert_eq!(o.verdict, Verdict::None);
         // ...but a fail elsewhere still fails it.
-        let f = Fake { ok: false, stat: None };
+        let f = Fake {
+            ok: false,
+            stat: None,
+        };
         let o = run(&spec(vec![cmd(), Verifier::Reviewer]), "a", dir(), &f, None);
         assert_eq!(o.verdict, Verdict::Fail);
     }
 
     #[test]
     fn dispatcher_spec_a_reviewer_never_uses_the_authors_model() {
-        let f = Fake { ok: true, stat: None };
+        let f = Fake {
+            ok: true,
+            stat: None,
+        };
         let same = Rev("m1", true);
-        let o = run(&spec(vec![Verifier::Reviewer]), "m1", dir(), &f, Some(&same));
+        let o = run(
+            &spec(vec![Verifier::Reviewer]),
+            "m1",
+            dir(),
+            &f,
+            Some(&same),
+        );
         assert_eq!(o.verdict, Verdict::None);
         let other = Rev("m2", true);
-        let o = run(&spec(vec![Verifier::Reviewer]), "m1", dir(), &f, Some(&other));
+        let o = run(
+            &spec(vec![Verifier::Reviewer]),
+            "m1",
+            dir(),
+            &f,
+            Some(&other),
+        );
         assert_eq!(o.verdict, Verdict::Pass);
         let no = Rev("m2", false);
         let o = run(&spec(vec![Verifier::Reviewer]), "m1", dir(), &f, Some(&no));
@@ -235,13 +267,37 @@ mod tests {
 
     #[test]
     fn dispatcher_spec_a_diff_bound_checks_files_and_lines() {
-        let b = Verifier::DiffBound { max_files: 3, max_lines: 50 };
-        let ok = Fake { ok: true, stat: Some(DiffStat { files: 3, lines: 50 }) };
-        assert_eq!(run(&spec(vec![b.clone()]), "a", dir(), &ok, None).verdict, Verdict::Pass);
-        let big = Fake { ok: true, stat: Some(DiffStat { files: 4, lines: 1 }) };
-        assert_eq!(run(&spec(vec![b.clone()]), "a", dir(), &big, None).verdict, Verdict::Fail);
-        let none = Fake { ok: true, stat: None };
-        assert_eq!(run(&spec(vec![b]), "a", dir(), &none, None).verdict, Verdict::None);
+        let b = Verifier::DiffBound {
+            max_files: 3,
+            max_lines: 50,
+        };
+        let ok = Fake {
+            ok: true,
+            stat: Some(DiffStat {
+                files: 3,
+                lines: 50,
+            }),
+        };
+        assert_eq!(
+            run(&spec(vec![b.clone()]), "a", dir(), &ok, None).verdict,
+            Verdict::Pass
+        );
+        let big = Fake {
+            ok: true,
+            stat: Some(DiffStat { files: 4, lines: 1 }),
+        };
+        assert_eq!(
+            run(&spec(vec![b.clone()]), "a", dir(), &big, None).verdict,
+            Verdict::Fail
+        );
+        let none = Fake {
+            ok: true,
+            stat: None,
+        };
+        assert_eq!(
+            run(&spec(vec![b]), "a", dir(), &none, None).verdict,
+            Verdict::None
+        );
     }
 
     #[test]
