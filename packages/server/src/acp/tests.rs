@@ -1923,3 +1923,16 @@ async fn a_new_workspace_gets_a_random_id_and_the_typed_name_is_only_a_label_tha
     let _ = b.backend.kill(&id).await;
     let _ = a.backend.kill(&id).await;
 }
+
+#[test]
+fn model_of_reads_the_models_block_then_the_model_config_option_and_nothing_else() {
+    let a =
+        json!({"sessionId":"s","models":{"currentModelId":"claude-opus-5-5","availableModels":[]}});
+    assert_eq!(model_of(&a).as_deref(), Some("claude-opus-5-5"));
+    let b = json!({"sessionId":"s","configOptions":[
+        {"id":"mode","category":"mode","currentValue":"code"},
+        {"id":"m","category":"model","currentValue":"gpt-5"}]});
+    assert_eq!(model_of(&b).as_deref(), Some("gpt-5"));
+    assert_eq!(model_of(&json!({"sessionId":"s"})), None);
+    assert_eq!(model_of(&json!({"models":{"currentModelId":""}})), None);
+}
