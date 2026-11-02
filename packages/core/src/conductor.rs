@@ -204,6 +204,9 @@ pub enum NodeMessage {
         #[serde(default)]
         queue_dropped: u32,
     },
+    /// Sent to a standby conductor on dialling it: this node could not reach the active conductor `active` (its
+    /// server id). One of the two views the standby needs before it takes over.
+    PeerReport { active: String },
     /// Bytes of an open terminal (base64), from the node. Only after an `open_terminal` of the same `ticket`.
     TerminalOutput { ticket: String, data: String },
     /// The node ended an open terminal (the tab closed, the open was refused); nothing follows on this ticket.
@@ -554,6 +557,14 @@ mod tests {
         assert!(serde_json::from_str::<NodeMessage>(answered).is_err());
         let acked = r#"{"type":"acked","epoch":1,"seq":1,"id":"a1","actor":"me"}"#;
         assert!(serde_json::from_str::<NodeMessage>(acked).is_err());
+    }
+
+    #[test]
+    fn conductor_peer_report_round_trips() {
+        let m = NodeMessage::PeerReport { active: "k".into() };
+        let t = serde_json::to_string(&m).unwrap();
+        assert_eq!(t, r#"{"type":"peer_report","active":"k"}"#);
+        assert_eq!(serde_json::from_str::<NodeMessage>(&t).unwrap(), m);
     }
 
     #[test]

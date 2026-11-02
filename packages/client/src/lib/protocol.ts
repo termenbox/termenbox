@@ -663,6 +663,7 @@ export type NodeMessage =
   | { type: 'answered'; epoch: number; seq: number; id: string; actor: string; owner: string; device: string; option: string }
   | { type: 'usage'; epoch: number; seq: number; rows: ConductorUsageRow[] }
   | { type: 'incident'; epoch: number; seq: number; cause: string; workspace?: string; detail?: string }
+  | { type: 'peer_report'; active: string }
   | { type: 'health'; epoch: number; seq: number; agents: number; working: number; waiting: number; load?: number; queue_dropped?: number };
 
 /** Conductor to node. An answer or ack without `actor` and `owner` is not valid. */

@@ -508,6 +508,8 @@ struct State {
     differ: Differ,
     /// `idem` keys already applied, so a redelivery after a reconnect does nothing.
     applied: VecDeque<String>,
+    /// The highest conductor epoch seen; a conductor below it is a returning old active and is refused.
+    lease: crate::conductor_standby::Lease,
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -527,6 +529,7 @@ pub async fn run(dir: PathBuf, mut pin: Pin, node: Node, mut backoff: Backoff) {
         outbox: Outbox::default(),
         differ: Differ::default(),
         applied: VecDeque::new(),
+        lease: Default::default(),
     };
     // Whatever is open now reaches the conductor in the first snapshot.
     st.differ.reset(&node.hub.attention_items());
@@ -702,7 +705,12 @@ where
     )
     .await?;
     match recv::<ConductorMessage, _>(&mut inbound).await? {
-        ConductorMessage::Welcome { .. } => {}
+        ConductorMessage::Welcome {
+            conductor_epoch, ..
+        } => anyhow::ensure!(
+            st.lease.accept(conductor_epoch),
+            "the conductor's epoch is below one already seen"
+        ),
         ConductorMessage::Disable => return Ok(Ended::Disabled),
         _ => anyhow::bail!("no welcome"),
     }
@@ -880,6 +888,7 @@ mod tests {
             outbox: Outbox::default(),
             differ: Differ::default(),
             applied: VecDeque::new(),
+            lease: Default::default(),
         }
     }
 
