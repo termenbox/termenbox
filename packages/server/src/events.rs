@@ -705,12 +705,12 @@ impl EventHub {
     }
 
     /// Counts an ACP agent reported for a turn (U13), kept against the task in flight.
-    pub fn record_tokens(&self, workspace: &str, t: crate::history::Tokens) {
+    pub fn record_tokens(&self, workspace: &str, model: Option<&str>, t: crate::history::Tokens) {
         if let Some(h) = &self.history {
             h.tokens(workspace, t);
         }
-        // ACP names no model with its counts.
-        self.meter_tokens(None, &t);
+        // ACP names no model with its counts: `model` is what the agent named when the session began.
+        self.meter_tokens(model, &t);
     }
 
     /// Task telemetry (plan step 1.4): a turn's counts go to the meter's day bucket. Numbers and a model id only.
@@ -3873,6 +3873,7 @@ mod tests {
         );
         h.record_tokens(
             "acp",
+            None,
             crate::history::Tokens {
                 input: Some(1472),
                 output: Some(35),

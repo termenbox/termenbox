@@ -326,6 +326,24 @@ pub(crate) fn dropped(what: &str) {
     tracing::debug!(what, total, "dropped an ACP message that did not decode");
 }
 
+/// The model a `session/new`, `resume` or `load` result names: `models.currentModelId`, or the current value of a config
+/// option in the `model` category. Read from the raw result because both are unstable in the schema.
+fn model_of(result: &Value) -> Option<String> {
+    let id = result
+        .pointer("/models/currentModelId")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            result
+                .get("configOptions")?
+                .as_array()?
+                .iter()
+                .find(|o| o.get("category").and_then(Value::as_str) == Some("model"))?
+                .get("currentValue")?
+                .as_str()
+        })?;
+    (!id.is_empty()).then(|| id.chars().take(64).collect())
+}
+
 /// Decodes one value into a schema type without copying it. `None` (counted) when it does not fit.
 pub(crate) fn decode<T: serde::de::DeserializeOwned>(v: &Value, what: &str) -> Option<T> {
     match T::deserialize(v) {
@@ -667,6 +685,8 @@ struct Inner {
     turn: bool,
     /// `session/load` replays history as updates; those are not news.
     replaying: bool,
+    /// The model the agent named when the session began (plan step 1.4), for the meter's per-model buckets.
+    model: Option<String>,
     /// What the workspace view shows (T0): kept here, bounded, and handed to a client on `acp_open`.
     stream: Stream,
     /// The conversation as scrubbed `session/update` frames with a sequence number, for a client that resumes.
@@ -1013,6 +1033,7 @@ fn spawn_agent(
             acp_id: String::new(),
             turn: false,
             replaying: false,
+            model: None,
             stream: Stream::new(agent, dir, crate::events::now_ms()),
             log: crate::event_log::EventLog::new("", crate::events::now_ms(), event_ring_bytes),
         }),
@@ -1152,6 +1173,7 @@ async fn handshake(
             let new: acp::NewSessionResponse = decode(&r, "session/new result")
                 .ok_or_else(|| anyhow!("the agent's session/new answer has no workspace id"))?;
             live.stream(|st| st.workspace_state(&r));
+            live.inner.lock_or_recover().model = model_of(&r);
             Ok(new.session_id.to_string())
         }
         Some(id) if caps.session_capabilities.resume.is_some() => {
@@ -1162,6 +1184,7 @@ async fn handshake(
                 .request("session/resume", params, Some(SETUP_TIMEOUT))
                 .await?;
             live.stream(|st| st.workspace_state(&r));
+            live.inner.lock_or_recover().model = model_of(&r);
             Ok(id.to_string())
         }
         Some(id) if caps.load_session => {
@@ -1180,6 +1203,7 @@ async fn handshake(
                 r?
             };
             live.stream(|st| st.workspace_state(&r));
+            live.inner.lock_or_recover().model = model_of(&r);
             Ok(id.to_string())
         }
         Some(_) => Err(anyhow!("the agent can neither resume nor load a workspace")),
@@ -1997,8 +2021,10 @@ impl WorkspaceBackend for AcpBackend {
             if let (Ok(v), Some(hub)) = (&r, &live.hub) {
                 if let Some(u) = v.get("usage").filter(|u| u.is_object()) {
                     let n = |k: &str| u.get(k).and_then(Value::as_u64);
+                    let model = live.inner.lock_or_recover().model.clone();
                     hub.record_tokens(
                         &live.event_name,
+                        model.as_deref(),
                         crate::history::Tokens {
                             input: n("inputTokens"),
                             output: n("outputTokens"),
