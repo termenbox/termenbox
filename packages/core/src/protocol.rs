@@ -381,6 +381,30 @@ pub enum ClientMessage {
         #[serde(default)]
         hidden: bool,
     },
+    /// Asks to copy a file from the device into the working folder of a tab (decision 0194). The client names
+    /// the tab, never a folder: the server resolves and pins it, then answers `upload_ready` or `upload_denied`.
+    /// Owner only. `id` is chosen by the client and also tags the binary chunks (`UploadFrame`).
+    UploadStart {
+        id: u32,
+        workspace: String,
+        tab: String,
+        name: String,
+        size: u64,
+        #[serde(default)]
+        collision: UploadCollision,
+    },
+    /// Continues an upload kept after a dropped connection, from the offset in `upload_ready`.
+    UploadResume {
+        id: u32,
+    },
+    /// All bytes were sent; the server checks the size and moves the file into place.
+    UploadFinish {
+        id: u32,
+    },
+    /// Stops an upload and deletes its partial file.
+    UploadCancel {
+        id: u32,
+    },
     NewWorkspace {
         name: String,
         /// Which workspace manager to create it in (`tmux`, `command`); the first one when absent.
@@ -832,6 +856,37 @@ pub enum ServerMessage {
     DirError {
         reason: String,
     },
+    /// The server pinned `dir` for upload `id` and expects chunks from byte `offset`.
+    UploadReady {
+        id: u32,
+        dir: String,
+        offset: u64,
+    },
+    /// The server has written `received` bytes of upload `id`; the client may send more up to its window.
+    UploadProgress {
+        id: u32,
+        received: u64,
+    },
+    /// The file is in place at `path` (the final name, after Keep both) and holds `size` bytes.
+    UploadDone {
+        id: u32,
+        path: String,
+        size: u64,
+    },
+    /// The upload was refused before any byte was written; `reason` is a short sentence for the user.
+    UploadDenied {
+        id: u32,
+        reason: String,
+    },
+    /// The upload stopped after it began (disk, a write error, a wrong size); the partial file is gone.
+    UploadFailed {
+        id: u32,
+        reason: String,
+    },
+    /// Answer to `upload_cancel`.
+    UploadCancelled {
+        id: u32,
+    },
     WorkspaceAttached {
         workspace_id: String,
         /// The tab the terminal is attached to; absent from an older server.
@@ -1204,6 +1259,75 @@ pub enum AcpBody {
 
 /// The most directories one `dir_listing` carries.
 pub const DIR_LISTING_MAX: usize = 500;
+
+/// What to do when the name is taken in the folder (decision 0194).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UploadCollision {
+    /// The server picks `name (1).ext` and never overwrites.
+    #[default]
+    KeepBoth,
+    Replace,
+    Skip,
+}
+
+/// Free space that must remain after an upload.
+pub const UPLOAD_FREE_DISK_FLOOR: u64 = 1024 * 1024 * 1024;
+/// How long a partial file and its pinned folder are kept after the connection ends.
+pub const UPLOAD_RESUME_GRACE_SECS: u64 = 600;
+/// Bytes a client may have sent and not had acknowledged; the server holds at most this much.
+pub const UPLOAD_WINDOW_BYTES: usize = 1024 * 1024;
+pub const UPLOAD_STARTS_PER_MINUTE: u32 = 60;
+pub const UPLOAD_MAX_BATCH: usize = 100;
+/// The most file bytes in one upload frame (fact 0076: under the direct transport's 64 KiB message limit).
+pub const UPLOAD_CHUNK_MAX: usize = 16 * 1024;
+/// Upload id (`u32`) and byte offset (`u64`), big-endian, before the payload.
+pub const UPLOAD_FRAME_HEADER: usize = 12;
+
+/// Why a binary upload frame was not accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadFrameError {
+    /// Shorter than the header.
+    Short,
+    /// More than `UPLOAD_CHUNK_MAX` payload bytes.
+    Oversize,
+}
+
+/// A chunk of file bytes: the binary frame of the upload lane. The tag byte of the WebSocket lane is not part of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadFrame {
+    pub id: u32,
+    pub offset: u64,
+    pub data: Vec<u8>,
+}
+
+impl UploadFrame {
+    /// `None` when the payload exceeds `UPLOAD_CHUNK_MAX`.
+    pub fn encode(&self) -> Option<Vec<u8>> {
+        if self.data.len() > UPLOAD_CHUNK_MAX {
+            return None;
+        }
+        let mut out = Vec::with_capacity(UPLOAD_FRAME_HEADER + self.data.len());
+        out.extend(self.id.to_be_bytes());
+        out.extend(self.offset.to_be_bytes());
+        out.extend(&self.data);
+        Some(out)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, UploadFrameError> {
+        if bytes.len() < UPLOAD_FRAME_HEADER {
+            return Err(UploadFrameError::Short);
+        }
+        if bytes.len() - UPLOAD_FRAME_HEADER > UPLOAD_CHUNK_MAX {
+            return Err(UploadFrameError::Oversize);
+        }
+        Ok(Self {
+            id: u32::from_be_bytes(bytes[0..4].try_into().unwrap()),
+            offset: u64::from_be_bytes(bytes[4..12].try_into().unwrap()),
+            data: bytes[UPLOAD_FRAME_HEADER..].to_vec(),
+        })
+    }
+}
 
 /// One directory in a `dir_listing`: a name only, never a path, size or time.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -2301,5 +2425,144 @@ mod label_tests {
         ] {
             assert!(!printed.contains("client-x"), "{printed}");
         }
+    }
+}
+
+#[cfg(test)]
+mod upload_tests {
+    use super::*;
+
+    fn round<T: Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
+        m: T,
+    ) -> serde_json::Value {
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(serde_json::from_value::<T>(v.clone()).unwrap(), m);
+        v
+    }
+
+    #[test]
+    fn the_client_upload_messages_round_trip_and_start_has_no_folder() {
+        let v = round(ClientMessage::UploadStart {
+            id: 7,
+            workspace: "w".into(),
+            tab: "t".into(),
+            name: "a.png".into(),
+            size: 5,
+            collision: UploadCollision::Replace,
+        });
+        assert_eq!(v["type"], "upload_start");
+        assert_eq!(v["collision"], "replace");
+        let keys: Vec<&String> = v.as_object().unwrap().keys().collect();
+        assert!(
+            !keys
+                .iter()
+                .any(|k| ["dir", "path", "folder"].contains(&k.as_str())),
+            "{keys:?}"
+        );
+        for (m, t) in [
+            (ClientMessage::UploadResume { id: 1 }, "upload_resume"),
+            (ClientMessage::UploadFinish { id: 1 }, "upload_finish"),
+            (ClientMessage::UploadCancel { id: 1 }, "upload_cancel"),
+        ] {
+            assert_eq!(round(m)["type"], t);
+        }
+        let d: ClientMessage = serde_json::from_str(
+            r#"{"type":"upload_start","id":1,"workspace":"w","tab":"t","name":"n","size":0}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            d,
+            ClientMessage::UploadStart {
+                collision: UploadCollision::KeepBoth,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn the_server_upload_messages_round_trip() {
+        for (m, t) in [
+            (
+                ServerMessage::UploadReady {
+                    id: 1,
+                    dir: "/h".into(),
+                    offset: 9,
+                },
+                "upload_ready",
+            ),
+            (
+                ServerMessage::UploadProgress { id: 1, received: 9 },
+                "upload_progress",
+            ),
+            (
+                ServerMessage::UploadDone {
+                    id: 1,
+                    path: "/h/a".into(),
+                    size: 9,
+                },
+                "upload_done",
+            ),
+            (
+                ServerMessage::UploadDenied {
+                    id: 1,
+                    reason: "no".into(),
+                },
+                "upload_denied",
+            ),
+            (
+                ServerMessage::UploadFailed {
+                    id: 1,
+                    reason: "disk".into(),
+                },
+                "upload_failed",
+            ),
+            (ServerMessage::UploadCancelled { id: 1 }, "upload_cancelled"),
+        ] {
+            assert_eq!(round(m)["type"], t);
+        }
+    }
+
+    #[test]
+    fn a_frame_round_trips_and_keeps_its_offset() {
+        let f = UploadFrame {
+            id: 0xAABBCCDD,
+            offset: 1 << 40,
+            data: vec![1, 2, 3],
+        };
+        let bytes = f.encode().unwrap();
+        assert_eq!(bytes.len(), UPLOAD_FRAME_HEADER + 3);
+        assert_eq!(UploadFrame::decode(&bytes).unwrap(), f);
+        let full = UploadFrame {
+            id: 1,
+            offset: 0,
+            data: vec![0; UPLOAD_CHUNK_MAX],
+        };
+        assert_eq!(UploadFrame::decode(&full.encode().unwrap()).unwrap(), full);
+    }
+
+    #[test]
+    fn a_frame_over_the_limit_or_without_a_header_is_rejected() {
+        let big = UploadFrame {
+            id: 1,
+            offset: 0,
+            data: vec![0; UPLOAD_CHUNK_MAX + 1],
+        };
+        assert!(big.encode().is_none());
+        let wire = vec![0u8; UPLOAD_FRAME_HEADER + UPLOAD_CHUNK_MAX + 1];
+        assert_eq!(UploadFrame::decode(&wire), Err(UploadFrameError::Oversize));
+        assert_eq!(UploadFrame::decode(&[0; 11]), Err(UploadFrameError::Short));
+    }
+
+    #[test]
+    fn an_out_of_order_offset_decodes_so_the_server_can_refuse_it() {
+        let f = UploadFrame {
+            id: 1,
+            offset: 99,
+            data: vec![1],
+        };
+        assert_eq!(
+            UploadFrame::decode(&f.encode().unwrap()).unwrap().offset,
+            99
+        );
     }
 }

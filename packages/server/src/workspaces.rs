@@ -1876,6 +1876,17 @@ impl WorkspaceManager {
                 .await;
                 send_r(tx, &reply).await?;
             }
+            // The upload writer arrives in step 2.3 of the upload plan; until then a start is refused.
+            ClientMessage::UploadStart { id, .. } => {
+                let reply = ServerMessage::UploadDenied {
+                    id,
+                    reason: "Uploads are not available on this server yet.".into(),
+                };
+                send_r(tx, &reply).await?;
+            }
+            ClientMessage::UploadResume { .. }
+            | ClientMessage::UploadFinish { .. }
+            | ClientMessage::UploadCancel { .. } => {}
             ClientMessage::Peek {
                 workspace,
                 tab,
