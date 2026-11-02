@@ -142,6 +142,8 @@ pub struct WorkspaceManager {
     device_classes: Arc<std::sync::Mutex<std::collections::HashMap<u64, &'static str>>>,
     /// Held across a resume's check and create, so two asks for one conversation make one workspace.
     resume_gate: Arc<tokio::sync::Mutex<()>>,
+    /// Files being copied from a device into a tab's folder, and the partials kept after a drop (decision 0194).
+    uploads: Arc<crate::upload::Uploads>,
 }
 
 #[async_trait::async_trait]
@@ -239,6 +241,7 @@ impl WorkspaceManager {
             searches: Arc::default(),
             device_classes: Arc::default(),
             resume_gate: Arc::default(),
+            uploads: Arc::new(crate::upload::Uploads::new(crate::listdir::server_home())),
         }
     }
 
@@ -677,11 +680,112 @@ impl WorkspaceManager {
             c.close_device_terminals(conn);
         }
         self.stop_search(conn);
+        self.detach_uploads(conn);
         self.device_classes.lock().unwrap().remove(&conn);
         if let Some(p) = &self.push {
             p.set_foreground(conn, None);
         }
         res
+    }
+
+    fn upload_who(
+        &self,
+        identity: &crate::auth::Identity,
+        auth: &crate::auth::AuthState,
+    ) -> crate::upload::Who {
+        crate::upload::Who {
+            provider: identity.provider.clone(),
+            account: identity.id.clone(),
+            owner: auth
+                .owner()
+                .is_some_and(|o| o.provider == identity.provider && o.id == identity.id),
+        }
+    }
+
+    /// Runs an upload operation off the async threads (it touches the disk).
+    async fn upload_run<F>(
+        &self,
+        conn: u64,
+        identity: &crate::auth::Identity,
+        auth: &crate::auth::AuthState,
+        f: F,
+    ) -> ServerMessage
+    where
+        F: FnOnce(&crate::upload::Uploads, crate::upload::Who, u64) -> ServerMessage
+            + Send
+            + 'static,
+    {
+        let (uploads, who) = (self.uploads.clone(), self.upload_who(identity, auth));
+        tokio::task::spawn_blocking(move || f(&uploads, who, conn))
+            .await
+            .unwrap_or_else(|_| ServerMessage::Error {
+                message: "The upload could not be handled".into(),
+            })
+    }
+
+    /// `upload_start`: reads the tab's live folder (never a client path), then lets the uploads pin it.
+    #[allow(clippy::too_many_arguments)]
+    async fn upload_start(
+        &self,
+        conn: u64,
+        identity: &crate::auth::Identity,
+        auth: &crate::auth::AuthState,
+        id: u32,
+        workspace: &str,
+        tab: &str,
+        name: String,
+        size: u64,
+        collision: termenbox_core::protocol::UploadCollision,
+    ) -> ServerMessage {
+        let window = self
+            .registry
+            .record(workspace)
+            .and_then(|r| r.tabs.into_iter().find(|t| t.id == tab))
+            .and_then(|t| t.window)
+            .unwrap_or_default();
+        let live = match self.backend.windows(workspace).await {
+            Ok(windows) => crate::upload::live_folder(&windows, &window).map(str::to_string),
+            Err(_) => Err(crate::upload::Refusal::NoWindow),
+        };
+        self.upload_run(conn, identity, auth, move |u, who, conn| {
+            u.start(
+                &who,
+                conn,
+                id,
+                live,
+                &name,
+                size,
+                collision,
+                std::time::Instant::now(),
+            )
+        })
+        .await
+    }
+
+    /// One binary chunk of the connection's running upload.
+    async fn upload_chunk(
+        &self,
+        conn: u64,
+        identity: &crate::auth::Identity,
+        auth: &crate::auth::AuthState,
+        bytes: Vec<u8>,
+    ) -> Option<ServerMessage> {
+        let (uploads, who) = (self.uploads.clone(), self.upload_who(identity, auth));
+        tokio::task::spawn_blocking(move || uploads.chunk(&who, conn, &bytes))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// The connection ended: its uploads wait for a resume, then the partials go.
+    fn detach_uploads(&self, conn: u64) {
+        self.uploads.detach(conn, std::time::Instant::now());
+        let uploads = self.uploads.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(uploads.grace() + std::time::Duration::from_secs(1)).await;
+            let _ =
+                tokio::task::spawn_blocking(move || uploads.sweep(std::time::Instant::now())).await;
+        });
     }
 
     async fn serve_conn(
@@ -772,6 +876,12 @@ impl WorkspaceManager {
                     idle.as_mut().reset(tokio::time::Instant::now() + IDLE_TIMEOUT);
                     let text = match msg {
                         Inbound::Json(text) => text,
+                        Inbound::Upload(bytes) => {
+                            if let Some(reply) = self.upload_chunk(conn, &identity, auth, bytes).await {
+                                if !send(&link.tx, &reply).await { break; }
+                            }
+                            continue;
+                        }
                         Inbound::Term(bytes) => {
                             if let (Some((ticket, _)), Some(c)) = (&remote, &self.conductor) {
                                 c.terminal_input(conn, ticket, &bytes);
@@ -1876,17 +1986,43 @@ impl WorkspaceManager {
                 .await;
                 send_r(tx, &reply).await?;
             }
-            // The upload writer arrives in step 2.3 of the upload plan; until then a start is refused.
-            ClientMessage::UploadStart { id, .. } => {
-                let reply = ServerMessage::UploadDenied {
-                    id,
-                    reason: "Uploads are not available on this server yet.".into(),
-                };
+            ClientMessage::UploadStart {
+                id,
+                workspace,
+                tab,
+                name,
+                size,
+                collision,
+            } => {
+                let reply = self
+                    .upload_start(
+                        conn, identity, auth, id, &workspace, &tab, name, size, collision,
+                    )
+                    .await;
                 send_r(tx, &reply).await?;
             }
-            ClientMessage::UploadResume { .. }
-            | ClientMessage::UploadFinish { .. }
-            | ClientMessage::UploadCancel { .. } => {}
+            ClientMessage::UploadResume { id } => {
+                let reply = self
+                    .upload_run(conn, identity, auth, move |u, who, conn| {
+                        u.resume(&who, conn, id, std::time::Instant::now())
+                    })
+                    .await;
+                send_r(tx, &reply).await?;
+            }
+            ClientMessage::UploadFinish { id } => {
+                let reply = self
+                    .upload_run(conn, identity, auth, move |u, who, conn| {
+                        u.finish(&who, conn, id)
+                    })
+                    .await;
+                send_r(tx, &reply).await?;
+            }
+            ClientMessage::UploadCancel { id } => {
+                let reply = self
+                    .upload_run(conn, identity, auth, move |u, who, _| u.cancel(&who, id))
+                    .await;
+                send_r(tx, &reply).await?;
+            }
             ClientMessage::Peek {
                 workspace,
                 tab,

@@ -9,7 +9,7 @@ use axum::{
     http::HeaderMap,
 };
 
-use crate::link::{self, Inbound, LinkEnd, LANE_TERM};
+use crate::link::{self, Inbound, LinkEnd, LANE_TERM, LANE_UPLOAD};
 
 const PING_EVERY: Duration = Duration::from_secs(20);
 /// Queued terminal chunks are joined into frames of about this size. It is also the longest a control message waits
@@ -20,6 +20,7 @@ pub(crate) const TERM_FRAME: usize = 16 * 1024;
 pub(crate) enum Rx {
     Text(String),
     Term(Vec<u8>),
+    Upload(Vec<u8>),
     /// The peer is gone.
     Closed,
     /// A frame that means nothing here (a pong, a binary frame of an unknown lane).
@@ -54,6 +55,9 @@ impl Socket for WebSocket {
             // Binary frames start with a lane tag; a tag this server does not know is ignored.
             Some(Ok(Message::Binary(frame))) if frame.first() == Some(&LANE_TERM) => {
                 Rx::Term(frame[1..].to_vec())
+            }
+            Some(Ok(Message::Binary(frame))) if frame.first() == Some(&LANE_UPLOAD) => {
+                Rx::Upload(frame[1..].to_vec())
             }
             Some(Ok(Message::Close(_))) | Some(Err(_)) | None => Rx::Closed,
             _ => Rx::Other,
@@ -108,6 +112,9 @@ pub(crate) async fn pump<S: Socket>(mut socket: S, mut end: LinkEnd, ping_every:
                 }
                 Rx::Term(bytes) => {
                     if end.to_workspace.send(Inbound::Term(bytes)).await.is_err() { break; }
+                }
+                Rx::Upload(bytes) => {
+                    if end.to_workspace.send(Inbound::Upload(bytes)).await.is_err() { break; }
                 }
                 Rx::Closed => break,
                 Rx::Other => {}
