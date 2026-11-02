@@ -8,6 +8,8 @@ export interface MeterReading {
   autoPercent: number | null;
   /** Estimated US dollars per task a verifier passed (plan step 1.4); null without cost data or without a pass. */
   dollarsPerVerified: number | null;
+  /** Turns whose model had no price, so the cost above leaves them out (plan step 1.4b); 0 when none. */
+  unpricedTurns: number;
 }
 
 const DAY_MS = 86_400_000;
@@ -24,7 +26,7 @@ export function mergeDays(perServer: (AttentionDay[] | undefined)[]): AttentionD
     for (const [k, v] of Object.entries(d.verified ?? {})) (m.verified ??= {})[k] = (m.verified[k] ?? 0) + v;
     for (const [k, v] of Object.entries(d.by_model ?? {})) {
       const u = ((m.by_model ??= {})[k] ??= { turns: 0, input: 0, output: 0, cache_read: 0, cache_write: 0, cost_micros: 0 });
-      u.turns += v.turns; u.input += v.input; u.output += v.output; u.cache_read += v.cache_read; u.cache_write += v.cache_write; u.cost_micros += v.cost_micros;
+      u.turns += v.turns; u.input += v.input; u.output += v.output; u.cache_read += v.cache_read; u.cache_write += v.cache_write; u.cost_micros += v.cost_micros; u.unpriced = (u.unpriced ?? 0) + (v.unpriced ?? 0);
     }
     byDay.set(d.day, m);
   }
@@ -41,7 +43,9 @@ export function reading(days: AttentionDay[], now: number, window = 7): MeterRea
   for (const d of inWindow) for (const [layer, n] of Object.entries(d.by_layer)) { resolved += n; if (layer === 'human') human += n; }
   const costMicros = inWindow.reduce((n, d) => n + (d.cost_micros ?? 0), 0);
   const passed = inWindow.reduce((n, d) => n + (d.verified?.pass ?? 0), 0);
+  const unpricedTurns = inWindow.reduce((n, d) => n + Object.values(d.by_model ?? {}).reduce((k, u) => k + (u.unpriced ?? 0), 0), 0);
   return {
+    unpricedTurns,
     dollarsPerVerified: costMicros > 0 && passed > 0 ? costMicros / 1e6 / passed : null,
     secPerAgentHour: agentMs > 0 ? Math.round(humanMs / 1000 / (agentMs / 3_600_000)) : null,
     autoPercent: resolved > 0 ? Math.round(((resolved - human) / resolved) * 100) : null,

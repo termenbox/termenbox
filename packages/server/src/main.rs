@@ -58,6 +58,7 @@ mod netutil;
 mod opencode_hooks;
 mod owner;
 mod ports;
+mod price_table;
 mod profile;
 mod pty;
 mod push;
@@ -197,6 +198,26 @@ struct Args {
     /// one-time secret comes from the running server (started with --accept-nodes) and is shown only here.
     #[arg(long, default_value = "false")]
     conductor_enrol: bool,
+
+    /// Fetch the model price table once from a public list (decision 0195), write `prices_fetched.json` beside the
+    /// attention meter file (the owner's `prices.json` is never touched), say which recorded models are priced, then exit.
+    #[arg(long, default_value = "false")]
+    fetch_prices: bool,
+
+    /// Refresh the price table by itself, at most once a day, while the server runs. Off by default: without this
+    /// or `--fetch-prices` the server makes no price request.
+    #[arg(
+        long,
+        env = "TERMENBOX_FETCH_PRICES",
+        default_value = "false",
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
+    auto_fetch_prices: bool,
+
+    /// Where the price table comes from: a LiteLLM `model_prices_and_context_window.json` or an OpenRouter
+    /// `/api/v1/models` answer, https (or http to this machine). Defaults to LiteLLM's public file.
+    #[arg(long, env = "TERMENBOX_PRICE_URL")]
+    price_url: Option<String>,
 
     /// Print the pairing link and QR for this server (a signed candidate bundle; works with no directory) and exit.
     #[arg(long, default_value = "false")]
@@ -813,6 +834,9 @@ async fn main() -> anyhow::Result<()> {
     if args.conductor_enrol {
         return print_conductor_enrol(&args).await;
     }
+    if args.fetch_prices {
+        return fetch_prices(&args).await;
+    }
 
     if let Some(secret) = &args.claim_secret {
         auth.provide_claim(secret)?;
@@ -872,6 +896,27 @@ async fn main() -> anyhow::Result<()> {
         Ok(meter) => {
             let meter = Arc::new(meter);
             hub = hub.with_meter(meter.clone());
+            if args.auto_fetch_prices {
+                let (meter, dir) = (meter.clone(), args.config_dir.clone());
+                let url = args
+                    .price_url
+                    .clone()
+                    .unwrap_or_else(|| price_table::DEFAULT_URL.to_string());
+                tokio::spawn(async move {
+                    loop {
+                        if price_table::due(&dir) {
+                            match price_table::refresh(&dir, &url).await {
+                                Ok(t) => {
+                                    info!("price table refreshed: {} models", t.len());
+                                    meter.reload_prices();
+                                }
+                                Err(e) => tracing::warn!("price table not refreshed: {e:#}"),
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                    }
+                });
+            }
             let meter_hub = hub.clone();
             tokio::spawn(async move {
                 loop {
@@ -1414,6 +1459,28 @@ async fn run_cloudflare(args: &Args) -> anyhow::Result<()> {
             eprintln!("{e:#}");
             std::process::exit(1);
         }
+    }
+    Ok(())
+}
+
+/// `--fetch-prices`: fetch the price table once, then say which models the meter has recorded are priced and which are not.
+async fn fetch_prices(args: &Args) -> anyhow::Result<()> {
+    let url = args
+        .price_url
+        .as_deref()
+        .unwrap_or(price_table::DEFAULT_URL);
+    let table = price_table::refresh(&args.config_dir, url).await?;
+    println!("Fetched {} model prices from {url}.", table.len());
+    let meter = attention_meter::AttentionMeter::open(&args.config_dir, events::now_ms())?;
+    let (priced, unpriced) = meter.price_report();
+    if priced.is_empty() && unpriced.is_empty() {
+        println!("The meter has recorded no models yet.");
+    }
+    for m in &priced {
+        println!("  priced    {m}");
+    }
+    for m in &unpriced {
+        println!("  unpriced  {m}  (add it to prices.json: {{\"{m}\": {{\"input\": 0, \"output\": 0, \"cache_read\": 0, \"cache_write\": 0}}}}, dollars per million tokens)");
     }
     Ok(())
 }
