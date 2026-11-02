@@ -106,6 +106,8 @@ pub fn check_name(name: &str) -> Result<(), Refusal> {
 pub struct Who {
     pub provider: String,
     pub account: String,
+    /// Id of the device key, the audit trail's key identifier.
+    pub device: String,
     pub owner: bool,
 }
 
@@ -219,11 +221,11 @@ impl Uploads {
     fn audit(&self, event: &str, who: &Who, dir: &Path, name: &str, size: u64) {
         let folder = crate::agentwatch::hex8(&dir.to_string_lossy());
         let file = crate::agentwatch::hex8(name);
-        info!(target: "audit", event, provider = %who.provider, account_id = %who.account, folder_hash = %folder, name_hash = %file, size);
+        info!(target: "audit", event, provider = %who.provider, account_id = %who.account, device = %who.device, folder_hash = %folder, name_hash = %file, size);
         #[cfg(test)]
         self.audited.lock().unwrap().push(format!(
-            "{event} {} {} {folder} {file} {size}",
-            who.provider, who.account
+            "{event} {} {} {} {folder} {file} {size}",
+            who.provider, who.account, who.device
         ));
     }
 
@@ -498,6 +500,7 @@ impl Uploads {
                 let who = Who {
                     provider: provider.into(),
                     account: account.into(),
+                    device: String::new(),
                     owner: true,
                 };
                 self.audit("upload_failed", &who, &e.dir, &e.name, e.size);
@@ -722,6 +725,7 @@ mod writer {
         Who {
             provider: "github".into(),
             account: "42".into(),
+            device: "dev0abc1".into(),
             owner: true,
         }
     }
@@ -1127,6 +1131,7 @@ mod writer {
                 && lines.contains("upload_cancelled")
                 && lines.contains("upload_refused")
         );
+        assert!(lines.contains("github 42 dev0abc1"));
         for secret in [
             "secret-report",
             "other-name",

@@ -696,6 +696,7 @@ impl WorkspaceManager {
         crate::upload::Who {
             provider: identity.provider.clone(),
             account: identity.id.clone(),
+            device: identity.device.clone().unwrap_or_default(),
             owner: auth
                 .owner()
                 .is_some_and(|o| o.provider == identity.provider && o.id == identity.id),
@@ -3619,6 +3620,7 @@ mod propagation_tests {
             id: id.into(),
             login: format!("login-{id}"),
             issued_at: None,
+            device: None,
         };
         let claim = auth.claim_token().unwrap().unwrap();
         auth.authorize(&identity("1"), Some(&claim)).unwrap();
@@ -3670,6 +3672,7 @@ mod propagation_tests {
             id: "1".into(),
             login: "u".into(),
             issued_at: None,
+            device: None,
         };
         let (la, mut ea) = crate::link::pair(None, None);
         let (lb, mut eb) = crate::link::pair(None, None);
@@ -3709,6 +3712,7 @@ mod propagation_tests {
             id: "1".into(),
             login: "u".into(),
             issued_at: None,
+            device: None,
         };
         let (link, mut end) = crate::link::pair(None, None);
         tokio::spawn(async move {
@@ -3783,6 +3787,7 @@ mod propagation_tests {
             id: id.into(),
             login: format!("login-{id}"),
             issued_at: None,
+            device: None,
         };
         let claim = auth.claim_token().unwrap().unwrap();
         auth.authorize(&owner("1"), Some(&claim)).unwrap();
@@ -4295,6 +4300,7 @@ mod search_tests {
             id: id.into(),
             login: format!("login-{id}"),
             issued_at: None,
+            device: None,
         }
     }
 
