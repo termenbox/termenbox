@@ -2,15 +2,15 @@
 // The controller owns the gesture state machine; the component only draws what `onChange` reports and forwards
 // pointer events. Everything the browser provides is injected, so the logic runs under test with a fake
 // terminal and fake timers.
+import { selectedText, type CopyTerm } from './copyJoin';
 import { cellAt, cellBox, ordered, selectionArgs, wordRange, type Cell, type Rect } from '../selection';
 
-export interface TermLike {
+export interface TermLike extends CopyTerm {
   cols: number;
   rows: number;
-  buffer: { active: { viewportY: number; getLine(i: number): { translateToString(trim?: boolean): string } | undefined } };
+  buffer: { active: { viewportY: number; getLine(i: number): { isWrapped: boolean; translateToString(trim?: boolean): string } | undefined } };
   select(col: number, row: number, length: number): void;
   clearSelection(): void;
-  getSelection(): string;
 }
 
 export interface Selection {
@@ -105,7 +105,8 @@ export class TouchSelection {
   }
 
   text(): string {
-    return this.deps.term()?.getSelection() ?? '';
+    const term = this.deps.term();
+    return term ? selectedText(term) : '';
   }
 
   /** Where to draw a handle (below-left of the start, below-right of the end), relative to the host element. */

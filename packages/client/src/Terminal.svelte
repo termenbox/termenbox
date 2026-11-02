@@ -21,6 +21,7 @@
   import { WordTracker } from './lib/terminal/wordTracker';
   import { IOS_KEYBOARD_HINT, nextVoiceLang, parseVoiceLang, pickLanguage, recognizerFactory, Voice, type VoiceLang } from './lib/terminal/voice';
   import { isOpenClick, linkAt } from './lib/terminal/links';
+  import { bufferRow, selectedText } from './lib/terminal/copyJoin';
   import { handleOpenRequests, hyperlinkHandler, openWeb } from './lib/terminal/openRequest';
   import { cellAt } from './lib/selection';
   import { PinchZoom } from './lib/terminal/pinch';
@@ -312,12 +313,10 @@
   /** Copies the selection, or the visible screen when nothing is selected. */
   async function copy() {
     if (!term) return;
-    let text = term.getSelection();
+    let text = selectedText(term);
     if (!text) {
       const buf = term.buffer.active;
-      const lines: string[] = [];
-      for (let i = 0; i < term.rows; i++) lines.push(buf.getLine(buf.viewportY + i)?.translateToString(true) ?? '');
-      text = lines.join('\n').replace(/\s+$/, '');
+      text = bufferText(bufferRow(buf), buf.viewportY + term.rows, term.cols, term.rows);
     }
     await copyText(text);
   }
@@ -325,7 +324,7 @@
   function openSelect() {
     if (!term) return;
     const buf = term.buffer.active;
-    selectText = bufferText((i) => buf.getLine(i)?.translateToString(true), buf.length);
+    selectText = bufferText(bufferRow(buf), buf.length, term!.cols);
   }
 
   /** Select all: everything the terminal holds, history included, selected in the select view. The server reads it from
@@ -342,7 +341,7 @@
   }
   function localText(): string {
     const buf = term!.buffer.active;
-    return bufferText((i) => buf.getLine(i)?.translateToString(true), buf.length);
+    return bufferText(bufferRow(buf), buf.length, term!.cols);
   }
   function closeSelect() {
     clearTimeout(historyTimer);
@@ -581,7 +580,7 @@
       const isA = ev.code === 'KeyA' || key === 'a';
       if (ev.ctrlKey && isV) return false;
       if ((ev.ctrlKey || ev.metaKey) && isC) {
-        const text = term?.getSelection();
+        const text = term && selectedText(term);
         if (!text) return !(ev.ctrlKey && ev.shiftKey); // Ctrl+Shift+C with no selection is not the program's key
         ev.preventDefault(); // no browser copy command, no inspector, and no ^C
         void copyText(text);
@@ -598,7 +597,7 @@
         return false;
       }
       if (action === 'cut') {
-        const text = term?.getSelection();
+        const text = term && selectedText(term);
         if (!text) return true;
         ev.preventDefault();
         void copyText(text);

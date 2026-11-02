@@ -61,9 +61,9 @@ describe('Fn panel', () => {
 describe('bufferText', () => {
   it('keeps the last lines, trims right edges and trailing blanks', () => {
     const lines = ['a  ', 'b', '', 'c   ', '', ''];
-    expect(bufferText((i) => lines[i], lines.length)).toBe('a\nb\n\nc');
-    expect(bufferText((i) => lines[i], lines.length, 2)).toBe('');
-    expect(bufferText((i) => lines[i], lines.length, 4)).toBe('\nc');
+    expect(bufferText((i) => ({ text: lines[i] }), lines.length, 80)).toBe('a\nb\n\nc');
+    expect(bufferText((i) => ({ text: lines[i] }), lines.length, 80, 2)).toBe('');
+    expect(bufferText((i) => ({ text: lines[i] }), lines.length, 80, 4)).toBe('\nc');
   });
 });
 
