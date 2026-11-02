@@ -5,6 +5,7 @@ import type { HubWorkspace } from './lib/hub';
 import type { TabInfo } from './lib/protocol';
 
 const tab = (id: string, label: string, order: number, kind = 'shell'): TabInfo => ({ id, label, order, kind, dir: '' });
+const count = (out: string, needle: string) => out.split(needle).length - 1;
 const workspace: HubWorkspace = {
   id: 'w', name: 'Work', agent: null, serverId: 's', serverName: 'Host', key: 's/w',
   tabs: [tab('t2', 'Build', 1, 'claude'), tab('t1', 'Shell', 0)],
@@ -23,11 +24,11 @@ describe('the tab menu', () => {
   it('offers rename, delete, a new tab and Close workspace only when the handlers are given', () => {
     const out = html({ onrename() {}, onclosetab() {}, onnew() {}, oncloseworkspace() {} });
     expect(out).toContain('Actions for Shell');
-    expect(out).toContain('+ New window');
+    expect(out).toContain('New tab in Work');
     expect(out).toContain('Close workspace');
     const bare = html();
     expect(bare).not.toContain('Actions for Shell');
-    expect(bare).not.toContain('+ New window');
+    expect(bare).not.toContain('New tab in Work');
     expect(bare).not.toContain('Close workspace');
   });
   it('shows each tab state and offers the Recent and Cache expiring filters', () => {
@@ -45,5 +46,22 @@ describe('the tab menu', () => {
     expect(out).toContain('Work');
     expect(out).toContain('Docs');
     expect(out).toContain('Docs shell');
+  });
+  it('keeps the row menu on every tab of the Workspaces page and puts the plus in each section header', () => {
+    const other = { ...workspace, id: 'v', name: 'Docs', key: 's/v', tabs: [tab('t1', 'Docs shell', 0)] };
+    const out = render(TabMenu, {
+      props: { groups: [{ workspace, tabs: workspace.tabs! }, { workspace: other, tabs: other.tabs! }], onopen() {}, onclose() {}, onrename() {}, onclosetab() {}, onnew() {} },
+    }).body;
+    expect(out).toContain('New tab in Work');
+    expect(out).toContain('New tab in Docs');
+    expect(out).not.toContain('+ New window');
+    expect(count(out, 'Actions for ')).toBe(3);
+  });
+  it('offers no actions and no plus for a non-editable ACP workspace', () => {
+    const out = render(TabMenu, {
+      props: { groups: [{ workspace, tabs: workspace.tabs!, editable: false }], onopen() {}, onclose() {}, onrename() {}, onclosetab() {}, onnew() {} },
+    }).body;
+    expect(out).not.toContain('Actions for ');
+    expect(out).not.toContain('New tab in');
   });
 });

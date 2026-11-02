@@ -40,6 +40,14 @@ describe('the Workspaces list', () => {
     expect(html([ws('s', 'two', 2)])).not.toContain('workspace-rename');
   });
 
+  it('puts a cross next to the pencil only when a close handler is given', () => {
+    const out = html([ws('s', 'two')], {}, { onrename() {}, onclose() {} });
+    expect(count(out, 'data-testid="workspace-close"')).toBe(1);
+    expect(out).toContain('Close two');
+    expect(out.indexOf('Rename two')).toBeLessThan(out.indexOf('Close two'));
+    expect(html([ws('s', 'two')], {}, { onrename() {} })).not.toContain('workspace-close');
+  });
+
   it('has no handle for a server\'s only workspace, and no actions button without a handler', () => {
     const out = html([ws('s', 'only')]);
     expect(out).not.toContain('workspace-grip');

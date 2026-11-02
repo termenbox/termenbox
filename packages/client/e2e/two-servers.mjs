@@ -155,7 +155,14 @@ try {
   const ctx = await browser.newContext(contextOptions({ viewport: { width: 390, height: 800 }, hasTouch: true, isMobile: true }));
   const page = await ctx.newPage();
   const errors = [];
-  page.on('pageerror', (e) => errors.push(e.message));
+  // Closing a workspace disposes its terminal; xterm 5.3 can then throw from a queued renderer frame (the same
+  // teardown throw Terminal.svelte guards). It fires on some runners only, so ignore that one library error and
+  // keep the gate for errors from this app.
+  const xtermTeardown = /^Cannot read properties of undefined \(reading 'dimensions'\)$/;
+  page.on('pageerror', (e) => {
+    if (xtermTeardown.test(e.message)) return;
+    errors.push(e.message);
+  });
   await page.goto(`http://127.0.0.1:${appPort}/`);
   const deviceKey = await page.evaluate(async () => {
     const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
@@ -230,6 +237,18 @@ try {
   if (!rowText.some((t) => t.includes('infra') && t.includes('beta'))) fail(`the second server's workspace row is missing: ${JSON.stringify(rowText)}`);
   ok('three agent workspaces in one repo and one on a second server give four rows');
 
+  // 1b. A workspace row carries a cross next to its pencil: it asks first, naming the workspace and its server.
+  const cross = rowFor('api').getByRole('button', { name: 'Close api', exact: true });
+  if (!(await cross.count())) fail('the workspace row has no Close button next to the pencil');
+  const actions = page.getByRole('dialog', { name: 'Workspace actions' });
+  await cross.click();
+  await actions.waitFor();
+  if (!(await actions.getByText(/Close api on/).count())) fail('the confirmation does not name the workspace and its server');
+  await actions.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await actions.waitFor({ state: 'hidden' });
+  if ((await rows().count()) !== 4) fail('Cancel closed the workspace');
+  ok('the workspace row cross asks first and names the workspace and its server');
+
   // 2. Opening a row shows one phone plaque for that workspace's tabs.
   await openWorkspace('api');
   if ((await plaque().count()) !== 1) fail('the phone has no single tab plaque');
@@ -253,8 +272,8 @@ try {
   // 4. The tab menu creates a tab in the open workspace; the server and tmux record it.
   const agentTabId = tabsOf(a, 'api')[0]?.split('|')[0];
   await openMenu();
-  if (!(await menu().getByRole('button', { name: '+ New window', exact: true }).count())) fail('the tab menu has no + New window action');
-  await menu().getByRole('button', { name: '+ New window', exact: true }).click();
+  if (!(await menu().getByRole('button', { name: 'New tab in api', exact: true }).count())) fail('the tab menu has no + next to the workspace name');
+  await menu().getByRole('button', { name: 'New tab in api', exact: true }).click();
   await newTabDialog().waitFor();
   const heading = (await newTabDialog().getByRole('heading').innerText()) ?? '';
   if (!heading.includes('New tab in api')) fail(`the new-tab dialog is not for api: ${heading}`);
@@ -267,7 +286,7 @@ try {
   const tabOptions = tabsOf(a, 'api');
   const tabIds = tabOptions.map((l) => l.split('|')[0]);
   if (tabIds.length !== 2 || tabIds.some((id) => !id) || new Set(tabIds).size !== 2) fail(`tmux has no distinct @termenbox_tab for both windows: ${JSON.stringify(tabOptions)}`);
-  ok('+ New window creates a tab in the current workspace and tmux carries @termenbox_tab');
+  ok('the header + creates a tab in the current workspace and tmux carries @termenbox_tab');
 
   // 5. Switching tabs keeps the terminal, and each tab shows its own window.
   const shellWindow = tabOptions
@@ -294,9 +313,21 @@ try {
 
   // 6. Deleting a tab frees its tmux window; the workspace keeps the other one.
   await openMenu();
+  const shellRow = menu().locator('[data-row]').filter({ hasText: shellTab }).first();
+  const rowBefore = await shellRow.boundingBox();
   await menu().getByRole('button', { name: `Actions for ${shellTab}`, exact: true }).click();
-  await menu().getByRole('button', { name: 'Delete', exact: true }).click();
-  await menu().getByRole('button', { name: 'Delete this tab?', exact: true }).click();
+  const tabMenu = menu().getByRole('menu');
+  await tabMenu.waitFor();
+  await page.keyboard.press('Escape');
+  await tabMenu.waitFor({ state: 'hidden' });
+  if (!(await menu().isVisible())) fail('Escape closed the whole tab dialog instead of its row menu');
+  await menu().getByRole('button', { name: `Actions for ${shellTab}`, exact: true }).click();
+  await menu().getByRole('menuitem', { name: 'Delete tab…', exact: true }).click();
+  const rowDuring = await shellRow.boundingBox();
+  if (!rowBefore || !rowDuring || Math.abs(rowBefore.y - rowDuring.y) > 1 || Math.abs(rowBefore.height - rowDuring.height) > 1) {
+    fail(`the row moved when its menu opened: ${JSON.stringify({ rowBefore, rowDuring })}`);
+  }
+  await menu().getByRole('menuitem', { name: 'Delete tab', exact: true }).click();
   await waitFor(() => windowsOf(a, 'api') === 1, 'the tab to close');
   await page.waitForFunction((l) => document.querySelector('[data-testid=tab-plaque]')?.getAttribute('aria-label')?.endsWith(`: ${l}`), agentTab);
   await menu().getByRole('button', { name: 'Close the tab menu' }).click().catch(() => {});
@@ -344,8 +375,8 @@ try {
   }, 'the tab menu', 5000);
   await menu().waitFor();
   await menu().getByRole('button', { name: 'Actions for Shell', exact: true }).click();
-  await menu().getByRole('button', { name: 'Delete', exact: true }).click();
-  await menu().getByRole('button', { name: 'Delete this tab?', exact: true }).click();
+  await menu().getByRole('menuitem', { name: 'Delete tab…', exact: true }).click();
+  await menu().getByRole('menuitem', { name: 'Delete tab', exact: true }).click();
   await waitFor(() => windowsOf(a, 'api') === 1, 'the strip tab to close');
   await menu().getByRole('button', { name: 'Close the tab menu' }).click();
   await waitFor(async () => (await stripTabs.count()) === 1, 'one tab in the strip again');

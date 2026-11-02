@@ -1,6 +1,7 @@
 <script lang="ts">
   import { backdropClose } from './lib/backdropClose';
   import { onDestroy, onMount } from 'svelte';
+  import { DropdownMenu } from 'bits-ui';
   import AgentIcon from './AgentIcon.svelte';
   import { rememberFocus } from './lib/focus';
   import { RowDragger, type DragView } from './lib/dragsort';
@@ -11,7 +12,7 @@
   interface TabGroup { workspace: HubWorkspace; tabs: TabInfo[]; editable?: boolean }
   /**
    * Every tab of one workspace, or of every workspace from the Workspaces page (decision 0149). Rename and Delete are in
-   * the row's own menu, never a one-tap on the tab; Close workspace is the only workspace action and always asks.
+   * the row's own menu, never a one-tap on the tab; Delete asks before it sends `close_tab`, and Close workspace always asks.
    */
   let { groups, activeKey = null, activeTab = null, states = {}, cacheTtlMs = 5 * 60_000, onopen, onrename, onclosetab, onmove, onnew, oncloseworkspace, onclose }: {
     groups: TabGroup[];
@@ -32,7 +33,6 @@
 
   let dialog: HTMLDialogElement;
   let scroller: HTMLElement | undefined = $state();
-  let actions: string | null = $state(null);
   let confirming: string | null = $state(null);
   let closing: string | null = $state(null);
   let drag: DragView | null = $state(null);
@@ -85,11 +85,16 @@
   const keyOf = (workspaceKey: string, tab: string) => `${workspaceKey}/${tab}`;
   function open(workspaceKey: string, tab: string) { onclose(); onopen(workspaceKey, tab); }
   function rename(workspaceKey: string, tab: TabInfo) { onclose(); onrename?.(workspaceKey, tab); }
+  /** The menu's second step: only this sends `close_tab`. */
   function remove(workspaceKey: string, tab: TabInfo) {
-    if (confirming !== keyOf(workspaceKey, tab.id)) { confirming = keyOf(workspaceKey, tab.id); return; }
-    confirming = null; actions = null;
+    confirming = null;
     onclosetab?.(workspaceKey, tab);
   }
+  /** A fresh menu always starts at Rename / Delete, not at a confirmation left over from another row. */
+  function opened(open: boolean) { if (open) confirming = null; }
+  // Tailwind, like ServerMenu: the classes go to bits-ui, so scoped CSS would not reach them.
+  const menuItem = 'flex min-h-11 cursor-pointer items-center rounded-control px-3 text-base text-fg outline-none data-[highlighted]:bg-raised';
+  const dangerItem = `${menuItem} text-bad`;
   function newTab(workspaceKey: string) { onclose(); onnew?.(workspaceKey); }
   function closeWorkspace(workspaceKey: string) {
     if (closing !== workspaceKey) { closing = workspaceKey; return; }
@@ -106,6 +111,9 @@
         <strong>Tabs</strong>
       {/if}
     </div>
+    {#if single && groups[0].editable !== false && onnew}
+      <button type="button" class="add" aria-label={`New tab in ${groups[0].workspace.name}`} title="New tab" onclick={() => newTab(groups[0].workspace.key)}>+</button>
+    {/if}
     <button type="button" class="secondary close" aria-label="Close the tab menu" onclick={onclose}>✕</button>
   </header>
   <div class="sr" role="status" aria-live="polite">{announcement}</div>
@@ -118,7 +126,14 @@
     {#each groups as group (group.workspace.key)}
       {@const tabs = shownTabs(group)}
       <section data-group={group.workspace.key} aria-label={`Tabs of ${group.workspace.name}`}>
-        {#if !single}<h3>{group.workspace.name} <span>{group.workspace.serverName}</span></h3>{/if}
+        {#if !single}
+          <h3>
+            <span class="titles">{group.workspace.name} <span class="server">{group.workspace.serverName}</span></span>
+            {#if group.editable !== false && onnew}
+              <button type="button" class="add" aria-label={`New tab in ${group.workspace.name}`} title="New tab" onclick={() => newTab(group.workspace.key)}>+</button>
+            {/if}
+          </h3>
+        {/if}
         {#each tabs as tab (tab.id)}
           {@const active = currentOf(group)?.id === tab.id}
           {@const dragging = drag?.key === tab.id}
@@ -144,27 +159,24 @@
               {#if active}<span class="here" aria-label="current tab">●</span>{/if}
             </button>
             {#if group.editable !== false && (onrename || onclosetab)}
-              <button type="button" class="more" aria-label={`Actions for ${tab.label}`} aria-expanded={actions === keyOf(group.workspace.key, tab.id)}
-                onclick={() => (actions = actions === keyOf(group.workspace.key, tab.id) ? null : keyOf(group.workspace.key, tab.id))}>⋮</button>
+              <DropdownMenu.Root onOpenChange={opened}>
+                <DropdownMenu.Trigger class="flex w-11 min-h-11 shrink-0 items-center justify-center border-0 bg-transparent p-0 text-soft" aria-label={`Actions for ${tab.label}`}>⋮</DropdownMenu.Trigger>
+                <DropdownMenu.Content align="end" sideOffset={4} class="z-40 min-w-48 rounded-card border border-line bg-panel p-1 shadow-sheet">
+                  {#if confirming === keyOf(group.workspace.key, tab.id)}
+                    <p class="px-3 py-2 text-sm text-soft">Delete <strong class="text-fg">{tab.label}</strong>?</p>
+                    <DropdownMenu.Item class={dangerItem} onSelect={() => remove(group.workspace.key, tab)}>Delete tab</DropdownMenu.Item>
+                    <DropdownMenu.Item class={menuItem} onSelect={() => (confirming = null)}>Cancel</DropdownMenu.Item>
+                  {:else}
+                    {#if onrename}<DropdownMenu.Item class={menuItem} onSelect={() => rename(group.workspace.key, tab)}>Rename</DropdownMenu.Item>{/if}
+                    {#if onclosetab}<DropdownMenu.Item class={dangerItem} closeOnSelect={false} onSelect={() => (confirming = keyOf(group.workspace.key, tab.id))}>Delete tab…</DropdownMenu.Item>{/if}
+                  {/if}
+                </DropdownMenu.Content>
+              </DropdownMenu.Root>
             {/if}
           </div>
-          {#if actions === keyOf(group.workspace.key, tab.id)}
-            <div class="actions" role="group" aria-label={`Actions for ${tab.label}`}>
-              {#if group.editable !== false && onrename}<button type="button" onclick={() => rename(group.workspace.key, tab)}>Rename</button>{/if}
-              {#if group.editable !== false && onclosetab}
-                <button type="button" class="danger" onclick={() => remove(group.workspace.key, tab)}>
-                  {confirming === keyOf(group.workspace.key, tab.id) ? 'Delete this tab?' : 'Delete'}
-                </button>
-                {#if confirming === keyOf(group.workspace.key, tab.id)}
-                  <button type="button" class="secondary" onclick={() => (confirming = null)}>Cancel</button>
-                {/if}
-              {/if}
-            </div>
-          {/if}
         {:else}
           <p class="none">No tabs</p>
         {/each}
-        {#if group.editable !== false && onnew}<button type="button" class="new" onclick={() => newTab(group.workspace.key)}>+ New window</button>{/if}
       </section>
     {/each}
   </div>
@@ -189,6 +201,8 @@
   .who strong, .who span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .who span { color: var(--fg-muted); font-size: 0.8rem; }
   .close { min-height: 44px; min-width: 44px; padding: 0; }
+  /* The plus sits opposite the workspace name, in the header or in the section header (it never moves with a long name). */
+  .add { flex: 0 0 44px; width: 44px; min-height: 44px; padding: 0; display: flex; align-items: center; justify-content: center; background: transparent; color: var(--fg-muted); border: 0; font-size: 1.3rem; line-height: 1; }
   .filters { display: flex; gap: 4px; padding: 6px 8px 0; }
   .filters button { min-height: 44px; padding: 0 10px; font-size: 0.8rem; }
   .filters button[aria-pressed='true'] { border-color: var(--accent); color: var(--accent); }
@@ -198,8 +212,9 @@
   .state.working { color: var(--fg); }
   .state.failed { border-color: var(--danger); color: var(--danger); }
   section { display: flex; flex-direction: column; gap: 2px; }
-  h3 { margin: 8px 6px 2px; font-size: 0.8rem; font-weight: 600; color: var(--fg-muted); }
-  h3 span { font-weight: 400; }
+  h3 { display: flex; align-items: center; gap: 4px; margin: 8px 6px 2px; font-size: 0.8rem; font-weight: 600; color: var(--fg-muted); }
+  .titles { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  h3 .server { font-weight: 400; }
   .row { position: relative; display: flex; align-items: stretch; gap: 2px; }
   .row.active .tab { border-color: var(--accent); }
   .row.dragging { z-index: 3; opacity: 0.95; filter: drop-shadow(0 4px 10px #0006); }
@@ -211,11 +226,7 @@
   .label, .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .path { font-size: 0.75rem; color: var(--fg-muted); }
   .here { color: var(--accent); }
-  .grip, .more { flex: 0 0 44px; width: 44px; min-height: 48px; display: flex; align-items: center; justify-content: center; background: transparent; color: var(--fg-muted); border: 0; padding: 0; }
-  .grip { touch-action: none; user-select: none; cursor: grab; }
-  .actions { display: flex; gap: 4px; padding: 2px 4px 6px; }
-  .actions button { min-height: 44px; flex: 1; }
-  .new { min-height: 48px; margin: 4px 4px 8px; }
+  .grip { flex: 0 0 44px; width: 44px; min-height: 48px; display: flex; align-items: center; justify-content: center; background: transparent; color: var(--fg-muted); border: 0; padding: 0; touch-action: none; user-select: none; cursor: grab; }
   .footer { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px; border-top: 1px solid var(--border); }
   .footer p { flex: 1 1 100%; margin: 0 0 4px; }
   .footer button { min-height: 44px; flex: 1; }
