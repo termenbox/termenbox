@@ -1,7 +1,7 @@
 // U15 on the real app: the docked sidebar (toggle, resize by pointer and keyboard, reload), the live terminal beside the
 // structured view, crossing 720 px, and the keyboard shortcuts. Runs from desktop.mjs; see app-lib.mjs for what the
 // scripted server stands in for.
-import { startShared, startApp, CLAUDE_PROMPT } from './app-lib.mjs';
+import { startShared, startApp, CLAUDE_PROMPT, ScriptedServer } from './app-lib.mjs';
 import { DPR, viewport } from './browser.mjs';
 
 const WORKSPACE = 'termenbox_workspace';
@@ -493,6 +493,41 @@ async function workspacesCreate(shared) {
   return ok;
 }
 
+/** The top bar at desktop width: the sidebar toggle stays at the right edge with the Tabs button as well as with the tab strip (issue #379). */
+async function topbarLayout(shared) {
+  const layout = { [WORKSPACE]: JSON.stringify({ sidebarOpen: false, sidebarWidth: 264, splitOpen: false, splitWidth: 900 }) };
+  const gap = (page) => page.evaluate(() => {
+    const bar = document.querySelector('header.topbar');
+    const toggle = document.querySelector('.sidebar-toggle');
+    return bar && toggle ? Math.round(bar.getBoundingClientRect().right - toggle.getBoundingClientRect().right) : null;
+  });
+  const t = await startApp(shared, { viewport: { width: 1280, height: 800 }, storage: layout, server: new ScriptedServer({ tabs: true }) });
+  const { page } = t;
+  await t.open();
+  // The Workspaces page with no open workspace shows the small Tabs button instead of the strip.
+  await page.locator('[data-shell=bottom-bar] [data-destination=workspaces]').click();
+  await page.locator('[data-workspace-groups]').waitFor();
+  t.check(await page.locator('[data-testid=page-tabs]').isVisible(), 'topbar: the Workspaces page without tabs has no Tabs button');
+  const pageGap = await gap(page);
+  t.check(pageGap !== null && pageGap <= 8, `topbar: the Tabs button leaves the sidebar toggle ${pageGap} px from the right edge`);
+  // A workspace with a tab: the strip is there and the toggle has not moved.
+  await page.locator('.sidebar-toggle').click();
+  await page.locator('[data-shell=sidebar]').waitFor();
+  await t.openWorkspace('s1');
+  t.check((await page.locator('[data-testid=tab-strip] [role=tab]').count()) > 0, 'topbar: the workspace strip has no tab');
+  const stripGap = await gap(page);
+  t.check(stripGap !== null && stripGap <= 8, `topbar: the strip leaves the sidebar toggle ${stripGap} px from the right edge`);
+  const desktop = await t.end();
+  // A phone has no sidebar toggle, tab-capable server or not.
+  const p = await startApp(shared, { viewport: { width: 390, height: 844 }, server: new ScriptedServer({ tabs: true }) });
+  await p.open();
+  p.check((await p.page.locator('.sidebar-toggle').count()) === 0, 'topbar: a sidebar toggle reached the phone top bar');
+  p.check((await p.page.locator('[data-shell=bottom-bar]').count()) === 1, 'topbar: the phone has no bottom bar');
+  const mobile = await p.end();
+  if (desktop && mobile) t.ok('topbar: the sidebar toggle sits at the right edge with the Tabs button and with the strip, and the phone has none');
+  return desktop && mobile;
+}
+
 /** A phone width keeps its own sheet and bottom bar whatever the desktop layout was saved as. */
 async function phone(shared) {
   const t = await startApp(shared, { viewport: { width: 390, height: 844 }, storage: { [WORKSPACE]: JSON.stringify({ sidebarOpen: false, sidebarWidth: 480, splitOpen: true, splitWidth: 900 }) } });
@@ -773,6 +808,7 @@ export async function realApp() {
     results.push(await clipboardDenied(shared));
     results.push(await zoom200(shared));
     results.push(await workspacesCreate(shared));
+    results.push(await topbarLayout(shared));
     results.push(await phone(shared));
   } finally {
     await shared.stop();
