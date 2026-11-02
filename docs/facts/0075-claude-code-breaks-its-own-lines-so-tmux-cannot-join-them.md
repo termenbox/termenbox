@@ -10,7 +10,7 @@ last-verified: 2026-11-02
 
 # Why copy needs a client heuristic
 
-Measured with Claude Code 2.1.308 in a 60-column pane on tmux 3.8 (34 row pairs); the spike is in the history of `docs/plans/copy-joins-wrapped-lines.md`.
+Measured with Claude Code 2.1.308 in a 60-column pane on tmux 3.8 (34 row pairs) (the spike for the copy-join fix, PR #501).
 
 - A plain shell line longer than the pane, or one typed at a prompt, is wrapped by tmux: `capture-pane -p` gives several rows and `-J` joins them.
 - Claude Code never prints a row wider than the pane. It word-wraps and ends each row itself, so xterm sets no `isWrapped` and `-J` joins nothing.
