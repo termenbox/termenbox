@@ -224,11 +224,13 @@ try {
   writeFileSync(big, Buffer.alloc(BIG, 7));
   await openActions();
   await sheet.locator('input[type=file]').setInputFiles(big);
+  const t0 = Date.now();
   await sheet.getByRole('button', { name: /^Upload/ }).click();
   await see(sheet.locator('li[data-state=uploading]'), 'big.bin uploading');
   await see(sheet.locator('[data-testid="upload-folder"] code'), 'the pinned folder');
   await typeLine(`cd ${projB}`);
   await see(sheet.locator('li[data-state=done]'), 'big.bin done', 120000);
+  console.log(`measured  ${(BIG / 1048576 / ((Date.now() - t0) / 1000)).toFixed(1)} MiB/s over loopback with a 1 MiB window (${BIG / 1048576} MiB in ${Date.now() - t0} ms)`);
   if (!existsSync(join(projA, 'big.bin')) || existsSync(join(projB, 'big.bin'))) throw new Error('big.bin did not land in the folder pinned at the start');
   if (statSync(join(projA, 'big.bin')).size !== BIG) throw new Error('big.bin has the wrong size');
   await closeSheet();

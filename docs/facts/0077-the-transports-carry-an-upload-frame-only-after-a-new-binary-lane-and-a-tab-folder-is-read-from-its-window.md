@@ -1,5 +1,5 @@
 ---
-id: 0076
+id: 0077
 title: Neither transport carries a client-to-server upload frame yet; a tab's live folder is the path of its window state
 status: active
 tags: [protocol, server, client, upload]
