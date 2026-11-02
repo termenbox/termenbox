@@ -18,7 +18,7 @@ use termenbox_core::bundle::{Bundle, CandidateKind};
 use termenbox_core::conductor::{
     cap, ClearedBy, ConductorMessage, NodeMessage, Obligation, MAX_NAME, MAX_USAGE_ROWS,
 };
-use termenbox_core::events::{AgentState, Attention};
+use termenbox_core::events::{AgentState, Attention, AttentionKind, AttentionTier};
 use termenbox_core::protocol::{ClientMessage, ServerMessage};
 use tokio::sync::broadcast::error::RecvError;
 use tokio_tungstenite::tungstenite::Message;
@@ -160,6 +160,11 @@ impl Outbox {
                     |(m, _)| matches!(m, NodeMessage::Raised { obligation, .. } if &obligation.id == id),
                 ) {
                     self.remove(at);
+                    while let Some(f) = self.queue.iter().position(
+                        |(m, _)| matches!(m, NodeMessage::Filled { id: fid, .. } if fid == id),
+                    ) {
+                        self.remove(f);
+                    }
                     return;
                 }
             }
@@ -226,6 +231,19 @@ fn size_of(m: &NodeMessage) -> usize {
 
 // --- what the node tells ----------------------------------------------------------------------------------------
 
+/// The tier of an item; an item from before the status model derives it from its kind (decision 0193).
+fn tier_of(a: &Attention) -> AttentionTier {
+    a.tier.unwrap_or(match a.kind {
+        AttentionKind::NeedsInput => AttentionTier::NeedsYou,
+        _ => AttentionTier::Result,
+    })
+}
+
+/// Whether the conductor hears of the item: an ask or a result. `info` is silent and stays on the node.
+fn forwarded(a: &Attention) -> bool {
+    matches!(tier_of(a), AttentionTier::NeedsYou | AttentionTier::Result)
+}
+
 fn obligation_of(a: &Attention) -> Obligation {
     Obligation {
         id: a.id.clone(),
@@ -237,14 +255,19 @@ fn obligation_of(a: &Attention) -> Obligation {
         class_features: Vec::new(),
         task: a.task.as_ref().map(|t| t.title.clone()),
         prompt: a.prompt.clone(),
+        tier: Some(tier_of(a)),
+        ask: a.ask,
+        cause: a.cause,
     }
     .capped()
 }
 
-/// Turns the open list into changes: what appeared is raised, what left is cleared.
+/// Turns the open list into changes: what appeared is raised, what left is cleared, and what got its text later is
+/// filled under the same id.
 #[derive(Default)]
 struct Differ {
-    known: HashSet<String>,
+    /// Forwarded items and the prompt the conductor last heard for each.
+    known: HashMap<String, Option<String>>,
     /// How an item left when this node itself made it leave (an answer or an ack from the conductor).
     by: HashMap<String, ClearedBy>,
 }
@@ -252,19 +275,38 @@ struct Differ {
 impl Differ {
     fn changes(&mut self, epoch: u64, items: &[Attention]) -> Vec<NodeMessage> {
         let mut out = Vec::new();
-        for a in items {
-            if self.known.insert(a.id.clone()) {
-                out.push(NodeMessage::Raised {
-                    epoch,
-                    seq: 0,
-                    obligation: obligation_of(a),
-                });
+        for a in items.iter().filter(|a| forwarded(a)) {
+            let o = obligation_of(a);
+            match self.known.get_mut(&a.id) {
+                None => {
+                    self.known.insert(a.id.clone(), o.prompt.clone());
+                    out.push(NodeMessage::Raised {
+                        epoch,
+                        seq: 0,
+                        obligation: o,
+                    });
+                }
+                Some(heard) if o.prompt.is_some() && *heard != o.prompt => {
+                    *heard = o.prompt.clone();
+                    out.push(NodeMessage::Filled {
+                        epoch,
+                        seq: 0,
+                        id: o.id,
+                        prompt: o.prompt,
+                        ask: o.ask,
+                    });
+                }
+                Some(_) => {}
             }
         }
-        let open: HashSet<&str> = items.iter().map(|a| a.id.as_str()).collect();
+        let open: HashSet<&str> = items
+            .iter()
+            .filter(|a| forwarded(a))
+            .map(|a| a.id.as_str())
+            .collect();
         let gone: Vec<String> = self
             .known
-            .iter()
+            .keys()
             .filter(|id| !open.contains(id.as_str()))
             .cloned()
             .collect();
@@ -283,8 +325,12 @@ impl Differ {
 
     /// After a snapshot the conductor knows exactly this list.
     fn reset(&mut self, items: &[Attention]) {
-        self.known = items.iter().map(|a| a.id.clone()).collect();
-        self.by.retain(|id, _| self.known.contains(id));
+        self.known = items
+            .iter()
+            .filter(|a| forwarded(a))
+            .map(|a| (a.id.clone(), obligation_of(a).prompt))
+            .collect();
+        self.by.retain(|id, _| self.known.contains_key(id));
     }
 }
 
@@ -298,6 +344,19 @@ fn stamp(m: NodeMessage, seq: u64) -> NodeMessage {
             obligation,
         },
         NodeMessage::Cleared { epoch, id, by, .. } => NodeMessage::Cleared { epoch, seq, id, by },
+        NodeMessage::Filled {
+            epoch,
+            id,
+            prompt,
+            ask,
+            ..
+        } => NodeMessage::Filled {
+            epoch,
+            seq,
+            id,
+            prompt,
+            ask,
+        },
         NodeMessage::Acked {
             epoch,
             id,
@@ -659,13 +718,20 @@ where
         st.differ.reset(&items);
         NodeMessage::Snapshot {
             epoch: st.epoch,
-            items: items.iter().map(obligation_of).collect(),
+            items: items
+                .iter()
+                .filter(|a| forwarded(a))
+                .map(obligation_of)
+                .collect(),
             workspaces: Vec::new(),
         }
     };
-    st.outbox
-        .queue
-        .retain(|(m, _)| !matches!(m, NodeMessage::Raised { .. } | NodeMessage::Cleared { .. }));
+    st.outbox.queue.retain(|(m, _)| {
+        !matches!(
+            m,
+            NodeMessage::Raised { .. } | NodeMessage::Cleared { .. } | NodeMessage::Filled { .. }
+        )
+    });
     st.outbox.bytes = st.outbox.queue.iter().map(|(_, s)| s).sum();
     let first = snapshot(node, st);
     send_json(&mut tx, &first).await?;
@@ -930,6 +996,149 @@ mod tests {
         assert_eq!(hub.attention_items().len(), 1);
     }
 
+    fn item(
+        id: &str,
+        kind: AttentionKind,
+        tier: Option<AttentionTier>,
+        prompt: Option<&str>,
+    ) -> Attention {
+        Attention {
+            id: id.into(),
+            workspace: "w".into(),
+            tab: Some("t".into()),
+            kind,
+            raised_at: 1,
+            task: None,
+            prompt: prompt.map(Into::into),
+            tier,
+            ask: (kind == AttentionKind::NeedsInput)
+                .then_some(termenbox_core::events::AskKind::Permission),
+            cause: None,
+        }
+    }
+
+    #[test]
+    fn conductor_link_forwards_asks_and_results_but_not_info() {
+        let mut d = Differ::default();
+        let items = [
+            item(
+                "a",
+                AttentionKind::NeedsInput,
+                Some(AttentionTier::NeedsYou),
+                Some("ok?"),
+            ),
+            item(
+                "r",
+                AttentionKind::FinishedUnseen,
+                Some(AttentionTier::Result),
+                None,
+            ),
+            item(
+                "i",
+                AttentionKind::FinishedUnseen,
+                Some(AttentionTier::Info),
+                None,
+            ),
+        ];
+        let out = d.changes(1, &items);
+        let tiers: Vec<_> = out
+            .iter()
+            .map(|m| match m {
+                NodeMessage::Raised { obligation, .. } => {
+                    (obligation.id.clone(), obligation.tier, obligation.is_ask())
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        // A result is carried as a result and is not an ask; info never leaves the node.
+        assert_eq!(tiers.len(), 2);
+        assert!(tiers.contains(&("a".into(), Some(AttentionTier::NeedsYou), true)));
+        assert!(tiers.contains(&("r".into(), Some(AttentionTier::Result), false)));
+    }
+
+    #[test]
+    fn conductor_link_an_item_from_before_the_status_model_derives_its_tier_from_its_kind() {
+        let mut d = Differ::default();
+        let out = d.changes(
+            1,
+            &[item("a", AttentionKind::NeedsInput, None, Some("ok?"))],
+        );
+        assert!(matches!(
+            out.as_slice(),
+            [NodeMessage::Raised { obligation, .. }] if obligation.tier == Some(AttentionTier::NeedsYou)
+        ));
+    }
+
+    #[test]
+    fn conductor_link_a_fill_keeps_the_id_and_never_raises_twice() {
+        let mut d = Differ::default();
+        let bare = item(
+            "a",
+            AttentionKind::NeedsInput,
+            Some(AttentionTier::NeedsYou),
+            None,
+        );
+        assert_eq!(d.changes(1, &[bare.clone()]).len(), 1);
+        assert!(d.changes(1, &[bare]).is_empty());
+        let filled = item(
+            "a",
+            AttentionKind::NeedsInput,
+            Some(AttentionTier::NeedsYou),
+            Some("Run cargo test?"),
+        );
+        let out = d.changes(1, &[filled.clone()]);
+        assert!(matches!(
+            out.as_slice(),
+            [NodeMessage::Filled { id, prompt: Some(p), .. }] if id == "a" && p == "Run cargo test?"
+        ));
+        // The same text again says nothing; a changed text fills again under the same id.
+        assert!(d.changes(1, &[filled.clone()]).is_empty());
+        let changed = Attention {
+            prompt: Some("Run cargo build?".into()),
+            ..filled
+        };
+        assert!(matches!(
+            d.changes(1, &[changed]).as_slice(),
+            [NodeMessage::Filled { id, .. }] if id == "a"
+        ));
+    }
+
+    #[test]
+    fn conductor_link_a_clear_while_away_drops_the_raise_and_its_fills() {
+        let mut q = Outbox::default();
+        q.push(raised("a"));
+        q.push(NodeMessage::Filled {
+            epoch: 1,
+            seq: 0,
+            id: "a".into(),
+            prompt: Some("p".into()),
+            ask: None,
+        });
+        q.push(NodeMessage::Cleared {
+            epoch: 1,
+            seq: 0,
+            id: "a".into(),
+            by: ClearedBy::Fact,
+        });
+        assert_eq!(q.len(), 0);
+    }
+
+    #[test]
+    fn conductor_link_the_cleared_by_view_path_still_clears_a_result() {
+        let mut d = Differ::default();
+        let r = item(
+            "r",
+            AttentionKind::FinishedUnseen,
+            Some(AttentionTier::Result),
+            None,
+        );
+        assert_eq!(d.changes(1, &[r]).len(), 1);
+        assert!(matches!(
+            d.changes(1, &[]).as_slice(),
+            [NodeMessage::Cleared { id, by: ClearedBy::Fact, .. }] if id == "r"
+        ));
+    }
+
     fn tmpdir() -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("termenbox-conductor-{}", uuid::Uuid::new_v4()));
@@ -951,6 +1160,9 @@ mod tests {
                 class_features: vec![],
                 task: None,
                 prompt: Some("p".into()),
+                tier: None,
+                ask: None,
+                cause: None,
             },
         }
     }

@@ -17,6 +17,7 @@ use termenbox_core::conductor::{
     cap, AnswerTarget, CardInfo, ClearedBy, ConductorMessage, NodeInfo, NodeMessage, NodeStanding,
     Obligation, MAX_NAME,
 };
+use termenbox_core::events::AskKind;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::link::{Inbound, Link};
@@ -125,6 +126,18 @@ impl NodeState {
         while self.incidents.len() > INCIDENT_MAX {
             self.incidents.pop_front();
         }
+    }
+
+    /// The text of an open item arrived after it was raised; the card and the id stay, nothing alerts.
+    fn fill(&mut self, id: &str, prompt: Option<String>, ask: Option<AskKind>) {
+        let Some(h) = self.items.get_mut(id).filter(|h| h.cleared.is_none()) else {
+            return;
+        };
+        let before = h.bytes;
+        h.obligation.prompt = prompt;
+        h.obligation.ask = ask.or(h.obligation.ask);
+        h.bytes = size_of(&h.obligation);
+        self.bytes = self.bytes - before + h.bytes;
     }
 
     fn insert(&mut self, card: String, o: Obligation) {
@@ -518,6 +531,7 @@ impl Conductor {
         let seqd = match &msg {
             NodeMessage::Raised { epoch, seq, .. }
             | NodeMessage::Cleared { epoch, seq, .. }
+            | NodeMessage::Filled { epoch, seq, .. }
             | NodeMessage::Acked { epoch, seq, .. }
             | NodeMessage::Answered { epoch, seq, .. }
             | NodeMessage::Usage { epoch, seq, .. }
@@ -576,6 +590,9 @@ impl Conductor {
                 n.insert(card, obligation);
             }
             NodeMessage::Cleared { id, by, .. } => clear(n, &id, by, now),
+            NodeMessage::Filled {
+                id, prompt, ask, ..
+            } => n.fill(&id, prompt, ask),
             NodeMessage::Acked { id, .. } => clear(n, &id, ClearedBy::Ack, now),
             NodeMessage::Answered { id, .. } => clear(n, &id, ClearedBy::Answer, now),
             NodeMessage::Usage { rows, .. } => {
@@ -1105,6 +1122,9 @@ mod tests {
             class_features: vec!["claude".into()],
             task: Some("fix".into()),
             prompt: Some("Run cargo test?".into()),
+            tier: None,
+            ask: None,
+            cause: None,
         }
     }
 

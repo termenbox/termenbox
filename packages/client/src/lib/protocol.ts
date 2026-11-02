@@ -632,6 +632,10 @@ export interface ConductorObligation {
   class_features?: string[];
   task?: string;
   prompt?: string;
+  /** Absent from an older node: an ask. A `result` waits to be viewed and is not an ask (decision 0193). */
+  tier?: AttentionTier;
+  ask?: AskKind;
+  cause?: FailureCause;
 }
 
 export interface ConductorUsageRow {
@@ -653,6 +657,7 @@ export type NodeMessage =
   | { type: 'hello'; v: number; node: string; name: string; epoch: number; version: string; caps?: string[]; enrol?: string; sig?: string }
   | { type: 'snapshot'; epoch: number; items: ConductorObligation[]; workspaces?: { workspace: string; activity: string }[] }
   | { type: 'raised'; epoch: number; seq: number; obligation: ConductorObligation }
+  | { type: 'filled'; epoch: number; seq: number; id: string; prompt?: string; ask?: AskKind }
   | { type: 'cleared'; epoch: number; seq: number; id: string; by: ClearedBy }
   | { type: 'acked'; epoch: number; seq: number; id: string; actor: string; owner: string }
   | { type: 'answered'; epoch: number; seq: number; id: string; actor: string; owner: string; device: string; option: string }

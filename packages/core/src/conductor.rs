@@ -6,7 +6,7 @@
 //! Unknown variants fall back to `Unknown` so an older peer ignores what it does not know.
 use serde::{Deserialize, Serialize};
 
-use crate::events::AttentionKind;
+use crate::events::{AskKind, AttentionKind, AttentionTier, FailureCause};
 
 pub const MAX_PROMPT: usize = 512;
 pub const MAX_TASK: usize = 160;
@@ -41,9 +41,23 @@ pub struct Obligation {
     /// The question; the only agent text on the link.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+    /// How loud the item is (decision 0193). Absent from an older node: it then means an ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<AttentionTier>,
+    /// What a `needs_you` item waits for (decision 0190).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<AskKind>,
+    /// Why a `failed` result ended (decision 0192).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<FailureCause>,
 }
 
 impl Obligation {
+    /// A `result` waits to be viewed and never counts as an ask; everything else is an ask.
+    pub fn is_ask(&self) -> bool {
+        !matches!(self.tier, Some(AttentionTier::Result | AttentionTier::Info))
+    }
+
     pub fn capped(mut self) -> Self {
         self.workspace = cap(&self.workspace, MAX_NAME);
         self.task = self.task.map(|t| cap(&t, MAX_TASK));
@@ -137,6 +151,16 @@ pub enum NodeMessage {
         id: String,
         by: ClearedBy,
     },
+    /// The text of an open item arrived or changed after it was raised (decision 0190); same id, never an alert.
+    Filled {
+        epoch: u64,
+        seq: u64,
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ask: Option<AskKind>,
+    },
     Acked {
         epoch: u64,
         seq: u64,
@@ -229,6 +253,19 @@ impl NodeMessage {
                 epoch,
                 seq,
                 obligation: obligation.capped(),
+            },
+            NodeMessage::Filled {
+                epoch,
+                seq,
+                id,
+                prompt,
+                ask,
+            } => NodeMessage::Filled {
+                epoch,
+                seq,
+                id,
+                prompt: prompt.map(|p| cap(&p, MAX_PROMPT)),
+                ask,
             },
             NodeMessage::Usage {
                 epoch,
@@ -370,6 +407,9 @@ mod tests {
             class_features: vec!["claude".into(), "bash".into()],
             task: Some("fix the build".into()),
             prompt: Some("Run cargo test?".into()),
+            tier: Some(AttentionTier::NeedsYou),
+            ask: Some(AskKind::Permission),
+            cause: None,
         }
     }
 
@@ -405,6 +445,13 @@ mod tests {
             seq: 2,
             id: "a1".into(),
             by: ClearedBy::Rule,
+        });
+        round(NodeMessage::Filled {
+            epoch: 7,
+            seq: 3,
+            id: "a1".into(),
+            prompt: Some("Run cargo test?".into()),
+            ask: Some(AskKind::Permission),
         });
         round(NodeMessage::Acked {
             epoch: 7,
