@@ -44,7 +44,7 @@ Context: Copy has several paths that must agree: Ctrl/Cmd+C and cut in the key h
 Do: write the function per the decision, cover it with tests in a sibling `*.test.ts` (wrapped-marked rows, tmux-repainted full rows, a real line end on a full-width row, blank lines, indented continuations, selection starting mid-line), and call it from every path above in place of the raw `getSelection()` / row join. If the decision needs the server, add the protocol message in `packages/core/src/protocol.rs`, its mirror in `packages/client/src/lib/protocol.ts`, the handler in `packages/server`, and a Rust test.
 Done-when: no copy path in `Terminal.svelte`, `touchSelection.ts` or `lib/keys.ts` copies unjoined `getSelection()` text, and the check passes.
 
-### 2.2 Whole-workspace checks — [ ]
+### 2.2 Whole-workspace checks — [x]
 Class: review · Needs: 2.1 · Check: `scripts/dev.sh sh -c 'cargo test --workspace && pnpm -r test && pnpm -r build'`
 Context: CI runs the same, plus commit-subject and instruction-file checks.
 Do: run the check, fix what the change broke, and look over the diff against `docs/guardrails/` once (the `conform` skill).
