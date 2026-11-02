@@ -518,6 +518,8 @@ export interface ModelUse {
   cache_read: number;
   cache_write: number;
   cost_micros: number;
+  /** Turns with no price, so the estimate left them out (plan step 1.4b); absent from an older server. */
+  unpriced?: number;
 }
 
 export interface Attention {

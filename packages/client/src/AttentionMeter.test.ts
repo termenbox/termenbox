@@ -30,6 +30,15 @@ describe('AttentionMeter', () => {
     expect(html([day(DAY, { ...base, verified: { none: 4 } })])).not.toContain('per verified outcome');
     expect(html([day(DAY, { agent_ms: 3_600_000, verified: { pass: 1 } })])).not.toContain('per verified outcome');
   });
+  it('says how many turns had no price, so a gap is not read as free', () => {
+    const m = (unpriced?: number) => ({ turns: 4, input: 1, output: 1, cache_read: 0, cache_write: 0, cost_micros: 0, unpriced });
+    const d = (by_model: Record<string, ReturnType<typeof m>>) => day(DAY, { agent_ms: 3_600_000, by_model });
+    expect(html([d({ a: m(2), b: m(1) })])).toContain(', 3 turns unpriced');
+    expect(html([d({ a: m(1) })])).toContain(', 1 turn unpriced');
+    expect(html([d({ a: m(0), b: m() })])).not.toContain('unpriced');
+    expect(reading([d({ a: m(5) }), day(DAY - 7, { by_model: { a: m(9) } })], NOW).unpricedTurns).toBe(5);
+    expect(mergeDays([[d({ a: m(2) })], [d({ a: m(3) })]])[0].by_model?.a.unpriced).toBe(5);
+  });
   it('reads only the last window of days', () => {
     const old = day(DAY - 7, { human_ms: 1_000_000, agent_ms: 3_600_000 });
     const r = reading([old, day(DAY, { human_ms: 36_000, agent_ms: 3_600_000 })], NOW);

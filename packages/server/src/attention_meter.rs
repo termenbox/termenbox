@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -35,9 +35,12 @@ const MAX_ID: usize = 32;
 const FILE: &str = "attention_meter.json";
 const FILE_VERSION: u32 = 1;
 /// The owner's price table (plan step 1.4): `{"<model id>": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75}}`,
-/// US dollars per million tokens. Termenbox starts from `DEFAULT_PRICES` and the owner's entries replace them per model;
-/// a model with no entry in either costs nothing in the meter.
+/// US dollars per million tokens. Termenbox starts from `DEFAULT_PRICES`, the fetched table (`FETCHED_FILE`, step 1.4b)
+/// replaces them per model and the owner's entries replace both; a model with no entry in any costs nothing in the
+/// meter and its turns are counted as unpriced.
 const PRICES_FILE: &str = "prices.json";
+/// The table `--fetch-prices` writes (decision 0195), never the owner's file.
+pub const FETCHED_FILE: &str = "prices_fetched.json";
 /// Anthropic list prices, standard tier, 5-minute cache writes (fact 0041, accessed 2026-10-04, expires 2027-01-04):
 /// (model id, input, output, cache read, cache write). Estimates only: the owner's `prices.json` wins.
 const DEFAULT_PRICES: [(&str, f64, f64, f64, f64); 6] = [
@@ -48,6 +51,27 @@ const DEFAULT_PRICES: [(&str, f64, f64, f64, f64); 6] = [
     ("claude-sonnet-5", 2.0, 10.0, 0.2, 2.5),
     ("claude-haiku-4-5", 1.0, 5.0, 0.1, 1.25),
 ];
+
+/// A table with its ids written the way a lookup writes them (`price_table::normalise`).
+fn normalised(t: HashMap<String, Price>) -> HashMap<String, Price> {
+    t.into_iter()
+        .map(|(k, p)| (crate::price_table::normalise(&k), p))
+        .collect()
+}
+
+/// The three layers, later ones winning per model: built-in, fetched, the owner's. A missing or unreadable file adds nothing.
+fn load_prices(dir: &Path) -> HashMap<String, Price> {
+    let mut prices = default_prices();
+    for file in [FETCHED_FILE, PRICES_FILE] {
+        if let Some(t) = std::fs::read(dir.join(file))
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<HashMap<String, Price>>(&raw).ok())
+        {
+            prices.extend(normalised(t));
+        }
+    }
+    prices
+}
 
 fn default_prices() -> HashMap<String, Price> {
     DEFAULT_PRICES
@@ -86,16 +110,17 @@ impl Verdict {
     }
 }
 
-#[derive(Deserialize, Clone, Copy, Default)]
-struct Price {
+/// Dollars per million tokens.
+#[derive(Serialize, Deserialize, Clone, Copy, Default, Debug, PartialEq)]
+pub struct Price {
     #[serde(default)]
-    input: f64,
+    pub input: f64,
     #[serde(default)]
-    output: f64,
+    pub output: f64,
     #[serde(default)]
-    cache_read: f64,
+    pub cache_read: f64,
     #[serde(default)]
-    cache_write: f64,
+    pub cache_write: f64,
 }
 
 impl Price {
@@ -173,7 +198,7 @@ struct Inner {
 
 pub struct AttentionMeter {
     path: Option<PathBuf>,
-    prices: HashMap<String, Price>,
+    prices: RwLock<HashMap<String, Price>>,
     inner: Mutex<Inner>,
 }
 
@@ -198,6 +223,7 @@ fn scrub(d: &mut AttentionDay) {
         e.cache_read = e.cache_read.saturating_add(v.cache_read);
         e.cache_write = e.cache_write.saturating_add(v.cache_write);
         e.cost_micros = e.cost_micros.saturating_add(v.cost_micros);
+        e.unpriced = e.unpriced.saturating_add(v.unpriced);
     }
     d.by_model = by_model;
 }
@@ -242,7 +268,7 @@ impl AttentionMeter {
     pub fn in_memory() -> Self {
         Self {
             path: None,
-            prices: HashMap::new(),
+            prices: RwLock::default(),
             inner: Mutex::default(),
         }
     }
@@ -250,22 +276,49 @@ impl AttentionMeter {
     /// The same, with a price table (tests).
     #[cfg(test)]
     fn with_prices(mut self, json: &str) -> Self {
-        self.prices = serde_json::from_str(json).unwrap();
+        let owner: HashMap<String, Price> = serde_json::from_str(json).unwrap();
+        self.prices = RwLock::new(normalised(owner));
         self
     }
 
     /// The entry for a model id, or for the longest listed id it extends (`claude-haiku-4-5-20251001` is `claude-haiku-4-5`).
-    fn price_of(&self, key: &str) -> Option<&Price> {
-        self.prices.get(key).or_else(|| {
-            self.prices
+    fn price_of(&self, key: &str) -> Option<Price> {
+        let key = crate::price_table::normalise(key);
+        let prices = self.prices.read().unwrap();
+        prices.get(&key).copied().or_else(|| {
+            prices
                 .iter()
                 .filter(|(id, _)| {
                     key.strip_prefix(id.as_str())
                         .is_some_and(|r| r.starts_with('-'))
                 })
                 .max_by_key(|(id, _)| id.len())
-                .map(|(_, p)| p)
+                .map(|(_, p)| *p)
         })
+    }
+
+    /// The models in the stored days, split by whether a price is known for them (`--fetch-prices` prints it).
+    pub fn price_report(&self) -> (Vec<String>, Vec<String>) {
+        let mut models: Vec<String> = {
+            let g = self.inner.lock().unwrap();
+            let mut all: Vec<String> = g
+                .days
+                .values()
+                .flat_map(|d| d.by_model.keys().cloned())
+                .collect();
+            all.sort();
+            all.dedup();
+            all
+        };
+        models.retain(|m| m != "unknown" && m != "other");
+        models.into_iter().partition(|m| self.price_of(m).is_some())
+    }
+
+    /// Reads the price layers again (after `--fetch-prices` ran in the server). A meter without a store keeps its table.
+    pub fn reload_prices(&self) {
+        if let Some(dir) = self.path.as_deref().and_then(Path::parent) {
+            *self.prices.write().unwrap() = load_prices(dir);
+        }
     }
 
     /// A turn used `t` on `model` (None when the agent names none). Counts only; the estimated cost uses the owner's
@@ -276,11 +329,9 @@ impl AttentionMeter {
             return;
         }
         let key = model_key(model);
-        let cost = if estimate {
-            self.price_of(&key).map_or(0, |p| p.micros(t))
-        } else {
-            0
-        };
+        let price = if estimate { self.price_of(&key) } else { None };
+        let cost = price.map_or(0, |p| p.micros(t));
+        let unpriced = estimate && price.is_none();
         let mut g = self.inner.lock().unwrap();
         let b = g.bucket(now);
         let key = if b.by_model.contains_key(&key) || b.by_model.len() < MAX_MODELS {
@@ -296,6 +347,7 @@ impl AttentionMeter {
         m.cache_read = add(m.cache_read, t.cache_read);
         m.cache_write = add(m.cache_write, t.cache_write);
         m.cost_micros = m.cost_micros.saturating_add(cost);
+        m.unpriced = m.unpriced.saturating_add(u32::from(unpriced));
         b.cost_micros = b.cost_micros.saturating_add(cost);
         g.dirty = true;
     }
@@ -344,18 +396,11 @@ impl AttentionMeter {
                 }
             }
         }
-        let mut prices = default_prices();
-        if let Some(owner) = std::fs::read(dir.join(PRICES_FILE))
-            .ok()
-            .and_then(|raw| serde_json::from_slice::<HashMap<String, Price>>(&raw).ok())
-        {
-            prices.extend(owner);
-        }
         let oldest = day_of(now).saturating_sub(KEEP_DAYS as u32 - 1);
         inner.days.retain(|d, _| *d >= oldest);
         Ok(Self {
             path: Some(path),
-            prices,
+            prices: RwLock::new(load_prices(dir)),
             inner: Mutex::new(inner),
         })
     }
@@ -704,6 +749,73 @@ mod attention_meter_tests {
         let by = &m.stats(D0)[0].by_model;
         assert_eq!(by["claude-sonnet-5-5"].cost_micros, 7_000_000);
         assert_eq!(by["claude-opus-5-5"].cost_micros, 4_000_000);
+    }
+
+    #[test]
+    fn task_telemetry_fetched_prices_sit_between_the_built_in_list_and_the_owners_file() {
+        let d = dir("fetched");
+        std::fs::write(
+            d.join(FETCHED_FILE),
+            r#"{"claude-sonnet-5.5":{"input":3.0},"gpt-5.1-codex":{"input":1.25,"output":10.0},"acme-1":{"input":9.0}}"#,
+        )
+        .unwrap();
+        std::fs::write(d.join(PRICES_FILE), r#"{"acme-1":{"input":0.5}}"#).unwrap();
+        let m = AttentionMeter::open(&d, D0).unwrap();
+        for model in [
+            "claude-sonnet-5-5",
+            "gpt-5.1-codex",
+            "acme-1",
+            "claude-opus-5-5",
+        ] {
+            m.turn_used(Some(model), &tokens(1_000_000, 0, 0), true, D0);
+        }
+        let by = &m.stats(D0)[0].by_model;
+        assert_eq!(
+            by["claude-sonnet-5-5"].cost_micros, 3_000_000,
+            "fetched beats built-in, dots or dashes"
+        );
+        assert_eq!(
+            by["gpt-5.1-codex"].cost_micros, 1_250_000,
+            "a model only the fetch knows"
+        );
+        assert_eq!(
+            by["acme-1"].cost_micros, 500_000,
+            "the owner's file beats the fetch"
+        );
+        assert_eq!(
+            by["claude-opus-5-5"].cost_micros, 4_000_000,
+            "built-in stays where nothing replaces it"
+        );
+        // a refresh while running is picked up without a restart
+        std::fs::write(d.join(FETCHED_FILE), r#"{"gpt-5.1-codex":{"input":2.0}}"#).unwrap();
+        m.reload_prices();
+        m.turn_used(Some("gpt-5.1-codex"), &tokens(1_000_000, 0, 0), true, D0);
+        assert_eq!(
+            m.stats(D0)[0].by_model["gpt-5.1-codex"].cost_micros,
+            3_250_000
+        );
+    }
+
+    #[test]
+    fn task_telemetry_a_turn_on_a_model_with_no_price_is_counted_as_unpriced_not_free() {
+        let m = AttentionMeter::in_memory().with_prices(PRICES);
+        m.turn_used(Some("m-unlisted"), &tokens(10, 10, 0), true, D0);
+        m.turn_used(Some("m-unlisted"), &tokens(10, 10, 0), true, D0);
+        m.turn_used(Some("m-big"), &tokens(10, 10, 0), true, D0);
+        // the agent reported its own cost: nothing was estimated, so nothing is missing
+        m.turn_used(Some("m-other"), &tokens(10, 10, 0), false, D0);
+        let by = &m.stats(D0)[0].by_model;
+        assert_eq!(by["m-unlisted"].unpriced, 2);
+        assert_eq!(by["m-big"].unpriced, 0);
+        assert_eq!(by["m-other"].unpriced, 0);
+        let (priced, unpriced) = m.price_report();
+        assert_eq!(
+            (priced, unpriced),
+            (
+                vec!["m-big".to_string()],
+                vec!["m-other".to_string(), "m-unlisted".to_string()]
+            )
+        );
     }
 
     #[test]

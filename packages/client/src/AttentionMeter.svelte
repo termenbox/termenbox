@@ -11,6 +11,6 @@
   {#if r.secPerAgentHour === null}
     Attention: no agent time measured yet
   {:else}
-    Attention: {r.secPerAgentHour} s per agent-hour ({window} days){#if r.autoPercent !== null}, {r.autoPercent}% of asks answered without you{/if}{#if r.dollarsPerVerified !== null}, about ${r.dollarsPerVerified.toFixed(2)} per verified outcome{/if}
+    Attention: {r.secPerAgentHour} s per agent-hour ({window} days){#if r.autoPercent !== null}, {r.autoPercent}% of asks answered without you{/if}{#if r.dollarsPerVerified !== null}, about ${r.dollarsPerVerified.toFixed(2)} per verified outcome{/if}{#if r.unpricedTurns > 0}, {r.unpricedTurns} {r.unpricedTurns === 1 ? 'turn' : 'turns'} unpriced{/if}
   {/if}
 </p>

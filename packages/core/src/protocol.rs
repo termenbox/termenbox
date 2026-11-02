@@ -663,6 +663,9 @@ pub struct ModelUse {
     pub cache_write: u64,
     #[serde(default)]
     pub cost_micros: u64,
+    /// Turns that had no price, so the estimate left them out (plan step 1.4b). Turns whose agent reported a cost are not counted.
+    #[serde(default)]
+    pub unpriced: u32,
 }
 
 /// What reopening a dormant workspace did to one tab that held an agent conversation (decision 0152). `outcome` is
