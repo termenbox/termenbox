@@ -1,0 +1,26 @@
+name: Bug report
+description: Something does not work
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not paste tokens, keys, pairing links or the output of commands that print them. Security problems go through SECURITY.md, not here.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `termenbox-server --version`
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and device
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true

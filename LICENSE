@@ -1,0 +1,38 @@
+TERMENBOX END USER LICENCE AGREEMENT (EULA)
+
+Licensor: Sergei Strebulaev, doing business as Termenbox ("we", "us").
+Copyright (c) 2024-2026 Sergei Strebulaev. All rights reserved except as granted below.
+
+This agreement covers the Termenbox server, the Termenbox web client, the installer and the other binaries and
+files that the Termenbox project distributes (together, "Termenbox"). By installing or running Termenbox you
+accept these terms.
+
+1. Free use. You may install and run Termenbox, on as many machines as you like, for any purpose, including
+   commercial use, without a fee.
+
+2. No redistribution as a product. You may not sell, sublicense, rent or redistribute Termenbox, modified or
+   unmodified, or offer it as a product or service that competes with Termenbox. Copying it between your own
+   machines, and keeping a backup, is use and is allowed.
+
+3. No reverse engineering. You may not decompile, disassemble or otherwise reverse engineer Termenbox, except to
+   the extent that applicable law allows it despite this restriction.
+
+4. No warranty. Termenbox is provided "as is", without warranty of any kind, express or implied, including
+   merchantability, fitness for a particular purpose and non-infringement.
+
+   No liability. To the fullest extent the law allows, we accept no responsibility or liability of any kind for
+   Termenbox or your use of it, including loss of data, loss of profit, damage to your machines, accounts or
+   systems, actions taken by programs or agents that you run with it, and any direct, indirect, incidental or
+   consequential damage, even if we were told it could happen. You use Termenbox at your own risk. If the law does
+   not allow a part of this section, it applies to the extent it can.
+
+5. Ownership. Termenbox is licensed, not sold. All rights not granted here are reserved.
+
+6. Third-party components. Termenbox includes third-party components that keep their own licences, which apply to
+   those components instead of this agreement. They are listed, with their licence texts, in the file NOTICES that
+   ships with each release. The one component that is our own, the crate `bridge-contract` (the Bridge Contract
+   state machine, `packages/bridge-contract`), is licensed separately under MIT OR Apache-2.0, at your option, and
+   is not covered by sections 2 and 3; the copy of it inside the Termenbox binary is covered by this agreement
+   as a part of that binary.
+
+Security reports: see SECURITY.md.
