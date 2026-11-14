@@ -30,4 +30,4 @@ Releases are listed under [Releases](https://github.com/termenbox/termenbox/rele
 
 Copyright holder and terms are in [LICENSE](LICENSE) (free-use end user agreement). Third-party software shipped with
 Termenbox, with its licenses, is listed in [NOTICES](NOTICES). Contact: security@termenbox.dev for security reports,
-[Discussions](https://github.com/termenbox/termenbox/discussions) for everything else.
+[Discussions](https://github.com/termenbox/termenbox/discussions) for questions, hello@termenbox.dev for business inquiries.

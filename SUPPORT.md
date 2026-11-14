@@ -5,3 +5,5 @@
 3. If it is a bug, [open an issue](https://github.com/termenbox/termenbox/issues/new/choose) with your version and OS.
 
 Security reports go through [SECURITY.md](SECURITY.md).
+
+Business inquiries (partnerships, licensing, pilots): hello@termenbox.dev. It is not a support channel; use Discussions for that.
