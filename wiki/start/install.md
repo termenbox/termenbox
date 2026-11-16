@@ -1,0 +1,94 @@
+# Install, firewall and where workspaces run
+
+Back to the [README](../../README.md). New to this? [Chapter 1, Install](../course/01-install.md) walks through it in a few minutes.
+
+The command is the same on every network and carries no secret:
+
+```sh
+curl -fsSL https://github.com/termenbox/termenbox/releases/latest/download/install.sh -o install.sh && sha256sum install.sh && sh install.sh
+```
+
+To verify the installer against a key that is published in this repository, not on the site that serves it, use the script from the repository instead:
+
+```bash
+curl -fsSL https://github.com/termenbox/termenbox/releases/latest/download/install-verified.sh | sh -s -- <args>
+```
+
+It carries the bundle keys of `packages/client/bundle-keys.txt`, downloads the installer and its signed `bundle.json`, checks the signature, that the bundle is not older than the lowest version the script accepts, and the installer's SHA-256 with `ssh-keygen`, and runs that same downloaded file with your arguments (the installer does not fetch itself a second time) (for example `container` or `--channel beta`). If anything does not match, nothing is installed. Key fingerprints: `bk1 SHA256:EcN+IBMm8lQWCl2JxgNA4ebTftzlxK2u3bp6P3PYO9g`, `bk2 SHA256:lfmv+huP625NbSM4qgP3na8YgOr+2dfK6cSxei0Gak4`. It checks the stable channel.
+
+It picks a free UDP port, starts the server and ends with a QR, a link and a short code. Scan the QR (or paste the link) in **Add Server**. It is safe to run again: on an owned server it prints a link that adds the server to another browser.
+
+## Firewalls
+
+The server needs **one inbound UDP port** (the installer picks a free one, usually 4443, and opens it in `ufw` or `firewalld` if they are active). If you use a provider firewall or security group (AWS, GCP, Oracle, Hetzner Cloud Firewall), open that port there. The app tells you which port when it cannot reach your server: *"Server unreachable on UDP port N"*. To see the port: `cat /opt/termenbox/udp_port` (isolated container) or `sudo cat /var/lib/termenbox-root/udp_port` (on the machine).
+
+Some mobile and corporate networks block UDP. Those clients can still connect through a tunnel: see [Tunnels](../features/connecting.md#tunnels-reaching-a-server-from-anywhere).
+
+## Where your agents run
+
+Add Server offers these places. The plain command installs `host-me`; the others add one word after it.
+
+- `curl -fsSL https://github.com/termenbox/termenbox/releases/latest/download/install.sh -o install.sh && sha256sum install.sh && sh install.sh`: on this machine as the user who runs the command, as a user service; no root (the default).
+- `curl -fsSL https://github.com/termenbox/termenbox/releases/latest/download/install.sh -o install.sh && sha256sum install.sh && sh install.sh container`: in an isolated Docker container; Docker is installed if missing.
+- `curl -fsSL https://github.com/termenbox/termenbox/releases/latest/download/install.sh -o install.sh && sha256sum install.sh && sh install.sh host`: on this machine as root, as a system service; asks for `sudo`.
+- `curl -fsSL https://github.com/termenbox/termenbox/releases/latest/download/install.sh -o install.sh && sha256sum install.sh && sh install.sh host-user`: on this machine as a dedicated unprivileged user `termenbox`, as a system service; asks for `sudo`.
+
+Release channel: add `--channel stable|beta|nightly` (default `stable`), for example `curl -fsSL https://github.com/termenbox/termenbox/releases/latest/download/install.sh -o install.sh && sha256sum install.sh && sh install.sh --channel beta`.
+
+Install checked against a key published in this repository: `curl -fsSL https://github.com/termenbox/termenbox/releases/latest/download/install-verified.sh | sh -s -- <args>`.
+
+Uninstall (without `--yes` it only shows what it would do): `curl -fsSL https://github.com/termenbox/termenbox/releases/latest/download/uninstall-verified.sh | sudo sh -s -- --yes`.
+
+**In an isolated container** (the install command with `container` added). Workspaces run inside a Docker container, in `/opt/termenbox/home` (mounted as the container's home, so it survives restarts and upgrades). Docker is installed if missing. The container cannot see the rest of your VPS. The image has tmux, git, curl and Node. Install your agents in a Termenbox workspace, for example:
+
+```bash
+npm install -g @anthropic-ai/claude-code @openai/codex
+```
+
+**On the machine itself** (no Docker; the install command with `host-user` added for a dedicated user, with `host` for root). The server is a single static binary run as a systemd service, and workspaces run directly on your VPS, where your repositories and agent tools already are. You choose who the workspaces run as: a dedicated unprivileged user `termenbox` (created for you, recommended), the user who runs the install command (workspaces open on your behalf, in your home, with your repositories, keys and agent logins; nothing is created), or `root`. This gives your browser a shell on the server itself, so the app shows a warning and asks you to confirm. Requirements: systemd, `curl`, `ssh-keygen` (package `openssh-client`), x86_64 or aarch64. A pinned static `tmux` (3.2 or newer) is installed next to the server, so none has to be installed first; `TERMENBOX_TMUX` points the server at a tmux of your own instead.
+
+**As your own user, with no root** (the default, the install command with nothing added). The same machine-itself install, but as a user service of the account that runs the command: no `sudo`, no new user. The binary lives in `~/.local/bin`, state in `~/.config/termenbox`, and the update check is a timer of your own. Starting at boot needs lingering, which systemd lets you switch on for yourself (`loginctl enable-linger`); if your system refuses, the installer says so and prints the one command root would have to run. A firewall rule is printed the same way, never run. The pinned static `tmux` goes to `~/.local/bin` beside the server, so none has to be installed. The dedicated user and root choices still use a system service and ask for `sudo`.
+
+The installer also sets up an update check that runs as root, separately from the server (which can stay an unprivileged user). Before anything is installed, and before every update, the release is checked: its manifest must carry a valid signature by the project's release key, and the binary must match the signed SHA-256 (see `SECURITY.md`). It lists every change it will make, records each one in a journal in `/var/lib/termenbox-root` before making it, and can undo them.
+
+## Logs and diagnostics
+
+The server writes its log as JSON Lines to `logs/termenbox.jsonl` in its state directory (`~/.config/termenbox/logs` for a user install), as well as to the service manager's own log. The file rotates at 10 MB and is pruned after 30 days or 100 MB in total. Secrets are replaced and session text is left out of every line. Set `TERMENBOX_LOG` (for example `TERMENBOX_LOG=debug`) in the service environment to change the level; `RUST_LOG` is used if it is not set, and the default is `info`. A panic also writes `logs/crash-<time>.json`.
+
+If the server died without a clean exit, the app says so once on your next sign-in and offers **Server diagnostics**. The same action is in Settings and the menu, for the owner only. The server builds a bundle on request: the last 2 MB of log, the newest crash file, the unclean-exit report, versions and the health history. Addresses, ports, tokens, certificates, home paths, session names and terminal content are removed. You read the bundle in the app first, then download it or open a prefilled GitHub issue labelled `incident`. Nothing is sent automatically, and nothing leaves your device until you tap.
+
+## Updating and removing
+
+Remove the server from the machine with one command. Without `--yes` it only shows what it would do:
+
+```bash
+curl -fsSL https://github.com/termenbox/termenbox/releases/latest/download/uninstall-verified.sh | sudo sh            # preview, changes nothing
+curl -fsSL https://github.com/termenbox/termenbox/releases/latest/download/uninstall-verified.sh | sudo sh -s -- --yes
+```
+
+This script comes from the repository, carries the bundle keys of `packages/client/bundle-keys.txt`, and checks the signed `bundle.json` (signature, stable channel, not older than the lowest version it accepts, and the SHA-256 of `uninstall.sh`) before it runs that same downloaded file. Nothing is removed when a check fails.
+
+An install made for your own user needs no `sudo` to remove: run the same command as that user, without `sudo`.
+
+It handles both install kinds. For the container it removes the container and `/opt/termenbox`. On the machine itself it stops the service and the updater, deletes the server's state and undoes every journaled change (binary, units, firewall rule, and the `termenbox` user and tmux only if the installer added them). It never touches your repositories, or the home of the user your workspaces run as. Add `--keep-state` to keep the server's keys and owner, `--delete-home` to also delete the home of a `termenbox` user the installer created. Running tmux sessions are left alone. Then use **Remove** in the app to drop it from your list; you can also uninstall from there while connected.
+
+Updates: a container install gets the same host timers and root helper. The timer pulls the image digest named in the signed release manifest (never a tag), recreates the container from the arguments the installer recorded in `/var/lib/termenbox-root/container.json`, and puts the previous container back if the new one is not healthy; the container never gets the Docker socket. The helper is the server binary copied out of the image, so `docker` must be on the host's `PATH`. Pinning a tag by hand with `TERMENBOX_IMAGE` turns the timer's pull off. A container installed before this release gets its timers the next time you run the install command; until then, running it again is how it updates. On the machine itself a timer (root-owned, or your own for the no-root install) checks for a new signed release shortly after boot and every six hours; if the new server does not come up healthy the old one is put back. A release that was rolled back is not tried again until a newer one appears. The commands below take `--journal-dir` and `--requests-dir` as the installer's units do (`systemctl cat termenbox-update.service` shows them; add `--user-helper` for the no-root install, and run them as root, or as yourself for that install):
+
+- `termenbox-server --root-helper status [--json]` reads only: version, policy, last check and why it failed, the release on offer.
+- `termenbox-server --root-helper check` looks for a release and records it; it never installs, in any mode.
+- `termenbox-server --root-helper apply` installs the release now. `skip` stops offering the release on offer until a newer one appears; `postpone` adds one more grace period to a scheduled install (three times at most).
+
+The old advice `--root-helper update` installs in `auto` mode, so it is not a check.
+
+Release channels and update policy: `--channel stable|beta|nightly` picks the release stream (default stable), for example the install command with `--channel beta` added. A stable server never installs a beta or nightly; a beta server installs beta and stable releases; a nightly server installs only nightlies. The container uses the image tag of the channel (`latest` for stable, `beta`, `nightly`; `X.Y.Z` and the exact prerelease version pin a release). `latest` moves only when a stable `vX.Y.Z` tag is released, no longer with every change on the release branch, so a container on `latest` stays where it is until the first stable release made with the channel workflows. The choice is written to `update.toml` in the journal directory (`/var/lib/termenbox-root`, or `~/.local/state/termenbox` for the no-root install), which only the host can change; run the installer again with `--channel`, or edit the file:
+
+```toml
+[update]
+channel = "stable"             # stable | beta | nightly
+mode = "auto"                  # auto: install daily | notify: record it, install when asked | hold: do nothing
+maintenance_window = "03:00-04:00"   # optional, local time; limits the automatic install
+grace = "12h"                  # optional, only with mode = "notify": time to answer a new release (5m to 14d)
+on_timeout = "install"         # optional: install | skip (the default) when the grace period ends unanswered
+```
+
+`auto` is the default, except on nightly, which defaults to `notify` (an unattended daily restart is a surprise on a server that wanted to try nightly); `--auto-update` turns it on. In `notify` the check records the available version in `update-state.json` (and, for one more release, `update-status.json`) in the server's state directory, and the notice stays until it is installed or a newer release replaces it, however long ago the check was, and "update now" from the app installs it. A phone with push turned on is told once per release (the server's name and "has an update", never the version), not during quiet hours. **Server diagnostics** from the app include `update-state.json`, with paths and addresses removed. `hold` does nothing, even when asked. An automatic update never crosses a major version: it is recorded, and installing it is your call. With `grace`, a new release in `notify` mode gets a deadline (first seen plus the grace period, moved to the next window start when it falls outside `maintenance_window`). Before it you can **Update now**, **Postpone** (one more grace period, three times) or **Skip this version** in the app or with `--root-helper`. At the deadline a five-minute local timer (`termenbox-update-tick.timer`, no network until a deadline has passed) installs the release (`install`) or pins it as skipped (`skip`). A major version never installs by itself, and a release that failed to install or was rolled back is not retried until a newer one appears or you ask. Add the two keys only on a server that runs this release or later: an older binary refuses keys it does not know. A file that does not parse stops the updater, so fix the typo and the check resumes.
