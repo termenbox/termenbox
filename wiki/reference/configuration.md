@@ -1,0 +1,25 @@
+# Configuration
+
+Back to the [README](../../README.md). To run your own client, directory and OAuth app, servers need `TERMENBOX_CLIENT_URL=https://your-client`, which the install command of your own client carries.
+
+Server (environment variables of the container; the installer sets the first two):
+
+| Variable | Description |
+|---|---|
+| `TERMENBOX_UDP_PORT` | UDP port of the WebRTC transport (default: the first free port in 4443-4542, remembered across restarts) |
+| `TERMENBOX_CLIENT_URL` | Client and directory origin (default https://app.termenbox.dev) |
+| `TERMENBOX_PUBLIC_IP` | Address clients connect to; detected when unset |
+| `TERMENBOX_LAN_ONLY` | `1`: reach the server over the LAN or an overlay only (no directory, no public-IP lookup, no router mapping); pair with `--print-pairing` |
+| `TERMENBOX_LAN_ADDRS` | LAN addresses for the signed list, comma-separated, instead of the ones found on the interfaces (at most 4 are used) |
+| `TERMENBOX_OVERLAY_ADDRS` | Overlay addresses (Tailscale, WireGuard) for the signed list, instead of the ones found |
+| `TERMENBOX_WEBRTC` | `off` for WebSocket only |
+| `TERMENBOX_SERVER_NAME` | Display name; default: `<user>@<hostname>`, the user sessions run as and the host's short hostname (the installer passes both into the container). A rename made in the app is saved on the server and wins over this setting |
+| `TERMENBOX_BACKEND` | `auto` (default: `tmux`, plus `acp` when `TERMENBOX_ACP=on`), `tmux`, `command`, `acp`, or a comma list such as `tmux,acp`, taken as written |
+| `TERMENBOX_ACP` | `off` (default). `on` makes `auto` offer the built-in agent-view (ACP) agents `claude` and `opencode` once their adapter is installed. With `acp` next to `tmux`, workspace ids become `tmux:<name>`, so tabs you hid and push links made before the switch no longer match |
+| `TERMENBOX_HANDOFF` | `off` (default). `on` lets an agent blocked in a browser ask you for a handoff; see [When an agent is stuck in a browser](../features/agent-browser-handoff.md) |
+| `TERMENBOX_CONFIG_DIR` | Owner, keys and certificate (default `~/.config/termenbox`) |
+| `TERMENBOX_HISTORY_DAYS` | Days of agent history kept for the Activity view (default 90) |
+| `TERMENBOX_HISTORY_MAX_MB` | Most disk the history may use, oldest dropped first (default 20) |
+| `TERMENBOX_TIMELINE_BUDGET_MB` | Most memory the Decision pane's chats of all tabs may hold together, the one read longest ago let go first (default 32; each tab holds about 2 MB) |
+
+Client build: `VITE_GITHUB_CLIENT_ID`; `TERMENBOX_CLIENT_ORIGIN` (`https://your-client`) is written into the installer served at `/i` as its default client address, so a self-hosted client shows the same bare install command. The OAuth code exchange runs in a Pages Function that needs `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` and `CERT_SIGNING_KEY` (base64 PKCS#8 Ed25519) as secrets on the Pages project. Servers trust its public key from `packages/server/cert-keys.txt`; self-hosters set `TERMENBOX_CERT_KEYS=kid=<base64url key>` on their servers.
